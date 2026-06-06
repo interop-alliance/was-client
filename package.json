@@ -42,6 +42,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@interop/ed25519-verification-key": "^7.0.1",
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.7",
@@ -53,7 +54,8 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.4",
     "vite": "^8.0.14",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "was-teaching-server": "link:../was-teaching-server"
   },
   "publishConfig": {
     "access": "public",
