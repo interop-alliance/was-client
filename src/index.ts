@@ -1,4 +1,47 @@
 /*!
- * Copyright (c) 2026 Interop Alliance and Dmitri Zagidulin. All rights reserved.
+ * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-export { Example } from './Example.js'
+/**
+ * Public entry point for `@interop/was-client`: the `WasClient` and its
+ * navigational handles, the typed error hierarchy, and the shared types.
+ */
+export { WasClient } from './WasClient.js'
+export { Space } from './Space.js'
+export { Collection } from './Collection.js'
+export { Resource } from './Resource.js'
+
+export {
+  WasError,
+  NotFoundError,
+  ValidationError,
+  AuthRequiredError,
+  NotImplementedError,
+  WasServerError,
+  mapError
+} from './errors.js'
+
+export type {
+  Json,
+  JsonPrimitive,
+  JsonObject,
+  JsonArray,
+  Action,
+  ActionInput,
+  SpaceDescription,
+  CollectionDescription,
+  CollectionSummary,
+  CollectionListing,
+  SpaceSummary,
+  SpaceListing,
+  ResourceSummary,
+  ResourceListing,
+  AddResult,
+  ImportStats,
+  HandleOptions,
+  BackendReference,
+  GrantOptions,
+  RequestInput,
+  IZcap,
+  IDelegatedZcap,
+  ISigner
+} from './types.js'
