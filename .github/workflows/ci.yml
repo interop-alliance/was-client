@@ -28,10 +28,10 @@ jobs:
         run: pnpm run build
 
       - name: Test (Node)
-        run: pnpm run test-node
+        run: pnpm run test:node
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Test (Browser)
-        run: pnpm run test-browser
+        run: pnpm run test:browser
