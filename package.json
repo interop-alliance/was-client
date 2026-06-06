@@ -1,7 +1,7 @@
 {
-  "name": "@interop/isomorphic-lib-template",
-  "description": "A Typescript/Javascript isomorphic library template, for use in the browser, Node.js, and React Native.",
-  "version": "0.0.1",
+  "name": "@interop/was-client",
+  "description": "A developer-friendly client for Wallet Attached Storage (WAS) servers.",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "build": "pnpm run clear && tsc",
@@ -35,6 +35,10 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "dependencies": {
+    "@interop/data-integrity-core": "^6.1.2",
+    "@interop/ed25519-signature": "^7.0.1",
+    "@interop/ezcap": "^7.1.1",
+    "@interop/http-client": "^1.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -56,7 +60,10 @@
     "provenance": true
   },
   "keywords": [
-    "isomorphic"
+    "wallet attached storage",
+    "was",
+    "zcap",
+    "ezcap"
   ],
   "packageManager": "pnpm@11.5.0",
   "engines": {
@@ -69,8 +76,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/interop-alliance/isomorphic-lib-template.git"
+    "url": "git+https://github.com/interop-alliance/was-client.git"
   },
-  "homepage": "https://github.com/interop-alliance/isomorphic-lib-template",
-  "bugs": "https://github.com/interop-alliance/isomorphic-lib-template/issues"
+  "homepage": "https://github.com/interop-alliance/was-client",
+  "bugs": "https://github.com/interop-alliance/was-client/issues"
 }
