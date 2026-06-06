@@ -24,6 +24,9 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.4.1)
+      '@interop/ed25519-verification-key':
+        specifier: ^7.0.1
+        version: 7.0.1
       '@playwright/test':
         specifier: ^1.60.0
         version: 1.60.0
@@ -60,6 +63,9 @@ importers:
       vitest:
         specifier: ^4.1.7
         version: 4.1.8(@types/node@25.9.1)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.1))
+      was-teaching-server:
+        specifier: link:../was-teaching-server
+        version: link:../was-teaching-server
 
 packages:
 
