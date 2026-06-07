@@ -66,6 +66,20 @@ export function spaceImport(spaceId: string): string {
 }
 
 /**
+ * `/space/:spaceId/policy` -- the space-level access-control policy resource.
+ */
+export function spacePolicy(spaceId: string): string {
+  return `/space/${encode(spaceId)}/policy`
+}
+
+/**
+ * `/space/:spaceId/linkset` -- the space-level linkset (policy discovery).
+ */
+export function spaceLinkset(spaceId: string): string {
+  return `/space/${encode(spaceId)}/linkset`
+}
+
+/**
  * `/space/:spaceId/:collectionId` -- get / update / delete a collection
  * (no trailing slash).
  */
@@ -82,6 +96,28 @@ export function collectionItems(spaceId: string, collectionId: string): string {
 }
 
 /**
+ * `/space/:spaceId/:collectionId/policy` -- the collection-level access-control
+ * policy resource.
+ */
+export function collectionPolicy(
+  spaceId: string,
+  collectionId: string
+): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/policy`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/linkset` -- the collection-level linkset
+ * (policy discovery).
+ */
+export function collectionLinkset(
+  spaceId: string,
+  collectionId: string
+): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/linkset`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId` -- get / put / delete a resource
  * (no trailing slash).
  */
@@ -91,6 +127,18 @@ export function resourcePath(
   resourceId: string
 ): string {
   return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/:resourceId/policy` -- the resource-level
+ * access-control policy resource.
+ */
+export function resourcePolicy(
+  spaceId: string,
+  collectionId: string,
+  resourceId: string
+): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}/policy`
 }
 
 /**

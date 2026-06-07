@@ -44,6 +44,8 @@ export interface SpaceDescription {
   type: string[]
   name?: string
   controller: string
+  /** URL of the Space's linkset (policy discovery), if the server advertises it. */
+  linkset?: string
 }
 
 /**
@@ -53,6 +55,36 @@ export interface CollectionDescription {
   id: string
   type: string[]
   name?: string
+  /** URL of the Collection's linkset (policy discovery), if advertised. */
+  linkset?: string
+}
+
+/**
+ * An access-control policy document attached to a Space, Collection, or
+ * Resource. A `type`-discriminated, open/extensible shape: the reference server
+ * recognizes `{ "type": "PublicCanRead" }` for world-readable access (see
+ * `setPublic()`); other types are server-defined.
+ */
+export interface PolicyDocument {
+  type: string
+  [key: string]: unknown
+}
+
+/**
+ * One member of a {@link LinkSet} (RFC9264): an `anchor` plus relation keys
+ * (e.g. `https://wallet.storage/spec#policy`) mapping to arrays of link targets.
+ */
+export interface LinkSetEntry {
+  anchor?: string
+  [relation: string]: unknown
+}
+
+/**
+ * Return shape of `space.linkset()` / `collection.linkset()`: an RFC9264
+ * `application/linkset+json` document.
+ */
+export interface LinkSet {
+  linkset: LinkSetEntry[]
 }
 
 /**
@@ -130,6 +162,8 @@ export interface ImportStats {
   collectionsSkipped: number
   resourcesCreated: number
   resourcesSkipped: number
+  policiesCreated: number
+  policiesSkipped: number
 }
 
 /**
