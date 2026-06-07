@@ -6,12 +6,12 @@
  * keyed by id within a Collection). Sugar over the Collection item operations,
  * with explicit `getText()` / `getBytes()` escape hatches.
  */
-import { resourcePath } from './internal/paths.js'
+import { resourcePath, resourcePolicy } from './internal/paths.js'
 import { prepareBody, parseResource } from './internal/content.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import type { IZcap, Json } from './types.js'
+import type { IZcap, Json, PolicyDocument } from './types.js'
 
 export class Resource {
   readonly spaceId: string
@@ -141,6 +141,67 @@ export class Resource {
   async delete(): Promise<void> {
     await send(this._context, {
       path: this._path,
+      method: 'DELETE',
+      capability: this._capability,
+      idempotent: true
+    })
+  }
+
+  private get _policyPath(): string {
+    return resourcePolicy(this.spaceId, this.collectionId, this.id)
+  }
+
+  /**
+   * Reads the resource's access-control policy. Returns `null` when no policy is
+   * set (or it is not visible to you). Managing a policy is a controller-level
+   * operation.
+   *
+   * @returns {Promise<PolicyDocument | null>}
+   */
+  async getPolicy(): Promise<PolicyDocument | null> {
+    const response = await send(this._context, {
+      path: this._policyPath,
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as PolicyDocument)
+  }
+
+  /**
+   * Sets (creates or replaces) the resource's access-control policy.
+   *
+   * @param policy {PolicyDocument}
+   * @returns {Promise<void>}
+   */
+  async setPolicy(policy: PolicyDocument): Promise<void> {
+    await send(this._context, {
+      path: this._policyPath,
+      method: 'PUT',
+      capability: this._capability,
+      json: policy
+    })
+  }
+
+  /**
+   * Makes this single resource world-readable: it becomes readable without
+   * authorization. Sugar for `setPolicy({ type: 'PublicCanRead' })`.
+   *
+   * @returns {Promise<void>}
+   */
+  async setPublic(): Promise<void> {
+    await this.setPolicy({ type: 'PublicCanRead' })
+  }
+
+  /**
+   * Removes the resource's access-control policy, reverting it to
+   * capability-only access. Idempotent.
+   *
+   * @returns {Promise<void>}
+   */
+  async clearPolicy(): Promise<void> {
+    await send(this._context, {
+      path: this._policyPath,
       method: 'DELETE',
       capability: this._capability,
       idempotent: true

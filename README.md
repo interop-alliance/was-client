@@ -153,12 +153,41 @@ authorizes on these case-sensitively (uppercase), but `grant()` also accepts the
 lowercase forms and normalizes them to uppercase in the signed zcap -- so
 `actions: ['get']` still validates server-side.
 
+### Public sharing and access-control policies
+
+A Space, Collection, or Resource can carry an access-control **policy** that
+grants read access beyond capabilities -- most commonly making it world-readable
+("share via public link"). The policy methods live on all three handles:
+
+```ts
+// Make a whole collection world-readable (the "create public link" case).
+await collection.setPublic() // sugar for setPolicy({ type: 'PublicCanRead' })
+
+// Anyone (even unauthenticated) can now read its resources.
+const link = added.url // hand this URL out; a plain GET resolves it
+
+// Inspect or revoke.
+const policy = await collection.getPolicy() // { type: 'PublicCanRead' } | null
+await collection.clearPolicy() // revert to capability-only access (idempotent)
+
+// setPolicy() is the generic, forward-compatible primitive; setPublic() is sugar.
+await space.setPolicy({ type: 'PublicCanRead' }) // inherited by all contents
+await resource.setPublic() // a single public resource
+```
+
+Policies are resolved most-specific-first (Resource over Collection over Space)
+and are permissive-only -- they broaden access, never restrict a valid capability
+holder. Managing a policy is a controller-level operation. Discover a policy via
+`space.linkset()` / `collection.linkset()` (RFC9264) or the `linkset` property on
+a description.
+
 ### Export and import
 
 ```ts
 const archive = await space.export() // Uint8Array (application/x-tar)
 const stats = await otherSpace.import(archive)
-// { collectionsCreated, collectionsSkipped, resourcesCreated, resourcesSkipped }
+// { collectionsCreated, collectionsSkipped, resourcesCreated, resourcesSkipped,
+//   policiesCreated, policiesSkipped }
 ```
 
 ### The manual-request escape hatch
@@ -191,7 +220,7 @@ All error classes extend `WasError` (carrying `status`, `title`, `details`, and
 `requestUrl`). `delete()` additionally treats a 404 as success, so it is
 idempotent.
 
-Some spec endpoints (`listSpaces()`, `policy`/`meta`, `query`, ...) are not yet
+Some spec endpoints (`listSpaces()`, `meta`, `query`, ...) are not yet
 implemented by the reference server and currently surface `NotImplementedError`.
 
 ## Contribute

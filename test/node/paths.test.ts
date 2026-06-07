@@ -16,9 +16,14 @@ import {
   spaceCollections,
   spaceExport,
   spaceImport,
+  spacePolicy,
+  spaceLinkset,
   collectionPath,
   collectionItems,
+  collectionPolicy,
+  collectionLinkset,
   resourcePath,
+  resourcePolicy,
   toUrl
 } from '../../src/internal/paths.js'
 
@@ -58,6 +63,19 @@ describe('path builders', () => {
 
   it('omits the trailing slash for a resource by id', () => {
     expect(resourcePath('home', 'docs', 'note')).toBe('/space/home/docs/note')
+  })
+
+  it('builds the policy resource paths at each level', () => {
+    expect(spacePolicy('home')).toBe('/space/home/policy')
+    expect(collectionPolicy('home', 'docs')).toBe('/space/home/docs/policy')
+    expect(resourcePolicy('home', 'docs', 'note')).toBe(
+      '/space/home/docs/note/policy'
+    )
+  })
+
+  it('builds the linkset paths (space and collection)', () => {
+    expect(spaceLinkset('home')).toBe('/space/home/linkset')
+    expect(collectionLinkset('home', 'docs')).toBe('/space/home/docs/linkset')
   })
 
   it('percent-encodes path segments so ids cannot break out of their slot', () => {

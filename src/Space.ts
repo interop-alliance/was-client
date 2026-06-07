@@ -13,6 +13,8 @@ import {
   spaceCollections,
   spaceExport,
   spaceImport,
+  spacePolicy,
+  spaceLinkset,
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
@@ -29,6 +31,8 @@ import type {
   IDelegatedZcap,
   IZcap,
   ImportStats,
+  LinkSet,
+  PolicyDocument,
   SpaceDescription
 } from './types.js'
 
@@ -247,5 +251,80 @@ export class Space {
       headers: { 'content-type': 'application/x-tar' }
     })
     return (response as { data?: unknown }).data as ImportStats
+  }
+
+  /**
+   * Reads the space's access-control policy. Returns `null` when no policy is
+   * set (or it is not visible to you). A space-level policy is inherited by all
+   * collections and resources unless overridden by a more specific one. Managing
+   * a policy is a controller-level operation.
+   *
+   * @returns {Promise<PolicyDocument | null>}
+   */
+  async getPolicy(): Promise<PolicyDocument | null> {
+    const response = await send(this._context, {
+      path: spacePolicy(this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as PolicyDocument)
+  }
+
+  /**
+   * Sets (creates or replaces) the space's access-control policy.
+   *
+   * @param policy {PolicyDocument}
+   * @returns {Promise<void>}
+   */
+  async setPolicy(policy: PolicyDocument): Promise<void> {
+    await send(this._context, {
+      path: spacePolicy(this.id),
+      method: 'PUT',
+      capability: this._capability,
+      json: policy
+    })
+  }
+
+  /**
+   * Makes the whole space world-readable: every collection and resource under
+   * it becomes readable without authorization (unless overridden by a more
+   * specific policy). Sugar for `setPolicy({ type: 'PublicCanRead' })`.
+   *
+   * @returns {Promise<void>}
+   */
+  async setPublic(): Promise<void> {
+    await this.setPolicy({ type: 'PublicCanRead' })
+  }
+
+  /**
+   * Removes the space's access-control policy, reverting it to capability-only
+   * access. Idempotent.
+   *
+   * @returns {Promise<void>}
+   */
+  async clearPolicy(): Promise<void> {
+    await send(this._context, {
+      path: spacePolicy(this.id),
+      method: 'DELETE',
+      capability: this._capability,
+      idempotent: true
+    })
+  }
+
+  /**
+   * Reads the space's linkset (RFC9264 policy discovery). Returns `null` if the
+   * space is missing or not visible to you.
+   *
+   * @returns {Promise<LinkSet | null>}
+   */
+  async linkset(): Promise<LinkSet | null> {
+    const response = await send(this._context, {
+      path: spaceLinkset(this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as LinkSet)
   }
 }

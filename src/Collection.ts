@@ -9,6 +9,8 @@
 import {
   collectionPath,
   collectionItems,
+  collectionPolicy,
+  collectionLinkset,
   resourcePath,
   toUrl
 } from './internal/paths.js'
@@ -26,6 +28,8 @@ import type {
   IDelegatedZcap,
   IZcap,
   Json,
+  LinkSet,
+  PolicyDocument,
   ResourceListing
 } from './types.js'
 
@@ -262,5 +266,80 @@ export class Collection {
         toUrl({ serverUrl: this._context.serverUrl, path: this._path }),
       capability: options.capability ?? this._capability
     })
+  }
+
+  /**
+   * Reads the collection's access-control policy. Returns `null` when no policy
+   * is set (or it is not visible to you). Managing a policy is a controller-level
+   * operation; a capability scoped to the collection does not cover its policy
+   * sub-resource.
+   *
+   * @returns {Promise<PolicyDocument | null>}
+   */
+  async getPolicy(): Promise<PolicyDocument | null> {
+    const response = await send(this._context, {
+      path: collectionPolicy(this.spaceId, this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as PolicyDocument)
+  }
+
+  /**
+   * Sets (creates or replaces) the collection's access-control policy.
+   *
+   * @param policy {PolicyDocument}
+   * @returns {Promise<void>}
+   */
+  async setPolicy(policy: PolicyDocument): Promise<void> {
+    await send(this._context, {
+      path: collectionPolicy(this.spaceId, this.id),
+      method: 'PUT',
+      capability: this._capability,
+      json: policy
+    })
+  }
+
+  /**
+   * Makes the collection world-readable: every resource in it becomes readable
+   * without authorization (unless overridden by a more specific policy). Sugar
+   * for `setPolicy({ type: 'PublicCanRead' })`.
+   *
+   * @returns {Promise<void>}
+   */
+  async setPublic(): Promise<void> {
+    await this.setPolicy({ type: 'PublicCanRead' })
+  }
+
+  /**
+   * Removes the collection's access-control policy, reverting it to
+   * capability-only access. Idempotent.
+   *
+   * @returns {Promise<void>}
+   */
+  async clearPolicy(): Promise<void> {
+    await send(this._context, {
+      path: collectionPolicy(this.spaceId, this.id),
+      method: 'DELETE',
+      capability: this._capability,
+      idempotent: true
+    })
+  }
+
+  /**
+   * Reads the collection's linkset (RFC9264 policy discovery). Returns `null`
+   * if the collection is missing or not visible to you.
+   *
+   * @returns {Promise<LinkSet | null>}
+   */
+  async linkset(): Promise<LinkSet | null> {
+    const response = await send(this._context, {
+      path: collectionLinkset(this.spaceId, this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as LinkSet)
   }
 }
