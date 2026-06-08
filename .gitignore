@@ -24,7 +24,7 @@ lib-cov
 # Coverage directory used by tools like istanbul
 coverage
 *.lcov
-
+.pnpm-store/
 # nyc test coverage
 /.nyc_output
 /coverage

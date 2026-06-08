@@ -302,6 +302,16 @@ export class Collection {
   }
 
   /**
+   * Returns `true` when this collection's policy is `PublicCanRead`.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async isPublic(): Promise<boolean> {
+    const policy = await this.getPolicy()
+    return policy?.type === 'PublicCanRead'
+  }
+
+  /**
    * Makes the collection world-readable: every resource in it becomes readable
    * without authorization (unless overridden by a more specific policy). Sugar
    * for `setPolicy({ type: 'PublicCanRead' })`.

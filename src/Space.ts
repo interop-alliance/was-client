@@ -287,6 +287,16 @@ export class Space {
   }
 
   /**
+   * Returns `true` when this space's policy is `PublicCanRead`.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async isPublic(): Promise<boolean> {
+    const policy = await this.getPolicy()
+    return policy?.type === 'PublicCanRead'
+  }
+
+  /**
    * Makes the whole space world-readable: every collection and resource under
    * it becomes readable without authorization (unless overridden by a more
    * specific policy). Sugar for `setPolicy({ type: 'PublicCanRead' })`.
