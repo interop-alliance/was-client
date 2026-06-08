@@ -1,6 +1,6 @@
 # @interop/was-client Changelog
 
-## Unreleased
+## 0.3.0 - TBD
 
 ### Added
 
