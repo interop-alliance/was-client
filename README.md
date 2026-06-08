@@ -300,6 +300,7 @@ const link = added.url // hand this URL out; a plain GET resolves it
 
 // Inspect or revoke.
 const policy = await collection.getPolicy() // { type: 'PublicCanRead' } | null
+const isPublic = await collection.isPublic() // true if its own policy is PublicCanRead
 await collection.clearPolicy() // revert to capability-only access (idempotent)
 
 // setPolicy() is the generic, forward-compatible primitive; setPublic() is sugar.
@@ -312,6 +313,20 @@ and are permissive-only -- they broaden access, never restrict a valid
 capability holder. Managing a policy is a controller-level operation. Discover a
 policy via `space.linkset()` / `collection.linkset()` (RFC9264) or the `linkset`
 property on a description.
+
+`isPublic()` is a read-only convenience that returns `true` when the handle's
+**own** policy is `{ type: 'PublicCanRead' }` (`false` otherwise, including when
+no policy is set). It checks a single level only -- it does not walk the
+inheritance chain -- so a resource can still be world-readable via an inherited
+Collection or Space policy even when `resource.isPublic()` is `false`. To mirror
+the server's effective decision, check the levels in most-specific order:
+
+```ts
+const effectivelyPublic =
+  (await resource.isPublic()) ||
+  (await collection.isPublic()) ||
+  (await space.isPublic())
+```
 
 ### Export and import
 

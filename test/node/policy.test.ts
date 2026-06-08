@@ -108,6 +108,40 @@ describe('policy handle methods', () => {
     expect(lastRequest()?.url).toBe('https://was.example/space/s/c/r/policy')
   })
 
+  describe('isPublic()', () => {
+    const itChecksIsPublic = (
+      level: string,
+      getHandle: (client: WasClient) => { isPublic(): Promise<boolean> }
+    ): void => {
+      describe(level, () => {
+        it(`is true when the ${level} policy is PublicCanRead`, async () => {
+          const { client } = clientWithRequestSpy({
+            data: { type: 'PublicCanRead' }
+          })
+          expect(await getHandle(client).isPublic()).toBe(true)
+        })
+
+        it(`is false when the ${level} policy type is unsupported`, async () => {
+          const { client } = clientWithRequestSpy({
+            data: { type: 'SomethingUnsupported' }
+          })
+          expect(await getHandle(client).isPublic()).toBe(false)
+        })
+
+        it(`is false when the ${level} has no policy`, async () => {
+          const { client } = clientWithRequestSpy({ fail: 404 })
+          expect(await getHandle(client).isPublic()).toBe(false)
+        })
+      })
+    }
+
+    itChecksIsPublic('space', client => client.space('s'))
+    itChecksIsPublic('collection', client => client.space('s').collection('c'))
+    itChecksIsPublic('resource', client =>
+      client.space('s').collection('c').resource('r')
+    )
+  })
+
   it('linkset() reads the space/collection linkset resource', async () => {
     const { client, lastRequest } = clientWithRequestSpy({
       data: { linkset: [{ anchor: '/space/s/c' }] }

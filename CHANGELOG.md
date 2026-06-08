@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## Unreleased
+
+### Added
+
+- `isPublic()` on the `Space`, `Collection`, and `Resource` handles: a read-only
+  convenience that resolves `true` when the handle's own access-control policy is
+  `{ type: 'PublicCanRead' }`. It inspects a single level only and does not walk
+  the inheritance chain.
+
 ## 0.2.0 - 2026-06-06
 
 ### Added
