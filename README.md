@@ -3,17 +3,20 @@
 [![NPM Version](https://img.shields.io/npm/v/@interop/was-client.svg)](https://npm.im/@interop/was-client)
 
 > A developer-friendly client for Wallet Attached Storage (WAS) servers, with a
-> MongoDB-driver-inspired navigational API over zcap-authorized HTTP.
+> database-driver-inspired navigational API over zcap-authorized HTTP.
 
 ## Table of Contents
 
 - [Background](#background)
 - [Install](#install)
 - [Usage](#usage)
-  - [Construction](#construction)
+  - [Creating a client (signer + zcapClient)](#creating-a-client-signer--zcapclient)
   - [The handle model](#the-handle-model)
+  - [Spaces](#spaces)
+  - [Collections](#collections)
   - [Resources: JSON and binary](#resources-json-and-binary)
   - [Delegation and sharing](#delegation-and-sharing)
+  - [Public sharing and access-control policies](#public-sharing-and-access-control-policies)
   - [Export and import](#export-and-import)
   - [The manual-request escape hatch](#the-manual-request-escape-hatch)
 - [Errors and the 404/null caveat](#errors-and-the-404null-caveat)
@@ -22,23 +25,19 @@
 
 ## Background
 
-The WAS protocol exposes a containment model --
+The WAS protocol exposes a general purpose database-like container model --
 `SpacesRepository > Space > Collection > Resource` -- over HTTP, authorized with
-[Authorization Capabilities (zcaps)](https://w3c-ccg.github.io/zcap-spec/). The
-low-level transport is an
-[`@interop/ezcap`](https://www.npmjs.com/package/@interop/ezcap) `ZcapClient`,
-where every operation hand-builds a URL, picks a trailing-slash variant, threads
-JSON vs binary bodies, and reasons about delegation inline.
+[Authorization Capabilities (zcaps)](https://w3c-ccg.github.io/zcap-spec/).
 
 `@interop/was-client` wraps that `ZcapClient` and exposes the containment model
-through cheap, lazy navigational handles modeled on the MongoDB driver's DX
+through cheap, lazy navigational handles modeled on a document store's DX
 (`client > db > collection`), using WAS-specific verbs
 (`add`/`get`/`put`/`list`/`delete`) rather than `insertOne`/`findOne` (WAS has
 no query-by-filter yet).
 
-| MongoDB driver                      | WAS client                                 |
-| ----------------------------------- | ------------------------------------------ |
-| `new MongoClient(url)`              | `new WasClient({ serverUrl, zcapClient })` |
+| Document db driver                  | WAS client                                 |
+|-------------------------------------| ------------------------------------------ |
+| `new Client(url)`                   | `new WasClient({ serverUrl, zcapClient })` |
 | `client.db('app')`                  | `was.space(spaceId)`                       |
 | `db.collection('users')`            | `space.collection(collectionId)`           |
 | `collection.insertOne(doc)`         | `collection.add(doc)`                      |
@@ -57,18 +56,69 @@ pnpm install @interop/was-client
 
 ## Usage
 
-### Construction
+### Creating a client (signer + zcapClient)
+
+A `WasClient` signs every request with a key you control. The key is held by an
+ezcap `ZcapClient`, which you build from a `did:key` identity. You will need two
+companion packages alongside this one (this library already depends on
+`@interop/ed25519-signature`):
+
+```
+pnpm install @interop/ezcap @interop/did-method-key @interop/ed25519-verification-key
+```
+
+The primary form wraps a `ZcapClient` you build yourself. The `did:key` driver
+generates a key pair and a matching DID document, wiring the signer's
+`id`/`controller` correctly:
 
 ```ts
+import { ZcapClient } from '@interop/ezcap'
+import * as didKey from '@interop/did-method-key'
+import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
 
-// Primary form: wrap an existing ezcap ZcapClient (which holds the signer).
-const was = new WasClient({ serverUrl, zcapClient })
+// 1. Generate a did:key identity (didDocument + keyPairs).
+const didKeyDriver = didKey.driver()
+didKeyDriver.use({ keyPairClass: Ed25519VerificationKey })
+const { didDocument, keyPairs } = await didKeyDriver.generate()
 
-// Convenience: build the ZcapClient internally from a signer
-// (uses the Ed25519Signature2020 suite).
-const was = WasClient.fromSigner({ serverUrl, signer })
+// 2. Build the ezcap ZcapClient (it holds the signer and signs every request).
+const zcapClient = new ZcapClient({
+  didDocument,
+  keyPairs,
+  SuiteClass: Ed25519Signature2020
+})
+
+// 3. Wrap it.
+const was = new WasClient({ serverUrl: 'https://was.example', zcapClient })
 ```
+
+If you already have a single signer, `WasClient.fromSigner()` builds the
+`ZcapClient` internally (using the `Ed25519Signature2020` suite). A signer is
+any object with `{ id, sign() }`; here we get one from a generated key. The
+signer's `id` must be a `did:key` so the server can resolve and verify it:
+
+```ts
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { WasClient } from '@interop/was-client'
+
+// Pass a 32-byte `seed` for a deterministic key, or omit it for a random one.
+const keyPair = await Ed25519VerificationKey.generate({ seed })
+keyPair.controller = `did:key:${keyPair.fingerprint()}`
+keyPair.id = `${keyPair.controller}#${keyPair.fingerprint()}`
+
+const was = WasClient.fromSigner({
+  serverUrl: 'https://was.example',
+  signer: keyPair.signer()
+})
+```
+
+The `seed` is where a passphrase-, stored-secret-, or KMS-derived key plugs in:
+deriving the same 32-byte seed yields the same DID, and therefore access to the
+same spaces. (Apps with user accounts often derive the signer from a passphrase
+via `CapabilityAgent.fromSecret()` from `@digitalbazaar/webkms-client` -- not
+required, just a common alternative.)
 
 `serverUrl` is the base for both URL building and zcap `invocationTarget`s, so
 the "server URL must equal the invocation target host:port" constraint holds by
@@ -76,15 +126,16 @@ construction.
 
 ### The handle model
 
+The client exposes the WAS containment model
+(`SpacesRepository > Space > Collection > Resource`) as navigational handles.
 Handles are lazy and synchronous to obtain -- only the verb methods hit the
 network. Lazy chains never throw: `was.space(x).collection(y)` does no I/O and
 just accumulates URL context. Existence is checked on the first network verb.
 
 ```ts
-const space = await was.createSpace({ name: 'Home' }) // POST /spaces/
+const space = await was.createSpace({ name: 'Home' })
 
 const collection = await space.createCollection({
-  id: 'credentials',
   name: 'Verifiable Credentials'
 })
 
@@ -94,17 +145,98 @@ await collection.put('vc-1', {
 })
 const vc = await collection.get('vc-1') // parsed JSON object, or null on a miss
 
-const listing = await collection.list() // { id, url, totalItems, items, ... }
-
 await collection.resource('vc-1').delete() // delete one resource by id
 await space.delete() // delete the whole space (idempotent)
 ```
 
 `delete()` is uniform at every level, takes no argument, and always deletes the
 thing the handle points at -- so there is no "delete the collection" vs "delete
-one item" footgun.
+one item" footgun. The next sections cover each level in turn.
+
+### Spaces
+
+A Space is the top-level container, created from the spaces repository. The
+server requires a `name`; `controller` defaults to the client's own DID, and the
+server generates the id unless you pass one.
+
+```ts
+const space = await was.createSpace({ name: 'Home' }) // POST /spaces/
+
+// Lazy handle to an existing space by id -- no I/O until a verb runs.
+const same = was.space(space.id)
+
+// Read the Space Description (null if missing or not visible to you).
+const desc = await space.describe() // { id, type: ['Space'], name, controller } | null
+
+// Upsert: merges the given fields over the current description.
+await space.configure({ name: 'Home (renamed)' })
+
+await space.delete() // idempotent
+```
+
+Listing every space in the repository (`was.listSpaces()`) is specified but not
+yet implemented by the reference server, so it currently throws
+`NotImplementedError`. To enumerate what is _inside_ a space, use
+`space.collections()` (below).
+
+### Collections
+
+A Collection lives inside a Space and holds resources. WAS does not auto-create
+parents, so `createCollection` throws `NotFoundError` if the space does not
+exist. The server generates the id unless you pass one (a handful of reserved
+ids are rejected).
+
+```ts
+// Create.
+const collection = await space.createCollection({
+  name: 'Verifiable Credentials'
+})
+
+// Lazy handle to an existing collection by id.
+const same = space.collection(collection.id)
+
+// Read the Collection Description (null if missing or not visible).
+const desc = await collection.describe() // { id, type: ['Collection'], name } | null
+
+// Update (upsert; merges over the current description).
+await collection.configure({ name: 'Credentials' })
+
+// List the collections in a space.
+const collections = await space.collections()
+// { url, totalItems, items: [{ id, name, url }, ...] } | null
+
+// List the resources inside this collection.
+const resources = await collection.list()
+// { id, url, totalItems, items: [{ id, url, contentType }, ...], ... } | null
+
+await collection.delete() // deletes the whole collection; idempotent
+```
+
+To delete a single resource instead of the whole collection, use
+`collection.resource(id).delete()`.
 
 ### Resources: JSON and binary
+
+A Resource is a JSON object or binary blob keyed by id within a Collection. Use
+`add()` for a server-generated id or `put(id, ...)` to create-or-replace at a
+known id (both throw `NotFoundError` if the parent collection is missing):
+
+```ts
+// Server-generated id; returns { id, url, contentType? }.
+const added = await collection.add({
+  type: ['VerifiableCredential'],
+  name: 'Diploma'
+})
+
+// Create or replace at a known id (upsert).
+await collection.put('vc-1', {
+  type: ['VerifiableCredential'],
+  name: 'Diploma'
+})
+
+const vc = await collection.get('vc-1') // parsed JSON object, or null on a miss
+await collection.resource('vc-1').delete() // idempotent
+```
 
 Writes detect the payload: a plain object/array is sent as JSON; a
 `Blob`/`Uint8Array`/`Buffer` is sent as binary, with the content-type taken from
@@ -176,10 +308,10 @@ await resource.setPublic() // a single public resource
 ```
 
 Policies are resolved most-specific-first (Resource over Collection over Space)
-and are permissive-only -- they broaden access, never restrict a valid capability
-holder. Managing a policy is a controller-level operation. Discover a policy via
-`space.linkset()` / `collection.linkset()` (RFC9264) or the `linkset` property on
-a description.
+and are permissive-only -- they broaden access, never restrict a valid
+capability holder. Managing a policy is a controller-level operation. Discover a
+policy via `space.linkset()` / `collection.linkset()` (RFC9264) or the `linkset`
+property on a description.
 
 ### Export and import
 
