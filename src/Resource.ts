@@ -194,6 +194,16 @@ export class Resource {
   }
 
   /**
+   * Returns `true` when this resource policy is `PublicCanRead`.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async isPublic(): Promise<boolean> {
+    const policy = await this.getPolicy()
+    return policy?.type === 'PublicCanRead'
+  }
+
+  /**
    * Removes the resource's access-control policy, reverting it to
    * capability-only access. Idempotent.
    *
