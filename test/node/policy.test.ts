@@ -110,7 +110,7 @@ describe('policy handle methods', () => {
 
   describe('isPublic()', () => {
     const itChecksIsPublic = (
-      level: string,
+      level: string, // 'space', 'collection', 'resource'
       getHandle: (client: WasClient) => { isPublic(): Promise<boolean> }
     ): void => {
       describe(level, () => {
