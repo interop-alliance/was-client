@@ -314,19 +314,11 @@ capability holder. Managing a policy is a controller-level operation. Discover a
 policy via `space.linkset()` / `collection.linkset()` (RFC9264) or the `linkset`
 property on a description.
 
-`isPublic()` is a read-only convenience that returns `true` when the handle's
-**own** policy is `{ type: 'PublicCanRead' }` (`false` otherwise, including when
-no policy is set). It checks a single level only -- it does not walk the
-inheritance chain -- so a resource can still be world-readable via an inherited
-Collection or Space policy even when `resource.isPublic()` is `false`. To mirror
-the server's effective decision, check the levels in most-specific order:
-
-```ts
-const effectivelyPublic =
-  (await resource.isPublic()) ||
-  (await collection.isPublic()) ||
-  (await space.isPublic())
-```
+`isPublic()` is a read-only convenience that returns `true` when the Space,
+Collection, or Resource has a `{ type: 'PublicCanRead' }` policy -- that is, when
+it has been made public via `setPublic()` (or an equivalent `setPolicy()` call).
+It's meant to drive data-browser style UI, to show a "This
+space(/collection/resource) has been shared publicly" type of icon.
 
 ### Export and import
 
