@@ -1,12 +1,14 @@
 # @interop/was-client Changelog
 
-## 0.3.0 - TBD
+## 0.3.0 - 2026-06-09
 
 ### Added
 
-- `isPublic()` on the `Space`, `Collection`, and `Resource` handles: a read-only
-  convenience that resolves `true` when the handle's own access-control policy is
-  `{ type: 'PublicCanRead' }`.
+- `isPublic()`, a read-only convenience that returns `true` when the Space,
+  Collection, or Resource has a `{ type: 'PublicCanRead' }` policy -- that is,
+  when it has been made public via `setPublic()` (or an equivalent `setPolicy()`
+  call). It's meant to drive data-browser style UI, to show a "This
+  space(/collection/resource) has been shared publicly" type of icon.
 
 ## 0.2.0 - 2026-06-06
 
