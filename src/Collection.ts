@@ -31,7 +31,7 @@ import type {
   Json,
   LinkSet,
   PolicyDocument,
-  ResourceListing
+  CollectionResourcesList
 } from './types.js'
 
 export class Collection {
@@ -241,16 +241,16 @@ export class Collection {
    * Lists the items in the collection. Returns `null` if the collection is
    * missing or not visible to you (404 conflation caveat).
    *
-   * @returns {Promise<ResourceListing | null>}
+   * @returns {Promise<CollectionResourcesList | null>}
    */
-  async list(): Promise<ResourceListing | null> {
+  async list(): Promise<CollectionResourcesList | null> {
     const response = await send(this._context, {
       path: this._itemsPath,
       method: 'GET',
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as ResourceListing)
+    return response === null ? null : (response.data as CollectionResourcesList)
   }
 
   /**

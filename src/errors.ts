@@ -7,6 +7,7 @@
  * `requestUrl`); `mapError()` translates a thrown ky/ezcap error into the
  * appropriate subclass.
  */
+import { ProblemTypes } from '@interop/storage-core'
 
 /**
  * Structured fields attached to a `WasError`, sourced from the server's
@@ -150,6 +151,50 @@ interface HttpClientError {
 }
 
 /**
+ * A `WasError` subclass constructor (the base and every subclass share this
+ * `(message, options)` signature).
+ */
+type WasErrorClass = new (
+  message: string,
+  options?: WasErrorOptions
+) => WasError
+
+/**
+ * Extracts the fragment of a problem-type URI (the part after `#`, e.g.
+ * `quota-exceeded` from `https://wallet.storage/spec#quota-exceeded`).
+ * @param problemType {string}   a `ProblemTypes` URI
+ * @returns {string}
+ */
+function problemFragment(problemType: string): string {
+  return problemType.split('#')[1] ?? ''
+}
+
+/**
+ * Maps each problem-kind fragment to the `WasError` subclass that represents
+ * it. Keyed off the shared `ProblemTypes` registry from `@interop/storage-core`
+ * (via `problemFragment`) so the kinds stay in lockstep with the server instead
+ * of being duplicated as literal strings here.
+ */
+const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
+  [problemFragment(ProblemTypes.NOT_FOUND)]: NotFoundError,
+  [problemFragment(ProblemTypes.INVALID_ID)]: ValidationError,
+  [problemFragment(ProblemTypes.INVALID_REQUEST_BODY)]: ValidationError,
+  [problemFragment(ProblemTypes.MISSING_CONTENT_TYPE)]: ValidationError,
+  [problemFragment(ProblemTypes.INVALID_AUTHORIZATION_HEADER)]: ValidationError,
+  [problemFragment(ProblemTypes.CONTROLLER_MISMATCH)]: ValidationError,
+  [problemFragment(ProblemTypes.INVALID_IMPORT)]: ValidationError,
+  [problemFragment(ProblemTypes.MISSING_AUTHORIZATION)]: AuthRequiredError,
+  [problemFragment(ProblemTypes.RESERVED_ID)]: ConflictError,
+  [problemFragment(ProblemTypes.ID_CONFLICT)]: ConflictError,
+  [problemFragment(ProblemTypes.UNSUPPORTED_BACKEND)]: ConflictError,
+  [problemFragment(ProblemTypes.PAYLOAD_TOO_LARGE)]: PayloadTooLargeError,
+  [problemFragment(ProblemTypes.QUOTA_EXCEEDED)]: QuotaExceededError,
+  [problemFragment(ProblemTypes.UNSUPPORTED_OPERATION)]: NotImplementedError,
+  [problemFragment(ProblemTypes.STORAGE_ERROR)]: WasServerError,
+  [problemFragment(ProblemTypes.INTERNAL_ERROR)]: WasServerError
+}
+
+/**
  * Constructs a `WasError` subclass from a problem-kind anchor (the fragment of
  * the `type` URI, e.g. `quota-exceeded`). Returns `null` for an unrecognized or
  * absent kind so the caller can fall back to status-based dispatch.
@@ -164,34 +209,8 @@ function errorForKind(
   message: string,
   options: WasErrorOptions
 ): WasError | null {
-  switch (kind) {
-    case 'not-found':
-      return new NotFoundError(message, options)
-    case 'invalid-id':
-    case 'invalid-request-body':
-    case 'missing-content-type':
-    case 'invalid-authorization-header':
-    case 'controller-mismatch':
-    case 'invalid-import':
-      return new ValidationError(message, options)
-    case 'missing-authorization':
-      return new AuthRequiredError(message, options)
-    case 'reserved-id':
-    case 'id-conflict':
-    case 'unsupported-backend':
-      return new ConflictError(message, options)
-    case 'payload-too-large':
-      return new PayloadTooLargeError(message, options)
-    case 'quota-exceeded':
-      return new QuotaExceededError(message, options)
-    case 'unsupported-operation':
-      return new NotImplementedError(message, options)
-    case 'storage-error':
-    case 'internal-error':
-      return new WasServerError(message, options)
-    default:
-      return null
-  }
+  const ErrorClass = kind === undefined ? undefined : ERROR_CLASS_BY_KIND[kind]
+  return ErrorClass ? new ErrorClass(message, options) : null
 }
 
 /**

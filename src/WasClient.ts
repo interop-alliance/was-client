@@ -29,7 +29,7 @@ import type {
   IZcap,
   Json,
   RequestInput,
-  ResourceListing,
+  CollectionResourcesList,
   SpaceListing
 } from './types.js'
 
@@ -195,13 +195,13 @@ export class WasClient {
    *
    * @param options {object}
    * @param options.collectionUrl {string}   the absolute collection URL
-   * @returns {Promise<ResourceListing | null>}
+   * @returns {Promise<CollectionResourcesList | null>}
    */
   async publicListCollection({
     collectionUrl
   }: {
     collectionUrl: string
-  }): Promise<ResourceListing | null> {
+  }): Promise<CollectionResourcesList | null> {
     // The collection listing endpoint is the trailing-slash items URL.
     const url = collectionUrl.endsWith('/')
       ? collectionUrl
@@ -210,7 +210,7 @@ export class WasClient {
     if (response === null) {
       return null
     }
-    return (response.data ?? (await response.json())) as ResourceListing
+    return (response.data ?? (await response.json())) as CollectionResourcesList
   }
 
   /**
