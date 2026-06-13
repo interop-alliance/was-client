@@ -14,7 +14,8 @@ import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import type { HttpResponse } from '@interop/http-client'
 import { spacesRoot } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
-import { send, rawRequest } from './internal/request.js'
+import { send, rawRequest, unsignedRequest } from './internal/request.js'
+import { parseResource } from './internal/content.js'
 import { delegateGrant } from './internal/grant.js'
 import { ValidationError } from './errors.js'
 import { Space } from './Space.js'
@@ -26,7 +27,9 @@ import type {
   IDelegatedZcap,
   ISigner,
   IZcap,
+  Json,
   RequestInput,
+  ResourceListing,
   SpaceListing
 } from './types.js'
 
@@ -116,9 +119,9 @@ export class WasClient {
   }
 
   /**
-   * Creates a space (server-generated id unless `id` is given). The server
-   * requires `name`, and `controller` must match the wrapped signer's DID
-   * (which is the default).
+   * Creates a space (server-generated id unless `id` is given). `name` is
+   * optional (both in the spec and on the reference server); `controller` must
+   * match the wrapped signer's DID (which is the default).
    *
    * @param desc {object}
    * @param [desc.id] {string}
@@ -159,6 +162,55 @@ export class WasClient {
       method: 'GET'
     })
     return (response as { data?: unknown }).data as SpaceListing
+  }
+
+  /**
+   * Reads a public (`PublicCanRead`) resource by its URL with no authorization
+   * -- an unsigned `GET`, for consuming a shared public link. Auto-parses JSON
+   * to an object and returns binary as a `Blob`. Returns `null` if the resource
+   * is missing or not publicly readable (404 conflation caveat).
+   *
+   * @param options {object}
+   * @param options.resourceUrl {string}   the absolute resource URL
+   * @returns {Promise<Json | Blob | null>}
+   */
+  async publicRead({
+    resourceUrl
+  }: {
+    resourceUrl: string
+  }): Promise<Json | Blob | null> {
+    const response = await unsignedRequest({
+      url: resourceUrl,
+      method: 'GET',
+      read: true
+    })
+    return parseResource(response)
+  }
+
+  /**
+   * Lists a public (`PublicCanRead`) collection by its URL with no authorization
+   * -- an unsigned `GET` -- e.g. to browse a blog published as a public-read
+   * collection. Returns `null` if the collection is missing or not publicly
+   * readable (404 conflation caveat).
+   *
+   * @param options {object}
+   * @param options.collectionUrl {string}   the absolute collection URL
+   * @returns {Promise<ResourceListing | null>}
+   */
+  async publicListCollection({
+    collectionUrl
+  }: {
+    collectionUrl: string
+  }): Promise<ResourceListing | null> {
+    // The collection listing endpoint is the trailing-slash items URL.
+    const url = collectionUrl.endsWith('/')
+      ? collectionUrl
+      : `${collectionUrl}/`
+    const response = await unsignedRequest({ url, method: 'GET', read: true })
+    if (response === null) {
+      return null
+    }
+    return (response.data ?? (await response.json())) as ResourceListing
   }
 
   /**

@@ -44,6 +44,8 @@ export interface SpaceDescription {
   type: string[]
   name?: string
   controller: string
+  /** Absolute URL of the Space, if the server populates it. */
+  url?: string
   /** URL of the Space's linkset (policy discovery), if the server advertises it. */
   linkset?: string
 }
@@ -55,6 +57,13 @@ export interface CollectionDescription {
   id: string
   type: string[]
   name?: string
+  /** Absolute URL of the Collection, if the server populates it. */
+  url?: string
+  /**
+   * The backend the Collection is stored on. The spec default is
+   * `{ id: 'default' }`; populated as the server lands the field.
+   */
+  backend?: BackendReference
   /** URL of the Collection's linkset (policy discovery), if advertised. */
   linkset?: string
 }
@@ -139,10 +148,39 @@ export interface ResourceSummary {
 export interface ResourceListing {
   id: string
   url: string
+  /**
+   * The listing-level name. Once resource metadata writes exist, a resource's
+   * entry `name` is fed by its metadata `custom.name` (see
+   * {@link ResourceMetadataCustom}); updating one updates the other.
+   */
   name?: string
   type: string[]
   totalItems: number
   items: ResourceSummary[]
+}
+
+/**
+ * The user-writable properties of a resource's metadata object, nested under
+ * `custom`. `name` is the same value surfaced as the listing `name` in
+ * {@link ResourceListing}; `tags` are application-defined string annotations.
+ */
+export interface ResourceMetadataCustom {
+  name?: string
+  tags?: Record<string, string>
+}
+
+/**
+ * Return shape of `resource.meta()`: a resource's metadata object. The
+ * server-managed properties (`contentType`, `size`, and the optional
+ * timestamps) sit at the top level; the user-writable properties live under
+ * `custom`.
+ */
+export interface ResourceMetadata {
+  contentType: string
+  size: number
+  createdAt?: string
+  updatedAt?: string
+  custom?: ResourceMetadataCustom
 }
 
 /**
@@ -181,6 +219,65 @@ export interface HandleOptions {
  */
 export interface BackendReference {
   id: string
+}
+
+/**
+ * A Backend description object (return shape of `space.backends()` entries):
+ * advertises a backend's identity and capabilities so clients can pick a
+ * suitable backend for each Collection.
+ */
+export interface BackendDescriptor {
+  id: string
+  name?: string
+  managedBy?: 'server' | 'external'
+  storageMode?: ('document' | 'blob')[]
+  persistence?: 'durable' | 'volatile'
+}
+
+/**
+ * The storage limit reported for a backend in a quota report. When
+ * `isUnlimited` is `true`, `capacityBytes` may be omitted.
+ */
+export interface StorageLimit {
+  capacityBytes?: number
+  isUnlimited: boolean
+}
+
+/**
+ * One Collection's contribution to a backend's usage, in the optional
+ * `usageByCollection` breakdown of a {@link BackendUsage} entry.
+ */
+export interface CollectionUsage {
+  id: string
+  usageBytes: number
+}
+
+/**
+ * Per-backend usage entry in a {@link SpaceQuotaReport}.
+ */
+export interface BackendUsage {
+  id: string
+  name?: string
+  managedBy?: 'server' | 'external'
+  state: 'ok' | 'near-limit' | 'over-quota' | 'unreachable'
+  usageBytes: number
+  limit: StorageLimit
+  /** Operational constraints such as `maxUploadBytes`. */
+  constraints?: { maxUploadBytes?: number; [key: string]: unknown }
+  /** Actions (uppercase HTTP verbs) currently unavailable on this backend. */
+  restrictedActions: Action[]
+  measuredAt: string
+  /** Per-collection breakdown; present when the server includes it. */
+  usageByCollection?: CollectionUsage[]
+}
+
+/**
+ * Return shape of `space.quotas()`: a Space's storage report, grouped by
+ * backend.
+ */
+export interface SpaceQuotaReport {
+  respondedAt: string
+  backends: BackendUsage[]
 }
 
 /**

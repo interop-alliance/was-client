@@ -16,6 +16,8 @@ import {
   spaceCollections,
   spaceExport,
   spaceImport,
+  spaceBackends,
+  spaceQuotas,
   spacePolicy,
   spaceLinkset,
   collectionPath,
@@ -24,6 +26,7 @@ import {
   collectionLinkset,
   resourcePath,
   resourcePolicy,
+  resourceMeta,
   toUrl
 } from '../../src/internal/paths.js'
 
@@ -76,6 +79,17 @@ describe('path builders', () => {
   it('builds the linkset paths (space and collection)', () => {
     expect(spaceLinkset('home')).toBe('/space/home/linkset')
     expect(collectionLinkset('home', 'docs')).toBe('/space/home/docs/linkset')
+  })
+
+  it('builds the backends and quotas paths (space level)', () => {
+    expect(spaceBackends('home')).toBe('/space/home/backends')
+    expect(spaceQuotas('home')).toBe('/space/home/quotas')
+  })
+
+  it('builds the resource metadata path', () => {
+    expect(resourceMeta('home', 'docs', 'note')).toBe(
+      '/space/home/docs/note/meta'
+    )
   })
 
   it('percent-encodes path segments so ids cannot break out of their slot', () => {

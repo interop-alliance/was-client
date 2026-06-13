@@ -17,6 +17,8 @@
   - [Resources: JSON and binary](#resources-json-and-binary)
   - [Delegation and sharing](#delegation-and-sharing)
   - [Public sharing and access-control policies](#public-sharing-and-access-control-policies)
+  - [Resource metadata](#resource-metadata)
+  - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
   - [Export and import](#export-and-import)
   - [The manual-request escape hatch](#the-manual-request-escape-hatch)
 - [Errors and the 404/null caveat](#errors-and-the-404null-caveat)
@@ -36,7 +38,7 @@ through cheap, lazy navigational handles modeled on a document store's DX
 no query-by-filter yet).
 
 | Document db driver                  | WAS client                                 |
-|-------------------------------------| ------------------------------------------ |
+| ----------------------------------- | ------------------------------------------ |
 | `new Client(url)`                   | `new WasClient({ serverUrl, zcapClient })` |
 | `client.db('app')`                  | `was.space(spaceId)`                       |
 | `db.collection('users')`            | `space.collection(collectionId)`           |
@@ -315,10 +317,65 @@ policy via `space.linkset()` / `collection.linkset()` (RFC9264) or the `linkset`
 property on a description.
 
 `isPublic()` is a read-only convenience that returns `true` when the Space,
-Collection, or Resource has a `{ type: 'PublicCanRead' }` policy -- that is, when
-it has been made public via `setPublic()` (or an equivalent `setPolicy()` call).
-It's meant to drive data-browser style UI, to show a "This
+Collection, or Resource has a `{ type: 'PublicCanRead' }` policy -- that is,
+when it has been made public via `setPublic()` (or an equivalent `setPolicy()`
+call). It's meant to drive data-browser style UI, to show a "This
 space(/collection/resource) has been shared publicly" type of icon.
+
+#### Consuming public links (unauthenticated reads)
+
+The flip side of `setPublic()`: reading a `PublicCanRead` resource or collection
+with no authorization, by its URL. These use an unsigned plain `fetch` (no
+capability invocation), so they work for a consumer who only holds the link.
+
+```ts
+// Fetch a single public resource (auto-parses JSON, returns binary as a Blob).
+const doc = await was.publicRead({
+  resourceUrl: 'https://was.example/space/s/c/r'
+}) // Json | Blob | null
+
+// List a public collection -- e.g. a blog published as a public-read collection.
+const listing = await was.publicListCollection({
+  collectionUrl: 'https://was.example/space/s/c'
+}) // ResourceListing | null
+```
+
+Both follow the read-method 404/null caveat: a missing or non-public target
+resolves to `null`.
+
+### Resource metadata
+
+Each Resource has a metadata object at its reserved `/meta` path: server-managed
+properties (`contentType`, `size`, optional `createdAt` / `updatedAt`) plus a
+user-writable `custom` object (`name` and `tags`).
+
+```ts
+const resource = collection.resource('vc-1')
+
+const meta = await resource.meta() // ResourceMetadata | null (null on a miss)
+
+// setMeta() is a full replacement of `custom`; omitted properties are cleared.
+await resource.setMeta({ custom: { name: 'Diploma', tags: { year: '2026' } } })
+
+// setName() / setTags() are read-modify-write sugar that preserve the other.
+await resource.setName('Renamed diploma') // keeps existing tags
+await resource.setTags({ status: 'verified' }) // keeps existing name
+```
+
+The `custom.name` is the same value surfaced as a resource's `name` in
+collection listings; updating one updates the other.
+
+### Storage introspection: backends and quotas
+
+A Space can report the storage backends available to it and a per-backend usage
+report. Both are optional server features (a server without them surfaces a
+`NotImplementedError`); both follow the read-method 404/null caveat.
+
+```ts
+const backends = await space.backends() // BackendDescriptor[] | null
+const report = await space.quotas() // SpaceQuotaReport | null
+// report.backends[i]: { id, state, usageBytes, limit, restrictedActions, ... }
+```
 
 ### Export and import
 
@@ -347,20 +404,28 @@ MongoDB's `findOne` semantics. **WAS returns 404 for both not-found and
 unauthorized**, so `null` means "not visible to you" rather than strictly "does
 not exist". Write/delete methods throw a typed error instead.
 
-| Status | Read methods          | Write / delete methods |
-| ------ | --------------------- | ---------------------- |
-| 404    | `null`                | `NotFoundError`        |
-| 400    | `ValidationError`     | `ValidationError`      |
-| 401    | `AuthRequiredError`   | `AuthRequiredError`    |
-| 501    | `NotImplementedError` | `NotImplementedError`  |
-| 5xx    | `WasServerError`      | `WasServerError`       |
+| Status | Read methods           | Write / delete methods |
+| ------ | ---------------------- | ---------------------- |
+| 404    | `null`                 | `NotFoundError`        |
+| 400    | `ValidationError`      | `ValidationError`      |
+| 401    | `AuthRequiredError`    | `AuthRequiredError`    |
+| 409    | `ConflictError`        | `ConflictError`        |
+| 413    | `PayloadTooLargeError` | `PayloadTooLargeError` |
+| 501    | `NotImplementedError`  | `NotImplementedError`  |
+| 507    | `QuotaExceededError`   | `QuotaExceededError`   |
+| 5xx    | `WasServerError`       | `WasServerError`       |
 
-All error classes extend `WasError` (carrying `status`, `title`, `details`, and
-`requestUrl`). `delete()` additionally treats a 404 as success, so it is
-idempotent.
+All error classes extend `WasError` (carrying `status`, the problem-kind `type`
+URI, `title`, `details`, and `requestUrl`). When the server sends a
+`problem+json` `type` (the spec's Error Type Registry), `mapError()` dispatches
+on that kind first and falls back to the HTTP status -- so, for example, a 409
+`id-conflict` from `createSpace({ id })` is catchable as a `ConflictError`, and
+a 507 `quota-exceeded` (a client-actionable storage-full condition, not a server
+fault) as a `QuotaExceededError`. `delete()` additionally treats a 404 as
+success, so it is idempotent.
 
-Some spec endpoints (`listSpaces()`, `meta`, `query`, ...) are not yet
-implemented by the reference server and currently surface `NotImplementedError`.
+Some spec endpoints (`listSpaces()`, ...) are not yet implemented by the
+reference server and currently surface `NotImplementedError`.
 
 ## Contribute
 
