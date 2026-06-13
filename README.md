@@ -1,5 +1,6 @@
 # Wallet Attached Storage Client _(@interop/was-client)_
 
+[![Node.js CI](https://github.com/interop-alliance/was-client/workflows/CI/badge.svg)](https://github.com/interop-alliance/was-client/actions?query=workflow%3A%22CI%22)
 [![NPM Version](https://img.shields.io/npm/v/@interop/was-client.svg)](https://npm.im/@interop/was-client)
 
 > A developer-friendly client for Wallet Attached Storage (WAS) servers, with a
