@@ -25,6 +25,22 @@
 
 ### Changed
 
+- Adopt `@interop/storage-core` for the shared WAS wire model and error
+  vocabulary. `src/types.ts` now re-exports the data-model shapes
+  (`SpaceDescription`, `CollectionDescription`, `BackendDescriptor`,
+  `ResourceMetadata`, the quota shapes, etc.) and the `Action` / `ActionInput`
+  vocabulary from core, keeping only the client-local shapes (`Json*`,
+  `AddResult`, `HandleOptions`, `GrantOptions`, `RequestInput`); the package's
+  public type surface is unchanged except for two renames below. `mapError()`'s
+  problem-kind dispatch is now keyed off core's `ProblemTypes` registry rather
+  than hardcoded `type`-fragment strings.
+- **Rename:** the collections-in-a-space listing (`space.collections()`) is now
+  `CollectionsList` (was `CollectionListing`), and the resources-in-a-collection
+  listing (`collection.list()`) is now `CollectionResourcesList` (was
+  `ResourceListing`). This removes a name collision with the server's use of
+  `CollectionListing`.
+- `SpaceDescription.controller` is now typed `IDID` (a `did:${string}` branded
+  string) rather than a bare `string`, matching the server's wire type.
 - `mapError()` now dispatches on the `application/problem+json` `type` URI (the
   spec's Error Type Registry) when present, falling back to the HTTP status.
   `WasError` carries the raw problem-kind `type` URI as a new field. This lets,

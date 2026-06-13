@@ -28,7 +28,7 @@ import type {
   BackendDescriptor,
   BackendReference,
   CollectionDescription,
-  CollectionListing,
+  CollectionsList,
   GrantOptions,
   HandleOptions,
   IDelegatedZcap,
@@ -113,7 +113,9 @@ export class Space {
       id: this.id,
       type: current?.type ?? ['Space'],
       ...(name !== undefined ? { name } : {}),
-      controller
+      // `controller` is a user-supplied DID string; assert it as the branded
+      // `IDID` the wire type now uses (the server validates the DID form).
+      controller: controller as SpaceDescription['controller']
     }
   }
 
@@ -189,16 +191,16 @@ export class Space {
    * Lists the collections in the space. Returns `null` if the space is missing
    * or not visible to you (404 conflation caveat).
    *
-   * @returns {Promise<CollectionListing | null>}
+   * @returns {Promise<CollectionsList | null>}
    */
-  async collections(): Promise<CollectionListing | null> {
+  async collections(): Promise<CollectionsList | null> {
     const response = await send(this._context, {
       path: spaceCollections(this.id),
       method: 'GET',
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as CollectionListing)
+    return response === null ? null : (response.data as CollectionsList)
   }
 
   /**
