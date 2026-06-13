@@ -66,6 +66,20 @@ export function spaceImport(spaceId: string): string {
 }
 
 /**
+ * `/space/:spaceId/backends` -- the backends available within a space.
+ */
+export function spaceBackends(spaceId: string): string {
+  return `/space/${encode(spaceId)}/backends`
+}
+
+/**
+ * `/space/:spaceId/quotas` -- the space-level storage quota report.
+ */
+export function spaceQuotas(spaceId: string): string {
+  return `/space/${encode(spaceId)}/quotas`
+}
+
+/**
  * `/space/:spaceId/policy` -- the space-level access-control policy resource.
  */
 export function spacePolicy(spaceId: string): string {
@@ -127,6 +141,18 @@ export function resourcePath(
   resourceId: string
 ): string {
   return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/:resourceId/meta` -- the resource metadata
+ * object (server-managed properties plus the user-writable `custom` object).
+ */
+export function resourceMeta(
+  spaceId: string,
+  collectionId: string,
+  resourceId: string
+): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}/meta`
 }
 
 /**

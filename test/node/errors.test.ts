@@ -14,6 +14,9 @@ import {
   ValidationError,
   AuthRequiredError,
   NotImplementedError,
+  ConflictError,
+  PayloadTooLargeError,
+  QuotaExceededError,
   WasServerError
 } from '../../src/index.js'
 import { mapError } from '../../src/errors.js'
@@ -38,6 +41,86 @@ describe('mapError', () => {
   it('maps any other 5xx to WasServerError', () => {
     expect(mapError({ status: 500 })).toBeInstanceOf(WasServerError)
     expect(mapError({ status: 503 })).toBeInstanceOf(WasServerError)
+  })
+
+  it('maps 409 to ConflictError', () => {
+    expect(mapError({ status: 409 })).toBeInstanceOf(ConflictError)
+  })
+
+  it('maps 413 to PayloadTooLargeError', () => {
+    expect(mapError({ status: 413 })).toBeInstanceOf(PayloadTooLargeError)
+  })
+
+  it('maps 507 to QuotaExceededError', () => {
+    expect(mapError({ status: 507 })).toBeInstanceOf(QuotaExceededError)
+  })
+
+  describe('problem-type (data.type) dispatch', () => {
+    const typeUri = (kind: string): string =>
+      `https://wallet.storage/spec#${kind}`
+
+    it('dispatches quota-exceeded to QuotaExceededError', () => {
+      expect(
+        mapError({ status: 507, data: { type: typeUri('quota-exceeded') } })
+      ).toBeInstanceOf(QuotaExceededError)
+    })
+
+    it('dispatches payload-too-large to PayloadTooLargeError', () => {
+      expect(
+        mapError({ status: 413, data: { type: typeUri('payload-too-large') } })
+      ).toBeInstanceOf(PayloadTooLargeError)
+    })
+
+    it('dispatches the 409 conflict kinds to ConflictError', () => {
+      for (const kind of [
+        'id-conflict',
+        'reserved-id',
+        'unsupported-backend'
+      ]) {
+        expect(
+          mapError({ status: 409, data: { type: typeUri(kind) } })
+        ).toBeInstanceOf(ConflictError)
+      }
+    })
+
+    it('distinguishes invalid-authorization-header (400) as a ValidationError', () => {
+      const mapped = mapError({
+        status: 400,
+        data: { type: typeUri('invalid-authorization-header') }
+      })
+      expect(mapped).toBeInstanceOf(ValidationError)
+    })
+
+    it('dispatches missing-authorization to AuthRequiredError', () => {
+      expect(
+        mapError({
+          status: 401,
+          data: { type: typeUri('missing-authorization') }
+        })
+      ).toBeInstanceOf(AuthRequiredError)
+    })
+
+    it('dispatches unsupported-operation to NotImplementedError', () => {
+      expect(
+        mapError({ data: { type: typeUri('unsupported-operation') } })
+      ).toBeInstanceOf(NotImplementedError)
+    })
+
+    it('exposes the raw type URI on the error', () => {
+      const mapped = mapError({
+        status: 507,
+        data: { type: typeUri('quota-exceeded') }
+      })
+      expect(mapped.type).toBe(typeUri('quota-exceeded'))
+    })
+
+    it('falls back to status when the type kind is unrecognized', () => {
+      const mapped = mapError({
+        status: 404,
+        data: { type: typeUri('some-future-kind') }
+      })
+      expect(mapped).toBeInstanceOf(NotFoundError)
+    })
   })
 
   it('reads the status from a nested response object', () => {

@@ -88,6 +88,51 @@ export async function rawRequest(
 }
 
 /**
+ * Sends an **unsigned** request (a plain `fetch`, no capability invocation), for
+ * reading public (`PublicCanRead`) resources that need no authorization. Applies
+ * the same typed-error mapping and null-on-404 read translation as `send()`.
+ * Takes an absolute `url` -- public reads address a resource by its link, not by
+ * a server-relative path.
+ *
+ * @param input {object}
+ * @param input.url {string}                    absolute URL to read
+ * @param [input.method] {string}               HTTP method (defaults to `GET`)
+ * @param [input.headers] {Record<string,string>}
+ * @param [input.read] {boolean}                when true, a 404 resolves to `null`
+ * @returns {Promise<HttpResponse | null>}
+ */
+export async function unsignedRequest(input: {
+  url: string
+  method?: string
+  headers?: Record<string, string>
+  read?: boolean
+}): Promise<HttpResponse | null> {
+  let response: Response
+  try {
+    response = await fetch(input.url, {
+      method: input.method ?? 'GET',
+      headers: input.headers
+    })
+  } catch (err) {
+    throw mapError(err)
+  }
+  if (response.ok) {
+    return response as HttpResponse
+  }
+  if (input.read && response.status === 404) {
+    return null
+  }
+  // Reconstruct a problem+json-shaped error so mapError can dispatch on it.
+  let data: unknown
+  try {
+    data = await response.json()
+  } catch {
+    data = undefined
+  }
+  throw mapError({ status: response.status, requestUrl: input.url, data })
+}
+
+/**
  * Signs and sends a request, applying the typed-error mapping. When `read` is
  * set, a 404 resolves to `null` (MongoDB `findOne` semantics); otherwise every
  * non-2xx maps to a `WasError` subclass.

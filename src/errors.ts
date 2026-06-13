@@ -14,6 +14,11 @@
  */
 export interface WasErrorOptions {
   status?: number
+  /**
+   * The problem-kind URI from the response body's `type` (e.g.
+   * `https://wallet.storage/spec#quota-exceeded`), when the server sent one.
+   */
+  type?: string
   title?: string
   details?: string[]
   requestUrl?: string
@@ -25,15 +30,17 @@ export interface WasErrorOptions {
  */
 export class WasError extends Error {
   status?: number
+  type?: string
   title?: string
   details?: string[]
   requestUrl?: string
 
   constructor(message: string, options: WasErrorOptions = {}) {
-    const { status, title, details, requestUrl, cause } = options
+    const { status, type, title, details, requestUrl, cause } = options
     super(message, cause !== undefined ? { cause } : undefined)
     this.name = 'WasError'
     this.status = status
+    this.type = type
     this.title = title
     this.details = details
     this.requestUrl = requestUrl
@@ -84,6 +91,43 @@ export class NotImplementedError extends WasError {
 }
 
 /**
+ * A client-supplied id or backend conflicts with existing state (HTTP 409):
+ * `id-conflict` (the id already exists), `reserved-id` (the id collides with a
+ * reserved path segment), or `unsupported-backend` (the backend id is not in
+ * the space's available list). The specific kind is on the `type` URI.
+ */
+export class ConflictError extends WasError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'ConflictError'
+  }
+}
+
+/**
+ * A single upload exceeded the target backend's `maxUploadBytes` constraint
+ * (HTTP 413). Unlike `QuotaExceededError`, this is per-request -- a smaller
+ * upload may still succeed.
+ */
+export class PayloadTooLargeError extends WasError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'PayloadTooLargeError'
+  }
+}
+
+/**
+ * A write was rejected because the target backend's storage quota is exhausted
+ * (HTTP 507). This is a client-actionable storage-full condition, not a server
+ * fault.
+ */
+export class QuotaExceededError extends WasError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'QuotaExceededError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {
@@ -102,12 +146,59 @@ interface HttpClientError {
   requestUrl?: string
   message?: string
   response?: { status?: number }
-  data?: { title?: string; errors?: Array<{ detail?: string }> }
+  data?: { type?: string; title?: string; errors?: Array<{ detail?: string }> }
+}
+
+/**
+ * Constructs a `WasError` subclass from a problem-kind anchor (the fragment of
+ * the `type` URI, e.g. `quota-exceeded`). Returns `null` for an unrecognized or
+ * absent kind so the caller can fall back to status-based dispatch.
+ *
+ * @param kind {string | undefined}   the `type` URI fragment
+ * @param message {string}
+ * @param options {WasErrorOptions}
+ * @returns {WasError | null}
+ */
+function errorForKind(
+  kind: string | undefined,
+  message: string,
+  options: WasErrorOptions
+): WasError | null {
+  switch (kind) {
+    case 'not-found':
+      return new NotFoundError(message, options)
+    case 'invalid-id':
+    case 'invalid-request-body':
+    case 'missing-content-type':
+    case 'invalid-authorization-header':
+    case 'controller-mismatch':
+    case 'invalid-import':
+      return new ValidationError(message, options)
+    case 'missing-authorization':
+      return new AuthRequiredError(message, options)
+    case 'reserved-id':
+    case 'id-conflict':
+    case 'unsupported-backend':
+      return new ConflictError(message, options)
+    case 'payload-too-large':
+      return new PayloadTooLargeError(message, options)
+    case 'quota-exceeded':
+      return new QuotaExceededError(message, options)
+    case 'unsupported-operation':
+      return new NotImplementedError(message, options)
+    case 'storage-error':
+    case 'internal-error':
+      return new WasServerError(message, options)
+    default:
+      return null
+  }
 }
 
 /**
  * Translates a thrown ky/ezcap error into the appropriate `WasError` subclass,
- * carrying through the server's `problem+json` fields.
+ * carrying through the server's `problem+json` fields. Dispatches on the
+ * problem-kind `type` URI when the server sent one, falling back to the HTTP
+ * status otherwise.
  *
  * @param err {unknown}   the caught error
  * @returns {WasError}
@@ -120,13 +211,20 @@ export function mapError(err: unknown): WasError {
   const httpError = (err ?? {}) as HttpClientError
   const status = httpError.status ?? httpError.response?.status
   const data = httpError.data
+  const type = data?.type
   const title = data?.title
   const details = data?.errors
     ?.map(entry => entry.detail)
     .filter((detail): detail is string => typeof detail === 'string')
   const requestUrl = httpError.requestUrl
   const message = title ?? httpError.message ?? 'WAS request failed'
-  const options = { status, title, details, requestUrl, cause: err }
+  const options = { status, type, title, details, requestUrl, cause: err }
+
+  const kind = typeof type === 'string' ? type.split('#')[1] : undefined
+  const byKind = errorForKind(kind, message, options)
+  if (byKind !== null) {
+    return byKind
+  }
 
   switch (status) {
     case 400:
@@ -135,8 +233,14 @@ export function mapError(err: unknown): WasError {
       return new AuthRequiredError(message, options)
     case 404:
       return new NotFoundError(message, options)
+    case 409:
+      return new ConflictError(message, options)
+    case 413:
+      return new PayloadTooLargeError(message, options)
     case 501:
       return new NotImplementedError(message, options)
+    case 507:
+      return new QuotaExceededError(message, options)
   }
 
   if (typeof status === 'number' && status >= 500) {

@@ -1,0 +1,190 @@
+/*!
+ * Copyright (c) 2026 Interop Alliance. All rights reserved.
+ */
+/**
+ * Unit tests for the storage-introspection and metadata handle methods:
+ * `space.backends()` / `space.quotas()`, `resource.meta()` / `setMeta()` /
+ * `setName()` / `setTags()`, and the reserved-id guard on
+ * `Collection.configure()`. A stub `ZcapClient` captures the request args and
+ * returns canned `HttpResponse`s, so no signer or server is involved.
+ */
+import { describe, it, expect } from 'vitest'
+
+import type { HttpResponse } from '@interop/http-client'
+import { WasClient, ValidationError } from '../../src/index.js'
+
+interface RequestArgs {
+  url?: string
+  method?: string
+  json?: unknown
+}
+
+/**
+ * Builds a `WasClient` over a stub `ZcapClient` that records every
+ * `request(...)` call and returns each entry of `responses` in turn (a single
+ * `data` payload is reused for every call). When `fail` is set, the stub throws
+ * an error carrying that HTTP status.
+ *
+ * @param options {object}
+ * @param [options.data] {unknown}     the response `data` payload
+ * @param [options.fail] {number}      an HTTP status to throw instead
+ * @returns {object} { client, calls }
+ */
+function clientWithRequestSpy({
+  data,
+  fail
+}: { data?: unknown; fail?: number } = {}): {
+  client: WasClient
+  calls: RequestArgs[]
+} {
+  const calls: RequestArgs[] = []
+  const zcapClient = {
+    invocationSigner: { id: 'did:example:alice#key-1' },
+    async request(args: RequestArgs) {
+      calls.push(args)
+      if (fail !== undefined) {
+        throw { status: fail, response: { status: fail } }
+      }
+      return {
+        status: 200,
+        headers: new Headers(),
+        data,
+        async json() {
+          return data
+        }
+      } as unknown as HttpResponse
+    }
+  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  return { client, calls }
+}
+
+describe('space.backends()', () => {
+  it('GETs the backends endpoint and returns the array', async () => {
+    const backends = [
+      { id: 'default', name: 'Server Filesystem', managedBy: 'server' }
+    ]
+    const { client, calls } = clientWithRequestSpy({ data: backends })
+    const result = await client.space('s').backends()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/backends')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(backends)
+  })
+
+  it('returns null when the space is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').backends()).toBeNull()
+  })
+})
+
+describe('space.quotas()', () => {
+  it('GETs the quotas endpoint and returns the report', async () => {
+    const report = { respondedAt: '2026-06-12T13:25:00Z', backends: [] }
+    const { client, calls } = clientWithRequestSpy({ data: report })
+    const result = await client.space('s').quotas()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/quotas')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(report)
+  })
+
+  it('returns null when the space is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').quotas()).toBeNull()
+  })
+})
+
+describe('resource.meta()', () => {
+  it('GETs the meta endpoint and returns the metadata object', async () => {
+    const meta = {
+      contentType: 'application/json',
+      size: 16,
+      custom: { name: 'Hello' }
+    }
+    const { client, calls } = clientWithRequestSpy({ data: meta })
+    const result = await client.space('s').collection('c').resource('r').meta()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/r/meta')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(meta)
+  })
+
+  it('returns null when the resource is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    const result = await client.space('s').collection('c').resource('r').meta()
+    expect(result).toBeNull()
+  })
+})
+
+describe('resource.setMeta()', () => {
+  it('PUTs the custom object to the meta endpoint', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client
+      .space('s')
+      .collection('c')
+      .resource('r')
+      .setMeta({ custom: { name: 'Hi', tags: { project: 'demo' } } })
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/r/meta')
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.json).toEqual({
+      custom: { name: 'Hi', tags: { project: 'demo' } }
+    })
+  })
+
+  it('clears the custom object when called with no argument', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client.space('s').collection('c').resource('r').setMeta()
+    expect(calls[0]?.json).toEqual({ custom: {} })
+  })
+})
+
+describe('resource.setName() / setTags()', () => {
+  it('setName() preserves existing tags (read-modify-write)', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: {
+        contentType: 'application/json',
+        size: 16,
+        custom: { name: 'Old', tags: { project: 'demo' } }
+      }
+    })
+    await client.space('s').collection('c').resource('r').setName('New')
+    // First call is the GET (meta), second is the PUT.
+    expect(calls[1]?.method).toBe('PUT')
+    expect(calls[1]?.json).toEqual({
+      custom: { name: 'New', tags: { project: 'demo' } }
+    })
+  })
+
+  it('setTags() preserves the existing name (read-modify-write)', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: {
+        contentType: 'application/json',
+        size: 16,
+        custom: { name: 'Keep', tags: { project: 'demo' } }
+      }
+    })
+    await client
+      .space('s')
+      .collection('c')
+      .resource('r')
+      .setTags({ status: 'final' })
+    expect(calls[1]?.json).toEqual({
+      custom: { name: 'Keep', tags: { status: 'final' } }
+    })
+  })
+})
+
+describe('Collection.configure() reserved-id guard', () => {
+  it('rejects a handle built on a reserved id before any request', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await expect(
+      client.space('s').collection('export').configure({ name: 'X' })
+    ).rejects.toThrow(ValidationError)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('allows configuring an ordinary collection id', async () => {
+    const { client, calls } = clientWithRequestSpy({ data: {} })
+    await client.space('s').collection('docs').configure({ name: 'Docs' })
+    // describe() GET + configure() PUT.
+    expect(calls.some(call => call.method === 'PUT')).toBe(true)
+  })
+})

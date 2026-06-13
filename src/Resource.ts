@@ -6,12 +6,18 @@
  * keyed by id within a Collection). Sugar over the Collection item operations,
  * with explicit `getText()` / `getBytes()` escape hatches.
  */
-import { resourcePath, resourcePolicy } from './internal/paths.js'
+import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { prepareBody, parseResource } from './internal/content.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import type { IZcap, Json, PolicyDocument } from './types.js'
+import type {
+  IZcap,
+  Json,
+  PolicyDocument,
+  ResourceMetadata,
+  ResourceMetadataCustom
+} from './types.js'
 
 export class Resource {
   readonly spaceId: string
@@ -145,6 +151,72 @@ export class Resource {
       capability: this._capability,
       idempotent: true
     })
+  }
+
+  private get _metaPath(): string {
+    return resourceMeta(this.spaceId, this.collectionId, this.id)
+  }
+
+  /**
+   * Reads the resource's metadata object (server-managed `contentType` / `size`
+   * / timestamps plus the user-writable `custom` object). Returns `null` if the
+   * resource is missing or not visible to you (404 conflation caveat). A server
+   * without metadata support surfaces its 501 as `NotImplementedError`.
+   *
+   * @returns {Promise<ResourceMetadata | null>}
+   */
+  async meta(): Promise<ResourceMetadata | null> {
+    const response = await send(this._context, {
+      path: this._metaPath,
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as ResourceMetadata)
+  }
+
+  /**
+   * Replaces the resource's user-writable metadata (`custom`). This is a full
+   * replacement: any property omitted from `custom` is cleared, and an omitted
+   * `custom` clears them all. Does not create the resource -- a `PUT` to the
+   * metadata of a nonexistent resource throws `NotFoundError`. Servers without
+   * metadata support surface their 501 as `NotImplementedError`.
+   *
+   * @param meta {object}
+   * @param [meta.custom] {ResourceMetadataCustom}   the user-writable properties
+   * @returns {Promise<void>}
+   */
+  async setMeta(meta: { custom?: ResourceMetadataCustom } = {}): Promise<void> {
+    await send(this._context, {
+      path: this._metaPath,
+      method: 'PUT',
+      capability: this._capability,
+      json: { custom: meta.custom ?? {} }
+    })
+  }
+
+  /**
+   * Sets the resource's human-readable `name` (the value surfaced in collection
+   * listings), preserving any existing `tags`. Convenience over `setMeta()`.
+   *
+   * @param name {string}
+   * @returns {Promise<void>}
+   */
+  async setName(name: string): Promise<void> {
+    const current = await this.meta()
+    await this.setMeta({ custom: { ...current?.custom, name } })
+  }
+
+  /**
+   * Sets the resource's `tags`, preserving any existing `name`. Convenience over
+   * `setMeta()`.
+   *
+   * @param tags {Record<string, string>}
+   * @returns {Promise<void>}
+   */
+  async setTags(tags: Record<string, string>): Promise<void> {
+    const current = await this.meta()
+    await this.setMeta({ custom: { ...current?.custom, tags } })
   }
 
   private get _policyPath(): string {

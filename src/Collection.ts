@@ -15,6 +15,7 @@ import {
   toUrl
 } from './internal/paths.js'
 import { prepareBody, parseResource } from './internal/content.js'
+import { assertNotReserved } from './internal/reserved.js'
 import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
@@ -103,6 +104,7 @@ export class Collection {
     name?: string
     backend?: BackendReference
   }): Promise<CollectionDescription> {
+    assertNotReserved(this.id, 'collection')
     const current = await this.describe()
     const name = desc.name ?? current?.name
     const body: Record<string, unknown> = { id: this.id, name }

@@ -12,7 +12,7 @@
     "lint": "eslint src test",
     "prepare": "pnpm run build",
     "rebuild": "pnpm run clear && pnpm run build",
-    "test": "pnpm run fix && pnpm run lint && pnpm run test-node && pnpm run test-browser",
+    "test": "pnpm run fix && pnpm run lint && pnpm run test:node && pnpm run test:browser",
     "test:browser": "playwright test",
     "test:node": "vitest run",
     "test:coverage": "vitest run --coverage"
@@ -35,9 +35,9 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "dependencies": {
-    "@interop/data-integrity-core": "^6.1.2",
-    "@interop/ed25519-signature": "^7.0.1",
-    "@interop/ezcap": "^7.1.1",
+    "@interop/data-integrity-core": "^8.0.0",
+    "@interop/ed25519-signature": "^7.1.1",
+    "@interop/ezcap": "^7.2.0",
     "@interop/http-client": "^1.0.3"
   },
   "devDependencies": {

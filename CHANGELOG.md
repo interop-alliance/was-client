@@ -1,5 +1,47 @@
 # @interop/was-client Changelog
 
+## 0.4.0 - TBD
+
+### Added
+
+- `space.backends()` reads the storage backends available within a space
+  (`GET /space/{id}/backends`); new `BackendDescriptor` type.
+- `space.quotas()` reads the space's per-backend storage usage report
+  (`GET /space/{id}/quotas`); new `SpaceQuotaReport` / `BackendUsage` /
+  `StorageLimit` / `CollectionUsage` types.
+- `resource.meta()` reads a resource's metadata object
+  (`GET .../{resource_id}/meta`); `resource.setMeta({ custom })` replaces the
+  user-writable `custom` object (`PUT .../meta`), with `resource.setName()` /
+  `resource.setTags()` read-modify-write convenience wrappers. New
+  `ResourceMetadata` / `ResourceMetadataCustom` types.
+- New error subclasses `ConflictError` (409 `id-conflict` / `reserved-id` /
+  `unsupported-backend`), `PayloadTooLargeError` (413 `payload-too-large`), and
+  `QuotaExceededError` (507 `quota-exceeded`).
+- Unauthenticated public-read methods `was.publicRead({ resourceUrl })` and
+  `was.publicListCollection({ collectionUrl })` for consuming `PublicCanRead`
+  links with no authorization (an unsigned plain `fetch`). Both go through a new
+  low-level `unsignedRequest()` helper.
+- Path builders `spaceBackends` / `spaceQuotas` / `resourceMeta`.
+
+### Changed
+
+- `mapError()` now dispatches on the `application/problem+json` `type` URI (the
+  spec's Error Type Registry) when present, falling back to the HTTP status.
+  `WasError` carries the raw problem-kind `type` URI as a new field. This lets,
+  for example, a 507 `quota-exceeded` map to `QuotaExceededError` rather than
+  the `WasServerError` 5xx catch-all.
+- `Collection.configure()` now applies the reserved-path-segment guard, so a
+  handle built directly on a reserved id (e.g. `space.collection('export')`)
+  rejects with a `ValidationError` instead of PUTting.
+- `SpaceDescription` and `CollectionDescription` gain an optional `url`
+  property; `CollectionDescription` also gains an optional `backend` property.
+  These populate as the reference server lands the spec's server-managed fields.
+
+### Fixed
+
+- `createSpace()` JSDoc no longer claims the server requires `name` (it is
+  optional in both the spec and the reference server).
+
 ## 0.3.0 - 2026-06-09
 
 ### Added
@@ -19,9 +61,9 @@
   `setPublic()` convenience (sugar for `setPolicy({ type: 'PublicCanRead' })`)
   for the "share via public link" case. `setPolicy()` is the generic,
   forward-compatible primitive; `setPublic()` is sugar over it.
-- `space.linkset()` / `collection.linkset()` read the RFC9264 linkset
-  (policy discovery); `SpaceDescription` / `CollectionDescription` gain an
-  optional `linkset` property.
+- `space.linkset()` / `collection.linkset()` read the RFC9264 linkset (policy
+  discovery); `SpaceDescription` / `CollectionDescription` gain an optional
+  `linkset` property.
 - New exported types `PolicyDocument`, `LinkSet`, `LinkSetEntry`; path builders
   `spacePolicy` / `collectionPolicy` / `resourcePolicy` and `spaceLinkset` /
   `collectionLinkset`.

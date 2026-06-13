@@ -13,6 +13,8 @@ import {
   spaceCollections,
   spaceExport,
   spaceImport,
+  spaceBackends,
+  spaceQuotas,
   spacePolicy,
   spaceLinkset,
   toUrl
@@ -23,6 +25,7 @@ import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { Collection } from './Collection.js'
 import type {
+  BackendDescriptor,
   BackendReference,
   CollectionDescription,
   CollectionListing,
@@ -33,7 +36,8 @@ import type {
   ImportStats,
   LinkSet,
   PolicyDocument,
-  SpaceDescription
+  SpaceDescription,
+  SpaceQuotaReport
 } from './types.js'
 
 export class Space {
@@ -195,6 +199,40 @@ export class Space {
       read: true
     })
     return response === null ? null : (response.data as CollectionListing)
+  }
+
+  /**
+   * Lists the storage backends available within this space. Returns `null` if
+   * the space is missing or not visible to you (404 conflation caveat). A
+   * server without backend support surfaces its 501 as `NotImplementedError`.
+   *
+   * @returns {Promise<BackendDescriptor[] | null>}
+   */
+  async backends(): Promise<BackendDescriptor[] | null> {
+    const response = await send(this._context, {
+      path: spaceBackends(this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as BackendDescriptor[])
+  }
+
+  /**
+   * Reads the space's storage quota report, grouped by backend. Returns `null`
+   * if the space is missing or not visible to you (404 conflation caveat). A
+   * server without quota support surfaces its 501 as `NotImplementedError`.
+   *
+   * @returns {Promise<SpaceQuotaReport | null>}
+   */
+  async quotas(): Promise<SpaceQuotaReport | null> {
+    const response = await send(this._context, {
+      path: spaceQuotas(this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as SpaceQuotaReport)
   }
 
   /**
