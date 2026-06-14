@@ -214,6 +214,18 @@ function errorForKind(
 }
 
 /**
+ * Reads the HTTP status from a raw ky/ezcap error, checking both the flat
+ * `status` and the nested `response.status` shapes.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {number | undefined}
+ */
+export function httpStatus(err: unknown): number | undefined {
+  const raw = err as { status?: number; response?: { status?: number } }
+  return raw?.status ?? raw?.response?.status
+}
+
+/**
  * Translates a thrown ky/ezcap error into the appropriate `WasError` subclass,
  * carrying through the server's `problem+json` fields. Dispatches on the
  * problem-kind `type` URI when the server sent one, falling back to the HTTP
@@ -228,7 +240,7 @@ export function mapError(err: unknown): WasError {
   }
 
   const httpError = (err ?? {}) as HttpClientError
-  const status = httpError.status ?? httpError.response?.status
+  const status = httpStatus(httpError)
   const data = httpError.data
   const type = data?.type
   const title = data?.title

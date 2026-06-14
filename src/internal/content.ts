@@ -81,6 +81,17 @@ export function prepareBody(
 }
 
 /**
+ * Reads a JSON response body, preferring the http-client's pre-parsed `data`
+ * and falling back to `response.json()` when it is absent.
+ *
+ * @param response {HttpResponse}
+ * @returns {Promise<unknown>}
+ */
+export async function readJsonData(response: HttpResponse): Promise<unknown> {
+  return response.data ?? (await response.json())
+}
+
+/**
  * Parses a resource GET response: returns the parsed object when the stored
  * content-type is JSON, otherwise a `Blob` whose `.type` carries the
  * content-type. A `null` response (404) passes through as `null`.
@@ -96,7 +107,7 @@ export async function parseResource(
   }
   const contentType = response.headers.get('content-type') ?? ''
   if (contentType.includes('json')) {
-    return (response.data ?? (await response.json())) as Json
+    return (await readJsonData(response)) as Json
   }
   return response.blob()
 }

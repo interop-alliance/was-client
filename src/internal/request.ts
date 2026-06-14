@@ -10,7 +10,7 @@
  */
 import type { ZcapClient } from '@interop/ezcap'
 import type { HttpResponse } from '@interop/http-client'
-import { mapError } from '../errors.js'
+import { mapError, httpStatus } from '../errors.js'
 import { toUrl } from './paths.js'
 import type { IZcap } from '../types.js'
 
@@ -148,14 +148,7 @@ export async function send(
   try {
     return await rawRequest(context, input)
   } catch (err) {
-    const status = (err as { status?: number; response?: { status?: number } })
-      ?.status
-    const responseStatus = (err as { response?: { status?: number } })?.response
-      ?.status
-    if (
-      (input.read || input.idempotent) &&
-      (status === 404 || responseStatus === 404)
-    ) {
+    if ((input.read || input.idempotent) && httpStatus(err) === 404) {
       return null
     }
     throw mapError(err)

@@ -15,6 +15,7 @@
     "test": "pnpm run fix && pnpm run lint && pnpm run test:node && pnpm run test:browser",
     "test:browser": "playwright test",
     "test:node": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:coverage": "vitest run --coverage"
   },
   "files": [
@@ -28,6 +29,12 @@
       "react-native": "./dist/index.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./edv": {
+      "types": "./dist/edv/index.d.ts",
+      "react-native": "./dist/edv/index.js",
+      "import": "./dist/edv/index.js",
+      "default": "./dist/edv/index.js"
     }
   },
   "module": "dist/index.js",
@@ -37,12 +44,15 @@
   "dependencies": {
     "@interop/data-integrity-core": "^8.0.0",
     "@interop/ed25519-signature": "^7.1.2",
+    "@interop/edv-client": "^17.2.0",
     "@interop/ezcap": "^7.2.1",
     "@interop/http-client": "^1.0.3",
     "@interop/storage-core": "^0.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@interop/ed25519-verification-key": "^8.0.0",
+    "@interop/x25519-key-agreement-key": "^5.1.0",
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.7",
