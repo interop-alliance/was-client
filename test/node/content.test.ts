@@ -10,7 +10,11 @@ import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
 import { ValidationError } from '../../src/index.js'
-import { prepareBody, parseResource } from '../../src/internal/content.js'
+import {
+  prepareBody,
+  parseResource,
+  guessContentTypeFromId
+} from '../../src/internal/content.js'
 
 /**
  * Builds a minimal `HttpResponse`-shaped stub for `parseResource`.
@@ -81,9 +85,69 @@ describe('prepareBody', () => {
     )
   })
 
+  it('guesses the content-type from options.filename for a Uint8Array', () => {
+    const bytes = new TextEncoder().encode('<!doctype html>')
+    expect(
+      prepareBody(bytes, { filename: 'index.html' }).contentType
+    ).toBe('text/html')
+  })
+
+  it('falls back to octet-stream when the filename has no known extension', () => {
+    const bytes = new TextEncoder().encode('data')
+    expect(prepareBody(bytes, { filename: 'resource' }).contentType).toBe(
+      'application/octet-stream'
+    )
+  })
+
+  it('guesses from options.filename for a typeless Blob', () => {
+    const blob = new Blob(['body { color: red }'])
+    expect(prepareBody(blob, { filename: 'styles.css' }).contentType).toBe(
+      'text/css'
+    )
+  })
+
+  it('prefers a non-empty Blob.type over the filename guess', () => {
+    const blob = new Blob(['hi'], { type: 'text/plain' })
+    expect(prepareBody(blob, { filename: 'note.html' }).contentType).toBe(
+      'text/plain'
+    )
+  })
+
+  it('lets options.contentType override the filename guess', () => {
+    const bytes = new TextEncoder().encode('data')
+    expect(
+      prepareBody(bytes, { filename: 'index.html', contentType: 'text/plain' })
+        .contentType
+    ).toBe('text/plain')
+  })
+
   it('throws a ValidationError for unsupported data (e.g. a primitive)', () => {
     expect(() => prepareBody('not allowed' as never)).toThrow(ValidationError)
     expect(() => prepareBody(null as never)).toThrow(ValidationError)
+  })
+})
+
+describe('guessContentTypeFromId', () => {
+  it('maps known static-web extensions, case-insensitively', () => {
+    expect(guessContentTypeFromId('index.html')).toBe('text/html')
+    expect(guessContentTypeFromId('app.MJS')).toBe('text/javascript')
+    expect(guessContentTypeFromId('photo.JPEG')).toBe('image/jpeg')
+  })
+
+  it('uses the last extension of a multi-dot name', () => {
+    expect(guessContentTypeFromId('logo.min.svg')).toBe('image/svg+xml')
+  })
+
+  it('returns undefined for an unknown extension', () => {
+    expect(guessContentTypeFromId('archive.tar.gz')).toBeUndefined()
+  })
+
+  it('returns undefined for a name with no extension', () => {
+    expect(guessContentTypeFromId('resource')).toBeUndefined()
+  })
+
+  it('returns undefined for a leading-dot dotfile', () => {
+    expect(guessContentTypeFromId('.gitignore')).toBeUndefined()
   })
 })
 

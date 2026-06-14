@@ -116,6 +116,12 @@ export class Resource {
    * objects/arrays, binary for `Blob`/`Uint8Array`. Throws `NotFoundError` if
    * the parent collection does not exist (WAS does not auto-create parents).
    *
+   * For binary data with no explicit `contentType` (and no `Blob.type`), the
+   * content-type is guessed from the resource id's file extension for common
+   * static-web types -- so `resource('index.html').put(bytes)` is sent as
+   * `text/html`. An unrecognized/absent extension sends no content-type, and the
+   * server applies its own required-`Content-Type` rule.
+   *
    * @param data {Json | Blob | Uint8Array}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
@@ -126,7 +132,7 @@ export class Resource {
     options: { contentType?: string } = {}
   ): Promise<void> {
     assertNotReserved(this.id, 'resource')
-    const prepared = prepareBody(data, options)
+    const prepared = prepareBody(data, { ...options, filename: this.id })
     await send(this._context, {
       path: this._path,
       method: 'PUT',
