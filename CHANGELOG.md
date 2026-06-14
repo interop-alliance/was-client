@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- Encrypted collections (EDV-over-WAS), Increment 1, on the opt-in
+  `@interop/was-client/edv` subpath. `WasTransport` is an `@interop/edv-client`
+  `Transport` that maps EDV document operations onto ordinary WAS resource CRUD,
+  so client-side end-to-end encryption works against any WAS server with no
+  server changes (the server stores opaque JWE envelopes; keys stay
+  client-side). Documents-only scope (`insert` / `update` / `get`); blinded
+  query, index updates, and chunked streams require server-side EDV affordances
+  and are not yet supported. Also exports `EDV_CONTENT_TYPE`.
+- A live-server integration test tier (`test/integration/`, run with
+  `pnpm test:integration` against a `TEST_SERVER_URL`), with an EDV-over-WAS
+  encrypt/write/read/decrypt round-trip. Skips when `TEST_SERVER_URL` is unset.
+
 ## 0.5.0 - 2026-06-13
 
 ### Added

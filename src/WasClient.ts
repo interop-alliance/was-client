@@ -15,7 +15,7 @@ import type { HttpResponse } from '@interop/http-client'
 import { spacesRoot } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
-import { parseResource } from './internal/content.js'
+import { parseResource, readJsonData } from './internal/content.js'
 import { delegateGrant } from './internal/grant.js'
 import { ValidationError } from './errors.js'
 import { Space } from './Space.js'
@@ -213,7 +213,7 @@ export class WasClient {
     if (response === null) {
       return null
     }
-    return (response.data ?? (await response.json())) as CollectionResourcesList
+    return (await readJsonData(response)) as CollectionResourcesList
   }
 
   /**

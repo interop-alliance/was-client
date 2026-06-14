@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import type { WasClient as WasClientClass } from '../../src/index.js'
 
 /**
  * Browser smoke test: confirms the bundle loads in a real browser and that the
@@ -7,7 +8,13 @@ import { test, expect } from '@playwright/test'
 test('WasClient builds lazy handles in the browser', async ({ page }) => {
   await page.goto('/test/index.html')
   const result = await page.evaluate(async () => {
-    const { WasClient } = await import('/src/index.ts')
+    // `/src/index.ts` is a Vite dev-server path resolved at runtime in the
+    // browser; `tsc` cannot resolve the specifier, so the static type comes
+    // from the type-only import above.
+    // @ts-expect-error -- Vite-only module specifier, resolved at runtime.
+    const { WasClient } = (await import('/src/index.ts')) as {
+      WasClient: typeof WasClientClass
+    }
     // The constructor only stores serverUrl + zcapClient; a minimal stub is
     // enough to exercise synchronous, network-free handle construction.
     const stubZcapClient = {
