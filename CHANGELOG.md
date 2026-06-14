@@ -1,5 +1,15 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Changed
+
+- `was.listSpaces()` is now functional against the reference server (which
+  implements `GET /spaces/`). It returns a `{ url, totalItems, items }`
+  listing of the spaces visible to the wrapped signer (per-controller
+  visibility; an unauthorized caller gets an empty list rather than an error).
+  No API change -- the method shape was already in place.
+
 ## 0.4.0 - 2026-06-13
 
 ### Added
