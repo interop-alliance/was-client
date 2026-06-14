@@ -5,7 +5,8 @@
  * JSON-vs-binary detection and body coercion for resource writes, plus
  * content-type-aware parsing for resource reads. A plain object/array is sent
  * as JSON; a `Blob`/`Uint8Array`/`Buffer` is sent as binary, with the
- * content-type taken from `options.contentType`, the `Blob.type`, or
+ * content-type taken from `options.contentType`, the `Blob.type`, a guess from
+ * the resource id's file extension (`options.filename`), or
  * `application/octet-stream`.
  */
 import type { HttpResponse } from '@interop/http-client'
@@ -13,6 +14,52 @@ import { ValidationError } from '../errors.js'
 import type { Json } from '../types.js'
 
 const OCTET_STREAM = 'application/octet-stream'
+
+/**
+ * Extension-to-content-type fallbacks for the common static-web file types --
+ * the only case where guessing a content-type from a resource id pays off
+ * (e.g. serving an HTML site out of a public Collection). Deliberately tiny and
+ * inline: an explicit `contentType` (or a non-empty `Blob.type`) always wins,
+ * and an unknown extension yields no guess -- so this never needs the breadth
+ * (or the `mime-db`-sized weight) of a full media-type library. `.js`/`.mjs`
+ * are pinned to `text/javascript` (the WHATWG-preferred form).
+ */
+const WEB_CONTENT_TYPES: Record<string, string> = {
+  html: 'text/html',
+  css: 'text/css',
+  js: 'text/javascript',
+  mjs: 'text/javascript',
+  json: 'application/json',
+  svg: 'image/svg+xml',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  ico: 'image/x-icon',
+  woff2: 'font/woff2',
+  txt: 'text/plain',
+  wasm: 'application/wasm'
+}
+
+/**
+ * Guesses a content-type from a resource id's file extension, limited to the
+ * static-web types in `WEB_CONTENT_TYPES`. Returns `undefined` when the id has
+ * no extension, is a leading-dot dotfile (e.g. `.gitignore`), or carries an
+ * unrecognized extension -- never a generic fallback, so the caller stays in
+ * control of a miss.
+ *
+ * @param id {string}   the resource id (often a filename like `index.html`)
+ * @returns {string | undefined}
+ */
+export function guessContentTypeFromId(id: string): string | undefined {
+  const lastDot = id.lastIndexOf('.')
+  if (lastDot < 1) {
+    return undefined
+  }
+  const extension = id.slice(lastDot + 1).toLowerCase()
+  return WEB_CONTENT_TYPES[extension]
+}
 
 /**
  * A write body resolved into either a JSON payload (passed to ezcap as `json`)
@@ -45,27 +92,39 @@ function toPlainBytes(bytes: Uint8Array): Uint8Array {
 /**
  * Inspects write data and resolves it to a JSON or binary payload.
  *
+ * The binary content-type resolves in precedence order: an explicit
+ * `options.contentType`, then a non-empty `Blob.type`, then a guess from
+ * `options.filename`'s extension, then `application/octet-stream`. (Coalescing
+ * with `||` rather than `??` so an empty-string `Blob.type` -- a typeless Blob
+ * -- falls through to the guess instead of becoming an empty content-type.)
+ *
  * @param data {Json | Blob | Uint8Array}   the resource content
  * @param options {object}
  * @param [options.contentType] {string}    overrides the inferred content-type
  *   for binary data
+ * @param [options.filename] {string}       resource id used to guess a
+ *   content-type by extension when none is given (binary data only)
  * @returns {PreparedBody}
  */
 export function prepareBody(
   data: Json | Blob | Uint8Array,
-  options: { contentType?: string } = {}
+  options: { contentType?: string; filename?: string } = {}
 ): PreparedBody {
+  const guessed = options.filename
+    ? guessContentTypeFromId(options.filename)
+    : undefined
+
   if (isBlob(data)) {
     return {
       body: data,
-      contentType: options.contentType ?? data.type ?? OCTET_STREAM
+      contentType: options.contentType || data.type || guessed || OCTET_STREAM
     }
   }
 
   if (data instanceof Uint8Array) {
     return {
       body: toPlainBytes(data),
-      contentType: options.contentType ?? OCTET_STREAM
+      contentType: options.contentType || guessed || OCTET_STREAM
     }
   }
 

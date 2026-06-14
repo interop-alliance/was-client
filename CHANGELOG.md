@@ -4,6 +4,16 @@
 
 ### Added
 
+- `Resource.put()` now guesses a binary write's `Content-Type` from the resource
+  id's file extension when none is supplied (and the data carries no `Blob.type`),
+  for the common static-web types (`html`, `css`, `js`/`mjs`, `json`, `svg`,
+  `png`, `jpg`/`jpeg`, `gif`, `webp`, `ico`, `woff2`, `txt`, `wasm`) -- so
+  `collection.resource('index.html').put(bytes)` is sent as `text/html`. An
+  explicit `contentType` (or a non-empty `Blob.type`) still wins, and an
+  unrecognized/absent extension sends no header (the server then applies its own
+  required-`Content-Type` rule). Implemented with a tiny inline table to avoid a
+  `mime-db`-sized dependency. `Collection.add()` is unaffected (its id is
+  server-generated, so there is no extension to read).
 - Encrypted collections (EDV-over-WAS), Increment 1, on the opt-in
   `@interop/was-client/edv` subpath. `WasTransport` is an `@interop/edv-client`
   `Transport` that maps EDV document operations onto ordinary WAS resource CRUD,
