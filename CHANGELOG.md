@@ -2,13 +2,22 @@
 
 ## Unreleased - TBD
 
+### Added
+
+- `collection.backend()` reads the storage backend a collection is stored on
+  ("Collection Backend Selected", `GET /space/{id}/{cid}/backend`); returns a
+  `BackendDescriptor`.
+- `collection.quota()` reads the collection's storage usage report, scoped to
+  its backend (spec "Quotas", `GET /space/{id}/{cid}/quota`); returns a
+  `BackendUsage`.
+
 ### Changed
 
 - `was.listSpaces()` is now functional against the reference server (which
-  implements `GET /spaces/`). It returns a `{ url, totalItems, items }`
-  listing of the spaces visible to the wrapped signer (per-controller
-  visibility; an unauthorized caller gets an empty list rather than an error).
-  No API change -- the method shape was already in place.
+  implements `GET /spaces/`). It returns a `{ url, totalItems, items }` listing
+  of the spaces visible to the wrapped signer (per-controller visibility; an
+  unauthorized caller gets an empty list rather than an error). No API change --
+  the method shape was already in place.
 
 ## 0.4.0 - 2026-06-13
 
