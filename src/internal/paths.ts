@@ -132,6 +132,25 @@ export function collectionLinkset(
 }
 
 /**
+ * `/space/:spaceId/:collectionId/backend` -- the "Collection Backend Selected"
+ * descriptor (the backend this collection is stored on).
+ */
+export function collectionBackend(
+  spaceId: string,
+  collectionId: string
+): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/backend`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/quota` -- the per-collection storage quota
+ * report (spec "Quotas").
+ */
+export function collectionQuota(spaceId: string, collectionId: string): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/quota`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId` -- get / put / delete a resource
  * (no trailing slash).
  */

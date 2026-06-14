@@ -93,6 +93,50 @@ describe('space.quotas()', () => {
   })
 })
 
+describe('collection.backend()', () => {
+  it('GETs the backend endpoint and returns the descriptor', async () => {
+    const backend = {
+      id: 'default',
+      name: 'Server Filesystem',
+      managedBy: 'server'
+    }
+    const { client, calls } = clientWithRequestSpy({ data: backend })
+    const result = await client.space('s').collection('c').backend()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/backend')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(backend)
+  })
+
+  it('returns null when the collection is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').collection('c').backend()).toBeNull()
+  })
+})
+
+describe('collection.quota()', () => {
+  it('GETs the quota endpoint and returns the usage report', async () => {
+    const usage = {
+      id: 'default',
+      managedBy: 'server',
+      state: 'ok',
+      usageBytes: 16,
+      limit: { maxBytes: 1024 },
+      restrictedActions: [],
+      measuredAt: '2026-06-12T13:25:00Z'
+    }
+    const { client, calls } = clientWithRequestSpy({ data: usage })
+    const result = await client.space('s').collection('c').quota()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/quota')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(usage)
+  })
+
+  it('returns null when the collection is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').collection('c').quota()).toBeNull()
+  })
+})
+
 describe('resource.meta()', () => {
   it('GETs the meta endpoint and returns the metadata object', async () => {
     const meta = {

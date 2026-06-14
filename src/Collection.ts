@@ -11,6 +11,8 @@ import {
   collectionItems,
   collectionPolicy,
   collectionLinkset,
+  collectionBackend,
+  collectionQuota,
   resourcePath,
   toUrl
 } from './internal/paths.js'
@@ -22,7 +24,9 @@ import { send } from './internal/request.js'
 import { Resource } from './Resource.js'
 import type {
   AddResult,
+  BackendDescriptor,
   BackendReference,
+  BackendUsage,
   CollectionDescription,
   GrantOptions,
   HandleOptions,
@@ -353,5 +357,41 @@ export class Collection {
       read: true
     })
     return response === null ? null : (response.data as LinkSet)
+  }
+
+  /**
+   * Reads the storage backend this collection is stored on ("Collection Backend
+   * Selected"). Returns `null` if the collection is missing or not visible to
+   * you (404 conflation caveat). A server without backend support surfaces its
+   * 501 as `NotImplementedError`.
+   *
+   * @returns {Promise<BackendDescriptor | null>}
+   */
+  async backend(): Promise<BackendDescriptor | null> {
+    const response = await send(this._context, {
+      path: collectionBackend(this.spaceId, this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as BackendDescriptor)
+  }
+
+  /**
+   * Reads the collection's storage usage report, scoped to its backend (spec
+   * "Quotas"). Returns `null` if the collection is missing or not visible to you
+   * (404 conflation caveat). A backend that cannot account per-collection
+   * surfaces its 501 as `NotImplementedError`.
+   *
+   * @returns {Promise<BackendUsage | null>}
+   */
+  async quota(): Promise<BackendUsage | null> {
+    const response = await send(this._context, {
+      path: collectionQuota(this.spaceId, this.id),
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    return response === null ? null : (response.data as BackendUsage)
   }
 }

@@ -384,6 +384,15 @@ const report = await space.quotas() // SpaceQuotaReport | null
 // report.backends[i]: { id, state, usageBytes, limit, restrictedActions, ... }
 ```
 
+A Collection can likewise report the backend it is stored on and its own usage,
+scoped to that backend (same optional-feature and 404/null caveats).
+
+```ts
+const backend = await collection.backend() // BackendDescriptor | null
+const usage = await collection.quota() // BackendUsage | null
+// usage: { id, state, usageBytes, limit, restrictedActions, measuredAt, ... }
+```
+
 ### Export and import
 
 ```ts
