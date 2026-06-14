@@ -172,6 +172,32 @@ describe('resource.setName() / setTags()', () => {
   })
 })
 
+describe('was.listSpaces()', () => {
+  it('GETs the spaces repository and returns the listing', async () => {
+    const listing = {
+      url: '/spaces/',
+      totalItems: 2,
+      items: [
+        { id: 's1', url: '/space/s1', name: 'Home' },
+        { id: 's2', url: '/space/s2' }
+      ]
+    }
+    const { client, calls } = clientWithRequestSpy({ data: listing })
+    const result = await client.listSpaces()
+    expect(calls[0]?.url).toBe('https://was.example/spaces/')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(listing)
+  })
+
+  it('returns the empty listing the server sends an unauthorized caller', async () => {
+    const empty = { url: '/spaces/', totalItems: 0, items: [] }
+    const { client } = clientWithRequestSpy({ data: empty })
+    const result = await client.listSpaces()
+    expect(result.items).toEqual([])
+    expect(result.totalItems).toBe(0)
+  })
+})
+
 describe('Collection.configure() reserved-id guard', () => {
   it('rejects a handle built on a reserved id before any request', async () => {
     const { client, calls } = clientWithRequestSpy()

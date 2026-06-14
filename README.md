@@ -177,10 +177,16 @@ await space.configure({ name: 'Home (renamed)' })
 await space.delete() // idempotent
 ```
 
-Listing every space in the repository (`was.listSpaces()`) is specified but not
-yet implemented by the reference server, so it currently throws
-`NotImplementedError`. To enumerate what is _inside_ a space, use
-`space.collections()` (below).
+List the spaces in the repository visible to your signer with
+`was.listSpaces()`. It returns a `{ url, totalItems, items }` listing holding
+only the spaces whose controller your invocation is authorized for; an
+unauthorized caller gets an empty list rather than an error. To enumerate what
+is _inside_ a space, use `space.collections()` (below).
+
+```ts
+const { totalItems, items } = await was.listSpaces()
+// items: [{ id, url, name? }, ...]
+```
 
 ### Collections
 
@@ -425,8 +431,8 @@ a 507 `quota-exceeded` (a client-actionable storage-full condition, not a server
 fault) as a `QuotaExceededError`. `delete()` additionally treats a 404 as
 success, so it is idempotent.
 
-Some spec endpoints (`listSpaces()`, ...) are not yet implemented by the
-reference server and currently surface `NotImplementedError`.
+Spec endpoints a given server has not yet implemented surface as
+`NotImplementedError` (the server's 501).
 
 ## Contribute
 

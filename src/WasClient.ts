@@ -150,9 +150,12 @@ export class WasClient {
   }
 
   /**
-   * Lists the spaces in the repository. Not yet implemented by the reference
-   * server, which answers 501 -- so this currently throws
-   * `NotImplementedError`.
+   * Lists the spaces in the repository visible to the wrapped signer, as a
+   * `{ url, totalItems, items }` listing. Visibility is per-controller: the
+   * result holds only the spaces whose controller the signed invocation is
+   * authorized for. An unauthorized caller is not an error -- the server
+   * returns an empty `items` list (the spec's explicit exception to 404
+   * masking), so nothing is revealed about which spaces exist.
    *
    * @returns {Promise<SpaceListing>}
    */
