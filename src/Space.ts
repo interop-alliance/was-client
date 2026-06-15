@@ -229,11 +229,20 @@ export class Space {
    * if the space is missing or not visible to you (404 conflation caveat). A
    * server without quota support surfaces its 501 as `NotImplementedError`.
    *
+   * @param [options] {object}
+   * @param [options.includeCollections] {boolean}   request the per-Collection
+   *   `usageByCollection` breakdown on each backend entry (the spec's
+   *   `?include=collections` opt-in); omitted by default to keep the report lean
    * @returns {Promise<SpaceQuotaReport | null>}
    */
-  async quotas(): Promise<SpaceQuotaReport | null> {
+  async quotas({
+    includeCollections = false
+  }: { includeCollections?: boolean } = {}): Promise<SpaceQuotaReport | null> {
+    const path = includeCollections
+      ? `${spaceQuotas(this.id)}?include=collections`
+      : spaceQuotas(this.id)
     const response = await send(this._context, {
-      path: spaceQuotas(this.id),
+      path,
       method: 'GET',
       capability: this._capability,
       read: true
