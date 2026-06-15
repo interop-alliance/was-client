@@ -3,7 +3,7 @@
  */
 /**
  * The EDV (Encrypted Data Vault) resource codec and its `EncryptionProvider`
- * factory -- the encrypting half of the codec seam (Increment 2). Bound to an
+ * factory -- the encrypting half of the codec seam. Bound to an
  * encrypted collection, it encrypts a caller's value into an EDV envelope
  * (`{ id, sequence, indexed, jwe }`) on write and decrypts it on read, so
  * `collection.put(id, obj)` / `collection.get(id)` transparently round-trip
@@ -27,13 +27,20 @@
  * - **Small binary as a single JWE.** A `Blob`/`Uint8Array` under the size cap
  *   is wrapped and encrypted as one document; an oversized one is rejected
  *   (chunked encrypted blobs need the server's `chunked-streams` affordance).
- * - **Advisory sequence.** Without server-side conditional writes, every write
- *   is `sequence: 0` (last-writer-wins), as in the standalone transport.
+ * - **Enforced sequence (conditional writes).** The codec sets
+ *   `conditionalWrites`, so the write path pre-reads the current envelope and
+ *   hands it to `encode`: an update advances `sequence` from its prior value and
+ *   pins the write to the server's current ETag via `If-Match`, while a fresh
+ *   insert (`sequence: 0`) is guarded by `If-None-Match: *`. A stale write
+ *   surfaces as a `PreconditionFailedError` (412) -- the lost-update guard --
+ *   rather than the old advisory last-writer-wins. Against a backend that does
+ *   not advertise `conditional-writes` (no ETag) it degrades to advisory.
  * - **No server-visible metadata.** `allowsServerMetadata` is `false`, so
  *   `setName`/`setTags` throw on an encrypted collection (the core seam enforces
  *   this).
  */
 import { EdvClientCore } from '@interop/edv-client'
+import type { HttpResponse } from '@interop/http-client'
 import type {
   IEncryptedDocument,
   IKeyAgreementKey,
@@ -124,6 +131,7 @@ function base64ToBytes(base64: string): Uint8Array {
  */
 export class EdvCodec implements ResourceCodec {
   readonly allowsServerMetadata = false
+  readonly conditionalWrites = true
 
   private readonly _edv: EdvClientCore
   private readonly _keyAgreementKey: IKeyAgreementKey
@@ -160,11 +168,13 @@ export class EdvCodec implements ResourceCodec {
   async encode({
     id,
     data,
-    contentType
+    contentType,
+    current
   }: {
     id?: string
     data: Json | Blob | Uint8Array
     contentType?: string
+    current?: HttpResponse | null
   }): Promise<EncodedWrite> {
     if (id !== undefined && !EDV_DOC_ID.test(id)) {
       throw new ValidationError(
@@ -175,18 +185,40 @@ export class EdvCodec implements ResourceCodec {
     }
     const docId = id ?? ((await this._edv.generateId()) as string)
     const content = await this._toContent(data, contentType)
+
+    // When the write path pre-read a current envelope, advance `sequence` from
+    // its prior value (`_encrypt({ update: true })` increments it) and pin the
+    // write to the server's current ETag with `If-Match`. With no prior envelope
+    // this is a fresh insert (`sequence: 0`) guarded by `If-None-Match: *`
+    // (create-if-absent), so a concurrent first writer cannot be clobbered.
+    const priorDoc = current
+      ? ((await readJsonData(
+          current as Parameters<typeof readJsonData>[0]
+        )) as IEncryptedDocument)
+      : null
+
     const recipients = this._edv._createDefaultRecipients(this._keyAgreementKey)
     const encrypted = await this._edv._encrypt({
-      doc: { id: docId, content },
+      doc: {
+        id: docId,
+        content,
+        ...(priorDoc && { sequence: priorDoc.sequence })
+      },
       recipients,
       keyResolver: this._edv.keyResolver,
       hmac: undefined,
-      update: false
+      update: priorDoc !== null
     })
     return {
       id: docId,
       body: ENCODER.encode(JSON.stringify(encrypted)),
-      contentType: this._contentType
+      contentType: this._contentType,
+      // Pin an update to the server's current ETag; guard a fresh insert with
+      // create-if-absent. (An ETag is absent only against a backend without the
+      // conditional-writes feature, where this degrades to an advisory write.)
+      ...(priorDoc
+        ? { ifMatch: current!.headers.get('etag') ?? undefined }
+        : { ifNoneMatch: true })
     }
   }
 

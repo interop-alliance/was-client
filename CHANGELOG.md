@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Conditional writes (optimistic concurrency).** Against a backend that
+  advertises the `conditional-writes` feature, a Resource carries a strong
+  `ETag` validator. `resource.put(data, { ifMatch })` /
+  `collection.put(id, data, { ifMatch })` perform an update-if-unchanged and
+  `{ ifNoneMatch: true }` a create-if-absent; `resource.delete({ ifMatch })`
+  deletes only if unchanged. A failed precondition throws the new typed
+  `PreconditionFailedError` (HTTP 412, mapped from the `precondition-failed`
+  problem type). Reads surface the validator: `resource.meta()` returns an
+  `etag`, and `put` / `add` return the new `etag`. Recover from a 412 by
+  re-reading the current `etag`, re-applying the change, and retrying.
+- **The EDV `sequence` is now enforced (lost-update-safe).** On an encrypted
+  collection the EDV codec drives conditional writes automatically: each
+  `put`/`add` pre-reads the current envelope, advances its `sequence`
+  (previous + 1), and pins the write to the server's current `ETag` via
+  `If-Match` (a fresh insert is guarded by `If-None-Match: *`). A stale write
+  surfaces as a `PreconditionFailedError` rather than the old advisory
+  last-writer-wins. Against a backend without `conditional-writes` (no ETag) it
+  degrades to advisory. The codec seam gains an optional
+  `ResourceCodec.conditionalWrites` flag and `EncodedWrite.ifMatch` /
+  `ifNoneMatch`. Uses the `precondition-failed` type from
+  `@interop/storage-core@^0.2.2`.
+
 - Encrypted collections (EDV-over-WAS), Increment 2: a pluggable **resource
   codec** seam folds client-side encryption into the ordinary
   `Collection`/`Resource` handles. Construct a `WasClient` with an `encryption`

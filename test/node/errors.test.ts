@@ -15,6 +15,7 @@ import {
   AuthRequiredError,
   NotImplementedError,
   ConflictError,
+  PreconditionFailedError,
   PayloadTooLargeError,
   QuotaExceededError,
   WasServerError
@@ -45,6 +46,12 @@ describe('mapError', () => {
 
   it('maps 409 to ConflictError', () => {
     expect(mapError({ status: 409 })).toBeInstanceOf(ConflictError)
+  })
+
+  it('maps 412 to PreconditionFailedError (distinct from 409)', () => {
+    const mapped = mapError({ status: 412 })
+    expect(mapped).toBeInstanceOf(PreconditionFailedError)
+    expect(mapped).not.toBeInstanceOf(ConflictError)
   })
 
   it('maps 413 to PayloadTooLargeError', () => {
@@ -104,6 +111,15 @@ describe('mapError', () => {
       expect(
         mapError({ data: { type: typeUri('unsupported-operation') } })
       ).toBeInstanceOf(NotImplementedError)
+    })
+
+    it('dispatches precondition-failed to PreconditionFailedError', () => {
+      expect(
+        mapError({
+          status: 412,
+          data: { type: typeUri('precondition-failed') }
+        })
+      ).toBeInstanceOf(PreconditionFailedError)
     })
 
     it('exposes the raw type URI on the error', () => {

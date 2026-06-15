@@ -21,6 +21,7 @@ import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
+import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
 import type {
@@ -200,16 +201,20 @@ export class Collection {
       data,
       contentType: options.contentType
     })
-    const headers = encoded.contentType
-      ? { 'content-type': encoded.contentType }
-      : undefined
+    // A codec may attach a create-if-absent precondition for its minted id (the
+    // EDV codec guards a fresh insert with `If-None-Match: *`); plaintext add
+    // carries none.
+    const headers = writeHeaders(encoded.contentType, {
+      ifMatch: encoded.ifMatch,
+      ifNoneMatch: encoded.ifNoneMatch
+    })
 
     // A codec that mints its own id (e.g. the encrypting codec's EDV id) writes
     // by `PUT`; the identity codec returns no id and lets the server mint one
     // via `POST`.
     if (encoded.id !== undefined) {
       const path = resourcePath(this.spaceId, this.id, encoded.id)
-      await send(this._context, {
+      const response = await send(this._context, {
         path,
         method: 'PUT',
         capability: this._capability,
@@ -220,7 +225,8 @@ export class Collection {
       return {
         id: encoded.id,
         url: toUrl({ serverUrl: this._context.serverUrl, path }),
-        contentType: encoded.contentType
+        contentType: encoded.contentType,
+        etag: readEtag(response)
       }
     }
 
@@ -248,7 +254,8 @@ export class Collection {
           serverUrl: this._context.serverUrl,
           path: resourcePath(this.spaceId, this.id, created.id)
         }),
-      contentType: created['content-type']
+      contentType: created['content-type'],
+      etag: readEtag(response)
     }
   }
 
@@ -272,20 +279,28 @@ export class Collection {
   }
 
   /**
-   * Creates or replaces a resource by id (upsert).
+   * Creates or replaces a resource by id (upsert). Forwards the conditional-write
+   * options (`ifMatch` / `ifNoneMatch`) to `Resource.put`; see it for the
+   * `conditional-writes` semantics. Returns the stored resource's new `etag`.
    *
    * @param resourceId {string}
    * @param data {Json | Blob | Uint8Array}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
-   * @returns {Promise<void>}
+   * @param [options.ifMatch] {string}       update only if the ETag matches
+   * @param [options.ifNoneMatch] {boolean}  create only if absent
+   * @returns {Promise<{ etag?: string }>}
    */
   async put(
     resourceId: string,
     data: Json | Blob | Uint8Array,
-    options: { contentType?: string } = {}
-  ): Promise<void> {
-    await this.resource(resourceId).put(data, options)
+    options: {
+      contentType?: string
+      ifMatch?: string
+      ifNoneMatch?: boolean
+    } = {}
+  ): Promise<{ etag?: string }> {
+    return this.resource(resourceId).put(data, options)
   }
 
   /**

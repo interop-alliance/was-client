@@ -19,6 +19,7 @@
   - [Delegation and sharing](#delegation-and-sharing)
   - [Public sharing and access-control policies](#public-sharing-and-access-control-policies)
   - [Resource metadata](#resource-metadata)
+  - [Conditional writes (optimistic concurrency)](#conditional-writes-optimistic-concurrency)
   - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
   - [Encrypted collections (EDV-over-WAS)](#encrypted-collections-edv-over-was)
   - [Export and import](#export-and-import)
@@ -372,6 +373,37 @@ await resource.setTags({ status: 'verified' }) // keeps existing name
 
 The `custom.name` is the same value surfaced as a resource's `name` in
 collection listings; updating one updates the other.
+
+### Conditional writes (optimistic concurrency)
+
+Against a backend that advertises the `conditional-writes` feature (see below),
+a Resource carries a strong **`ETag`** validator that changes on every write.
+Use it to prevent the lost-update problem -- two clients that both read version
+_N_ and each write _N+1_, the second silently clobbering the first.
+
+```ts
+const { etag } = await collection.put('doc', { v: 1 }) // writes return the ETag
+const meta = await collection.resource('doc').meta() // meta().etag also carries it
+
+// Update-if-unchanged: succeeds only if `doc` is still at `etag`, else throws
+// PreconditionFailedError (HTTP 412).
+await collection.put('doc', { v: 2 }, { ifMatch: etag })
+
+// Create-if-absent: succeeds only if `doc` does not yet exist (else 412).
+await collection.put('new-doc', { v: 1 }, { ifNoneMatch: true })
+
+// Delete-if-unchanged.
+await collection.resource('doc').delete({ ifMatch: someEtag })
+```
+
+Recover from a `PreconditionFailedError` by re-reading the current `etag`,
+re-applying your change on top of the new version, and retrying.
+
+On an **encrypted collection** this is automatic: the EDV codec advances the
+document `sequence` and pins each write to the current ETag for you, so a stale
+write surfaces as a `PreconditionFailedError` (the EDV `sequence` becomes
+enforced rather than advisory). The explicit `ifMatch` / `ifNoneMatch` options
+above are for plaintext collections.
 
 ### Storage introspection: backends and quotas
 

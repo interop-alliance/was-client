@@ -2,8 +2,8 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Integration test: encrypted collections through the unified handle seam
- * (Increment 2), end to end against a live WAS server (e.g. was-teaching-server's
+ * Integration test: encrypted collections through the unified handle seam,
+ * end to end against a live WAS server (e.g. was-teaching-server's
  * filesystem backend). A `WasClient` constructed with an `encryption` provider
  * transparently encrypts `collection.add()` / `put()` and decrypts `get()` -- the
  * same plain Collection/Resource API as a plaintext collection, with no EdvClient
@@ -25,7 +25,11 @@ import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { WasClient, ValidationError } from '../../src/index.js'
+import {
+  WasClient,
+  ValidationError,
+  PreconditionFailedError
+} from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
 import { createEdvEncryption } from '../../src/edv/index.js'
 
@@ -129,6 +133,41 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     expect(await collection.get(id)).toEqual({ v: 2 })
   })
 
+  it('chains sequential updates (the enforced sequence advances each write)', async () => {
+    const { id } = await collection.add({ v: 0 })
+    // Each put pre-reads the current envelope and writes previous+1 under
+    // If-Match, so a straight-line series of updates all succeed.
+    await collection.put(id, { v: 1 })
+    await collection.put(id, { v: 2 })
+    await collection.put(id, { v: 3 })
+    expect(await collection.get(id)).toEqual({ v: 3 })
+  })
+
+  it('enforces the sequence: a stale concurrent update is rejected (412)', async () => {
+    const { id } = await collection.add({ v: 0 })
+
+    // Two updates race off the same prior version. The server evaluates the
+    // EDV-sequence-derived If-Match atomically under its per-resource lock, so
+    // exactly one wins and the other gets a PreconditionFailedError -- the EDV
+    // sequence is now enforced (lost-update-safe), not advisory.
+    const results = await Promise.allSettled([
+      collection.put(id, { v: 1 }),
+      collection.put(id, { v: 2 })
+    ])
+    const fulfilled = results.filter(result => result.status === 'fulfilled')
+    const rejected = results.filter(result => result.status === 'rejected')
+    expect(fulfilled.length).toBe(1)
+    expect(rejected.length).toBe(1)
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      PreconditionFailedError
+    )
+
+    // The winner persists, and a fresh (re-read) update still succeeds.
+    expect([{ v: 1 }, { v: 2 }]).toContainEqual(await collection.get(id))
+    await collection.put(id, { v: 9 })
+    expect(await collection.get(id)).toEqual({ v: 9 })
+  })
+
   it('round-trips a small binary blob', async () => {
     const bytes = new Uint8Array([0, 1, 2, 250, 255])
     const { id } = await collection.add(bytes, {
@@ -151,5 +190,83 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     await expect(
       collection.resource(id).setName('a-plaintext-name')
     ).rejects.toThrow(ValidationError)
+  })
+})
+
+describeLive('plaintext conditional writes (live server)', () => {
+  let was: WasClient
+  let space: Space
+  let collection: Collection
+
+  beforeAll(async () => {
+    // A plaintext client (no encryption provider): conditional writes are the
+    // explicit ifMatch / ifNoneMatch options on the handles.
+    ;({ plaintext: was } = await freshClients())
+    space = await was.createSpace({ name: 'Conditional Writes Integration' })
+    collection = await space.createCollection({ id: 'docs', name: 'Docs' })
+  })
+
+  afterAll(async () => {
+    try {
+      await space.delete()
+    } catch {
+      /* best-effort cleanup */
+    }
+  })
+
+  it('surfaces the ETag on write and meta(), advancing on each write', async () => {
+    const first = await collection.put('etag-doc', { v: 1 })
+    expect(first.etag).toBeTruthy()
+
+    const meta = await collection.resource('etag-doc').meta()
+    expect(meta?.etag).toBe(first.etag)
+
+    const second = await collection.put('etag-doc', { v: 2 })
+    expect(second.etag).toBeTruthy()
+    expect(second.etag).not.toBe(first.etag)
+  })
+
+  it('an ifMatch update succeeds when current and 412s when stale', async () => {
+    const created = await collection.put('ifmatch-doc', { v: 1 })
+    const staleEtag = created.etag!
+
+    // Update-if-unchanged against the current ETag succeeds and advances it.
+    const updated = await collection.put(
+      'ifmatch-doc',
+      { v: 2 },
+      { ifMatch: staleEtag }
+    )
+    expect(updated.etag).not.toBe(staleEtag)
+
+    // Re-using the now-stale ETag is rejected (the lost-update guard).
+    await expect(
+      collection.put('ifmatch-doc', { v: 3 }, { ifMatch: staleEtag })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
+    // The clobbering write did not land.
+    expect(await collection.get('ifmatch-doc')).toEqual({ v: 2 })
+  })
+
+  it('ifNoneMatch creates when absent and 412s when the target exists', async () => {
+    const created = await collection.put(
+      'create-once',
+      { v: 1 },
+      { ifNoneMatch: true }
+    )
+    expect(created.etag).toBeTruthy()
+
+    await expect(
+      collection.put('create-once', { v: 2 }, { ifNoneMatch: true })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
+    expect(await collection.get('create-once')).toEqual({ v: 1 })
+  })
+
+  it('delete honors ifMatch: stale 412s, current succeeds', async () => {
+    const created = await collection.put('del-doc', { v: 1 })
+    await expect(
+      collection.resource('del-doc').delete({ ifMatch: '"999"' })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
+
+    await collection.resource('del-doc').delete({ ifMatch: created.etag! })
+    expect(await collection.get('del-doc')).toBeNull()
   })
 })
