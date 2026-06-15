@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.7.0 - TBD
+
+### Changed
+
+- `BackendDescriptor` (re-exported from `@interop/storage-core@^0.2.0`) now
+  carries an optional `features` capability array, surfaced unchanged through
+  `collection.backend()` and `space.backends()`. `features` containing
+  `'encrypted-documents'` is the signal a client gates client-side encryption on
+  (the future EDV codec). No API change -- the field flows through the existing
+  descriptor type; documented in the README and the method JSDoc.
+
 ## 0.6.0 - 2026-06-14
 
 ### Added

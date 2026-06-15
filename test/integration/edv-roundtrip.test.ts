@@ -170,4 +170,15 @@ describeLive('EDV-over-WAS round trip (live server)', () => {
       edv.get({ id: 'zMissingDoc', transport })
     ).rejects.toMatchObject({ name: 'NotFoundError' })
   })
+
+  it('advertises the encrypted-documents backend feature', async () => {
+    // The gating signal Increment 2's encryption codec keys on: the collection's
+    // backend descriptor advertises `encrypted-documents`, both per-collection
+    // and in the space's backend listing.
+    const backend = await collection.backend()
+    expect(backend?.features).toContain('encrypted-documents')
+
+    const backends = await space.backends()
+    expect(backends?.[0]?.features).toContain('encrypted-documents')
+  })
 })

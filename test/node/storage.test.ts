@@ -75,6 +75,19 @@ describe('space.backends()', () => {
     const { client } = clientWithRequestSpy({ fail: 404 })
     expect(await client.space('s').backends()).toBeNull()
   })
+
+  it('surfaces a backend descriptor `features` array', async () => {
+    const backends = [
+      {
+        id: 'default',
+        name: 'Server Filesystem',
+        features: ['encrypted-documents']
+      }
+    ]
+    const { client } = clientWithRequestSpy({ data: backends })
+    const result = await client.space('s').backends()
+    expect(result?.[0]?.features).toContain('encrypted-documents')
+  })
 })
 
 describe('space.quotas()', () => {
@@ -110,6 +123,19 @@ describe('collection.backend()', () => {
   it('returns null when the collection is missing or not visible (404)', async () => {
     const { client } = clientWithRequestSpy({ fail: 404 })
     expect(await client.space('s').collection('c').backend()).toBeNull()
+  })
+
+  it('surfaces the backend descriptor `features` array', async () => {
+    // `features` containing `encrypted-documents` is the signal the future
+    // encryption codec gates on.
+    const backend = {
+      id: 'default',
+      name: 'Server Filesystem',
+      features: ['encrypted-documents']
+    }
+    const { client } = clientWithRequestSpy({ data: backend })
+    const result = await client.space('s').collection('c').backend()
+    expect(result?.features).toContain('encrypted-documents')
   })
 })
 

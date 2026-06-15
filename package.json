@@ -42,12 +42,12 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "dependencies": {
-    "@interop/data-integrity-core": "^8.0.0",
+    "@interop/data-integrity-core": "^8.1.0",
     "@interop/ed25519-signature": "^7.1.2",
     "@interop/edv-client": "^17.2.0",
     "@interop/ezcap": "^7.2.1",
     "@interop/http-client": "^1.0.3",
-    "@interop/storage-core": "^0.1.0"
+    "@interop/storage-core": "^0.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
