@@ -16,11 +16,12 @@ import {
   resourcePath,
   toUrl
 } from './internal/paths.js'
-import { prepareBody, parseResource } from './internal/content.js'
 import { assertNotReserved } from './internal/reserved.js'
 import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
+import { resolveCodec } from './internal/codec.js'
+import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
 import type {
   AddResult,
@@ -44,6 +45,7 @@ export class Collection {
 
   private readonly _context: ClientContext
   private readonly _capability?: IZcap
+  private _codecPromise?: Promise<ResourceCodec>
 
   /**
    * @param options {object}
@@ -76,6 +78,21 @@ export class Collection {
 
   private get _itemsPath(): string {
     return collectionItems(this.spaceId, this.id)
+  }
+
+  /**
+   * Resolves (once, then caches) the codec for this collection's reads and
+   * writes: the identity codec for a plaintext collection, or the encrypting
+   * codec when an `EncryptionProvider` is injected and supplies one for this
+   * collection (i.e. the client holds keys for it).
+   *
+   * @returns {Promise<ResourceCodec>}
+   */
+  private _codec(): Promise<ResourceCodec> {
+    return (this._codecPromise ??= resolveCodec(this._context, {
+      spaceId: this.spaceId,
+      collectionId: this.id
+    }))
   }
 
   /**
@@ -157,7 +174,10 @@ export class Collection {
       spaceId: this.spaceId,
       collectionId: this.id,
       resourceId,
-      capability: options.capability ?? this._capability
+      capability: options.capability ?? this._capability,
+      // Share this collection's resolved codec so a resource handle does not
+      // repeat the backend() round-trip.
+      codec: () => this._codec()
     })
   }
 
@@ -175,16 +195,42 @@ export class Collection {
     data: Json | Blob | Uint8Array,
     options: { contentType?: string } = {}
   ): Promise<AddResult> {
-    const prepared = prepareBody(data, options)
+    const codec = await this._codec()
+    const encoded = await codec.encode({
+      data,
+      contentType: options.contentType
+    })
+    const headers = encoded.contentType
+      ? { 'content-type': encoded.contentType }
+      : undefined
+
+    // A codec that mints its own id (e.g. the encrypting codec's EDV id) writes
+    // by `PUT`; the identity codec returns no id and lets the server mint one
+    // via `POST`.
+    if (encoded.id !== undefined) {
+      const path = resourcePath(this.spaceId, this.id, encoded.id)
+      await send(this._context, {
+        path,
+        method: 'PUT',
+        capability: this._capability,
+        json: encoded.json,
+        body: encoded.body,
+        headers
+      })
+      return {
+        id: encoded.id,
+        url: toUrl({ serverUrl: this._context.serverUrl, path }),
+        contentType: encoded.contentType
+      }
+    }
+
     const response = await send(this._context, {
       path: this._itemsPath,
       method: 'POST',
       capability: this._capability,
-      json: prepared.json,
-      body: prepared.body,
-      headers: prepared.contentType
-        ? { 'content-type': prepared.contentType }
-        : undefined
+      json: encoded.json,
+      body: encoded.body,
+      headers
     })
     // POST always returns a response (404/errors throw via send()).
     const created = (response as { data?: unknown }).data as {
@@ -215,13 +261,14 @@ export class Collection {
    * @returns {Promise<Json | Blob | null>}
    */
   async get(resourceId: string): Promise<Json | Blob | null> {
+    const codec = await this._codec()
     const response = await send(this._context, {
       path: resourcePath(this.spaceId, this.id, resourceId),
       method: 'GET',
       capability: this._capability,
       read: true
     })
-    return parseResource(response)
+    return response === null ? null : codec.decode(response)
   }
 
   /**
@@ -365,12 +412,12 @@ export class Collection {
    * you (404 conflation caveat). A server without backend support surfaces its
    * 501 as `NotImplementedError`.
    *
-   * The descriptor's optional `features` array advertises backend capabilities;
-   * `features` containing `'encrypted-documents'` is the signal a client gates
-   * client-side encryption on (the future EDV codec encrypts only when the
-   * backend advertises it AND the client holds keys for the collection). An
-   * absent feature means the backend makes no claim to it -- treat it as
-   * unsupported rather than assuming a default.
+   * The descriptor's optional `features` array advertises optional server
+   * affordances (e.g. `conditional-writes`, `blinded-index-query`,
+   * `chunked-streams`); an absent token means the backend makes no claim to it,
+   * so treat it as unsupported rather than assuming a default. (Client-side
+   * encryption is not a backend feature -- it is a per-collection client concern
+   * gated on the client's keys.)
    *
    * @returns {Promise<BackendDescriptor | null>}
    */

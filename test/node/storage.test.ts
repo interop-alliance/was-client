@@ -81,12 +81,12 @@ describe('space.backends()', () => {
       {
         id: 'default',
         name: 'Server Filesystem',
-        features: ['encrypted-documents']
+        features: ['conditional-writes']
       }
     ]
     const { client } = clientWithRequestSpy({ data: backends })
     const result = await client.space('s').backends()
-    expect(result?.[0]?.features).toContain('encrypted-documents')
+    expect(result?.[0]?.features).toContain('conditional-writes')
   })
 })
 
@@ -126,16 +126,15 @@ describe('collection.backend()', () => {
   })
 
   it('surfaces the backend descriptor `features` array', async () => {
-    // `features` containing `encrypted-documents` is the signal the future
-    // encryption codec gates on.
+    // `features` advertises optional server affordances (e.g. conditional-writes).
     const backend = {
       id: 'default',
       name: 'Server Filesystem',
-      features: ['encrypted-documents']
+      features: ['conditional-writes']
     }
     const { client } = clientWithRequestSpy({ data: backend })
     const result = await client.space('s').collection('c').backend()
-    expect(result?.features).toContain('encrypted-documents')
+    expect(result?.features).toContain('conditional-writes')
   })
 })
 

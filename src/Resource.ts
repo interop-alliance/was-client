@@ -7,10 +7,12 @@
  * with explicit `getText()` / `getBytes()` escape hatches.
  */
 import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
-import { prepareBody, parseResource } from './internal/content.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
+import { resolveCodec } from './internal/codec.js'
+import type { ResourceCodec } from './codec.js'
+import { ValidationError } from './errors.js'
 import type {
   IZcap,
   Json,
@@ -26,6 +28,8 @@ export class Resource {
 
   private readonly _context: ClientContext
   private readonly _capability?: IZcap
+  private readonly _codecThunk?: () => Promise<ResourceCodec>
+  private _codecPromise?: Promise<ResourceCodec>
 
   /**
    * @param options {object}
@@ -34,29 +38,52 @@ export class Resource {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param [options.capability] {IZcap}   capability attached to every request
+   * @param [options.codec] {function}   resolver sharing the parent collection's
+   *   codec, so a resource handle obtained via `collection.resource(id)` does
+   *   not repeat the backend() round-trip. A standalone resource resolves its
+   *   own.
    */
   constructor({
     context,
     spaceId,
     collectionId,
     resourceId,
-    capability
+    capability,
+    codec
   }: {
     context: ClientContext
     spaceId: string
     collectionId: string
     resourceId: string
     capability?: IZcap
+    codec?: () => Promise<ResourceCodec>
   }) {
     this._context = context
     this.spaceId = spaceId
     this.collectionId = collectionId
     this.id = resourceId
     this._capability = capability
+    this._codecThunk = codec
   }
 
   private get _path(): string {
     return resourcePath(this.spaceId, this.collectionId, this.id)
+  }
+
+  /**
+   * Resolves (once, then caches) the codec for this resource: the parent
+   * collection's shared codec when this handle came from
+   * `collection.resource(id)`, otherwise one resolved for its own collection.
+   *
+   * @returns {Promise<ResourceCodec>}
+   */
+  private _codec(): Promise<ResourceCodec> {
+    return (this._codecPromise ??= this._codecThunk
+      ? this._codecThunk()
+      : resolveCodec(this._context, {
+          spaceId: this.spaceId,
+          collectionId: this.collectionId
+        }))
   }
 
   /**
@@ -67,18 +94,21 @@ export class Resource {
    * @returns {Promise<Json | Blob | null>}
    */
   async get(): Promise<Json | Blob | null> {
+    const codec = await this._codec()
     const response = await send(this._context, {
       path: this._path,
       method: 'GET',
       capability: this._capability,
       read: true
     })
-    return parseResource(response)
+    return response === null ? null : codec.decode(response)
   }
 
   /**
    * Reads the resource body as text. Returns `null` on a missing/unauthorized
-   * resource (404 conflation caveat).
+   * resource (404 conflation caveat). A raw escape hatch: it does NOT run the
+   * codec, so on an encrypted collection it never decrypts -- use `get()` to
+   * decrypt.
    *
    * @returns {Promise<string | null>}
    */
@@ -94,7 +124,9 @@ export class Resource {
 
   /**
    * Reads the resource body as raw bytes. Returns `null` on a
-   * missing/unauthorized resource (404 conflation caveat).
+   * missing/unauthorized resource (404 conflation caveat). A raw escape hatch:
+   * it does NOT run the codec, so on an encrypted collection it never decrypts
+   * -- use `get()` to decrypt.
    *
    * @returns {Promise<Uint8Array | null>}
    */
@@ -132,15 +164,20 @@ export class Resource {
     options: { contentType?: string } = {}
   ): Promise<void> {
     assertNotReserved(this.id, 'resource')
-    const prepared = prepareBody(data, { ...options, filename: this.id })
+    const codec = await this._codec()
+    const encoded = await codec.encode({
+      id: this.id,
+      data,
+      contentType: options.contentType
+    })
     await send(this._context, {
       path: this._path,
       method: 'PUT',
       capability: this._capability,
-      json: prepared.json,
-      body: prepared.body,
-      headers: prepared.contentType
-        ? { 'content-type': prepared.contentType }
+      json: encoded.json,
+      body: encoded.body,
+      headers: encoded.contentType
+        ? { 'content-type': encoded.contentType }
         : undefined
     })
   }
@@ -188,11 +225,23 @@ export class Resource {
    * metadata of a nonexistent resource throws `NotFoundError`. Servers without
    * metadata support surface their 501 as `NotImplementedError`.
    *
+   * On an encrypted collection this throws a `ValidationError`: `custom`
+   * (`name` / `tags`) would be stored as server-visible plaintext, defeating the
+   * encryption. Carry those values inside the encrypted content instead.
+   *
    * @param meta {object}
    * @param [meta.custom] {ResourceMetadataCustom}   the user-writable properties
    * @returns {Promise<void>}
    */
   async setMeta(meta: { custom?: ResourceMetadataCustom } = {}): Promise<void> {
+    const codec = await this._codec()
+    if (!codec.allowsServerMetadata) {
+      throw new ValidationError(
+        'Cannot set server-visible metadata (name/tags) on an encrypted ' +
+          'collection -- it would be stored as plaintext. Carry these values ' +
+          'inside the encrypted content instead.'
+      )
+    }
     await send(this._context, {
       path: this._metaPath,
       method: 'PUT',

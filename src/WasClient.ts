@@ -18,6 +18,7 @@ import { send, rawRequest, unsignedRequest } from './internal/request.js'
 import { parseResource, readJsonData } from './internal/content.js'
 import { delegateGrant } from './internal/grant.js'
 import { ValidationError } from './errors.js'
+import type { EncryptionProvider } from './codec.js'
 import { Space } from './Space.js'
 import { Collection } from './Collection.js'
 import { Resource } from './Resource.js'
@@ -36,22 +37,29 @@ import type {
 export class WasClient {
   readonly serverUrl: string
   readonly zcapClient: ZcapClient
+  readonly encryption?: EncryptionProvider
 
   /**
    * @param options {object}
    * @param options.serverUrl {string}    base URL for both URL building and
    *   zcap `invocationTarget`s
    * @param options.zcapClient {ZcapClient}   an ezcap client holding the signer
+   * @param [options.encryption] {EncryptionProvider}   supplies the encrypting
+   *   codec for the collections the client holds keys for (built by the
+   *   `@interop/was-client/edv` subpath); omit for plaintext-only clients
    */
   constructor({
     serverUrl,
-    zcapClient
+    zcapClient,
+    encryption
   }: {
     serverUrl: string
     zcapClient: ZcapClient
+    encryption?: EncryptionProvider
   }) {
     this.serverUrl = serverUrl
     this.zcapClient = zcapClient
+    this.encryption = encryption
   }
 
   /**
@@ -61,21 +69,24 @@ export class WasClient {
    * @param options {object}
    * @param options.serverUrl {string}
    * @param options.signer {ISigner}
+   * @param [options.encryption] {EncryptionProvider}   see the constructor
    * @returns {WasClient}
    */
   static fromSigner({
     serverUrl,
-    signer
+    signer,
+    encryption
   }: {
     serverUrl: string
     signer: ISigner
+    encryption?: EncryptionProvider
   }): WasClient {
     const zcapClient = new ZcapClient({
       SuiteClass: Ed25519Signature2020,
       invocationSigner: signer,
       delegationSigner: signer
     })
-    return new WasClient({ serverUrl, zcapClient })
+    return new WasClient({ serverUrl, zcapClient, encryption })
   }
 
   /**
@@ -98,7 +109,8 @@ export class WasClient {
     return {
       serverUrl: this.serverUrl,
       zcapClient: this.zcapClient,
-      controllerDid: this.controllerDid
+      controllerDid: this.controllerDid,
+      encryption: this.encryption
     }
   }
 

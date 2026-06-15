@@ -20,8 +20,8 @@
   - [Public sharing and access-control policies](#public-sharing-and-access-control-policies)
   - [Resource metadata](#resource-metadata)
   - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
-  - [Export and import](#export-and-import)
   - [Encrypted collections (EDV-over-WAS)](#encrypted-collections-edv-over-was)
+  - [Export and import](#export-and-import)
   - [The manual-request escape hatch](#the-manual-request-escape-hatch)
 - [Errors and the 404/null caveat](#errors-and-the-404null-caveat)
 - [Contribute](#contribute)
@@ -394,19 +394,67 @@ const usage = await collection.quota() // BackendUsage | null
 // usage: { id, state, usageBytes, limit, restrictedActions, measuredAt, ... }
 ```
 
-A `BackendDescriptor`'s optional `features` array advertises backend
-capabilities. `features` containing `'encrypted-documents'` is the signal a
-client gates client-side encryption on -- the future EDV codec encrypts only
-when the backend advertises it **and** the client holds keys for the collection.
-An absent feature means the backend makes no claim to it, so treat it as
-unsupported rather than assuming a default.
+A `BackendDescriptor`'s optional `features` array advertises optional **server
+affordances** -- things the backend actively does beyond the baseline read/write
+API (e.g. `conditional-writes`, `blinded-index-query`, `chunked-streams`). An
+absent token means the backend makes no claim to it, so treat it as unsupported
+rather than assuming a default. (Client-side encryption is _not_ a backend
+feature -- see below.)
 
 ```ts
 const backend = await collection.backend()
-if (backend?.features?.includes('encrypted-documents')) {
-  // backend stores opaque client-encrypted documents faithfully
+if (backend?.features?.includes('conditional-writes')) {
+  // backend enforces If-Match / If-None-Match write preconditions
 }
 ```
+
+### Encrypted collections (EDV-over-WAS)
+
+Client-side end-to-end encryption is a per-collection concern, gated on whether
+your client holds keys for the collection -- **not** a backend feature (an
+encrypted document is opaque JSON any document backend stores faithfully).
+Construct a `WasClient` with an `encryption` provider (built from the opt-in
+`@interop/was-client/edv` subpath, so plaintext consumers never pull the crypto
+graph), and the ordinary `Collection`/`Resource` handles transparently encrypt
+on write and decrypt on read -- for any collection your `resolveKeys` returns
+keys for. Keys live in your wallet; the server only ever stores opaque JWE
+envelopes.
+
+```ts
+import { WasClient } from '@interop/was-client'
+import { createEdvEncryption } from '@interop/was-client/edv'
+
+const encryption = createEdvEncryption({
+  // Return the collection's keys to encrypt it, or null to use it in plaintext.
+  async resolveKeys({ spaceId, collectionId }) {
+    return { keyAgreementKey, keyResolver } // from your wallet
+  }
+})
+const was = WasClient.fromSigner({ serverUrl, signer, encryption })
+
+const vault = was.space(spaceId).collection('vault')
+const { id } = await vault.add({ secret: 'hello' }) // encrypted; id is an EDV id
+const back = await vault.get(id) // { secret: 'hello' } -- decrypted
+```
+
+The switch is **keys**: a handle encrypts a collection exactly when
+`resolveKeys` returns keys for it (else it stays plaintext). Resolution happens
+once per collection handle and is cached -- no backend round-trip.
+
+Encrypted collections are a **stricter contract**, not a drop-in (documents-only
+scope for now):
+
+- **Ids.** `add()` mints an EDV id (a `z`-prefixed multibase value used verbatim
+  as the WAS resource id). `put(id, ...)` accepts only an EDV-format id; a
+  human-readable id is rejected (it would leak onto the URL) -- carry a
+  human-readable label inside the encrypted content instead.
+- **Metadata.** `resource.setName()` / `setTags()` throw on an encrypted
+  collection (they write server-visible plaintext); store those values inside
+  the encrypted content.
+- **Binary.** A small `Blob`/`Uint8Array` is encrypted as a single document;
+  larger binaries are rejected until chunked encrypted blobs land.
+- **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
+  do not (they return the stored representation).
 
 ### Export and import
 
