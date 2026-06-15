@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for the resource codec seam (Increment 2, Phase 1). Verify that:
+ * Unit tests for the resource codec seam. Verify that:
  *  - a client with no `EncryptionProvider` behaves exactly as before (identity);
  *  - the keys switch binds an injected codec iff the provider returns one for the
  *    collection -- with no backend round-trip (encryption is a per-collection
@@ -47,11 +47,17 @@ interface RequestArgs {
 function clientWithRouter({
   encryption,
   readData,
-  readContentType = 'application/json'
+  readContentType = 'application/json',
+  readEtag,
+  writeEtag,
+  readStatus = 200
 }: {
   encryption?: EncryptionProvider
   readData?: unknown
   readContentType?: string
+  readEtag?: string
+  writeEtag?: string
+  readStatus?: number
 } = {}): { client: WasClient; calls: RequestArgs[] } {
   const calls: RequestArgs[] = []
   const zcapClient = {
@@ -60,9 +66,15 @@ function clientWithRouter({
       calls.push(args)
       const isGet = (args.method ?? 'GET').toUpperCase() === 'GET'
       if (isGet) {
+        if (readStatus === 404) {
+          throw { status: 404, response: { status: 404 } }
+        }
         return {
-          status: 200,
-          headers: new Headers({ 'content-type': readContentType }),
+          status: readStatus,
+          headers: new Headers({
+            'content-type': readContentType,
+            ...(readEtag && { etag: readEtag })
+          }),
           data: readData,
           async json() {
             return readData
@@ -75,7 +87,7 @@ function clientWithRouter({
       // Writes (PUT/POST): echo a created id for POST.
       return {
         status: 200,
-        headers: new Headers(),
+        headers: new Headers(writeEtag ? { etag: writeEtag } : {}),
         data: { id: 'server-minted' },
         async json() {
           return { id: 'server-minted' }
@@ -231,5 +243,132 @@ describe('codec seam: encrypted metadata is forbidden', () => {
       .setMeta({ custom: { name: 'ok' } })
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.json).toEqual({ custom: { name: 'ok' } })
+  })
+})
+
+/**
+ * A fake conditional codec: declares `conditionalWrites`, derives its `ifMatch`
+ * from the pre-read `current` ETag (or `ifNoneMatch` for a fresh write), so the
+ * handle-level wiring (pre-read GET, then PUT with the precondition) can be
+ * asserted without real crypto.
+ */
+function conditionalFakeCodec(log: string[]): ResourceCodec {
+  return {
+    allowsServerMetadata: false,
+    conditionalWrites: true,
+    async encode({ id, data, current }): Promise<EncodedWrite> {
+      const etag = current?.headers.get('etag') ?? undefined
+      log.push(`encode:${id ?? 'mint'}:etag=${etag ?? 'none'}`)
+      return {
+        id: id ?? 'zMintedEdvId',
+        body: new TextEncoder().encode(JSON.stringify({ jwe: data })),
+        contentType: 'application/edv+json',
+        ...(etag ? { ifMatch: etag } : { ifNoneMatch: true })
+      }
+    },
+    async decode(): Promise<{ decrypted: true }> {
+      return { decrypted: true }
+    }
+  }
+}
+
+describe('conditional writes: plaintext handle options', () => {
+  it('put forwards ifMatch as an If-Match header', async () => {
+    const { client, calls } = clientWithRouter()
+    await client
+      .space('s')
+      .collection('c')
+      .put('r', { hello: 'world' }, { ifMatch: '"3"' })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.headers?.['if-match']).toBe('"3"')
+    expect(write?.headers?.['if-none-match']).toBeUndefined()
+  })
+
+  it('put forwards ifNoneMatch as If-None-Match: *', async () => {
+    const { client, calls } = clientWithRouter()
+    await client
+      .space('s')
+      .collection('c')
+      .put('r', { hello: 'world' }, { ifNoneMatch: true })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.headers?.['if-none-match']).toBe('*')
+  })
+
+  it('a plaintext put does not pre-read (no conditional codec)', async () => {
+    const { client, calls } = clientWithRouter()
+    await client.space('s').collection('c').put('r', { hello: 'world' })
+    expect(calls.some(call => call.method === 'GET')).toBe(false)
+  })
+
+  it('put returns the new ETag from the write response', async () => {
+    const { client } = clientWithRouter({ writeEtag: '"7"' })
+    const result = await client
+      .space('s')
+      .collection('c')
+      .put('r', { hello: 'world' })
+    expect(result.etag).toBe('"7"')
+  })
+
+  it('delete forwards ifMatch as an If-Match header', async () => {
+    const { client, calls } = clientWithRouter()
+    await client
+      .space('s')
+      .collection('c')
+      .resource('r')
+      .delete({ ifMatch: '"4"' })
+    const del = calls.find(call => call.method === 'DELETE')
+    expect(del?.headers?.['if-match']).toBe('"4"')
+  })
+
+  it('meta surfaces the ETag from the response header', async () => {
+    const { client } = clientWithRouter({
+      readData: { contentType: 'application/json', size: 2 },
+      readEtag: '"9"'
+    })
+    const meta = await client.space('s').collection('c').resource('r').meta()
+    expect(meta?.etag).toBe('"9"')
+  })
+})
+
+describe('conditional writes: conditional codec wiring', () => {
+  it('pre-reads the current resource and pins If-Match to its ETag', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async resolveCodec() {
+        return conditionalFakeCodec(log)
+      }
+    }
+    const { client, calls } = clientWithRouter({
+      encryption,
+      readData: { jwe: 'prior' },
+      readContentType: 'application/edv+json',
+      readEtag: '"5"'
+    })
+    await client.space('s').collection('c').put('zDoc', { secret: 1 })
+
+    // A GET precedes the PUT, and the codec's If-Match (the read ETag) is sent.
+    const getIndex = calls.findIndex(call => (call.method ?? 'GET') === 'GET')
+    const putIndex = calls.findIndex(call => call.method === 'PUT')
+    expect(getIndex).toBeGreaterThanOrEqual(0)
+    expect(putIndex).toBeGreaterThan(getIndex)
+    expect(log).toContain('encode:zDoc:etag="5"')
+    expect(calls[putIndex]?.headers?.['if-match']).toBe('"5"')
+  })
+
+  it('guards a first write (absent resource) with If-None-Match: *', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async resolveCodec() {
+        return conditionalFakeCodec(log)
+      }
+    }
+    const { client, calls } = clientWithRouter({
+      encryption,
+      readStatus: 404
+    })
+    await client.space('s').collection('c').put('zDoc', { secret: 1 })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(log).toContain('encode:zDoc:etag=none')
+    expect(write?.headers?.['if-none-match']).toBe('*')
   })
 })

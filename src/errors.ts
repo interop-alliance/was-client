@@ -105,6 +105,21 @@ export class ConflictError extends WasError {
 }
 
 /**
+ * A conditional write's precondition evaluated false (HTTP 412): an `ifMatch`
+ * ETag did not match the Resource's current version (a lost-update conflict), or
+ * an `ifNoneMatch` create-if-absent target already exists. Recover by re-reading
+ * the current Resource (its new `etag`), re-applying the change, and retrying.
+ * Distinct from `ConflictError` (409), which is the header-less id/backend
+ * conflict family.
+ */
+export class PreconditionFailedError extends WasError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'PreconditionFailedError'
+  }
+}
+
+/**
  * A single upload exceeded the target backend's `maxUploadBytes` constraint
  * (HTTP 413). Unlike `QuotaExceededError`, this is per-request -- a smaller
  * upload may still succeed.
@@ -187,6 +202,7 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
   [problemFragment(ProblemTypes.RESERVED_ID)]: ConflictError,
   [problemFragment(ProblemTypes.ID_CONFLICT)]: ConflictError,
   [problemFragment(ProblemTypes.UNSUPPORTED_BACKEND)]: ConflictError,
+  [problemFragment(ProblemTypes.PRECONDITION_FAILED)]: PreconditionFailedError,
   [problemFragment(ProblemTypes.PAYLOAD_TOO_LARGE)]: PayloadTooLargeError,
   [problemFragment(ProblemTypes.QUOTA_EXCEEDED)]: QuotaExceededError,
   [problemFragment(ProblemTypes.UNSUPPORTED_OPERATION)]: NotImplementedError,
@@ -266,6 +282,8 @@ export function mapError(err: unknown): WasError {
       return new NotFoundError(message, options)
     case 409:
       return new ConflictError(message, options)
+    case 412:
+      return new PreconditionFailedError(message, options)
     case 413:
       return new PayloadTooLargeError(message, options)
     case 501:

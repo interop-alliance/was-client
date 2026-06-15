@@ -37,12 +37,19 @@ import type { Json } from './types.js'
  *   layer: `json` for a structured body, `body` for raw bytes.
  * - `contentType` -- the content type to send for a `body` write (e.g.
  *   `application/edv+json` for an encrypted envelope).
+ * - `ifMatch` / `ifNoneMatch` -- an optional conditional-write precondition the
+ *   codec computed (e.g. the EDV codec maps its `sequence` onto an `If-Match`
+ *   ETag for lost-update-safe updates, or `If-None-Match: *` for a fresh
+ *   insert). The write path forwards these as the request's conditional headers.
+ *   Only honored for a codec that sets {@link ResourceCodec.conditionalWrites}.
  */
 export interface EncodedWrite {
   id?: string
   json?: object
   body?: Uint8Array | Blob
   contentType?: string
+  ifMatch?: string
+  ifNoneMatch?: boolean
 }
 
 /**
@@ -60,6 +67,17 @@ export interface ResourceCodec {
   readonly allowsServerMetadata: boolean
 
   /**
+   * Whether this codec drives optimistic-concurrency (conditional) writes. When
+   * `true`, the write path pre-reads the current stored resource and passes it
+   * to {@link encode} as `current`, then forwards the precondition `encode`
+   * returns ({@link EncodedWrite.ifMatch} / `ifNoneMatch`). The EDV codec sets
+   * this so its `sequence` is enforced (lost-update-safe) rather than advisory;
+   * the identity codec leaves it unset (plaintext writes carry only the caller's
+   * explicit precondition).
+   */
+  readonly conditionalWrites?: boolean
+
+  /**
    * Transforms a caller's write value into its stored representation. `id` is
    * present for `put(id, ...)` (and absent for `add(...)`, where the codec may
    * mint one by returning {@link EncodedWrite.id}).
@@ -68,12 +86,16 @@ export interface ResourceCodec {
    * @param [input.id] {string}                       resource id (absent on add)
    * @param input.data {Json | Blob | Uint8Array}     the plaintext value
    * @param [input.contentType] {string}              caller-supplied content type
+   * @param [input.current] {HttpResponse | null}     the current stored response
+   *   (or `null` if absent), supplied only when {@link conditionalWrites} is set,
+   *   so the codec can derive the next `sequence` and the `If-Match` ETag.
    * @returns {Promise<EncodedWrite>}
    */
   encode(input: {
     id?: string
     data: Json | Blob | Uint8Array
     contentType?: string
+    current?: HttpResponse | null
   }): Promise<EncodedWrite>
 
   /**

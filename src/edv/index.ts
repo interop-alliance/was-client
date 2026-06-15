@@ -9,11 +9,11 @@
  *
  * Two integration levels:
  *
- * - `createEdvEncryption` (Increment 2) -- the encrypting codec for the handle
+ * - `createEdvEncryption` -- the encrypting codec for the handle
  *   seam. Pass its result as `WasClient`'s `encryption` option to make
  *   `collection.put`/`get` transparently encrypt the collections the client
  *   holds keys for.
- * - `WasTransport` (Increment 1) -- the standalone `@interop/edv-client`
+ * - `WasTransport` -- the standalone `@interop/edv-client`
  *   transport, for driving an `EdvClient` directly against WAS.
  */
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'

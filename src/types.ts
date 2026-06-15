@@ -66,6 +66,12 @@ export interface AddResult {
   id: string
   url: string
   contentType?: string
+  /**
+   * The created resource's strong `ETag` validator, when the backend advertises
+   * the `conditional-writes` feature (absent otherwise). Pass it to a later
+   * `put(id, data, { ifMatch })` for a lost-update-safe update.
+   */
+  etag?: string
 }
 
 /**

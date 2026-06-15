@@ -17,6 +17,7 @@ export {
   AuthRequiredError,
   NotImplementedError,
   ConflictError,
+  PreconditionFailedError,
   PayloadTooLargeError,
   QuotaExceededError,
   WasServerError,

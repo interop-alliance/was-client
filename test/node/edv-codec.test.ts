@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for the EDV codec (Increment 2, Phase 2). These use real X25519
+ * Unit tests for the EDV codec. These use real X25519
  * keys and the real `EdvClientCore` cipher (no network) to prove that the codec
  * genuinely encrypts/decrypts at the seam: `encode` produces an opaque JWE
  * envelope (no plaintext leak) and `decode` round-trips it back. Also covers the
@@ -148,6 +148,94 @@ describe('EdvCodec: binary', () => {
     await expect(codec.encode({ data: 'just a string' })).rejects.toThrow(
       ValidationError
     )
+  })
+})
+
+describe('EdvCodec: conditional writes (sequence enforcement)', () => {
+  /**
+   * A read response the codec's `encode` accepts as `current`: the prior
+   * envelope plus an `ETag` header (the server's conditional-writes validator).
+   *
+   * @param body {Uint8Array | Blob}   the prior encoded envelope bytes
+   * @param etag {string | null}       the prior ETag (null to simulate a backend
+   *   without the conditional-writes feature)
+   * @returns {object}
+   */
+  function currentFrom(
+    body: Uint8Array | Blob | undefined,
+    etag: string | null
+  ): {
+    data: unknown
+    json(): Promise<unknown>
+    headers: { get(name: string): string | null }
+  } {
+    const envelope = JSON.parse(new TextDecoder().decode(body as Uint8Array))
+    return {
+      data: envelope,
+      async json() {
+        return envelope
+      },
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'etag' ? etag : null)
+      }
+    }
+  }
+
+  function sequenceOf(body: Uint8Array | Blob | undefined): number {
+    return JSON.parse(new TextDecoder().decode(body as Uint8Array)).sequence
+  }
+
+  it('marks the codec as driving conditional writes', async () => {
+    const codec = await makeCodec()
+    expect(codec.conditionalWrites).toBe(true)
+  })
+
+  it('a fresh insert is sequence 0 guarded by If-None-Match', async () => {
+    const codec = await makeCodec()
+    const minted = await codec.encode({ data: { v: 1 } })
+    expect(sequenceOf(minted.body)).toBe(0)
+    expect(minted.ifNoneMatch).toBe(true)
+    expect(minted.ifMatch).toBeUndefined()
+  })
+
+  it('an update advances the sequence and pins If-Match to the current ETag', async () => {
+    const codec = await makeCodec()
+    const first = await codec.encode({ data: { v: 1 } })
+    const id = first.id as string
+    expect(sequenceOf(first.body)).toBe(0)
+
+    const second = await codec.encode({
+      id,
+      data: { v: 2 },
+      current: currentFrom(first.body, '"1"')
+    })
+    expect(sequenceOf(second.body)).toBe(1)
+    expect(second.ifMatch).toBe('"1"')
+    expect(second.ifNoneMatch).toBeUndefined()
+    expect(await codec.decode(responseFrom(second.body))).toEqual({ v: 2 })
+
+    // A third update advances again from the prior envelope.
+    const third = await codec.encode({
+      id,
+      data: { v: 3 },
+      current: currentFrom(second.body, '"2"')
+    })
+    expect(sequenceOf(third.body)).toBe(2)
+    expect(third.ifMatch).toBe('"2"')
+  })
+
+  it('degrades to advisory (no If-Match) when the backend sends no ETag', async () => {
+    const codec = await makeCodec()
+    const first = await codec.encode({ data: { v: 1 } })
+    const second = await codec.encode({
+      id: first.id as string,
+      data: { v: 2 },
+      current: currentFrom(first.body, null)
+    })
+    // The sequence still advances, but with no validator there is no precondition.
+    expect(sequenceOf(second.body)).toBe(1)
+    expect(second.ifMatch).toBeUndefined()
+    expect(second.ifNoneMatch).toBeUndefined()
   })
 })
 

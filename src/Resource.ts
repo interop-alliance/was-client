@@ -6,11 +6,13 @@
  * keyed by id within a Collection). Sugar over the Collection item operations,
  * with explicit `getText()` / `getBytes()` escape hatches.
  */
+import type { HttpResponse } from '@interop/http-client'
 import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
+import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
 import { ValidationError } from './errors.js'
 import type {
@@ -154,45 +156,82 @@ export class Resource {
    * `text/html`. An unrecognized/absent extension sends no content-type, and the
    * server applies its own required-`Content-Type` rule.
    *
+   * Conditional writes (the backend's `conditional-writes` feature): pass
+   * `ifMatch` (the ETag from a prior read/write) for an update-if-unchanged, or
+   * `ifNoneMatch: true` for a create-if-absent. A failed precondition throws
+   * `PreconditionFailedError` (412). On an encrypted collection these are managed
+   * automatically by the codec (the EDV `sequence` becomes the enforced ETag), so
+   * the explicit options are for plaintext collections. Returns the new `etag`.
+   *
    * @param data {Json | Blob | Uint8Array}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
-   * @returns {Promise<void>}
+   * @param [options.ifMatch] {string}       update only if the ETag matches
+   * @param [options.ifNoneMatch] {boolean}  create only if absent
+   * @returns {Promise<{ etag?: string }>}   the stored resource's new ETag
    */
   async put(
     data: Json | Blob | Uint8Array,
-    options: { contentType?: string } = {}
-  ): Promise<void> {
+    options: {
+      contentType?: string
+      ifMatch?: string
+      ifNoneMatch?: boolean
+    } = {}
+  ): Promise<{ etag?: string }> {
     assertNotReserved(this.id, 'resource')
     const codec = await this._codec()
+    // A conditional codec (e.g. the EDV codec) needs the current stored envelope
+    // to advance its sequence and pin the write to the current ETag, so pre-read
+    // it. A plaintext codec needs no pre-read.
+    let current: HttpResponse | null | undefined
+    if (codec.conditionalWrites) {
+      current = await send(this._context, {
+        path: this._path,
+        method: 'GET',
+        capability: this._capability,
+        read: true
+      })
+    }
     const encoded = await codec.encode({
       id: this.id,
       data,
-      contentType: options.contentType
+      contentType: options.contentType,
+      current
     })
-    await send(this._context, {
+    // A conditional codec computes the precondition itself (from the sequence /
+    // ETag); a plaintext codec defers to the caller's explicit options.
+    const precondition = codec.conditionalWrites
+      ? { ifMatch: encoded.ifMatch, ifNoneMatch: encoded.ifNoneMatch }
+      : { ifMatch: options.ifMatch, ifNoneMatch: options.ifNoneMatch }
+    const response = await send(this._context, {
       path: this._path,
       method: 'PUT',
       capability: this._capability,
       json: encoded.json,
       body: encoded.body,
-      headers: encoded.contentType
-        ? { 'content-type': encoded.contentType }
-        : undefined
+      headers: writeHeaders(encoded.contentType, precondition)
     })
+    return { etag: readEtag(response) }
   }
 
   /**
-   * Deletes the resource. Idempotent.
+   * Deletes the resource. Idempotent. Pass `ifMatch` (the backend's
+   * `conditional-writes` feature) to delete only if the resource's current ETag
+   * matches; a stale validator throws `PreconditionFailedError` (412).
    *
+   * @param options {object}
+   * @param [options.ifMatch] {string}   delete only if the ETag matches
    * @returns {Promise<void>}
    */
-  async delete(): Promise<void> {
+  async delete(options: { ifMatch?: string } = {}): Promise<void> {
     await send(this._context, {
       path: this._path,
       method: 'DELETE',
       capability: this._capability,
-      idempotent: true
+      // A conditional delete is not idempotent: a stale `If-Match` must surface
+      // as a 412 rather than being swallowed as an absent-target success.
+      idempotent: options.ifMatch === undefined,
+      headers: writeHeaders(undefined, { ifMatch: options.ifMatch })
     })
   }
 
@@ -206,16 +245,25 @@ export class Resource {
    * resource is missing or not visible to you (404 conflation caveat). A server
    * without metadata support surfaces its 501 as `NotImplementedError`.
    *
-   * @returns {Promise<ResourceMetadata | null>}
+   * Against a backend with the `conditional-writes` feature the result also
+   * carries the resource's current `etag` (the strong validator) -- pass it as
+   * `put(data, { ifMatch })` for a lost-update-safe update.
+   *
+   * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
    */
-  async meta(): Promise<ResourceMetadata | null> {
+  async meta(): Promise<(ResourceMetadata & { etag?: string }) | null> {
     const response = await send(this._context, {
       path: this._metaPath,
       method: 'GET',
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as ResourceMetadata)
+    if (response === null) {
+      return null
+    }
+    const metadata = response.data as ResourceMetadata
+    const etag = readEtag(response)
+    return etag !== undefined ? { ...metadata, etag } : metadata
   }
 
   /**
