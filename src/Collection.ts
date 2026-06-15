@@ -365,6 +365,13 @@ export class Collection {
    * you (404 conflation caveat). A server without backend support surfaces its
    * 501 as `NotImplementedError`.
    *
+   * The descriptor's optional `features` array advertises backend capabilities;
+   * `features` containing `'encrypted-documents'` is the signal a client gates
+   * client-side encryption on (the future EDV codec encrypts only when the
+   * backend advertises it AND the client holds keys for the collection). An
+   * absent feature means the backend makes no claim to it -- treat it as
+   * unsupported rather than assuming a default.
+   *
    * @returns {Promise<BackendDescriptor | null>}
    */
   async backend(): Promise<BackendDescriptor | null> {

@@ -394,6 +394,20 @@ const usage = await collection.quota() // BackendUsage | null
 // usage: { id, state, usageBytes, limit, restrictedActions, measuredAt, ... }
 ```
 
+A `BackendDescriptor`'s optional `features` array advertises backend
+capabilities. `features` containing `'encrypted-documents'` is the signal a
+client gates client-side encryption on -- the future EDV codec encrypts only
+when the backend advertises it **and** the client holds keys for the collection.
+An absent feature means the backend makes no claim to it, so treat it as
+unsupported rather than assuming a default.
+
+```ts
+const backend = await collection.backend()
+if (backend?.features?.includes('encrypted-documents')) {
+  // backend stores opaque client-encrypted documents faithfully
+}
+```
+
 ### Export and import
 
 ```ts
