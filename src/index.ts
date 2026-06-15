@@ -24,6 +24,12 @@ export {
 } from './errors.js'
 
 export type {
+  ResourceCodec,
+  EncryptionProvider,
+  EncodedWrite
+} from './codec.js'
+
+export type {
   Json,
   JsonPrimitive,
   JsonObject,

@@ -208,9 +208,8 @@ export class Space {
    * the space is missing or not visible to you (404 conflation caveat). A
    * server without backend support surfaces its 501 as `NotImplementedError`.
    *
-   * Each descriptor's optional `features` array advertises backend
-   * capabilities; `features` containing `'encrypted-documents'` is the signal a
-   * client gates client-side encryption on. See {@link Collection.backend} for
+   * Each descriptor's optional `features` array advertises optional server
+   * affordances (e.g. `conditional-writes`). See {@link Collection.backend} for
    * the full note.
    *
    * @returns {Promise<BackendDescriptor[] | null>}

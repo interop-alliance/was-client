@@ -2,29 +2,49 @@
 
 ## 0.7.0 - TBD
 
+### Added
+
+- Encrypted collections (EDV-over-WAS), Increment 2: a pluggable **resource
+  codec** seam folds client-side encryption into the ordinary
+  `Collection`/`Resource` handles. Construct a `WasClient` with an `encryption`
+  provider and `collection.add()` / `put()` / `get()` transparently encrypt and
+  decrypt on any collection the client holds keys for. The encrypting codec
+  (`createEdvEncryption`) is on the opt-in `@interop/was-client/edv` subpath so
+  plaintext consumers keep the crypto graph out of core. Core exports the seam
+  types (`ResourceCodec`, `EncryptionProvider`, `EncodedWrite`); the default is
+  an identity codec, so plaintext behavior is unchanged.
+
+  The switch is **keys**: a handle encrypts a collection exactly when the
+  `encryption` provider's `resolveKeys` returns keys for it -- a per-collection
+  client concern, not a backend feature, so it needs no backend round-trip.
+  Encrypted collections are a stricter, documents-only contract: `add()` mints
+  an EDV id and `put()` rejects human-readable ids; `setName`/`setTags` are
+  forbidden (server-visible plaintext); small binaries are stored as a single
+  JWE and larger ones rejected; `getText`/`getBytes` are raw (do not decrypt).
+
 ### Changed
 
 - `BackendDescriptor` (re-exported from `@interop/storage-core@^0.2.0`) now
   carries an optional `features` capability array, surfaced unchanged through
-  `collection.backend()` and `space.backends()`. `features` containing
-  `'encrypted-documents'` is the signal a client gates client-side encryption on
-  (the future EDV codec). No API change -- the field flows through the existing
-  descriptor type; documented in the README and the method JSDoc.
+  `collection.backend()` and `space.backends()`. `features` advertises optional
+  server affordances (e.g. `conditional-writes`). No API change -- the field
+  flows through the existing descriptor type; documented in the README and the
+  method JSDoc.
 
 ## 0.6.0 - 2026-06-14
 
 ### Added
 
 - `Resource.put()` now guesses a binary write's `Content-Type` from the resource
-  id's file extension when none is supplied (and the data carries no `Blob.type`),
-  for the common static-web types (`html`, `css`, `js`/`mjs`, `json`, `svg`,
-  `png`, `jpg`/`jpeg`, `gif`, `webp`, `ico`, `woff2`, `txt`, `wasm`) -- so
-  `collection.resource('index.html').put(bytes)` is sent as `text/html`. An
-  explicit `contentType` (or a non-empty `Blob.type`) still wins, and an
-  unrecognized/absent extension sends no header (the server then applies its own
-  required-`Content-Type` rule). Implemented with a tiny inline table to avoid a
-  `mime-db`-sized dependency. `Collection.add()` is unaffected (its id is
-  server-generated, so there is no extension to read).
+  id's file extension when none is supplied (and the data carries no
+  `Blob.type`), for the common static-web types (`html`, `css`, `js`/`mjs`,
+  `json`, `svg`, `png`, `jpg`/`jpeg`, `gif`, `webp`, `ico`, `woff2`, `txt`,
+  `wasm`) -- so `collection.resource('index.html').put(bytes)` is sent as
+  `text/html`. An explicit `contentType` (or a non-empty `Blob.type`) still
+  wins, and an unrecognized/absent extension sends no header (the server then
+  applies its own required-`Content-Type` rule). Implemented with a tiny inline
+  table to avoid a `mime-db`-sized dependency. `Collection.add()` is unaffected
+  (its id is server-generated, so there is no extension to read).
 - Encrypted collections (EDV-over-WAS), Increment 1, on the opt-in
   `@interop/was-client/edv` subpath. `WasTransport` is an `@interop/edv-client`
   `Transport` that maps EDV document operations onto ordinary WAS resource CRUD,

@@ -87,9 +87,9 @@ describe('prepareBody', () => {
 
   it('guesses the content-type from options.filename for a Uint8Array', () => {
     const bytes = new TextEncoder().encode('<!doctype html>')
-    expect(
-      prepareBody(bytes, { filename: 'index.html' }).contentType
-    ).toBe('text/html')
+    expect(prepareBody(bytes, { filename: 'index.html' }).contentType).toBe(
+      'text/html'
+    )
   })
 
   it('falls back to octet-stream when the filename has no known extension', () => {

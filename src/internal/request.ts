@@ -12,16 +12,20 @@ import type { ZcapClient } from '@interop/ezcap'
 import type { HttpResponse } from '@interop/http-client'
 import { mapError, httpStatus } from '../errors.js'
 import { toUrl } from './paths.js'
+import type { EncryptionProvider } from '../codec.js'
 import type { IZcap } from '../types.js'
 
 /**
  * The shared context threaded through every handle: the server base URL, the
- * wrapped ezcap client, and the cached controller DID of its signer.
+ * wrapped ezcap client, the cached controller DID of its signer, and the
+ * optional encryption provider that supplies an encrypting codec for the
+ * collections the client holds keys for.
  */
 export interface ClientContext {
   serverUrl: string
   zcapClient: ZcapClient
   controllerDid: string
+  encryption?: EncryptionProvider
 }
 
 /**
