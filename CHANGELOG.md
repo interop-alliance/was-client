@@ -1,5 +1,15 @@
 # @interop/was-client Changelog
 
+## 0.7.1 - TBD
+
+### Added
+
+- `space.quotas({ includeCollections: true })` requests the per-Collection
+  `usageByCollection` breakdown on each backend entry, via the spec's
+  `?include=collections` opt-in. Called with no argument (or
+  `includeCollections: false`), `quotas()` returns the lean report without the
+  breakdown, as before.
+
 ## 0.7.0 - 2026-06-14
 
 ### Added

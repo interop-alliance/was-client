@@ -100,6 +100,16 @@ describe('space.quotas()', () => {
     expect(result).toEqual(report)
   })
 
+  it('requests the per-collection breakdown with includeCollections', async () => {
+    const report = { respondedAt: '2026-06-12T13:25:00Z', backends: [] }
+    const { client, calls } = clientWithRequestSpy({ data: report })
+    await client.space('s').quotas({ includeCollections: true })
+    expect(calls[0]?.url).toBe(
+      'https://was.example/space/s/quotas?include=collections'
+    )
+    expect(calls[0]?.method).toBe('GET')
+  })
+
   it('returns null when the space is missing or not visible (404)', async () => {
     const { client } = clientWithRequestSpy({ fail: 404 })
     expect(await client.space('s').quotas()).toBeNull()
