@@ -1,5 +1,36 @@
 # @interop/was-client Changelog
 
+## 0.8.0 - TBD
+
+### Added
+
+- **Bring-Your-Own-Storage backend registration.** The Space controller can now
+  register, re-consent, and deregister an `external` storage backend (e.g. a
+  wallet connecting a user's Google Drive), the write side of the spec's
+  "Backends" section:
+  - `space.registerBackend(registration)` -- `POST /space/:id/backends`. The
+    body carries the secret-bearing `connection` (an OAuth authorization code or
+    refresh token); the server returns the **sanitized** `BackendDescriptor`
+    (never the secrets). Throws `ConflictError` if the `id` already exists or
+    the provider is not permitted.
+  - `space.updateBackend(registration)` -- `PUT /space/:id/backends/:id`, the
+    re-consent / create-or-replace path. Returns the descriptor on create (201)
+    or `null` on an in-place replace (204, no body).
+  - `space.deregisterBackend(backendId)` -- `DELETE /space/:id/backends/:id`,
+    idempotent.
+  - New `registeredBackend` path builder; re-exports the registration types
+    `BackendRegistration`, `BackendConnectionInput`, and
+    `BackendConnectionPublic`.
+
+### Changed
+
+- `BackendDescriptor` (from `@interop/storage-core@^0.2.5`) now carries the
+  optional `provider` and sanitized `connection` fields a registered `external`
+  backend exposes (`connection.status` is `registered` | `connected` | `expired`
+  | `revoked` | `unreachable`), surfaced unchanged through `space.backends()` /
+  `collection.backend()` for re-consent UI.
+- Bumped `@interop/storage-core` from `^0.2.2` to `^0.2.5`.
+
 ## 0.7.1 - 2026-06-15
 
 ### Added

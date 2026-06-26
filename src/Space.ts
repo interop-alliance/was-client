@@ -14,6 +14,7 @@ import {
   spaceExport,
   spaceImport,
   spaceBackends,
+  registeredBackend,
   spaceQuotas,
   spacePolicy,
   spaceLinkset,
@@ -27,6 +28,7 @@ import { Collection } from './Collection.js'
 import type {
   BackendDescriptor,
   BackendReference,
+  BackendRegistration,
   CollectionDescription,
   CollectionsList,
   GrantOptions,
@@ -222,6 +224,89 @@ export class Space {
       read: true
     })
     return response === null ? null : (response.data as BackendDescriptor[])
+  }
+
+  /**
+   * Registers a new `external` ("Bring Your Own Storage") backend against this
+   * space (`POST /space/:id/backends`). The registration body carries the
+   * secret-bearing `connection` (e.g. an OAuth authorization code); the server
+   * persists it and returns the **sanitized** descriptor (no secrets). Requires
+   * the Space controller's authority (the same key that owns the space).
+   *
+   * Throws `ConflictError` if a backend with this `id` already exists
+   * (`id-conflict`) or the server does not permit the `provider`
+   * (`unsupported-backend`), and `ValidationError` (400) for a malformed body
+   * (e.g. the reserved `default` id). To replace an existing backend's
+   * connection (the re-consent path), use {@link updateBackend}.
+   *
+   * @param registration {BackendRegistration}   the backend to register
+   *   (`{ id, provider, connection: { kind, … }, name?, storageMode?, features? }`)
+   * @returns {Promise<BackendDescriptor>}   the sanitized descriptor of the
+   *   newly registered backend
+   */
+  async registerBackend(
+    registration: BackendRegistration
+  ): Promise<BackendDescriptor> {
+    const response = await send(this._context, {
+      path: spaceBackends(this.id),
+      method: 'POST',
+      capability: this._capability,
+      json: registration
+    })
+    return (response as { data?: unknown }).data as BackendDescriptor
+  }
+
+  /**
+   * Creates or replaces a registered `external` backend by id
+   * (`PUT /space/:id/backends/:id`) -- the re-consent / refresh path, used to
+   * swap in fresh `connection` material after a backend's status went `expired`
+   * or `revoked`. The target id is taken from `registration.id`. Requires the
+   * Space controller's authority.
+   *
+   * Returns the sanitized descriptor when the PUT **created** a new record (the
+   * server replies 201 with a body); returns `null` when it **replaced** an
+   * existing record in place (the server replies 204, no body) -- read it back
+   * with {@link backends} if you need the refreshed descriptor.
+   *
+   * @param registration {BackendRegistration}   the backend to upsert; its `id`
+   *   selects the target record
+   * @returns {Promise<BackendDescriptor | null>}   the descriptor on create, or
+   *   `null` on in-place replace
+   */
+  async updateBackend(
+    registration: BackendRegistration
+  ): Promise<BackendDescriptor | null> {
+    const response = await send(this._context, {
+      path: registeredBackend(this.id, registration.id),
+      method: 'PUT',
+      capability: this._capability,
+      json: registration
+    })
+    // 201 (create) carries the sanitized descriptor; 204 (in-place replace)
+    // carries no body, so `data` is undefined.
+    return ((response as { data?: unknown } | null)?.data ??
+      null) as BackendDescriptor | null
+  }
+
+  /**
+   * Deregisters (forgets) a registered `external` backend by id
+   * (`DELETE /space/:id/backends/:id`). Idempotent -- deregistering an absent
+   * backend still resolves. Requires the Space controller's authority.
+   *
+   * This removes the server's record and its stored connection; whether the
+   * upstream provider grant (e.g. an OAuth refresh token) is also revoked is a
+   * server/provider concern, not guaranteed by this call.
+   *
+   * @param backendId {string}   the registered backend's id
+   * @returns {Promise<void>}
+   */
+  async deregisterBackend(backendId: string): Promise<void> {
+    await send(this._context, {
+      path: registeredBackend(this.id, backendId),
+      method: 'DELETE',
+      capability: this._capability,
+      idempotent: true
+    })
   }
 
   /**

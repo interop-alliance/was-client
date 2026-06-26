@@ -45,13 +45,13 @@
     "@interop/data-integrity-core": "^8.1.0",
     "@interop/ed25519-signature": "^7.1.2",
     "@interop/edv-client": "^17.2.0",
-    "@interop/ezcap": "^7.2.1",
+    "@interop/ezcap": "^7.3.0",
     "@interop/http-client": "^1.0.3",
-    "@interop/storage-core": "^0.2.2"
+    "@interop/storage-core": "^0.2.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@interop/ed25519-verification-key": "^8.0.0",
+    "@interop/ed25519-verification-key": "^8.0.2",
     "@interop/x25519-key-agreement-key": "^5.1.0",
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.9.1",

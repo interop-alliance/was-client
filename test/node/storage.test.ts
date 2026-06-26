@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient, ValidationError } from '../../src/index.js'
+import { WasClient, ValidationError, ConflictError } from '../../src/index.js'
 
 interface RequestArgs {
   url?: string
@@ -87,6 +87,85 @@ describe('space.backends()', () => {
     const { client } = clientWithRequestSpy({ data: backends })
     const result = await client.space('s').backends()
     expect(result?.[0]?.features).toContain('conditional-writes')
+  })
+})
+
+describe('space.registerBackend()', () => {
+  const registration = {
+    id: 'gdrive-personal',
+    provider: 'google-drive',
+    connection: { kind: 'oauth2-google', authorizationCode: '4/0Ab' }
+  }
+
+  it('POSTs the registration and returns the sanitized descriptor', async () => {
+    const descriptor = {
+      id: 'gdrive-personal',
+      managedBy: 'external',
+      provider: 'google-drive',
+      connection: { kind: 'oauth2-google', status: 'registered' }
+    }
+    const { client, calls } = clientWithRequestSpy({ data: descriptor })
+    const result = await client.space('s').registerBackend(registration)
+    expect(calls[0]?.url).toBe('https://was.example/space/s/backends')
+    expect(calls[0]?.method).toBe('POST')
+    expect(calls[0]?.json).toEqual(registration)
+    expect(result).toEqual(descriptor)
+  })
+
+  it('throws ConflictError when the id already exists / provider is barred (409)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 409 })
+    await expect(
+      client.space('s').registerBackend(registration)
+    ).rejects.toBeInstanceOf(ConflictError)
+  })
+})
+
+describe('space.updateBackend()', () => {
+  const registration = {
+    id: 'gdrive-personal',
+    provider: 'google-drive',
+    connection: { kind: 'oauth2-google', refreshToken: '1//0g' }
+  }
+
+  it('PUTs to the per-id path and returns the descriptor on create (201)', async () => {
+    const descriptor = {
+      id: 'gdrive-personal',
+      managedBy: 'external',
+      provider: 'google-drive',
+      connection: { kind: 'oauth2-google', status: 'registered' }
+    }
+    const { client, calls } = clientWithRequestSpy({ data: descriptor })
+    const result = await client.space('s').updateBackend(registration)
+    expect(calls[0]?.url).toBe(
+      'https://was.example/space/s/backends/gdrive-personal'
+    )
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.json).toEqual(registration)
+    expect(result).toEqual(descriptor)
+  })
+
+  it('returns null on an in-place replace (204, no body)', async () => {
+    // No `data` -> the stub mimics a 204 with no parsed body.
+    const { client } = clientWithRequestSpy()
+    expect(await client.space('s').updateBackend(registration)).toBeNull()
+  })
+})
+
+describe('space.deregisterBackend()', () => {
+  it('DELETEs the per-id path', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client.space('s').deregisterBackend('gdrive-personal')
+    expect(calls[0]?.url).toBe(
+      'https://was.example/space/s/backends/gdrive-personal'
+    )
+    expect(calls[0]?.method).toBe('DELETE')
+  })
+
+  it('resolves (idempotent) when the backend is absent (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    await expect(
+      client.space('s').deregisterBackend('missing')
+    ).resolves.toBeUndefined()
   })
 })
 

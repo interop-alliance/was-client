@@ -17,6 +17,7 @@ import {
   spaceExport,
   spaceImport,
   spaceBackends,
+  registeredBackend,
   spaceQuotas,
   spacePolicy,
   spaceLinkset,
@@ -86,6 +87,12 @@ describe('path builders', () => {
   it('builds the backends and quotas paths (space level)', () => {
     expect(spaceBackends('home')).toBe('/space/home/backends')
     expect(spaceQuotas('home')).toBe('/space/home/quotas')
+  })
+
+  it('builds the per-id registered backend path (replace / deregister)', () => {
+    expect(registeredBackend('home', 'gdrive')).toBe(
+      '/space/home/backends/gdrive'
+    )
   })
 
   it('builds the backend and quota paths (collection level)', () => {
