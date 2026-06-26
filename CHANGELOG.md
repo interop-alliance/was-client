@@ -1,6 +1,6 @@
 # @interop/was-client Changelog
 
-## 0.8.0 - TBD
+## 0.8.0 - 2026-06-26
 
 ### Added
 
