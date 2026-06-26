@@ -66,10 +66,19 @@ export function spaceImport(spaceId: string): string {
 }
 
 /**
- * `/space/:spaceId/backends` -- the backends available within a space.
+ * `/space/:spaceId/backends` -- the backends available within a space (list, and
+ * register a new `external` backend).
  */
 export function spaceBackends(spaceId: string): string {
   return `/space/${encode(spaceId)}/backends`
+}
+
+/**
+ * `/space/:spaceId/backends/:backendId` -- a single registered `external`
+ * backend (replace / deregister by id).
+ */
+export function registeredBackend(spaceId: string, backendId: string): string {
+  return `/space/${encode(spaceId)}/backends/${encode(backendId)}`
 }
 
 /**

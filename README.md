@@ -21,6 +21,7 @@
   - [Resource metadata](#resource-metadata)
   - [Conditional writes (optimistic concurrency)](#conditional-writes-optimistic-concurrency)
   - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
+  - [Registering a Bring-Your-Own-Storage backend](#registering-a-bring-your-own-storage-backend)
   - [Encrypted collections (EDV-over-WAS)](#encrypted-collections-edv-over-was)
   - [Export and import](#export-and-import)
   - [The manual-request escape hatch](#the-manual-request-escape-hatch)
@@ -439,6 +440,63 @@ if (backend?.features?.includes('conditional-writes')) {
   // backend enforces If-Match / If-None-Match write preconditions
 }
 ```
+
+### Registering a Bring-Your-Own-Storage backend
+
+Beyond the server's built-in `default` backend, the Space controller can
+register an `external` ("Bring Your Own Storage") backend -- e.g. a wallet
+connecting a user's own Google Drive. Registration is a controller-authorized
+write: the body carries the secret-bearing `connection` material (an OAuth
+authorization code or refresh token), and the server stores it and returns the
+**sanitized** descriptor (never the secrets).
+
+```ts
+const descriptor = await space.registerBackend({
+  id: 'gdrive-personal', // unique within the Space
+  name: 'My Google Drive',
+  provider: 'google-drive', // selects the server-side adapter
+  storageMode: ['document', 'blob'],
+  connection: {
+    kind: 'oauth2-google',
+    authorizationCode: '4/0Ab...', // one-time PKCE code (or a refreshToken)
+    redirectUri: 'https://wallet.example/oauth/callback'
+  }
+})
+// descriptor.connection: { kind, status: 'registered', account?, scope?, ... }
+```
+
+Once registered, select it on a Collection by id; reads of the backend reflect
+its connection `status` (`registered` | `connected` | `expired` | `revoked` |
+`unreachable`), which a storage-management UI uses to prompt re-consent:
+
+```ts
+await space.createCollection({
+  id: 'photos',
+  backend: { id: 'gdrive-personal' }
+})
+
+const [, gdrive] = (await space.backends()) ?? []
+if (gdrive?.connection?.status === 'expired') {
+  // re-consent: swap in fresh connection material (create-or-replace by id)
+  await space.updateBackend({
+    id: 'gdrive-personal',
+    provider: 'google-drive',
+    connection: { kind: 'oauth2-google', authorizationCode: '4/0Cd...' }
+  })
+}
+
+// Deregister (idempotent): forgets the record and its stored connection.
+await space.deregisterBackend('gdrive-personal')
+```
+
+`registerBackend()` throws a `ConflictError` if the `id` already exists or the
+server does not permit the `provider`; `updateBackend()` returns the descriptor
+when it created a record and `null` when it replaced one in place (the server
+sends no body on an in-place replace).
+
+> A registered backend's record exists immediately, but whether its connection
+> can actually serve bytes depends on the server having a live provider adapter
+> for it. Until then it is registered but inert (`status: 'registered'`).
 
 ### Encrypted collections (EDV-over-WAS)
 
