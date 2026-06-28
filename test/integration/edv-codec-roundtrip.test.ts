@@ -28,7 +28,8 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
   WasClient,
   ValidationError,
-  PreconditionFailedError
+  PreconditionFailedError,
+  EncryptionError
 } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
 import { createEdvEncryption } from '../../src/edv/index.js'
@@ -42,11 +43,16 @@ const describeLive = serverUrl ? describe : describe.skip
  * codec). The plaintext client reads what the server actually stores -- a JWE
  * envelope -- to prove ciphertext at rest. The key never leaves the client.
  *
- * @returns {Promise<{ encrypted: WasClient, plaintext: WasClient }>}
+ * Also returns a `keyless` client: encryption-capable (it has an EDV provider)
+ * but whose keystore holds no keys, to prove the fail-closed path -- reading a
+ * collection declared encrypted throws rather than returning ciphertext.
+ *
+ * @returns {Promise<{ encrypted: WasClient, plaintext: WasClient, keyless: WasClient }>}
  */
 async function freshClients(): Promise<{
   encrypted: WasClient
   plaintext: WasClient
+  keyless: WasClient
 }> {
   const keyPair = await Ed25519VerificationKey.generate()
   const did = `did:key:${keyPair.fingerprint()}`
@@ -79,6 +85,11 @@ async function freshClients(): Promise<{
     plaintext: WasClient.fromSigner({
       serverUrl: serverUrl!,
       signer: keyPair.signer()
+    }),
+    keyless: WasClient.fromSigner({
+      serverUrl: serverUrl!,
+      signer: keyPair.signer(),
+      encryption: createEdvEncryption({ resolveKeys: async () => null })
     })
   }
 }
@@ -86,13 +97,21 @@ async function freshClients(): Promise<{
 describeLive('encrypted collection via the codec seam (live server)', () => {
   let was: WasClient
   let plaintext: WasClient
+  let keyless: WasClient
   let space: Space
   let collection: Collection
 
   beforeAll(async () => {
-    ;({ encrypted: was, plaintext } = await freshClients())
+    ;({ encrypted: was, plaintext, keyless } = await freshClients())
     space = await was.createSpace({ name: 'EDV Codec Integration' })
-    collection = await space.createCollection({ id: 'vault', name: 'Vault' })
+    // Declare the collection encrypted: the marker lets any authorized reader
+    // discover it (the returned handle is pre-seeded so the first write needs no
+    // round-trip), and the keystore supplies the keys.
+    collection = await space.createCollection({
+      id: 'vault',
+      name: 'Vault',
+      encryption: { scheme: 'edv' }
+    })
   })
 
   afterAll(async () => {
@@ -111,6 +130,24 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
 
     const got = await collection.get(id)
     expect(got).toEqual(content)
+  })
+
+  it('a fresh handle (no pre-seed) discovers the marker and decrypts', async () => {
+    const { id } = await collection.add({ via: 'marker discovery' })
+    // A brand-new handle for the same collection, with no encryption override:
+    // it must read the Collection Description, see the `encryption` marker, and
+    // decrypt with the keystore's keys -- the delegated-consumer discovery path.
+    const rediscovered = was.space(space.id).collection('vault')
+    expect(await rediscovered.get(id)).toEqual({ via: 'marker discovery' })
+  })
+
+  it('fails closed: an encryption-capable client with no keys throws, not ciphertext', async () => {
+    const { id } = await collection.add({ secret: 'still safe' })
+    // The keyless client discovers the marker (encrypted) but its keystore holds
+    // no keys, so reading throws EncryptionError rather than leaking the JWE.
+    await expect(
+      keyless.space(space.id).collection('vault').get(id)
+    ).rejects.toThrow(EncryptionError)
   })
 
   it('stores an opaque JWE envelope (a plaintext client sees ciphertext)', async () => {

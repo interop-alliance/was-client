@@ -21,6 +21,7 @@ import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
+import { describeCollection } from './internal/describe.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
@@ -30,6 +31,8 @@ import type {
   BackendReference,
   BackendUsage,
   CollectionDescription,
+  CollectionEncryption,
+  EncryptionOverride,
   GrantOptions,
   HandleOptions,
   IDelegatedZcap,
@@ -46,6 +49,7 @@ export class Collection {
 
   private readonly _context: ClientContext
   private readonly _capability?: IZcap
+  private readonly _encryptionOverride?: EncryptionOverride
   private _codecPromise?: Promise<ResourceCodec>
 
   /**
@@ -55,22 +59,28 @@ export class Collection {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param [options.capability] {IZcap} - capability attached to every request
+   * @param [options.encryption] {EncryptionOverride} - per-handle encryption
+   *   override; wins over the Collection's declared marker and skips the
+   *   marker-discovery round-trip
    */
   constructor({
     context,
     spaceId,
     collectionId,
-    capability
+    capability,
+    encryption
   }: {
     context: ClientContext
     spaceId: string
     collectionId: string
     capability?: IZcap
+    encryption?: EncryptionOverride
   }) {
     this._context = context
     this.spaceId = spaceId
     this.id = collectionId
     this._capability = capability
+    this._encryptionOverride = encryption
   }
 
   private get _path(): string {
@@ -84,15 +94,21 @@ export class Collection {
   /**
    * Resolves (once, then caches) the codec for this collection's reads and
    * writes: the identity codec for a plaintext collection, or the encrypting
-   * codec when an `EncryptionProvider` is injected and supplies one for this
-   * collection (i.e. the client holds keys for it).
+   * codec when this collection is declared encrypted -- by a per-handle override
+   * or its `encryption` marker -- and the client's keystore supplies its keys.
+   * An encrypted collection the client cannot key for fails closed (throws), and
+   * the marker read happens at most once per handle (memoized here) -- a fresh
+   * handle to the same collection re-reads it, so retain the handle to reuse it.
    *
    * @returns {Promise<ResourceCodec>}
    */
   private _codec(): Promise<ResourceCodec> {
     return (this._codecPromise ??= resolveCodec(this._context, {
       spaceId: this.spaceId,
-      collectionId: this.id
+      collectionId: this.id,
+      override: this._encryptionOverride,
+      readMarker: async (): Promise<CollectionEncryption | undefined> =>
+        (await this.describe())?.encryption
     }))
   }
 
@@ -104,13 +120,11 @@ export class Collection {
    * @returns {Promise<CollectionDescription | null>}
    */
   async describe(): Promise<CollectionDescription | null> {
-    const response = await send(this._context, {
-      path: this._path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
+    return describeCollection(this._context, {
+      spaceId: this.spaceId,
+      collectionId: this.id,
+      capability: this._capability
     })
-    return response === null ? null : (response.data as CollectionDescription)
   }
 
   /**
@@ -120,11 +134,16 @@ export class Collection {
    * @param desc {object}
    * @param [desc.name] {string}
    * @param [desc.backend] {BackendReference}
+   * @param [desc.encryption] {CollectionEncryption}   declare the client-side
+   *   encryption marker. Set-once on the server: it may be added to a Collection
+   *   that lacks one, but changing/clearing an existing marker is rejected
+   *   (`ConflictError`, `encryption-immutable`).
    * @returns {Promise<CollectionDescription>}
    */
   async configure(desc: {
     name?: string
     backend?: BackendReference
+    encryption?: CollectionEncryption
   }): Promise<CollectionDescription> {
     assertNotReserved(this.id, 'collection')
     const current = await this.describe()
@@ -132,6 +151,9 @@ export class Collection {
     const body: Record<string, unknown> = { id: this.id, name }
     if (desc.backend) {
       body.backend = desc.backend
+    }
+    if (desc.encryption) {
+      body.encryption = desc.encryption
     }
     await send(this._context, {
       path: this._path,

@@ -314,16 +314,33 @@ export class EdvCodec implements ResourceCodec {
   }
 }
 
+/** The EDV scheme tag this provider handles (matches the Collection marker). */
+const EDV_SCHEME = 'edv'
+
+/** The per-collection key material an EDV codec is built from. */
+export interface EdvKeys {
+  keyAgreementKey: IKeyAgreementKey
+  keyResolver: IKeyResolver
+}
+
 /**
- * Builds an {@link EncryptionProvider} that encrypts the collections the client
- * holds keys for, wiring the per-collection keys (from `resolveKeys`) into an
- * {@link EdvCodec}. Pass the result as `WasClient`'s `encryption` option; core
- * resolves a codec for a collection exactly when `resolveKeys` returns keys for
- * it (the switch is keys alone -- encryption is not a backend feature).
+ * Builds an {@link EncryptionProvider} for the `edv` scheme: a pure **keystore**
+ * that turns a collection's keys into an {@link EdvCodec}. Pass the result as
+ * `WasClient`'s `encryption` option.
+ *
+ * It does **not** decide which collections are encrypted -- that policy is the
+ * Collection's `encryption` marker (or a per-handle override). Core calls
+ * `codecFor` only for a collection already known to be encrypted; this provider
+ * then supplies the keys: the override-supplied `keys` when present, else
+ * `resolveKeys({ spaceId, collectionId })`. `resolveKeys` returning `null` means
+ * "I hold no keys for this collection", so core fails closed (it does **not**
+ * mean plaintext -- the marker/override already decided that). A non-`edv`
+ * scheme yields `null` (this provider does not handle it).
  *
  * @param options {object}
- * @param options.resolveKeys {function}   returns the collection's
- *   `{ keyAgreementKey, keyResolver }`, or `null` to read/write it as plaintext
+ * @param options.resolveKeys {function}   the keystore: returns the collection's
+ *   `{ keyAgreementKey, keyResolver }`, or `null` if this client holds no keys
+ *   for it (fail-closed -- not a plaintext signal)
  * @param [options.contentType] {string}   stored envelope content type;
  *   defaults to `application/json`. Pass `EDV_CONTENT_TYPE`
  *   (`application/edv+json`) against a server that registers an
@@ -337,26 +354,32 @@ export function createEdvEncryption({
   contentType = DEFAULT_CONTENT_TYPE,
   maxBlobBytes = DEFAULT_MAX_BLOB_BYTES
 }: {
-  resolveKeys: (ref: { spaceId: string; collectionId: string }) => Promise<{
-    keyAgreementKey: IKeyAgreementKey
-    keyResolver: IKeyResolver
-  } | null>
+  resolveKeys: (ref: {
+    spaceId: string
+    collectionId: string
+  }) => Promise<EdvKeys | null>
   contentType?: string
   maxBlobBytes?: number
 }): EncryptionProvider {
   return {
-    async resolveCodec({ spaceId, collectionId }) {
-      const keys = await resolveKeys({ spaceId, collectionId })
-      if (!keys) {
+    async codecFor({ spaceId, collectionId, scheme, keys }) {
+      if (scheme !== EDV_SCHEME) {
+        return null
+      }
+      // Prefer override-supplied keys; otherwise consult the keystore.
+      const resolved =
+        (keys as EdvKeys | undefined) ??
+        (await resolveKeys({ spaceId, collectionId }))
+      if (!resolved) {
         return null
       }
       const edv = new EdvClientCore({
-        keyAgreementKey: keys.keyAgreementKey,
-        keyResolver: keys.keyResolver
+        keyAgreementKey: resolved.keyAgreementKey,
+        keyResolver: resolved.keyResolver
       })
       return new EdvCodec({
         edv,
-        keyAgreementKey: keys.keyAgreementKey,
+        keyAgreementKey: resolved.keyAgreementKey,
         contentType,
         maxBlobBytes
       })

@@ -49,7 +49,13 @@ async function makeCodec(
     resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
     ...options
   })
-  const codec = await provider.resolveCodec({ spaceId: 's', collectionId: 'c' })
+  // Core decides policy (marker/override) and then asks the provider to build
+  // the codec for the declared scheme; mirror that here.
+  const codec = await provider.codecFor({
+    spaceId: 's',
+    collectionId: 'c',
+    scheme: 'edv'
+  })
   if (!codec) {
     throw new Error('expected a codec')
   }
@@ -239,13 +245,64 @@ describe('EdvCodec: conditional writes (sequence enforcement)', () => {
   })
 })
 
-describe('createEdvEncryption: provider', () => {
-  it('resolves null when resolveKeys yields no keys (plaintext)', async () => {
+describe('createEdvEncryption: provider (keystore)', () => {
+  it('returns null when resolveKeys yields no keys (core then fails closed)', async () => {
     const provider = createEdvEncryption({ resolveKeys: async () => null })
-    const codec = await provider.resolveCodec({
+    const codec = await provider.codecFor({
       spaceId: 's',
-      collectionId: 'c'
+      collectionId: 'c',
+      scheme: 'edv'
+    })
+    // Null no longer means "plaintext" -- policy already said encrypted, so core
+    // turns this into a fail-closed EncryptionError rather than a codec.
+    expect(codec).toBeNull()
+  })
+
+  it('returns null for a scheme it does not handle', async () => {
+    const kak = await X25519KeyAgreementKey2020.generate({
+      controller: 'did:example:alice'
+    })
+    const provider = createEdvEncryption({
+      resolveKeys: async () => ({
+        keyAgreementKey: kak,
+        keyResolver: async () => ({
+          id: kak.id,
+          type: kak.type,
+          publicKeyMultibase: kak.publicKeyMultibase
+        })
+      })
+    })
+    const codec = await provider.codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'age'
     })
     expect(codec).toBeNull()
+  })
+
+  it('uses override-supplied keys instead of the keystore', async () => {
+    const kak = await X25519KeyAgreementKey2020.generate({
+      controller: 'did:example:alice'
+    })
+    const keyResolver = async () => ({
+      id: kak.id,
+      type: kak.type,
+      publicKeyMultibase: kak.publicKeyMultibase
+    })
+    let keystoreCalls = 0
+    const provider = createEdvEncryption({
+      resolveKeys: async () => {
+        keystoreCalls++
+        return null
+      }
+    })
+    const codec = await provider.codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'edv',
+      keys: { keyAgreementKey: kak, keyResolver }
+    })
+    expect(codec).not.toBeNull()
+    expect(keystoreCalls).toBe(0)
   })
 })
