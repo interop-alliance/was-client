@@ -1,13 +1,27 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Fixed
+
+- **`application/jsonl` (and other `json`-substring content-types) are no longer
+  JSON-parsed on read.** `parseResource` decided a response was JSON by testing
+  whether its content-type _contained_ the substring `json`, so a JSON-Lines /
+  NDJSON / JSON-seq resource was run through `JSON.parse` (which throws on a
+  multi-line body) instead of being returned as a `Blob`. The check now anchors
+  the `json` token to the end of the media type, matching only
+  `application/json` and `application/<prefix>+json` (e.g.
+  `application/ld+json`, `application/edv+json`); everything else reads back as
+  binary.
+
 ## 0.9.0 - 2026-06-27
 
 ### Changed
 
-- **Encrypted collections are now marker-driven, not keys-driven**.
-  Whether a collection is encrypted is decided
-  by its declared `encryption` marker (or a per-handle override), letting a
-  delegated consumer **discover** an encrypted collection from its Description.
+- **Encrypted collections are now marker-driven, not keys-driven**. Whether a
+  collection is encrypted is decided by its declared `encryption` marker (or a
+  per-handle override), letting a delegated consumer **discover** an encrypted
+  collection from its Description.
   - `createCollection({ encryption: { scheme: 'edv' } })` declares the marker;
     the returned handle is pre-seeded so the first write needs no extra
     round-trip. `collection.configure({ encryption })` declares it on an
