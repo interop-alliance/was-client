@@ -164,6 +164,22 @@ describe('parseResource', () => {
     expect(await parseResource(response)).toEqual({ message: 'hello' })
   })
 
+  it('returns the parsed object for an application/*+json structured suffix', async () => {
+    const response = responseStub({
+      contentType: 'application/ld+json',
+      data: { '@context': 'x' }
+    })
+    expect(await parseResource(response)).toEqual({ '@context': 'x' })
+  })
+
+  it('returns the parsed object for a JSON content-type with parameters', async () => {
+    const response = responseStub({
+      contentType: 'application/json; charset=utf-8',
+      data: { message: 'hello' }
+    })
+    expect(await parseResource(response)).toEqual({ message: 'hello' })
+  })
+
   it('returns a Blob for a non-JSON content-type', async () => {
     const blob = new Blob(['raw bytes'], { type: 'text/plain' })
     const response = responseStub({ contentType: 'text/plain', blob })
@@ -171,4 +187,18 @@ describe('parseResource', () => {
     expect(parsed).toBeInstanceOf(Blob)
     expect(await (parsed as Blob).text()).toBe('raw bytes')
   })
+
+  // Content-types that merely contain the substring "json" but are NOT JSON
+  // (e.g. JSON Lines / NDJSON / JSON-seq) must read back as raw binary, not be
+  // JSON-parsed -- a multi-line JSONL body is not a single JSON value.
+  it.each(['application/jsonl', 'application/json-seq', 'application/json5'])(
+    'returns a Blob for %s (json-substring but not JSON)',
+    async contentType => {
+      const blob = new Blob(['{"a":1}\n{"a":2}\n'], { type: contentType })
+      const response = responseStub({ contentType, blob })
+      const parsed = await parseResource(response)
+      expect(parsed).toBeInstanceOf(Blob)
+      expect(await (parsed as Blob).text()).toBe('{"a":1}\n{"a":2}\n')
+    }
+  )
 })
