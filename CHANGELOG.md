@@ -1,14 +1,13 @@
 # @interop/was-client Changelog
 
-## 0.9.0 - TBD
+## 0.9.0 - 2026-06-27
 
 ### Changed
 
-- **Encrypted collections are now marker-driven, not keys-driven** (requires
-  `@interop/storage-core` ^0.3.0). Whether a collection is encrypted is decided
-  by its declared `encryption` marker (or a per-handle override), not by whether
-  the keystore returns keys. This Lets a delegated consumer **discover** an
-  encrypted collection from its Description.
+- **Encrypted collections are now marker-driven, not keys-driven**.
+  Whether a collection is encrypted is decided
+  by its declared `encryption` marker (or a per-handle override), letting a
+  delegated consumer **discover** an encrypted collection from its Description.
   - `createCollection({ encryption: { scheme: 'edv' } })` declares the marker;
     the returned handle is pre-seeded so the first write needs no extra
     round-trip. `collection.configure({ encryption })` declares it on an
