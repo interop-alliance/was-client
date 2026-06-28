@@ -95,8 +95,7 @@ export interface AddResult {
  * `encryption` provider (which turns a scheme + keys into a codec).
  */
 export type EncryptionOverride =
-  | { scheme: string; keys?: unknown }
-  | 'plaintext'
+  { scheme: string; keys?: unknown } | 'plaintext'
 
 /**
  * Options accepted by every handle factory (`space()`, `collection()`,

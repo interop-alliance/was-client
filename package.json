@@ -1,7 +1,7 @@
 {
   "name": "@interop/was-client",
   "description": "A developer-friendly client for Wallet Attached Storage (WAS) servers.",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "type": "module",
   "scripts": {
     "build": "pnpm run clear && tsc",
@@ -46,7 +46,7 @@
     "@interop/ed25519-signature": "^7.1.2",
     "@interop/edv-client": "^17.2.0",
     "@interop/ezcap": "^7.3.0",
-    "@interop/http-client": "^1.0.3",
+    "@interop/http-client": "^1.0.4",
     "@interop/storage-core": "^0.3.0"
   },
   "devDependencies": {

@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.9.2 - 2026-06-28
+
+### Fixed
+
+- Update to `@interop/http-client@1.0.4`, fixes `json` content-type parsing.
+
 ## 0.9.1 - 2026-06-27
 
 ### Fixed

@@ -1,4 +1,5 @@
 allowBuilds:
   core-js: false
 minimumReleaseAgeExclude:
+  - '@interop/http-client@1.0.4'
   - '@interop/storage-core@0.3.0'
