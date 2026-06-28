@@ -44,9 +44,13 @@ export class WasClient {
    * @param options.serverUrl {string}    base URL for both URL building and
    *   zcap `invocationTarget`s
    * @param options.zcapClient {ZcapClient}   an ezcap client holding the signer
-   * @param [options.encryption] {EncryptionProvider}   supplies the encrypting
-   *   codec for the collections the client holds keys for (built by the
-   *   `@interop/was-client/edv` subpath); omit for plaintext-only clients
+   * @param [options.encryption] {EncryptionProvider}   the keystore that
+   *   supplies keys for collections declared encrypted (by their `encryption`
+   *   marker or a per-handle override); built by the `@interop/was-client/edv`
+   *   subpath. Omit for plaintext-only clients. It does not decide *which*
+   *   collections are encrypted -- that is the marker/override -- so a missing
+   *   key for an encrypted collection fails closed rather than silently
+   *   downgrading to plaintext.
    */
   constructor({
     serverUrl,

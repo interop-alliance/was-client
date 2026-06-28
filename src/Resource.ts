@@ -12,10 +12,13 @@ import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
+import { describeCollection } from './internal/describe.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
 import { ValidationError } from './errors.js'
 import type {
+  CollectionEncryption,
+  EncryptionOverride,
   IZcap,
   Json,
   PolicyDocument,
@@ -31,6 +34,7 @@ export class Resource {
   private readonly _context: ClientContext
   private readonly _capability?: IZcap
   private readonly _codecThunk?: () => Promise<ResourceCodec>
+  private readonly _encryptionOverride?: EncryptionOverride
   private _codecPromise?: Promise<ResourceCodec>
 
   /**
@@ -44,6 +48,9 @@ export class Resource {
    *   codec, so a resource handle obtained via `collection.resource(id)` does
    *   not repeat the backend() round-trip. A standalone resource resolves its
    *   own.
+   * @param [options.encryption] {EncryptionOverride}   per-handle encryption
+   *   override for a standalone resource (ignored when `codec` is supplied --
+   *   the shared parent codec wins)
    */
   constructor({
     context,
@@ -51,7 +58,8 @@ export class Resource {
     collectionId,
     resourceId,
     capability,
-    codec
+    codec,
+    encryption
   }: {
     context: ClientContext
     spaceId: string
@@ -59,6 +67,7 @@ export class Resource {
     resourceId: string
     capability?: IZcap
     codec?: () => Promise<ResourceCodec>
+    encryption?: EncryptionOverride
   }) {
     this._context = context
     this.spaceId = spaceId
@@ -66,6 +75,7 @@ export class Resource {
     this.id = resourceId
     this._capability = capability
     this._codecThunk = codec
+    this._encryptionOverride = encryption
   }
 
   private get _path(): string {
@@ -75,7 +85,11 @@ export class Resource {
   /**
    * Resolves (once, then caches) the codec for this resource: the parent
    * collection's shared codec when this handle came from
-   * `collection.resource(id)`, otherwise one resolved for its own collection.
+   * `collection.resource(id)`, otherwise one resolved for its own collection. A
+   * standalone resource discovers its collection's `encryption` marker (one GET
+   * on the collection, cached per handle) unless a per-handle override is set,
+   * and fails closed if it cannot key an encrypted collection. A fresh
+   * standalone handle re-reads the marker, so retain the handle to reuse it.
    *
    * @returns {Promise<ResourceCodec>}
    */
@@ -84,7 +98,16 @@ export class Resource {
       ? this._codecThunk()
       : resolveCodec(this._context, {
           spaceId: this.spaceId,
-          collectionId: this.collectionId
+          collectionId: this.collectionId,
+          override: this._encryptionOverride,
+          readMarker: async (): Promise<CollectionEncryption | undefined> =>
+            (
+              await describeCollection(this._context, {
+                spaceId: this.spaceId,
+                collectionId: this.collectionId,
+                capability: this._capability
+              })
+            )?.encryption
         }))
   }
 

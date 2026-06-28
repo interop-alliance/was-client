@@ -28,6 +28,7 @@ export type {
   ActionInput,
   SpaceDescription,
   CollectionDescription,
+  CollectionEncryption,
   PolicyDocument,
   LinkSet,
   LinkSetEntry,
@@ -78,12 +79,37 @@ export interface AddResult {
 }
 
 /**
+ * A per-handle client-side encryption override -- the escape hatch / bootstrap
+ * path that takes precedence over the Collection's declared `encryption` marker
+ * AND skips the marker-discovery round-trip:
+ *
+ * - `{ scheme }` -- treat the collection as encrypted under `scheme`, pulling
+ *   keys from the client's keystore. Use right after `createCollection` (before
+ *   the marker is readable), or to avoid the `describe()` round-trip.
+ * - `{ scheme, keys }` -- additionally supply the key material inline (opaque to
+ *   core; the encryption provider interprets it per `scheme`) instead of the
+ *   keystore.
+ * - `'plaintext'` -- force plaintext even if a marker / keystore would encrypt.
+ *
+ * The non-`'plaintext'` forms require the `WasClient` to be constructed with an
+ * `encryption` provider (which turns a scheme + keys into a codec).
+ */
+export type EncryptionOverride =
+  | { scheme: string; keys?: unknown }
+  | 'plaintext'
+
+/**
  * Options accepted by every handle factory (`space()`, `collection()`,
  * `resource()`). A bound `capability` is attached to every request the handle
  * makes.
  */
 export interface HandleOptions {
   capability?: IZcap
+  /**
+   * Per-handle client-side encryption override (see {@link EncryptionOverride}).
+   * Omit to let the Collection's declared `encryption` marker decide.
+   */
+  encryption?: EncryptionOverride
 }
 
 /**

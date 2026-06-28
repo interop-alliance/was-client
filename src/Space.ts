@@ -30,6 +30,7 @@ import type {
   BackendReference,
   BackendRegistration,
   CollectionDescription,
+  CollectionEncryption,
   CollectionsList,
   GrantOptions,
   HandleOptions,
@@ -148,7 +149,8 @@ export class Space {
       context: this._context,
       spaceId: this.id,
       collectionId,
-      capability: options.capability ?? this._capability
+      capability: options.capability ?? this._capability,
+      encryption: options.encryption
     })
   }
 
@@ -160,10 +162,19 @@ export class Space {
    * @param [desc.id] {string}
    * @param [desc.name] {string}
    * @param [desc.backend] {BackendReference}
+   * @param [desc.encryption] {CollectionEncryption}   declare the collection
+   *   client-side encrypted (e.g. `{ scheme: 'edv' }`). The returned handle is
+   *   pre-seeded with a matching encryption override, so the immediate next
+   *   write encrypts without a marker-discovery round-trip.
    * @returns {Promise<Collection>}
    */
   async createCollection(
-    desc: { id?: string; name?: string; backend?: BackendReference } = {}
+    desc: {
+      id?: string
+      name?: string
+      backend?: BackendReference
+      encryption?: CollectionEncryption
+    } = {}
   ): Promise<Collection> {
     if (desc.id !== undefined) {
       assertNotReserved(desc.id, 'collection')
@@ -178,6 +189,9 @@ export class Space {
     if (desc.backend) {
       body.backend = desc.backend
     }
+    if (desc.encryption) {
+      body.encryption = desc.encryption
+    }
     const response = await send(this._context, {
       path: spaceItems(this.id),
       method: 'POST',
@@ -186,7 +200,11 @@ export class Space {
     })
     const created = (response as { data?: unknown })
       .data as CollectionDescription
-    return this.collection(created.id)
+    // Pre-seed the handle with an override matching the just-declared scheme so
+    // the first write encrypts immediately (keys come from the keystore); no
+    // describe() round-trip needed before the marker is locally known. A
+    // `CollectionEncryption` marker is itself a valid `EncryptionOverride`.
+    return this.collection(created.id, { encryption: desc.encryption })
   }
 
   /**

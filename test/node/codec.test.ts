@@ -4,9 +4,9 @@
 /**
  * Unit tests for the resource codec seam. Verify that:
  *  - a client with no `EncryptionProvider` behaves exactly as before (identity);
- *  - the keys switch binds an injected codec iff the provider returns one for the
- *    collection -- with no backend round-trip (encryption is a per-collection
- *    client concern, not a backend capability);
+ *  - a per-handle encryption override marks the collection encrypted and binds
+ *    the injected codec -- with no backend round-trip (encryption is a
+ *    per-collection client concern, not a backend capability);
  *  - a bound codec's `encode`/`decode` are actually invoked on write/read, and a
  *    codec that mints an id turns `add()` from a POST into a PUT;
  *  - `setMeta`/`setName`/`setTags` throw when the codec forbids server metadata.
@@ -17,8 +17,9 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient, ValidationError } from '../../src/index.js'
+import { WasClient, ValidationError, EncryptionError } from '../../src/index.js'
 import type {
+  CollectionEncryption,
   EncryptionProvider,
   ResourceCodec,
   EncodedWrite
@@ -50,7 +51,8 @@ function clientWithRouter({
   readContentType = 'application/json',
   readEtag,
   writeEtag,
-  readStatus = 200
+  readStatus = 200,
+  marker
 }: {
   encryption?: EncryptionProvider
   readData?: unknown
@@ -58,6 +60,8 @@ function clientWithRouter({
   readEtag?: string
   writeEtag?: string
   readStatus?: number
+  /** When set, a collection-description GET (`/space/{s}/{c}`) carries it. */
+  marker?: CollectionEncryption
 } = {}): { client: WasClient; calls: RequestArgs[] } {
   const calls: RequestArgs[] = []
   const zcapClient = {
@@ -68,6 +72,26 @@ function clientWithRouter({
       if (isGet) {
         if (readStatus === 404) {
           throw { status: 404, response: { status: 404 } }
+        }
+        // A collection-description GET (`/space/{spaceId}/{collectionId}`, three
+        // path segments) drives marker discovery; carry the marker when set.
+        const segments = new URL(args.url ?? '').pathname
+          .split('/')
+          .filter(Boolean)
+        if (segments.length === 3 && segments[0] === 'space') {
+          const description = {
+            id: segments[2],
+            type: ['Collection'],
+            ...(marker && { encryption: marker })
+          }
+          return {
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            data: description,
+            async json() {
+              return description
+            }
+          } as unknown as HttpResponse
         }
         return {
           status: readStatus,
@@ -150,43 +174,50 @@ describe('codec seam: no provider (plaintext, unchanged)', () => {
   })
 })
 
-describe('codec seam: keys switch (no backend probe)', () => {
-  it('uses identity when the provider returns null', async () => {
+describe('codec seam: encryption override binds the codec (no backend probe)', () => {
+  it('uses identity for an unmarked collection with no override', async () => {
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
-        return null
+      async codecFor() {
+        return fakeCodec([])
       }
     }
+    // No override and (the GET marker resolves undefined) no marker => identity,
+    // so the provider's codecFor is never reached and the write stays plaintext.
     const { client, calls } = clientWithRouter({ encryption })
     await client.space('s').collection('c').put('r', { hello: 'world' })
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.json).toEqual({ hello: 'world' }) // plaintext JSON
   })
 
-  it('binds the codec when the provider returns one -- with no backend round-trip', async () => {
+  it('binds the codec under an override -- with no backend round-trip', async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
+      async codecFor() {
         return fakeCodec(log)
       }
     }
     const { client, calls } = clientWithRouter({ encryption })
+    // The override marks the collection encrypted and skips marker discovery.
     // add(): codec mints an id, so the write is a PUT to that id, not a POST.
-    const result = await client.space('s').collection('c').add({ secret: 1 })
+    const result = await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .add({ secret: 1 })
     expect(log).toContain('encode:mint')
     expect(result.id).toBe('zMintedEdvId')
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.url).toBe('https://was.example/space/s/c/zMintedEdvId')
     expect(write?.headers?.['content-type']).toBe('application/edv+json')
     expect(write?.body).toBeInstanceOf(Uint8Array)
-    // The switch is keys alone: resolving the codec never reads the backend.
+    // The override skips both the backend probe and marker discovery: no GET.
     expect(calls.every(call => !call.url?.endsWith('/backend'))).toBe(true)
+    expect(calls.some(call => (call.method ?? 'GET') === 'GET')).toBe(false)
   })
 
   it('decodes reads through the bound codec', async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
+      async codecFor() {
         return fakeCodec(log)
       }
     }
@@ -195,7 +226,10 @@ describe('codec seam: keys switch (no backend probe)', () => {
       readData: { jwe: 'ciphertext' },
       readContentType: 'application/edv+json'
     })
-    const value = await client.space('s').collection('c').get('zDoc')
+    const value = await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .get('zDoc')
     expect(log).toContain('decode')
     expect(value).toEqual({ decrypted: true })
   })
@@ -204,13 +238,15 @@ describe('codec seam: keys switch (no backend probe)', () => {
     let resolveCount = 0
     const log: string[] = []
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
+      async codecFor() {
         resolveCount++
         return fakeCodec(log)
       }
     }
     const { client } = clientWithRouter({ encryption })
-    const collection = client.space('s').collection('c')
+    const collection = client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
     await collection.put('a', { n: 1 })
     await collection.put('b', { n: 2 })
     await collection.get('a')
@@ -218,15 +254,108 @@ describe('codec seam: keys switch (no backend probe)', () => {
   })
 })
 
+describe('codec seam: policy resolution (override > marker > plaintext)', () => {
+  it('discovers the marker and binds the codec (no override)', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    const { client, calls } = clientWithRouter({
+      encryption,
+      marker: { scheme: 'edv' }
+    })
+    // No override: the collection-description GET reveals the marker, which
+    // binds the codec; the write is then an encrypted PUT (bytes, not JSON).
+    await client.space('s').collection('c').put('zDoc', { secret: 1 })
+    const markerGet = calls.find(
+      call =>
+        (call.method ?? 'GET') === 'GET' &&
+        call.url === 'https://was.example/space/s/c'
+    )
+    expect(markerGet).toBeTruthy()
+    expect(log).toContain('encode:zDoc')
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.body).toBeInstanceOf(Uint8Array)
+    expect(write?.json).toBeUndefined()
+  })
+
+  it("a 'plaintext' override beats a marker (and skips discovery)", async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        log.push('codecFor')
+        return fakeCodec(log)
+      }
+    }
+    const { client, calls } = clientWithRouter({
+      encryption,
+      marker: { scheme: 'edv' }
+    })
+    await client
+      .space('s')
+      .collection('c', { encryption: 'plaintext' })
+      .put('r', { hello: 'world' })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({ hello: 'world' }) // plaintext, not encrypted
+    expect(log).not.toContain('codecFor') // provider never consulted
+    expect(calls.some(call => (call.method ?? 'GET') === 'GET')).toBe(false)
+  })
+
+  it('fails closed when an override declares encryption but no keys are held', async () => {
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return null // keystore holds no keys for this collection
+      }
+    }
+    const { client } = clientWithRouter({ encryption })
+    await expect(
+      client
+        .space('s')
+        .collection('c', { encryption: { scheme: 'edv' } })
+        .put('zDoc', { secret: 1 })
+    ).rejects.toThrow(EncryptionError)
+  })
+
+  it('fails closed when a marker declares encryption but no keys are held', async () => {
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return null
+      }
+    }
+    const { client } = clientWithRouter({
+      encryption,
+      marker: { scheme: 'edv' }
+    })
+    await expect(client.space('s').collection('c').get('zDoc')).rejects.toThrow(
+      EncryptionError
+    )
+  })
+
+  it('fails closed when encrypted but no provider is configured at all', async () => {
+    const { client } = clientWithRouter() // no encryption provider
+    await expect(
+      client
+        .space('s')
+        .collection('c', { encryption: { scheme: 'edv' } })
+        .put('zDoc', { secret: 1 })
+    ).rejects.toThrow(EncryptionError)
+  })
+})
+
 describe('codec seam: encrypted metadata is forbidden', () => {
   it('setMeta throws a ValidationError on an encrypted collection', async () => {
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
+      async codecFor() {
         return fakeCodec([])
       }
     }
     const { client } = clientWithRouter({ encryption })
-    const resource = client.space('s').collection('c').resource('zDoc')
+    const resource = client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .resource('zDoc')
     await expect(resource.setMeta({ custom: { name: 'x' } })).rejects.toThrow(
       ValidationError
     )
@@ -334,7 +463,7 @@ describe('conditional writes: conditional codec wiring', () => {
   it('pre-reads the current resource and pins If-Match to its ETag', async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
+      async codecFor() {
         return conditionalFakeCodec(log)
       }
     }
@@ -344,7 +473,10 @@ describe('conditional writes: conditional codec wiring', () => {
       readContentType: 'application/edv+json',
       readEtag: '"5"'
     })
-    await client.space('s').collection('c').put('zDoc', { secret: 1 })
+    await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .put('zDoc', { secret: 1 })
 
     // A GET precedes the PUT, and the codec's If-Match (the read ETag) is sent.
     const getIndex = calls.findIndex(call => (call.method ?? 'GET') === 'GET')
@@ -358,7 +490,7 @@ describe('conditional writes: conditional codec wiring', () => {
   it('guards a first write (absent resource) with If-None-Match: *', async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
-      async resolveCodec() {
+      async codecFor() {
         return conditionalFakeCodec(log)
       }
     }
@@ -366,7 +498,10 @@ describe('conditional writes: conditional codec wiring', () => {
       encryption,
       readStatus: 404
     })
-    await client.space('s').collection('c').put('zDoc', { secret: 1 })
+    await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .put('zDoc', { secret: 1 })
     const write = calls.find(call => call.method === 'PUT')
     expect(log).toContain('encode:zDoc:etag=none')
     expect(write?.headers?.['if-none-match']).toBe('*')

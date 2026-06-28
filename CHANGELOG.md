@@ -1,5 +1,45 @@
 # @interop/was-client Changelog
 
+## 0.9.0 - TBD
+
+### Changed
+
+- **Encrypted collections are now marker-driven, not keys-driven** (requires
+  `@interop/storage-core` ^0.3.0). Whether a collection is encrypted is decided
+  by its declared `encryption` marker (or a per-handle override), not by whether
+  the keystore returns keys. This Lets a delegated consumer **discover** an
+  encrypted collection from its Description.
+  - `createCollection({ encryption: { scheme: 'edv' } })` declares the marker;
+    the returned handle is pre-seeded so the first write needs no extra
+    round-trip. `collection.configure({ encryption })` declares it on an
+    existing collection (set-once on the server).
+  - A handle with no override reads the Collection Description once (cached) to
+    discover the marker; plaintext-only clients and overrides skip that read.
+  - **Fail-closed:** a collection declared encrypted for which the client holds
+    no keys now throws the new `EncryptionError` instead of silently reading or
+    writing plaintext.
+  - `HandleOptions.encryption` (new `EncryptionOverride` type) forces the
+    decision per handle: `{ scheme }`, `{ scheme, keys }`, or `'plaintext'`.
+
+### BREAKING
+
+- `EncryptionProvider` now exposes
+  `codecFor({ spaceId, collectionId, scheme, keys? })` instead of
+  `resolveCodec({ spaceId, collectionId })`; core calls it only after policy has
+  decided a collection is encrypted. `createEdvEncryption`'s `resolveKeys` is
+  now a pure keystore: returning `null` means "no keys for this collection"
+  (which now fails closed), no longer "use plaintext" -- declare plaintext by
+  simply omitting the marker/override. An existing encrypted collection created
+  keys-only (no marker) must be re-declared once with
+  `configure({ encryption: { scheme: 'edv' } })`, or read with a per-handle
+  override.
+
+### Added
+
+- `EncryptionError`, `EncryptionOverride`, and the `CollectionEncryption` marker
+  type to the public surface; `EdvKeys` from the `@interop/was-client/edv`
+  subpath.
+
 ## 0.8.0 - 2026-06-26
 
 ### Added

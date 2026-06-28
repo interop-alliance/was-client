@@ -504,36 +504,74 @@ This is the recommended way to use encrypted collections. For the low-level
 alternative -- driving an `EdvClientCore` directly via `WasTransport` -- see
 [docs/edv-client-core-usage.md](docs/edv-client-core-usage.md).
 
-Client-side end-to-end encryption is a per-collection concern, gated on whether
-your client holds keys for the collection -- **not** a backend feature (an
-encrypted document is opaque JSON any document backend stores faithfully).
-Construct a `WasClient` with an `encryption` provider (built from the opt-in
-`@interop/was-client/edv` subpath, so plaintext consumers never pull the crypto
-graph), and the ordinary `Collection`/`Resource` handles transparently encrypt
-on write and decrypt on read -- for any collection your `resolveKeys` returns
-keys for. Keys live in your wallet; the server only ever stores opaque JWE
-envelopes.
+Client-side end-to-end encryption is a per-collection concern -- **not** a
+backend feature (an encrypted document is opaque JSON any document backend
+stores faithfully). Two things drive it, kept separate:
+
+- **Policy** (is this collection encrypted?) is declared on the collection
+  itself: `createCollection({ encryption: { scheme: 'edv' } })` writes a
+  non-secret `encryption` marker to the Collection Description. Any authorized
+  reader -- including a delegated consumer that did **not** create the
+  collection -- discovers it by reading the Description, so it knows to decrypt.
+- **Keys** come from an `encryption` provider you pass to `WasClient` (built
+  from the opt-in `@interop/was-client/edv` subpath, so plaintext consumers
+  never pull the crypto graph). It is a pure **keystore**: `resolveKeys` returns
+  the collection's keys, which live in your wallet. The server only ever stores
+  opaque JWE envelopes.
+
+The ordinary `Collection`/`Resource` handles then transparently encrypt on write
+and decrypt on read for any collection the marker (or an override) declares
+encrypted.
 
 ```ts
 import { WasClient } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 
 const encryption = createEdvEncryption({
-  // Return the collection's keys to encrypt it, or null to use it in plaintext.
+  // The keystore: return the collection's keys (from your wallet).
   async resolveKeys({ spaceId, collectionId }) {
-    return { keyAgreementKey, keyResolver } // from your wallet
+    return { keyAgreementKey, keyResolver }
   }
 })
 const was = WasClient.fromSigner({ serverUrl, signer, encryption })
 
-const vault = was.space(spaceId).collection('vault')
+// Declare the collection encrypted (writes the marker). The returned handle is
+// pre-seeded, so the first write encrypts with no extra round-trip.
+const vault = await was
+  .space(spaceId)
+  .createCollection({ id: 'vault', encryption: { scheme: 'edv' } })
 const { id } = await vault.add({ secret: 'hello' }) // encrypted; id is an EDV id
 const back = await vault.get(id) // { secret: 'hello' } -- decrypted
+
+// A consumer that did not create it discovers the marker and decrypts with its
+// own keys -- no override needed; one cached read of the Description:
+const same = was.space(spaceId).collection('vault')
+await same.get(id) // reads the marker, then decrypts
 ```
 
-The switch is **keys**: a handle encrypts a collection exactly when
-`resolveKeys` returns keys for it (else it stays plaintext). Resolution happens
-once per collection handle and is cached -- no backend round-trip.
+The switch is the **marker**: a handle encrypts a collection when its
+Description declares `encryption` (resolution reads the Description once, then
+caches -- no round-trip for plaintext-only clients or when an override is set).
+Keys are then **required**: if the collection is declared encrypted but your
+keystore returns no keys, reads/writes throw `EncryptionError` (fail-closed) --
+they never silently fall back to plaintext.
+
+**Per-handle override (escape hatch).** Pass `encryption` in the handle options
+to force the decision and skip the Description read -- `{ scheme: 'edv' }` (keys
+from the keystore), `{ scheme: 'edv', keys }` (keys inline), or `'plaintext'`:
+
+```ts
+const vault = was.space(spaceId).collection('vault', {
+  encryption: { scheme: 'edv' }
+})
+```
+
+**Migrating a pre-marker vault** (created before the marker existed, keys-only):
+re-declare it once with
+`collection.configure({ encryption: { scheme: 'edv' } })` (the marker is
+set-once: declaring it on a collection that lacks one is allowed, changing or
+clearing an existing one is rejected). Until then, a per-handle override reads
+it correctly.
 
 Encrypted collections are a **stricter contract**, not a drop-in (documents-only
 scope for now):

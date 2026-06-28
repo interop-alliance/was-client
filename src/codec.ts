@@ -16,11 +16,19 @@
  * `WasClient`; core holds it as an opaque interface and never imports the
  * subpath.
  *
- * Whether a collection is encrypted is a per-collection client concern (does the
- * client hold keys for it?), not a backend capability -- an encrypted document
- * is opaque JSON any document backend stores faithfully. So the switch is keys
- * alone: the encrypting codec binds iff the provider returns one for the
- * collection.
+ * Whether a collection is encrypted is a per-collection client concern, not a
+ * backend capability -- an encrypted document is opaque JSON any document
+ * backend stores faithfully. Two concerns drive it, deliberately split:
+ *
+ * - **Policy** (is this collection encrypted, and under which scheme?) is
+ *   decided by a per-handle override, else the Collection's declared
+ *   `encryption` marker (read from its Description; see `internal/codec.ts`),
+ *   else plaintext. A delegated consumer that did not create the collection
+ *   discovers this from the marker.
+ * - **Keys** (the material to encrypt/decrypt with) come from the injected
+ *   {@link EncryptionProvider}, a pure keystore. When policy says "encrypted"
+ *   but the keystore holds no keys, core fails closed (throws) rather than
+ *   silently writing plaintext.
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { Json } from './types.js'
@@ -110,23 +118,36 @@ export interface ResourceCodec {
 }
 
 /**
- * Supplies the encrypting {@link ResourceCodec} for a collection, if the client
- * holds keys for it. Injected into {@link WasClient} by an app that imports the
- * `@interop/was-client/edv` subpath; core only ever holds this interface.
+ * The keystore + codec factory for encrypted collections. Injected into
+ * {@link WasClient} by an app that imports the `@interop/was-client/edv`
+ * subpath (built by `createEdvEncryption`); core only ever holds this interface
+ * and never imports the crypto graph.
  *
- * `resolveCodec` returns `null` when this client has no keys for the collection,
- * so it should be read/written in plaintext. This is the whole switch: a
- * collection is encrypted iff the provider returns a codec for it.
+ * It is **not** the policy decider: core calls {@link codecFor} only after it
+ * has already decided -- from a per-handle override or the Collection's declared
+ * `encryption` marker -- that a collection is encrypted. `codecFor` then turns
+ * the declared `scheme` (and the client's keys for the collection) into a codec.
+ * Returning `null` means "I hold no keys for this collection"; core then fails
+ * closed (throws) rather than silently downgrading to plaintext.
  */
 export interface EncryptionProvider {
   /**
+   * Builds the encrypting codec for a collection already known to be encrypted.
+   *
    * @param input {object}
    * @param input.spaceId {string}
    * @param input.collectionId {string}
-   * @returns {Promise<ResourceCodec | null>}
+   * @param input.scheme {string}   the declared encryption scheme (e.g. `edv`)
+   * @param [input.keys] {unknown}   override-supplied key material (a per-handle
+   *   `encryption` override); when present the provider uses it instead of its
+   *   keystore. Opaque to core; the provider interprets it per `scheme`.
+   * @returns {Promise<ResourceCodec | null>}   the codec, or `null` if the
+   *   provider holds no keys / does not handle `scheme` (core then fails closed)
    */
-  resolveCodec(input: {
+  codecFor(input: {
     spaceId: string
     collectionId: string
+    scheme: string
+    keys?: unknown
   }): Promise<ResourceCodec | null>
 }

@@ -20,6 +20,7 @@ export {
   PreconditionFailedError,
   PayloadTooLargeError,
   QuotaExceededError,
+  EncryptionError,
   WasServerError,
   mapError
 } from './errors.js'
@@ -39,6 +40,7 @@ export type {
   ActionInput,
   SpaceDescription,
   CollectionDescription,
+  CollectionEncryption,
   CollectionSummary,
   CollectionsList,
   SpaceSummary,
@@ -53,6 +55,7 @@ export type {
   LinkSet,
   LinkSetEntry,
   HandleOptions,
+  EncryptionOverride,
   BackendReference,
   BackendDescriptor,
   BackendRegistration,

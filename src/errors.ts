@@ -144,6 +144,22 @@ export class QuotaExceededError extends WasError {
 }
 
 /**
+ * A client-side, fail-closed encryption error: a collection is declared
+ * encrypted (by a per-handle override or its `encryption` marker) but this
+ * client cannot build the codec -- no `encryption` provider is configured, or
+ * the keystore holds no keys for the collection (or does not handle its
+ * scheme). Raised before any request, so it carries no HTTP status; recover by
+ * supplying the collection's keys (your keystore's `resolveKeys`, or a
+ * per-handle `encryption` override). Never silently downgrades to plaintext.
+ */
+export class EncryptionError extends WasError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'EncryptionError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {
@@ -202,6 +218,7 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
   [problemFragment(ProblemTypes.RESERVED_ID)]: ConflictError,
   [problemFragment(ProblemTypes.ID_CONFLICT)]: ConflictError,
   [problemFragment(ProblemTypes.UNSUPPORTED_BACKEND)]: ConflictError,
+  [problemFragment(ProblemTypes.ENCRYPTION_IMMUTABLE)]: ConflictError,
   [problemFragment(ProblemTypes.PRECONDITION_FAILED)]: PreconditionFailedError,
   [problemFragment(ProblemTypes.PAYLOAD_TOO_LARGE)]: PayloadTooLargeError,
   [problemFragment(ProblemTypes.QUOTA_EXCEEDED)]: QuotaExceededError,
