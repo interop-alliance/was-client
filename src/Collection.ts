@@ -39,6 +39,7 @@ import type {
   IDelegatedZcap,
   IZcap,
   Json,
+  ResourceData,
   LinkSet,
   PolicyDocument,
   CollectionResourcesList
@@ -239,13 +240,13 @@ export class Collection {
    * binary for `Blob`/`Uint8Array`. Throws `NotFoundError` if the collection
    * does not exist (WAS does not auto-create parents).
    *
-   * @param data {Json | Blob | Uint8Array}
+   * @param data {ResourceData}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
    * @returns {Promise<AddResult>}
    */
   async add(
-    data: Json | Blob | Uint8Array,
+    data: ResourceData,
     options: { contentType?: string } = {}
   ): Promise<AddResult> {
     const codec = await this._codec()
@@ -336,7 +337,7 @@ export class Collection {
    * `conditional-writes` semantics. Returns the stored resource's new `etag`.
    *
    * @param resourceId {string}
-   * @param data {Json | Blob | Uint8Array}
+   * @param data {ResourceData}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
    * @param [options.ifMatch] {string}       update only if the ETag matches
@@ -345,7 +346,7 @@ export class Collection {
    */
   async put(
     resourceId: string,
-    data: Json | Blob | Uint8Array,
+    data: ResourceData,
     options: {
       contentType?: string
       ifMatch?: string

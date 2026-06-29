@@ -21,6 +21,7 @@ import type {
   EncryptionOverride,
   IZcap,
   Json,
+  ResourceData,
   PolicyDocument,
   ResourceMetadata,
   ResourceMetadataCustom
@@ -219,7 +220,7 @@ export class Resource {
    * automatically by the codec (the EDV `sequence` becomes the enforced ETag), so
    * the explicit options are for plaintext collections. Returns the new `etag`.
    *
-   * @param data {Json | Blob | Uint8Array}
+   * @param data {ResourceData}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
    * @param [options.ifMatch] {string}       update only if the ETag matches
@@ -227,7 +228,7 @@ export class Resource {
    * @returns {Promise<{ etag?: string }>}   the stored resource's new ETag
    */
   async put(
-    data: Json | Blob | Uint8Array,
+    data: ResourceData,
     options: {
       contentType?: string
       ifMatch?: string

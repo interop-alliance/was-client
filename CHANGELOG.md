@@ -11,6 +11,14 @@
   constant is renamed `EDV_CONTENT_TYPE` to `JOSE_CONTENT_TYPE` (breaking) and
   now holds the new value; the zero-server-change `application/json` default is
   unchanged.
+- **`put` / `add` no longer type-accept a top-level JSON primitive.** Their
+  `data` parameter was typed `Json | Blob | Uint8Array`, so
+  `collection.put('greeting', 'hello')` / `add(42)` / `add(null)` type-checked
+  but threw a `ValidationError` at runtime (on both the plaintext and EDV
+  paths -- the wire and EDV-content encoders only carry container JSON). The
+  parameter is narrowed to the new exported `ResourceData` type
+  (`JsonObject | JsonArray | Blob | Uint8Array`), so a bare primitive is now a
+  compile-time error; wrap it in an object or array to store it.
 
 ### Fixed
 

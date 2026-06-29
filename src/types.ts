@@ -64,6 +64,15 @@ export type JsonArray = Json[]
 export type Json = JsonPrimitive | JsonObject | JsonArray
 
 /**
+ * The value accepted by a resource write (`put`/`add`): a JSON object or array,
+ * or binary as a `Blob`/`Uint8Array`. A top-level JSON primitive
+ * (`string`/`number`/`boolean`/`null`) is intentionally excluded -- the wire and
+ * EDV paths only carry container JSON, so wrap a bare primitive in an object or
+ * array before storing it.
+ */
+export type ResourceData = JsonObject | JsonArray | Blob | Uint8Array
+
+/**
  * Return shape of `collection.add()` (server-generated resource id + location).
  */
 export interface AddResult {

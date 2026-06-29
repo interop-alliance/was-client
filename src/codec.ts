@@ -31,7 +31,7 @@
  *   silently writing plaintext.
  */
 import type { HttpResponse } from '@interop/http-client'
-import type { Json } from './types.js'
+import type { Json, ResourceData } from './types.js'
 
 /**
  * The result of {@link ResourceCodec.encode}: the stored representation of a
@@ -92,7 +92,7 @@ export interface ResourceCodec {
    *
    * @param input {object}
    * @param [input.id] {string}                       resource id (absent on add)
-   * @param input.data {Json | Blob | Uint8Array}     the plaintext value
+   * @param input.data {ResourceData}                 the plaintext value
    * @param [input.contentType] {string}              caller-supplied content type
    * @param [input.current] {HttpResponse | null}     the current stored response
    *   (or `null` if absent), supplied only when {@link conditionalWrites} is set,
@@ -101,7 +101,7 @@ export interface ResourceCodec {
    */
   encode(input: {
     id?: string
-    data: Json | Blob | Uint8Array
+    data: ResourceData
     contentType?: string
     current?: HttpResponse | null
   }): Promise<EncodedWrite>
