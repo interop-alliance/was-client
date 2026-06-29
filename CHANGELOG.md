@@ -1,5 +1,25 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Fixed
+
+- **Fail-closed encryption: an unreadable collection marker no longer downgrades
+  to plaintext.** When an encryption-capable client held a resource-scoped
+  capability, the marker-discovery GET on the collection description was
+  unauthorized; WAS masks that as a 404, which `resolveCodec` conflated with "no
+  marker" and handed back the identity codec -- writing the caller's secret as
+  server-visible plaintext into an encrypted collection. An unreadable
+  description is now treated as ambiguous and fails closed (throws
+  `EncryptionError`); pass an explicit per-handle `encryption` override
+  (`'plaintext'`, or a scheme/keys override) to proceed deliberately.
+- **Reserved resource ids are rejected on every operation, not just `put`.**
+  `resourcePath(s, c, 'policy')` is byte-identical to the collection policy path,
+  so `collection.resource('policy').delete()` silently wiped the collection's
+  access-control policy (same collision for `backend` / `quota` / `linkset` /
+  `meta`). The reserved-id guard now runs at `Resource` construction, covering
+  read / delete / meta / policy / put uniformly.
+
 ## 0.9.2 - 2026-06-28
 
 ### Fixed

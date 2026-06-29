@@ -12,12 +12,12 @@ import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
+import type { MarkerReadResult } from './internal/codec.js'
 import { describeCollection } from './internal/describe.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
 import { ValidationError } from './errors.js'
 import type {
-  CollectionEncryption,
   EncryptionOverride,
   IZcap,
   Json,
@@ -69,6 +69,15 @@ export class Resource {
     codec?: () => Promise<ResourceCodec>
     encryption?: EncryptionOverride
   }) {
+    // Guard the id against the Reserved Path Segment Registry up front, so a
+    // reserved id from caller input can never be mis-targeted at a
+    // collection-level endpoint. `resourcePath(s, c, 'policy')` is byte-identical
+    // to the collection policy path, so an unguarded `resource('policy').delete()`
+    // would silently wipe the collection's access-control policy; the same
+    // collision exists for `backend` / `quota` / `linkset` / `meta`. Guarding in
+    // the constructor covers every operation (read, delete, meta, policy, put),
+    // not just writes.
+    assertNotReserved(resourceId, 'resource')
     this._context = context
     this.spaceId = spaceId
     this.collectionId = collectionId
@@ -100,14 +109,16 @@ export class Resource {
           spaceId: this.spaceId,
           collectionId: this.collectionId,
           override: this._encryptionOverride,
-          readMarker: async (): Promise<CollectionEncryption | undefined> =>
-            (
-              await describeCollection(this._context, {
-                spaceId: this.spaceId,
-                collectionId: this.collectionId,
-                capability: this._capability
-              })
-            )?.encryption
+          readMarker: async (): Promise<MarkerReadResult> => {
+            const description = await describeCollection(this._context, {
+              spaceId: this.spaceId,
+              collectionId: this.collectionId,
+              capability: this._capability
+            })
+            return description === null
+              ? { readable: false }
+              : { readable: true, encryption: description.encryption }
+          }
         }))
   }
 
@@ -201,7 +212,6 @@ export class Resource {
       ifNoneMatch?: boolean
     } = {}
   ): Promise<{ etag?: string }> {
-    assertNotReserved(this.id, 'resource')
     const codec = await this._codec()
     // A conditional codec (e.g. the EDV codec) needs the current stored envelope
     // to advance its sequence and pin the write to the current ETag, so pre-read
