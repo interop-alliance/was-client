@@ -15,7 +15,7 @@ import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 
 import { ValidationError } from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
-import { createEdvEncryption, EDV_CONTENT_TYPE } from '../../src/edv/index.js'
+import { createEdvEncryption, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
 /**
  * Builds an EDV codec over a fresh real X25519 key (so encrypt/decrypt actually
@@ -102,10 +102,10 @@ describe('EdvCodec: JSON round trip', () => {
     expect(decoded).toEqual({ secret: 'do not leak', n: 42 })
   })
 
-  it('honors an opted-in application/edv+json content type', async () => {
-    const codec = await makeCodec({ contentType: EDV_CONTENT_TYPE })
+  it('honors an opted-in application/jose+json content type', async () => {
+    const codec = await makeCodec({ contentType: JOSE_CONTENT_TYPE })
     const encoded = await codec.encode({ data: { a: 1 } })
-    expect(encoded.contentType).toBe('application/edv+json')
+    expect(encoded.contentType).toBe('application/jose+json')
   })
 })
 

@@ -2,6 +2,16 @@
 
 ## Unreleased - TBD
 
+### Changed
+
+- **The preferred EDV envelope content type is now `application/jose+json`** (the
+  JWE JSON Serialization media type, RFC 7516), replacing the previous
+  `application/edv+json`. This aligns with the WAS spec's Encryption Scheme
+  Registry, which maps the `edv` scheme to `application/jose+json`. The exported
+  constant is renamed `EDV_CONTENT_TYPE` to `JOSE_CONTENT_TYPE` (breaking) and
+  now holds the new value; the zero-server-change `application/json` default is
+  unchanged.
+
 ### Fixed
 
 - **Fail-closed encryption: an unreadable collection marker no longer downgrades

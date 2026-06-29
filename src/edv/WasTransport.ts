@@ -19,12 +19,12 @@
  *   URL-safe and never a reserved segment.
  * - **Encrypted content type.** Documents are stored as `application/json` by
  *   default, so the profile works against an unmodified WAS server. The
- *   preferred marker is `application/edv+json` (exported as `EDV_CONTENT_TYPE`),
+ *   preferred marker is `application/jose+json` (exported as `JOSE_CONTENT_TYPE`),
  *   which distinguishes EDV envelopes from plaintext application JSON in
  *   listings and metadata -- but the server must register an `application/*+json`
  *   content-type parser to accept it (the reference was-teaching-server does; a
  *   server that does not will reject it with 415). Pass `contentType:
- *   EDV_CONTENT_TYPE` to opt into it where the server supports it.
+ *   JOSE_CONTENT_TYPE` to opt into it where the server supports it.
  *
  * Scope: documents only (`insert` / `update` / `get`). Blinded `find` / `count`
  * / `updateIndex` and chunked streams (`storeChunk` / `getChunk`) require
@@ -42,12 +42,15 @@ import { readJsonData } from '../internal/content.js'
 import { resourcePath } from '../internal/paths.js'
 
 /**
- * The preferred content type marking a stored EDV-encrypted document (a JSON
- * envelope whose `jwe` property carries the ciphertext). Requires the server to
- * register an `application/*+json` content-type parser; otherwise use the
- * default `application/json` (see `WasTransport`'s `contentType` option).
+ * The preferred content type marking a stored EDV-encrypted document: the JWE
+ * JSON Serialization media type (`application/jose+json`, RFC 7516), which is
+ * the wire format the WAS spec's Encryption Scheme Registry maps the `edv`
+ * scheme to. The stored envelope's `jwe` property carries the ciphertext.
+ * Requires the server to register an `application/*+json` content-type parser;
+ * otherwise use the default `application/json` (see `WasTransport`'s
+ * `contentType` option).
  */
-export const EDV_CONTENT_TYPE = 'application/edv+json'
+export const JOSE_CONTENT_TYPE = 'application/jose+json'
 
 /**
  * The content type used by default: plain JSON, which an unmodified WAS server
@@ -109,7 +112,7 @@ export class WasTransport extends Transport {
    * @param options.collectionId {string}    the vault Collection id
    * @param [options.contentType] {string}   content type for stored envelopes;
    *   defaults to `application/json` (accepted by an unmodified server). Pass
-   *   `EDV_CONTENT_TYPE` against a server that registers an `application/*+json`
+   *   `JOSE_CONTENT_TYPE` against a server that registers an `application/*+json`
    *   parser.
    */
   constructor({
@@ -145,7 +148,7 @@ export class WasTransport extends Transport {
 
   /**
    * Writes an encrypted document to its WAS resource path as
-   * `application/edv+json` (the envelope serialized to bytes so the stored
+   * `application/jose+json` (the envelope serialized to bytes so the stored
    * content type is exact).
    *
    * @param id {string}

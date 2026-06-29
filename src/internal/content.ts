@@ -18,7 +18,7 @@ const OCTET_STREAM = 'application/octet-stream'
 /**
  * Whether a content-type denotes JSON -- `application/json` or any
  * `application/<prefix>+json` structured-suffix variant (e.g.
- * `application/ld+json`, `application/edv+json`), each optionally followed by
+ * `application/ld+json`, `application/jose+json`), each optionally followed by
  * parameters (`; charset=utf-8`). The `json` token is anchored to the end of the
  * media type, so a non-JSON type that merely contains the substring `json` --
  * `application/jsonl`, `application/json-seq`, `application/json5` -- is NOT

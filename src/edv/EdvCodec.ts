@@ -54,7 +54,7 @@ import type {
 import { ValidationError } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
 import type { Json } from '../types.js'
-import { EDV_CONTENT_TYPE } from './WasTransport.js'
+import { JOSE_CONTENT_TYPE } from './WasTransport.js'
 
 /**
  * Default ceiling for a single-document (unchunked) encrypted binary write.
@@ -66,8 +66,8 @@ const DEFAULT_MAX_BLOB_BYTES = 1024 * 1024
 /**
  * The default stored content type. Plain JSON keeps the codec portable across
  * any document-capable server (the envelope is still self-identifying by its
- * `jwe` field). Pass `contentType: EDV_CONTENT_TYPE`
- * (`application/edv+json`) against a server that registers an
+ * `jwe` field). Pass `contentType: JOSE_CONTENT_TYPE`
+ * (`application/jose+json`) against a server that registers an
  * `application/*+json` parser to mark envelopes distinctly in listings.
  */
 const DEFAULT_CONTENT_TYPE = 'application/json'
@@ -342,8 +342,8 @@ export interface EdvKeys {
  *   `{ keyAgreementKey, keyResolver }`, or `null` if this client holds no keys
  *   for it (fail-closed -- not a plaintext signal)
  * @param [options.contentType] {string}   stored envelope content type;
- *   defaults to `application/json`. Pass `EDV_CONTENT_TYPE`
- *   (`application/edv+json`) against a server that registers an
+ *   defaults to `application/json`. Pass `JOSE_CONTENT_TYPE`
+ *   (`application/jose+json`) against a server that registers an
  *   `application/*+json` parser.
  * @param [options.maxBlobBytes] {number}   single-document binary cap (default
  *   1 MiB)
@@ -387,4 +387,4 @@ export function createEdvEncryption({
   }
 }
 
-export { EDV_CONTENT_TYPE }
+export { JOSE_CONTENT_TYPE }

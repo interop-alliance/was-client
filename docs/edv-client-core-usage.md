@@ -76,7 +76,7 @@ Scope and caveats (this is the first, documents-only increment):
   is lost-update-safe instead -- it drives the server's conditional writes
   via `If-Match`, surfacing a stale write as a `PreconditionFailedError`.)
 - **Content type.** Envelopes are stored as `application/json` by default so any
-  WAS server accepts them. The preferred marker `application/edv+json` (exported
-  as `EDV_CONTENT_TYPE`) needs the server to register an `application/*+json`
+  WAS server accepts them. The preferred marker `application/jose+json` (exported
+  as `JOSE_CONTENT_TYPE`) needs the server to register an `application/*+json`
   content-type parser -- the reference was-teaching-server does; pass
-  `contentType: EDV_CONTENT_TYPE` to opt in.
+  `contentType: JOSE_CONTENT_TYPE` to opt in.
