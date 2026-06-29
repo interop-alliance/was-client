@@ -14,9 +14,9 @@
 - **`put` / `add` no longer type-accept a top-level JSON primitive.** Their
   `data` parameter was typed `Json | Blob | Uint8Array`, so
   `collection.put('greeting', 'hello')` / `add(42)` / `add(null)` type-checked
-  but threw a `ValidationError` at runtime (on both the plaintext and EDV
-  paths -- the wire and EDV-content encoders only carry container JSON). The
-  parameter is narrowed to the new exported `ResourceData` type
+  but threw a `ValidationError` at runtime (on both the plaintext and EDV paths
+  -- the wire and EDV-content encoders only carry container JSON). The parameter
+  is narrowed to the new exported `ResourceData` type
   (`JsonObject | JsonArray | Blob | Uint8Array`), so a bare primitive is now a
   compile-time error; wrap it in an object or array to store it.
 
@@ -61,6 +61,28 @@
   now cleared on rejection (guarded against clobbering a newer in-flight
   promise), so the next call retries; a successful resolution is still memoized
   once per handle.
+- **`list()` / `publicListCollection()` no longer silently return only the first
+  page.** A collection larger than the server's page size yielded a listing with
+  `items.length < totalItems` and no error, because neither method followed the
+  response's `next` continuation link. Both now transparently follow `next` from
+  page to page (each dereferenced with the same authorization), aggregating
+  every page into a single listing; the returned envelope omits `next`, since
+  the whole list has been collected. A self-referential or already-seen `next`
+  ends the traversal defensively rather than looping forever.
+
+### Added
+
+- **Streaming pagination iterators for large listings.** `list()` /
+  `publicListCollection()` buffer the entire collection in memory; for large
+  collections, four new async iterators stream one page at a time and allow
+  stopping early (following `next` on demand, in constant memory):
+  `Collection.listPages()` / `Collection.listItems()` and
+  `WasClient.publicListCollectionPages()` /
+  `WasClient.publicListCollectionItems()`. The `*Pages()` variants yield each
+  `CollectionResourcesList` page; the `*Items()` variants flatten those into
+  individual `ResourceSummary` entries. Unlike the buffering methods, the
+  iterators yield nothing (rather than `null`) when the collection is
+  missing/unauthorized.
 
 ## 0.9.2 - 2026-06-28
 
