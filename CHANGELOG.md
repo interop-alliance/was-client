@@ -98,6 +98,13 @@
   skipping marker discovery, per `EncryptionOverride`); without one, the
   resource still shares the collection's codec to avoid a redundant
   marker-discovery round-trip.
+- **`toUrl` no longer drops a base-path prefix on `serverUrl`.** A leading-slash
+  path resolved with `new URL('/space/x', 'https://host/was/')` is
+  origin-absolute, silently dropping the `/was` prefix, so every signed request
+  and derived zcap `invocationTarget` targeted the wrong path and 404'd for any
+  WAS deployment mounted under a sub-path. The path is now joined onto the
+  server's base path (a trailing slash is ensured and the path made relative), so
+  a sub-path mount is preserved; a bare-origin `serverUrl` is unaffected.
 
 ### Added
 

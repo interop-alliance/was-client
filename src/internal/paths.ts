@@ -199,6 +199,10 @@ export function resourcePolicy(
  * Resolves a path against the server base URL, producing an absolute URL
  * string suitable for zcap `invocationTarget`s.
  *
+ * The path is joined onto `serverUrl`'s base path rather than its origin, so a
+ * WAS deployment mounted under a sub-path (e.g. `https://host/was/`) keeps that
+ * prefix. A bare-origin `serverUrl` behaves as before.
+ *
  * @param options {object}
  * @param options.serverUrl {string}   the server base URL
  * @param options.path {string}        a leading-slash path (e.g. `/space/x`)
@@ -211,5 +215,10 @@ export function toUrl({
   serverUrl: string
   path: string
 }): string {
-  return new URL(path, serverUrl).toString()
+  // A leading-slash `path` is origin-absolute to `new URL`, which would drop
+  // any base-path prefix on `serverUrl`. Ensure the base ends in a slash and
+  // make the path relative so the prefix is preserved.
+  const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
+  const relative = path.startsWith('/') ? path.slice(1) : path
+  return new URL(relative, base).toString()
 }
