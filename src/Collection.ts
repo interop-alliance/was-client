@@ -98,13 +98,19 @@ export class Collection {
    * codec when this collection is declared encrypted -- by a per-handle override
    * or its `encryption` marker -- and the client's keystore supplies its keys.
    * An encrypted collection the client cannot key for fails closed (throws), and
-   * the marker read happens at most once per handle (memoized here) -- a fresh
-   * handle to the same collection re-reads it, so retain the handle to reuse it.
+   * a successful marker read happens at most once per handle (memoized here) -- a
+   * fresh handle to the same collection re-reads it, so retain the handle to
+   * reuse it. A failed resolution (e.g. a transient 500/network error during
+   * marker discovery) is not memoized: the cache is cleared so the next call
+   * retries rather than re-throwing the stale error forever.
    *
    * @returns {Promise<ResourceCodec>}
    */
   private _codec(): Promise<ResourceCodec> {
-    return (this._codecPromise ??= resolveCodec(this._context, {
+    if (this._codecPromise) {
+      return this._codecPromise
+    }
+    const promise = resolveCodec(this._context, {
       spaceId: this.spaceId,
       collectionId: this.id,
       override: this._encryptionOverride,
@@ -114,7 +120,17 @@ export class Collection {
           ? { readable: false }
           : { readable: true, encryption: description.encryption }
       }
-    }))
+    })
+    // Memoize the in-flight promise so concurrent callers share one round-trip,
+    // but drop it on rejection so a transient failure does not permanently
+    // poison the handle. The identity guard avoids clobbering a newer promise.
+    this._codecPromise = promise
+    promise.catch((): void => {
+      if (this._codecPromise === promise) {
+        this._codecPromise = undefined
+      }
+    })
+    return promise
   }
 
   /**

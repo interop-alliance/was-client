@@ -484,6 +484,88 @@ describe('codec seam: configure() invalidates the memoized codec', () => {
   })
 })
 
+describe('codec seam: a transient marker-read failure does not poison the handle', () => {
+  /**
+   * Builds a client whose collection-description GET (marker discovery) throws a
+   * transient 500 on its first call and succeeds (revealing the marker) on every
+   * call after. Resource writes succeed. This exercises the codec memo: a
+   * rejected resolution must not be cached, so the next call retries.
+   *
+   * @returns {object} { client, calls }
+   */
+  function flakyMarkerClient(): { client: WasClient; calls: RequestArgs[] } {
+    const calls: RequestArgs[] = []
+    let markerGets = 0
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        const method = (args.method ?? 'GET').toUpperCase()
+        const segments = new URL(args.url ?? '').pathname
+          .split('/')
+          .filter(Boolean)
+        const isCollectionDescription =
+          segments.length === 3 && segments[0] === 'space'
+        if (method === 'GET' && isCollectionDescription) {
+          markerGets++
+          if (markerGets === 1) {
+            // Transient server failure during marker discovery.
+            throw { status: 500, response: { status: 500 } }
+          }
+          const description = {
+            id: segments[2],
+            type: ['Collection'],
+            encryption: { scheme: 'edv' }
+          }
+          return {
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            data: description,
+            async json() {
+              return description
+            }
+          } as unknown as HttpResponse
+        }
+        return {
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          data: { id: 'server-minted' },
+          async json() {
+            return { id: 'server-minted' }
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient,
+      encryption
+    })
+    return { client, calls }
+  }
+
+  it('retries marker discovery after a transient failure (same handle)', async () => {
+    const { client, calls } = flakyMarkerClient()
+    const collection = client.space('s').collection('c')
+    // First call: the marker GET 500s, so the resolution rejects and must throw.
+    await expect(collection.put('r', { secret: 1 })).rejects.toThrow()
+    // The transient failure must not be cached: a retry re-runs marker discovery,
+    // resolves the encrypting codec, and writes encrypted bytes (not plaintext).
+    await collection.put('r', { secret: 1 })
+    const write = calls.find(
+      call => call.method === 'PUT' && call.url?.endsWith('/c/r')
+    )
+    expect(write?.body).toBeInstanceOf(Uint8Array)
+    expect(write?.json).toBeUndefined()
+  })
+})
+
 describe('codec seam: encrypted metadata is forbidden', () => {
   it('setMeta throws a ValidationError on an encrypted collection', async () => {
     const encryption: EncryptionProvider = {

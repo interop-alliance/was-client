@@ -201,4 +201,21 @@ describe('parseResource', () => {
       expect(await (parsed as Blob).text()).toBe('{"a":1}\n{"a":2}\n')
     }
   )
+
+  // `@interop/http-client` pre-consumes the JSON body into `.data`, so a stored
+  // top-level `null` arrives as `.data === null` with the stream already used.
+  // `readJsonData` must return that `null`, not fall through to `.json()`.
+  it('returns a stored top-level null without re-reading the body', async () => {
+    const response = {
+      headers: new Headers({ 'content-type': 'application/json' }),
+      data: null,
+      async json() {
+        throw new TypeError('Body has already been used')
+      },
+      async blob() {
+        return new Blob([])
+      }
+    } as unknown as HttpResponse
+    expect(await parseResource(response)).toBeNull()
+  })
 })
