@@ -69,6 +69,14 @@
   every page into a single listing; the returned envelope omits `next`, since
   the whole list has been collected. A self-referential or already-seen `next`
   ends the traversal defensively rather than looping forever.
+- **`Collection.configure()` no longer drops `backend` / `encryption`.** It
+  carried only `name` forward from the fetched description, so on a
+  replace-semantics server `configure({ name })` dropped an EDV collection's
+  `backend` or cleared its `encryption` marker (tripping
+  `encryption-immutable`), and the returned `CollectionDescription` reported
+  `encryption === undefined` unconditionally. It now merges every current field
+  forward (mirroring `Space.configure`), so omitted fields are preserved in both
+  the PUT body and the returned description.
 
 ### Added
 

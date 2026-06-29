@@ -172,13 +172,19 @@ export class Collection {
   }): Promise<CollectionDescription> {
     assertNotReserved(this.id, 'collection')
     const current = await this.describe()
+    // Merge every current field forward (mirror `Space.configure`): a
+    // replace-semantics server drops anything omitted from the PUT body, so
+    // `configure({ name })` on an EDV collection would otherwise wipe its
+    // `backend` or trip `encryption-immutable` by clearing the marker.
     const name = desc.name ?? current?.name
+    const backend = desc.backend ?? current?.backend
+    const encryption = desc.encryption ?? current?.encryption
     const body: Record<string, unknown> = { id: this.id, name }
-    if (desc.backend) {
-      body.backend = desc.backend
+    if (backend) {
+      body.backend = backend
     }
-    if (desc.encryption) {
-      body.encryption = desc.encryption
+    if (encryption) {
+      body.encryption = encryption
     }
     await send(this._context, {
       path: this._path,
@@ -198,7 +204,9 @@ export class Collection {
     return {
       id: this.id,
       type: current?.type ?? ['Collection'],
-      ...(name !== undefined ? { name } : {})
+      ...(name !== undefined ? { name } : {}),
+      ...(backend !== undefined ? { backend } : {}),
+      ...(encryption !== undefined ? { encryption } : {})
     }
   }
 

@@ -371,6 +371,33 @@ describe('Collection.configure() reserved-id guard', () => {
     // describe() GET + configure() PUT.
     expect(calls.some(call => call.method === 'PUT')).toBe(true)
   })
+
+  it('merges current backend/encryption forward when only name changes', async () => {
+    // The `describe()` GET returns this canned current description; a
+    // replace-semantics server would drop any field omitted from the PUT body,
+    // so `configure({ name })` must carry `backend` and `encryption` forward.
+    const current = {
+      id: 'docs',
+      type: ['Collection'],
+      name: 'Docs',
+      backend: { id: 'custom' },
+      encryption: { scheme: 'edv' }
+    }
+    const { client, calls } = clientWithRequestSpy({ data: current })
+    const result = await client
+      .space('s')
+      .collection('docs')
+      .configure({ name: 'Renamed' })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toEqual({
+      id: 'docs',
+      name: 'Renamed',
+      backend: { id: 'custom' },
+      encryption: { scheme: 'edv' }
+    })
+    expect(result.backend).toEqual({ id: 'custom' })
+    expect(result.encryption).toEqual({ scheme: 'edv' })
+  })
 })
 
 describe('Resource reserved-id guard (path-collision safety)', () => {
