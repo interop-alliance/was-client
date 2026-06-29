@@ -77,6 +77,12 @@
   `encryption === undefined` unconditionally. It now merges every current field
   forward (mirroring `Space.configure`), so omitted fields are preserved in both
   the PUT body and the returned description.
+- **`mapError` no longer throws a `TypeError` on a non-array `errors` field.** A
+  non-conformant `application/problem+json` body with `errors` as a non-array
+  (e.g. `{ "errors": "boom" }`) passed the optional-chaining guard but threw
+  inside `.map`, replacing the intended `WasError` subclass with an opaque
+  `TypeError`. The `errors` field is now guarded with `Array.isArray` before
+  mapping its details.
 
 ### Added
 

@@ -277,9 +277,14 @@ export function mapError(err: unknown): WasError {
   const data = httpError.data
   const type = data?.type
   const title = data?.title
-  const details = data?.errors
-    ?.map(entry => entry.detail)
-    .filter((detail): detail is string => typeof detail === 'string')
+  // Guard with `Array.isArray`, not just optional chaining: a non-conformant
+  // `problem+json` body with `errors` as a non-array (e.g. `"boom"`) is truthy,
+  // so `?.map` would throw a `TypeError` and mask the real `WasError`.
+  const details = Array.isArray(data?.errors)
+    ? data.errors
+        .map(entry => entry.detail)
+        .filter((detail): detail is string => typeof detail === 'string')
+    : undefined
   const requestUrl = httpError.requestUrl
   const message = title ?? httpError.message ?? 'WAS request failed'
   const options = { status, type, title, details, requestUrl, cause: err }

@@ -172,6 +172,18 @@ describe('mapError', () => {
     expect(mapped.details).toEqual(['name is required', 'bad controller'])
   })
 
+  it('tolerates a non-array `errors` field without masking the real error', () => {
+    // A non-conformant body with `errors` as a string is truthy, so a bare
+    // `?.map` would throw a `TypeError` and replace the intended subclass.
+    const mapped = mapError({
+      status: 400,
+      data: { title: 'Bad request', errors: 'boom' }
+    })
+    expect(mapped).toBeInstanceOf(ValidationError)
+    expect(mapped.message).toBe('Bad request')
+    expect(mapped.details).toBeUndefined()
+  })
+
   it('preserves the original error as the cause', () => {
     const original = { status: 500, message: 'boom' }
     expect(mapError(original).cause).toBe(original)
