@@ -234,6 +234,55 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
     expect(value).toEqual({ decrypted: true })
   })
 
+  it('honors a per-resource override on collection.resource(id, { encryption })', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    // The parent collection has no marker and no override (it would be
+    // plaintext); the per-resource override marks just this resource encrypted
+    // and binds the codec, skipping marker discovery (no GET).
+    const { client, calls } = clientWithRouter({ encryption })
+    await client
+      .space('s')
+      .collection('c')
+      .resource('zDoc', { encryption: { scheme: 'edv' } })
+      .put({ secret: 1 })
+    expect(log).toContain('encode:zDoc')
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.url).toBe('https://was.example/space/s/c/zDoc')
+    expect(write?.body).toBeInstanceOf(Uint8Array)
+    expect(write?.json).toBeUndefined()
+    // The override skips marker discovery: no collection-description GET.
+    expect(calls.every(call => (call.method ?? 'GET') !== 'GET')).toBe(true)
+  })
+
+  it("a per-resource 'plaintext' override beats the collection's marker", async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        log.push('codecFor')
+        return fakeCodec(log)
+      }
+    }
+    // The collection declares an encryption marker, but the resource forces
+    // plaintext: the provider is never consulted and the write stays JSON.
+    const { client, calls } = clientWithRouter({
+      encryption,
+      marker: { scheme: 'edv' }
+    })
+    await client
+      .space('s')
+      .collection('c')
+      .resource('r', { encryption: 'plaintext' })
+      .put({ hello: 'world' })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({ hello: 'world' })
+    expect(log).not.toContain('codecFor')
+  })
+
   it('resolves the codec once and reuses it across resource handles', async () => {
     let resolveCount = 0
     const log: string[] = []
