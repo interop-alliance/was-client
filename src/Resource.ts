@@ -98,7 +98,10 @@ export class Resource {
    * standalone resource discovers its collection's `encryption` marker (one GET
    * on the collection, cached per handle) unless a per-handle override is set,
    * and fails closed if it cannot key an encrypted collection. A fresh
-   * standalone handle re-reads the marker, so retain the handle to reuse it.
+   * standalone handle re-reads the marker, so retain the handle to reuse it. A
+   * failed resolution (e.g. a transient 500/network error during marker
+   * discovery) is not memoized: the cache is cleared so the next call retries
+   * rather than re-throwing the stale error forever.
    *
    * A handle obtained via `collection.resource(id)` delegates to the parent's
    * shared thunk on every call rather than memoizing locally: the parent already
@@ -111,7 +114,10 @@ export class Resource {
     if (this._codecThunk) {
       return this._codecThunk()
     }
-    return (this._codecPromise ??= resolveCodec(this._context, {
+    if (this._codecPromise) {
+      return this._codecPromise
+    }
+    const promise = resolveCodec(this._context, {
       spaceId: this.spaceId,
       collectionId: this.collectionId,
       override: this._encryptionOverride,
@@ -125,7 +131,17 @@ export class Resource {
           ? { readable: false }
           : { readable: true, encryption: description.encryption }
       }
-    }))
+    })
+    // Memoize the in-flight promise so concurrent callers share one round-trip,
+    // but drop it on rejection so a transient failure does not permanently
+    // poison the handle. The identity guard avoids clobbering a newer promise.
+    this._codecPromise = promise
+    promise.catch((): void => {
+      if (this._codecPromise === promise) {
+        this._codecPromise = undefined
+      }
+    })
+    return promise
   }
 
   /**

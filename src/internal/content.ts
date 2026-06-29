@@ -160,11 +160,16 @@ export function prepareBody(
  * Reads a JSON response body, preferring the http-client's pre-parsed `data`
  * and falling back to `response.json()` when it is absent.
  *
+ * `@interop/http-client` pre-consumes the body into `.data` for JSON
+ * content-types, so a stored top-level `null` arrives as `.data === null`.
+ * Test for `undefined` rather than using `??`; otherwise the nullish fallback
+ * would re-invoke `.json()` on the already-consumed stream and throw.
+ *
  * @param response {HttpResponse}
  * @returns {Promise<unknown>}
  */
 export async function readJsonData(response: HttpResponse): Promise<unknown> {
-  return response.data ?? (await response.json())
+  return response.data === undefined ? await response.json() : response.data
 }
 
 /**

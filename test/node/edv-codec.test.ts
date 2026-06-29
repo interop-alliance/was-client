@@ -12,6 +12,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import type { IKeyAgreementKey } from '@interop/data-integrity-core'
+import type { HttpResponse } from '@interop/http-client'
 
 import { ValidationError } from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
@@ -46,7 +48,13 @@ async function makeCodec(
     }
   }
   const provider = createEdvEncryption({
-    resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
+    // `X25519KeyAgreementKey2020.id` is typed optional, but a key generated with
+    // a `controller` always derives one, so narrow it to the `IKeyAgreementKey`
+    // contract the EDV keystore expects.
+    resolveKeys: async () => ({
+      keyAgreementKey: kak as IKeyAgreementKey,
+      keyResolver
+    }),
     ...options
   })
   // Core decides policy (marker/override) and then asks the provider to build
@@ -69,17 +77,14 @@ async function makeCodec(
  * @param body {Uint8Array}
  * @returns {object}
  */
-function responseFrom(body?: Uint8Array | Blob): {
-  data: unknown
-  json(): Promise<unknown>
-} {
+function responseFrom(body?: Uint8Array | Blob): HttpResponse {
   const envelope = JSON.parse(new TextDecoder().decode(body as Uint8Array))
   return {
     data: envelope,
     async json() {
       return envelope
     }
-  }
+  } as unknown as HttpResponse
 }
 
 describe('EdvCodec: JSON round trip', () => {
@@ -170,11 +175,7 @@ describe('EdvCodec: conditional writes (sequence enforcement)', () => {
   function currentFrom(
     body: Uint8Array | Blob | undefined,
     etag: string | null
-  ): {
-    data: unknown
-    json(): Promise<unknown>
-    headers: { get(name: string): string | null }
-  } {
+  ): HttpResponse {
     const envelope = JSON.parse(new TextDecoder().decode(body as Uint8Array))
     return {
       data: envelope,
@@ -184,7 +185,7 @@ describe('EdvCodec: conditional writes (sequence enforcement)', () => {
       headers: {
         get: (name: string) => (name.toLowerCase() === 'etag' ? etag : null)
       }
-    }
+    } as unknown as HttpResponse
   }
 
   function sequenceOf(body: Uint8Array | Blob | undefined): number {
@@ -264,7 +265,7 @@ describe('createEdvEncryption: provider (keystore)', () => {
     })
     const provider = createEdvEncryption({
       resolveKeys: async () => ({
-        keyAgreementKey: kak,
+        keyAgreementKey: kak as IKeyAgreementKey,
         keyResolver: async () => ({
           id: kak.id,
           type: kak.type,

@@ -4,8 +4,8 @@
 
 ### Changed
 
-- **The preferred EDV envelope content type is now `application/jose+json`** (the
-  JWE JSON Serialization media type, RFC 7516), replacing the previous
+- **The preferred EDV envelope content type is now `application/jose+json`**
+  (the JWE JSON Serialization media type, RFC 7516), replacing the previous
   `application/edv+json`. This aligns with the WAS spec's Encryption Scheme
   Registry, which maps the `edv` scheme to `application/jose+json`. The exported
   constant is renamed `EDV_CONTENT_TYPE` to `JOSE_CONTENT_TYPE` (breaking) and
@@ -24,11 +24,11 @@
   `EncryptionError`); pass an explicit per-handle `encryption` override
   (`'plaintext'`, or a scheme/keys override) to proceed deliberately.
 - **Reserved resource ids are rejected on every operation, not just `put`.**
-  `resourcePath(s, c, 'policy')` is byte-identical to the collection policy path,
-  so `collection.resource('policy').delete()` silently wiped the collection's
-  access-control policy (same collision for `backend` / `quota` / `linkset` /
-  `meta`). The reserved-id guard now runs at `Resource` construction, covering
-  read / delete / meta / policy / put uniformly.
+  `resourcePath(s, c, 'policy')` is byte-identical to the collection policy
+  path, so `collection.resource('policy').delete()` silently wiped the
+  collection's access-control policy (same collision for `backend` / `quota` /
+  `linkset` / `meta`). The reserved-id guard now runs at `Resource`
+  construction, covering read / delete / meta / policy / put uniformly.
 - **`configure()` now invalidates the memoized codec when it enables
   encryption.** A read caches the identity (plaintext) codec while a collection
   is still plaintext; `configure({ encryption: { scheme: 'edv' } })` flipped the
@@ -38,6 +38,21 @@
   `encryption` marker, and child resource handles obtained via
   `collection.resource(id)` delegate to the parent's codec on every call so the
   invalidation propagates to them too.
+- **A stored top-level JSON `null` no longer crashes reads.**
+  `@interop/http-client` pre-consumes the body into `.data` for JSON
+  content-types, so a stored `null` arrived as `.data === null`;
+  `readJsonData`'s `response.data ?? response.json()` treated that as "absent"
+  and re-invoked `.json()` on the already-consumed stream, throwing
+  `Body has already been used`. The check now tests for `undefined`, so `get()`
+  / `publicRead()` return `null` as stored.
+- **A transient marker-discovery failure no longer permanently poisons a
+  handle.** `Collection`/`Resource` memoized the in-flight codec _promise_ with
+  `??=`, so a transient 500 / network error during marker discovery cached a
+  rejected promise and every later `get` / `put` / `add` on that handle re-threw
+  the stale error with no retry, even after the server recovered. The memo is
+  now cleared on rejection (guarded against clobbering a newer in-flight
+  promise), so the next call retries; a successful resolution is still memoized
+  once per handle.
 
 ## 0.9.2 - 2026-06-28
 

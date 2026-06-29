@@ -39,8 +39,7 @@ import type {
  * collection).
  */
 export type MarkerReadResult =
-  | { readable: false }
-  | { readable: true; encryption?: CollectionEncryption }
+  { readable: false } | { readable: true; encryption?: CollectionEncryption }
 
 /**
  * The default codec: passes plaintext through unchanged. `encode` echoes the
