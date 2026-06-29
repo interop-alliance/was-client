@@ -15,7 +15,7 @@ import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { HttpResponse } from '@interop/http-client'
 
-import { ValidationError } from '../../src/index.js'
+import { EncryptionError, ValidationError } from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
 import { createEdvEncryption, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
@@ -159,6 +159,47 @@ describe('EdvCodec: binary', () => {
     await expect(codec.encode({ data: 'just a string' })).rejects.toThrow(
       ValidationError
     )
+  })
+})
+
+describe('EdvCodec: non-envelope guard', () => {
+  /**
+   * A read response carrying an arbitrary JSON document (mirroring how core
+   * hands a GET response back), used to simulate a plaintext/foreign resource
+   * stored in an encrypted collection.
+   *
+   * @param doc {unknown}
+   * @returns {HttpResponse}
+   */
+  function jsonResponse(doc: unknown): HttpResponse {
+    return {
+      data: doc,
+      async json() {
+        return doc
+      },
+      headers: {
+        get: () => '"1"'
+      }
+    } as unknown as HttpResponse
+  }
+
+  it('throws a typed EncryptionError when decoding a non-envelope body', async () => {
+    const codec = await makeCodec()
+    await expect(
+      codec.decode(jsonResponse({ hello: 'plaintext, no jwe' }))
+    ).rejects.toThrow(EncryptionError)
+  })
+
+  it('throws a typed EncryptionError when updating over a non-envelope prior doc', async () => {
+    const codec = await makeCodec()
+    const minted = (await codec.encode({ data: { v: 1 } })).id as string
+    await expect(
+      codec.encode({
+        id: minted,
+        data: { v: 2 },
+        current: jsonResponse({ hello: 'plaintext, no jwe' })
+      })
+    ).rejects.toThrow(EncryptionError)
   })
 })
 

@@ -22,6 +22,12 @@
 
 ### Fixed
 
+- **A non-envelope document in an encrypted collection now throws a typed
+  `EncryptionError`.** `EdvCodec.decode` passed whatever JSON it read straight to
+  the cipher, and the conditional-write update path did the same with the
+  pre-read prior document; a plaintext or foreign resource (one with no `jwe`
+  field) made the EDV core throw a raw `TypeError` instead of a `WasError`. Both
+  paths now validate the EDV envelope shape and surface an `EncryptionError`.
 - **Fail-closed encryption: an unreadable collection marker no longer downgrades
   to plaintext.** When an encryption-capable client held a resource-scoped
   capability, the marker-discovery GET on the collection description was

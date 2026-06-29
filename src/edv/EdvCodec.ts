@@ -51,7 +51,7 @@ import type {
   EncryptionProvider,
   ResourceCodec
 } from '../codec.js'
-import { ValidationError } from '../errors.js'
+import { EncryptionError, ValidationError } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
 import type { Json, ResourceData } from '../types.js'
 import { JOSE_CONTENT_TYPE } from './WasTransport.js'
@@ -191,11 +191,14 @@ export class EdvCodec implements ResourceCodec {
     // write to the server's current ETag with `If-Match`. With no prior envelope
     // this is a fresh insert (`sequence: 0`) guarded by `If-None-Match: *`
     // (create-if-absent), so a concurrent first writer cannot be clobbered.
-    const priorDoc = current
-      ? ((await readJsonData(
-          current as Parameters<typeof readJsonData>[0]
-        )) as IEncryptedDocument)
-      : null
+    let priorDoc: IEncryptedDocument | null = null
+    if (current) {
+      const read = await readJsonData(
+        current as Parameters<typeof readJsonData>[0]
+      )
+      this._assertEnvelope(read, 'update')
+      priorDoc = read
+    }
 
     const recipients = this._edv._createDefaultRecipients(this._keyAgreementKey)
     const encrypted = await this._edv._encrypt({
@@ -229,14 +232,45 @@ export class EdvCodec implements ResourceCodec {
     data?: unknown
     json(): Promise<unknown>
   }): Promise<Json | Blob> {
-    const encryptedDoc = (await readJsonData(
+    const encryptedDoc = await readJsonData(
       response as Parameters<typeof readJsonData>[0]
-    )) as IEncryptedDocument
+    )
+    this._assertEnvelope(encryptedDoc, 'read')
     const decrypted = await this._edv._decrypt({
       encryptedDoc,
       keyAgreementKey: this._keyAgreementKey
     })
     return this._fromContent(decrypted.content)
+  }
+
+  /**
+   * Asserts that a document read from an encrypted collection is an EDV envelope
+   * (`{ jwe, ... }`) before it is handed to the cipher. A plaintext or foreign
+   * resource -- one written without this codec -- carries no `jwe`, which would
+   * otherwise make the EDV core throw a raw `TypeError`. Surfacing a typed
+   * `EncryptionError` keeps the fail-closed contract legible to callers.
+   *
+   * @param doc {unknown}
+   * @param context {string}   the operation in progress (`read` / `update`),
+   *   for the message
+   * @returns {asserts doc is IEncryptedDocument}
+   */
+  private _assertEnvelope(
+    doc: unknown,
+    context: string
+  ): asserts doc is IEncryptedDocument {
+    const jwe =
+      doc !== null && typeof doc === 'object'
+        ? (doc as { jwe?: unknown }).jwe
+        : undefined
+    if (jwe === null || typeof jwe !== 'object') {
+      throw new EncryptionError(
+        `Cannot ${context} an encrypted resource: the stored document is not ` +
+          'an EDV envelope (it carries no `jwe` field). It was likely written ' +
+          'as plaintext, or by a writer that did not use this encrypted ' +
+          'collection.'
+      )
+    }
   }
 
   /**
