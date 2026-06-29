@@ -125,4 +125,16 @@ describe('toUrl', () => {
       toUrl({ serverUrl: 'http://localhost:9787', path: '/spaces/' })
     ).toBe('http://localhost:9787/spaces/')
   })
+
+  it('preserves a base-path prefix on the server URL', () => {
+    expect(
+      toUrl({ serverUrl: 'https://host/was/', path: '/space/x' })
+    ).toBe('https://host/was/space/x')
+  })
+
+  it('preserves a base-path prefix without a trailing slash', () => {
+    expect(toUrl({ serverUrl: 'https://host/was', path: '/space/x' })).toBe(
+      'https://host/was/space/x'
+    )
+  })
 })
