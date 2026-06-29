@@ -166,6 +166,15 @@ export class Collection {
       capability: this._capability,
       json: body
     })
+    // Adding the encryption marker flips this collection from plaintext to
+    // encrypted server-side. Drop any codec memoized from the prior (plaintext)
+    // marker so the next read/write re-resolves it -- otherwise a `put` would
+    // reuse the cached identity codec and write server-visible plaintext into
+    // the now-encrypted collection. Child resource handles share this codec via
+    // their thunk, so resetting here propagates to them too.
+    if (desc.encryption) {
+      this._codecPromise = undefined
+    }
     return {
       id: this.id,
       type: current?.type ?? ['Collection'],
