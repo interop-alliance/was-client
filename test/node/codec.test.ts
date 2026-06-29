@@ -381,6 +381,109 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
   })
 })
 
+describe('codec seam: configure() invalidates the memoized codec', () => {
+  /**
+   * Builds a client over a stub whose collection is plaintext until a
+   * `configure` PUT carrying an `encryption` body flips it encrypted. The marker
+   * GET reflects the current server-side state, so a codec memoized while
+   * plaintext is stale once encryption is enabled.
+   *
+   * @returns {object} { client, calls }
+   */
+  function flippableClient(): { client: WasClient; calls: RequestArgs[] } {
+    const calls: RequestArgs[] = []
+    let encrypted = false
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        const method = (args.method ?? 'GET').toUpperCase()
+        const segments = new URL(args.url ?? '').pathname
+          .split('/')
+          .filter(Boolean)
+        const isCollectionDescription =
+          segments.length === 3 && segments[0] === 'space'
+        // A configure PUT to the collection description with an `encryption`
+        // body flips the server-side marker on.
+        if (
+          method === 'PUT' &&
+          isCollectionDescription &&
+          (args.json as { encryption?: unknown } | undefined)?.encryption
+        ) {
+          encrypted = true
+        }
+        if (method === 'GET' && isCollectionDescription) {
+          const description = {
+            id: segments[2],
+            type: ['Collection'],
+            ...(encrypted && { encryption: { scheme: 'edv' } })
+          }
+          return {
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            data: description,
+            async json() {
+              return description
+            }
+          } as unknown as HttpResponse
+        }
+        return {
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          data: { id: 'server-minted' },
+          async json() {
+            return { id: 'server-minted' }
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient,
+      encryption
+    })
+    return { client, calls }
+  }
+
+  it('re-resolves the codec after configure() enables encryption', async () => {
+    const { client, calls } = flippableClient()
+    const collection = client.space('s').collection('c')
+    // A read while plaintext memoizes the identity codec.
+    await collection.get('r')
+    // Enabling encryption must drop that cached codec.
+    await collection.configure({ encryption: { scheme: 'edv' } })
+    await collection.put('r', { secret: 1 })
+    const write = calls.find(
+      call => call.method === 'PUT' && call.url?.endsWith('/c/r')
+    )
+    // The re-resolved encrypting codec writes bytes, not plaintext JSON.
+    expect(write?.body).toBeInstanceOf(Uint8Array)
+    expect(write?.json).toBeUndefined()
+  })
+
+  it('the invalidation propagates to a child resource handle', async () => {
+    const { client, calls } = flippableClient()
+    const collection = client.space('s').collection('c')
+    const resource = collection.resource('r')
+    // The child handle reads while plaintext, caching the identity codec via the
+    // parent's shared thunk.
+    await resource.get()
+    await collection.configure({ encryption: { scheme: 'edv' } })
+    await resource.put({ secret: 1 })
+    const write = calls.find(
+      call => call.method === 'PUT' && call.url?.endsWith('/c/r')
+    )
+    expect(write?.body).toBeInstanceOf(Uint8Array)
+    expect(write?.json).toBeUndefined()
+  })
+})
+
 describe('codec seam: encrypted metadata is forbidden', () => {
   it('setMeta throws a ValidationError on an encrypted collection', async () => {
     const encryption: EncryptionProvider = {

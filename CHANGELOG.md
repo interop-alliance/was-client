@@ -29,6 +29,15 @@
   access-control policy (same collision for `backend` / `quota` / `linkset` /
   `meta`). The reserved-id guard now runs at `Resource` construction, covering
   read / delete / meta / policy / put uniformly.
+- **`configure()` now invalidates the memoized codec when it enables
+  encryption.** A read caches the identity (plaintext) codec while a collection
+  is still plaintext; `configure({ encryption: { scheme: 'edv' } })` flipped the
+  collection encrypted server-side but left the cached codec in place, so a
+  subsequent `put` wrote server-visible plaintext into the now-encrypted
+  collection. `configure()` now drops the cached codec whenever it sets the
+  `encryption` marker, and child resource handles obtained via
+  `collection.resource(id)` delegate to the parent's codec on every call so the
+  invalidation propagates to them too.
 
 ## 0.9.2 - 2026-06-28
 

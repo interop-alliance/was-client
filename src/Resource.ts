@@ -100,26 +100,32 @@ export class Resource {
    * and fails closed if it cannot key an encrypted collection. A fresh
    * standalone handle re-reads the marker, so retain the handle to reuse it.
    *
+   * A handle obtained via `collection.resource(id)` delegates to the parent's
+   * shared thunk on every call rather than memoizing locally: the parent already
+   * memoizes (so this adds no round-trip), and delegating lets a parent reset
+   * (e.g. after `configure()` adds the encryption marker) propagate here.
+   *
    * @returns {Promise<ResourceCodec>}
    */
   private _codec(): Promise<ResourceCodec> {
-    return (this._codecPromise ??= this._codecThunk
-      ? this._codecThunk()
-      : resolveCodec(this._context, {
+    if (this._codecThunk) {
+      return this._codecThunk()
+    }
+    return (this._codecPromise ??= resolveCodec(this._context, {
+      spaceId: this.spaceId,
+      collectionId: this.collectionId,
+      override: this._encryptionOverride,
+      readMarker: async (): Promise<MarkerReadResult> => {
+        const description = await describeCollection(this._context, {
           spaceId: this.spaceId,
           collectionId: this.collectionId,
-          override: this._encryptionOverride,
-          readMarker: async (): Promise<MarkerReadResult> => {
-            const description = await describeCollection(this._context, {
-              spaceId: this.spaceId,
-              collectionId: this.collectionId,
-              capability: this._capability
-            })
-            return description === null
-              ? { readable: false }
-              : { readable: true, encryption: description.encryption }
-          }
-        }))
+          capability: this._capability
+        })
+        return description === null
+          ? { readable: false }
+          : { readable: true, encryption: description.encryption }
+      }
+    }))
   }
 
   /**
