@@ -231,6 +231,9 @@ export class Collection {
    * @param resourceId {string}
    * @param options {object}
    * @param [options.capability] {IZcap}
+   * @param [options.encryption] {EncryptionOverride}   per-resource encryption
+   *   override; wins over the Collection's codec and resolves a fresh one for
+   *   this resource (see {@link EncryptionOverride})
    * @returns {Resource}
    */
   resource(resourceId: string, options: HandleOptions = {}): Resource {
@@ -240,9 +243,14 @@ export class Collection {
       collectionId: this.id,
       resourceId,
       capability: options.capability ?? this._capability,
-      // Share this collection's resolved codec so a resource handle does not
-      // repeat the backend() round-trip.
-      codec: () => this._codec()
+      // A per-resource encryption override resolves its own codec (honoring the
+      // override); without one, share this collection's resolved codec so the
+      // resource handle does not repeat the marker-discovery round-trip. The two
+      // are mutually exclusive: the Resource ignores `encryption` when `codec`
+      // is supplied.
+      ...(options.encryption !== undefined
+        ? { encryption: options.encryption }
+        : { codec: () => this._codec() })
     })
   }
 

@@ -83,6 +83,15 @@
   inside `.map`, replacing the intended `WasError` subclass with an opaque
   `TypeError`. The `errors` field is now guarded with `Array.isArray` before
   mapping its details.
+- **`collection.resource(id, { encryption })` now honors the per-resource
+  override.** `HandleOptions.encryption` was advertised on the `resource()`
+  factory but silently dropped: the method forwarded only `capability` and
+  always pinned the resource to the parent collection's shared codec, so a
+  per-resource override had no effect. When an override is passed, the resource
+  now resolves its own codec from it (winning over the Collection's marker and
+  skipping marker discovery, per `EncryptionOverride`); without one, the
+  resource still shares the collection's codec to avoid a redundant
+  marker-discovery round-trip.
 
 ### Added
 
