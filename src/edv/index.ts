@@ -18,4 +18,4 @@
  */
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
-export { WasTransport, EDV_CONTENT_TYPE } from './WasTransport.js'
+export { WasTransport, JOSE_CONTENT_TYPE } from './WasTransport.js'

@@ -142,7 +142,7 @@ function fakeCodec(
       return {
         id: id ?? 'zMintedEdvId',
         body: new TextEncoder().encode(JSON.stringify({ jwe: data })),
-        contentType: 'application/edv+json'
+        contentType: 'application/jose+json'
       }
     },
     async decode(): Promise<{ decrypted: true }> {
@@ -207,7 +207,7 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
     expect(result.id).toBe('zMintedEdvId')
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.url).toBe('https://was.example/space/s/c/zMintedEdvId')
-    expect(write?.headers?.['content-type']).toBe('application/edv+json')
+    expect(write?.headers?.['content-type']).toBe('application/jose+json')
     expect(write?.body).toBeInstanceOf(Uint8Array)
     // The override skips both the backend probe and marker discovery: no GET.
     expect(calls.every(call => !call.url?.endsWith('/backend'))).toBe(true)
@@ -224,7 +224,7 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
     const { client } = clientWithRouter({
       encryption,
       readData: { jwe: 'ciphertext' },
-      readContentType: 'application/edv+json'
+      readContentType: 'application/jose+json'
     })
     const value = await client
       .space('s')
@@ -428,7 +428,7 @@ function conditionalFakeCodec(log: string[]): ResourceCodec {
       return {
         id: id ?? 'zMintedEdvId',
         body: new TextEncoder().encode(JSON.stringify({ jwe: data })),
-        contentType: 'application/edv+json',
+        contentType: 'application/jose+json',
         ...(etag ? { ifMatch: etag } : { ifNoneMatch: true })
       }
     },
@@ -507,7 +507,7 @@ describe('conditional writes: conditional codec wiring', () => {
     const { client, calls } = clientWithRouter({
       encryption,
       readData: { jwe: 'prior' },
-      readContentType: 'application/edv+json',
+      readContentType: 'application/jose+json',
       readEtag: '"5"'
     })
     await client

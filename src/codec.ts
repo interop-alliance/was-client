@@ -44,7 +44,7 @@ import type { Json } from './types.js'
  * - `json` / `body` -- mutually exclusive payloads, mirroring the request
  *   layer: `json` for a structured body, `body` for raw bytes.
  * - `contentType` -- the content type to send for a `body` write (e.g.
- *   `application/edv+json` for an encrypted envelope).
+ *   `application/jose+json` for an encrypted envelope).
  * - `ifMatch` / `ifNoneMatch` -- an optional conditional-write precondition the
  *   codec computed (e.g. the EDV codec maps its `sequence` onto an `If-Match`
  *   ETag for lost-update-safe updates, or `If-None-Match: *` for a fresh

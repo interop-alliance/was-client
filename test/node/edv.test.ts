@@ -14,7 +14,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { HttpResponse } from '@interop/http-client'
 import type { IEncryptedDocument } from '@interop/data-integrity-core'
 
-import { WasTransport, EDV_CONTENT_TYPE } from '../../src/edv/index.js'
+import { WasTransport, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
 /**
  * A minimal encrypted-document fixture (the envelope shape a WAS server stores).
@@ -78,19 +78,19 @@ describe('WasTransport — insert', () => {
     expect(decodeBody(put.body)).toEqual(doc)
   })
 
-  it('honors a custom content type (EDV_CONTENT_TYPE)', async () => {
+  it('honors a custom content type (JOSE_CONTENT_TYPE)', async () => {
     const request = vi.fn(async (input: { method?: string }) => {
       if (input.method === 'GET') {
         throw httpError(404)
       }
       return {} as HttpResponse
     })
-    await transport(request, EDV_CONTENT_TYPE).insert({
+    await transport(request, JOSE_CONTENT_TYPE).insert({
       encrypted: encryptedDoc('zEdv')
     })
     const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
     expect((put.headers as Record<string, string>)['content-type']).toBe(
-      EDV_CONTENT_TYPE
+      JOSE_CONTENT_TYPE
     )
   })
 

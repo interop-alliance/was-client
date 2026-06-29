@@ -22,7 +22,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { WasClient } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
-import { WasTransport, EDV_CONTENT_TYPE } from '../../src/edv/index.js'
+import { WasTransport, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -122,7 +122,7 @@ describeLive('EDV-over-WAS round trip (live server)', () => {
     expect(JSON.stringify(stored)).not.toContain('do not leak')
 
     // Stored as application/json (the zero-server-change default). The
-    // preferred `application/edv+json` marker needs a server-side parser.
+    // preferred `application/jose+json` marker needs a server-side parser.
     const meta = await collection.resource(inserted.id).meta()
     expect(meta?.contentType).toMatch(/application\/json/)
   })
@@ -144,14 +144,14 @@ describeLive('EDV-over-WAS round trip (live server)', () => {
     expect(refetched.content).toEqual({ v: 2 })
   })
 
-  it('can store the preferred application/edv+json marker', async () => {
+  it('can store the preferred application/jose+json marker', async () => {
     // A server that registers an `application/*+json` content-type parser (the
     // reference server does) accepts the preferred EDV marker.
     const edvTransport = new WasTransport({
       was,
       spaceId: space.id,
       collectionId: collection.id,
-      contentType: EDV_CONTENT_TYPE
+      contentType: JOSE_CONTENT_TYPE
     })
     const inserted = await edv.insert({
       doc: { content: { marked: true } },
@@ -162,7 +162,7 @@ describeLive('EDV-over-WAS round trip (live server)', () => {
     expect(fetched.content).toEqual({ marked: true })
 
     const meta = await collection.resource(inserted.id).meta()
-    expect(meta?.contentType).toMatch(/application\/edv\+json/)
+    expect(meta?.contentType).toMatch(/application\/jose\+json/)
   })
 
   it('throws NotFoundError reading a missing document', async () => {
