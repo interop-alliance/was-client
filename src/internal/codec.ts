@@ -28,6 +28,21 @@ import type {
 } from '../types.js'
 
 /**
+ * The outcome of a marker read. The distinction is load-bearing: `readable:
+ * false` means the Collection Description could not be read at all (a null/404,
+ * which WAS also returns for an *unauthorized* read -- e.g. a resource-scoped
+ * capability cannot GET the collection description), which is indistinguishable
+ * from "absent". That ambiguity must NOT be collapsed into "plaintext", or an
+ * encryption-capable client would fail open and write server-visible plaintext
+ * into an encrypted collection. `readable: true` means the description was read;
+ * its `encryption` is the declared marker (absent for a genuine plaintext
+ * collection).
+ */
+export type MarkerReadResult =
+  | { readable: false }
+  | { readable: true; encryption?: CollectionEncryption }
+
+/**
  * The default codec: passes plaintext through unchanged. `encode` echoes the
  * caller's `id` (so `put(id, ...)` is a `PUT` and `add(...)`, with no id, stays
  * a server-minting `POST`) and reuses `prepareBody` -- including the
@@ -74,8 +89,9 @@ export const identityCodec: ResourceCodec = {
  * @param [options.override] {EncryptionOverride}   per-handle override; wins
  *   over the marker and skips the marker read
  * @param options.readMarker {function}   lazily reads the Collection's declared
- *   `encryption` marker (resolves `undefined` for plaintext / missing); called
- *   only when there is no override and the client has a keystore
+ *   `encryption` marker, distinguishing a readable description (with or without
+ *   a marker) from an unreadable one (see {@link MarkerReadResult}); called only
+ *   when there is no override and the client has a keystore
  * @returns {Promise<ResourceCodec>}
  */
 export async function resolveCodec(
@@ -89,7 +105,7 @@ export async function resolveCodec(
     spaceId: string
     collectionId: string
     override?: EncryptionOverride
-    readMarker: () => Promise<CollectionEncryption | undefined>
+    readMarker: () => Promise<MarkerReadResult>
   }
 ): Promise<ResourceCodec> {
   // 1. A per-handle override wins and skips the marker read.
@@ -108,15 +124,32 @@ export async function resolveCodec(
   if (!context.encryption) {
     return identityCodec
   }
-  // 3. Otherwise the Collection's declared marker decides.
+  // 3. Otherwise the Collection's declared marker decides -- but only if we
+  // could actually read it. An unreadable description (a resource-scoped
+  // capability cannot GET the collection description, and WAS masks that as a
+  // 404) is ambiguous: it is indistinguishable from "absent", so an
+  // encryption-capable client fails closed rather than silently downgrading to
+  // plaintext and writing the caller's secret as server-visible plaintext into
+  // a possibly-encrypted collection.
   const marker = await readMarker()
-  if (!marker) {
+  if (!marker.readable) {
+    throw new EncryptionError(
+      `Cannot determine whether collection ${spaceId}/${collectionId} is ` +
+        'encrypted: its description is not readable (a resource-scoped ' +
+        'capability cannot read the collection description, and WAS returns ' +
+        '404 for both not-found and unauthorized). Refusing to fall back to ' +
+        'plaintext. Pass an explicit per-handle encryption override -- ' +
+        "`{ encryption: 'plaintext' }` to write plaintext, or a scheme/keys " +
+        'override to encrypt.'
+    )
+  }
+  if (!marker.encryption) {
     return identityCodec
   }
   return buildEncryptingCodec(context, {
     spaceId,
     collectionId,
-    scheme: marker.scheme
+    scheme: marker.encryption.scheme
   })
 }
 

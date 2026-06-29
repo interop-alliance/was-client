@@ -21,6 +21,7 @@ import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
+import type { MarkerReadResult } from './internal/codec.js'
 import { describeCollection } from './internal/describe.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
@@ -107,8 +108,12 @@ export class Collection {
       spaceId: this.spaceId,
       collectionId: this.id,
       override: this._encryptionOverride,
-      readMarker: async (): Promise<CollectionEncryption | undefined> =>
-        (await this.describe())?.encryption
+      readMarker: async (): Promise<MarkerReadResult> => {
+        const description = await this.describe()
+        return description === null
+          ? { readable: false }
+          : { readable: true, encryption: description.encryption }
+      }
     }))
   }
 

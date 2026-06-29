@@ -342,6 +342,43 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
         .put('zDoc', { secret: 1 })
     ).rejects.toThrow(EncryptionError)
   })
+
+  it('fails closed when the marker is unreadable (no fail-open to plaintext)', async () => {
+    // An encryption-capable client whose collection-description GET 404s (the
+    // resource-scoped-capability case WAS masks as not-found). The marker is
+    // ambiguous, so resolveCodec must refuse rather than write plaintext.
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        log.push('codecFor')
+        return fakeCodec(log)
+      }
+    }
+    const { client, calls } = clientWithRouter({ encryption, readStatus: 404 })
+    await expect(
+      client.space('s').collection('c').put('zDoc', { secret: 1 })
+    ).rejects.toThrow(EncryptionError)
+    // It must not have fallen back and written the plaintext secret.
+    expect(calls.some(call => call.method === 'PUT')).toBe(false)
+    expect(log).not.toContain('codecFor')
+  })
+
+  it("a 'plaintext' override is the documented escape hatch for an unreadable marker", async () => {
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec([])
+      }
+    }
+    const { client, calls } = clientWithRouter({ encryption, readStatus: 404 })
+    // The override skips marker discovery, so the same unreadable-marker case
+    // writes plaintext deliberately rather than throwing.
+    await client
+      .space('s')
+      .collection('c', { encryption: 'plaintext' })
+      .put('r', { hello: 'world' })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({ hello: 'world' })
+  })
 })
 
 describe('codec seam: encrypted metadata is forbidden', () => {

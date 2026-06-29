@@ -372,3 +372,35 @@ describe('Collection.configure() reserved-id guard', () => {
     expect(calls.some(call => call.method === 'PUT')).toBe(true)
   })
 })
+
+describe('Resource reserved-id guard (path-collision safety)', () => {
+  it('rejects a reserved resource id at handle construction (no I/O)', () => {
+    // `resource('policy')` would otherwise target the collection's policy
+    // endpoint -- a `delete()` would wipe access control. The guard fires
+    // synchronously, before any request, for every reserved segment that
+    // collides with a collection-level path.
+    const { client, calls } = clientWithRequestSpy()
+    for (const reserved of ['policy', 'backend', 'quota', 'linkset', 'meta']) {
+      expect(() => client.space('s').collection('c').resource(reserved)).toThrow(
+        ValidationError
+      )
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  it('guards reads/deletes too, not just writes', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    // Construction throws, so get()/delete() never even build a request.
+    expect(() => client.space('s').collection('c').resource('policy')).toThrow(
+      ValidationError
+    )
+    expect(calls).toHaveLength(0)
+  })
+
+  it('allows an ordinary resource id', () => {
+    const { client } = clientWithRequestSpy()
+    expect(() =>
+      client.space('s').collection('c').resource('greeting')
+    ).not.toThrow()
+  })
+})
