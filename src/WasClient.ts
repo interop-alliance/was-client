@@ -16,6 +16,8 @@ import { spacesRoot } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
 import { parseResource, readJsonData } from './internal/content.js'
+import { collectPages, walkPages } from './internal/pagination.js'
+import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
 import { ValidationError } from './errors.js'
 import type { EncryptionProvider } from './codec.js'
@@ -31,6 +33,7 @@ import type {
   Json,
   RequestInput,
   CollectionResourcesList,
+  ResourceSummary,
   SpaceListing
 } from './types.js'
 
@@ -207,9 +210,49 @@ export class WasClient {
   }
 
   /**
+   * Reads the first page of a public (`PublicCanRead`) collection listing with an
+   * unsigned `GET` and packages the means to follow its `next` links. Returns
+   * `null` if the collection is missing or not publicly readable (404 conflation
+   * caveat).
+   *
+   * @param collectionUrl {string}   the absolute collection URL
+   * @returns {Promise<PageWalk | null>}
+   */
+  private async _publicListWalk(
+    collectionUrl: string
+  ): Promise<PageWalk | null> {
+    // The collection listing endpoint is the trailing-slash items URL.
+    const url = collectionUrl.endsWith('/')
+      ? collectionUrl
+      : `${collectionUrl}/`
+    const response = await unsignedRequest({ url, method: 'GET', read: true })
+    if (response === null) {
+      return null
+    }
+    return {
+      first: (await readJsonData(response)) as CollectionResourcesList,
+      firstUrl: url,
+      fetchPage: async pageUrl => {
+        const pageResponse = await unsignedRequest({
+          url: pageUrl,
+          method: 'GET',
+          read: true
+        })
+        return pageResponse === null
+          ? null
+          : ((await readJsonData(pageResponse)) as CollectionResourcesList)
+      }
+    }
+  }
+
+  /**
    * Lists a public (`PublicCanRead`) collection by its URL with no authorization
    * -- an unsigned `GET` -- e.g. to browse a blog published as a public-read
-   * collection. Returns `null` if the collection is missing or not publicly
+   * collection. Transparently follows the server's `next` pagination links,
+   * buffering every page into a single list (the returned envelope omits `next`).
+   * For a large collection prefer `publicListCollectionPages()` or
+   * `publicListCollectionItems()`, which stream one page at a time and allow
+   * stopping early. Returns `null` if the collection is missing or not publicly
    * readable (404 conflation caveat).
    *
    * @param options {object}
@@ -221,15 +264,53 @@ export class WasClient {
   }: {
     collectionUrl: string
   }): Promise<CollectionResourcesList | null> {
-    // The collection listing endpoint is the trailing-slash items URL.
-    const url = collectionUrl.endsWith('/')
-      ? collectionUrl
-      : `${collectionUrl}/`
-    const response = await unsignedRequest({ url, method: 'GET', read: true })
-    if (response === null) {
-      return null
+    const walk = await this._publicListWalk(collectionUrl)
+    return walk === null ? null : collectPages(walk)
+  }
+
+  /**
+   * Lazily yields a public collection listing one page at a time, following the
+   * server's `next` links on demand with unsigned `GET`s. Use this to stream a
+   * large public collection in constant memory or to stop early. Yields nothing
+   * if the collection is missing or not publicly readable (404 conflation
+   * caveat).
+   *
+   * @param options {object}
+   * @param options.collectionUrl {string}   the absolute collection URL
+   * @returns {AsyncGenerator<CollectionResourcesList>}
+   */
+  async *publicListCollectionPages({
+    collectionUrl
+  }: {
+    collectionUrl: string
+  }): AsyncGenerator<CollectionResourcesList> {
+    const walk = await this._publicListWalk(collectionUrl)
+    if (walk === null) {
+      return
     }
-    return (await readJsonData(response)) as CollectionResourcesList
+    yield* walkPages(walk)
+  }
+
+  /**
+   * Lazily yields each item of a public collection across every page, flattening
+   * `publicListCollectionPages()`. Yields the listing's `ResourceSummary` entries
+   * (id / url / contentType / name), not the resource bodies. Yields nothing if
+   * the collection is missing or not publicly readable (404 conflation caveat).
+   *
+   * @param options {object}
+   * @param options.collectionUrl {string}   the absolute collection URL
+   * @returns {AsyncGenerator<ResourceSummary>}
+   */
+  async *publicListCollectionItems({
+    collectionUrl
+  }: {
+    collectionUrl: string
+  }): AsyncGenerator<ResourceSummary> {
+    for await (const page of this.publicListCollectionPages({
+      collectionUrl
+    })) {
+      yield* page.items
+    }
   }
 
   /**

@@ -217,9 +217,17 @@ await collection.configure({ name: 'Credentials' })
 const collections = await space.collections()
 // { url, totalItems, items: [{ id, name, url }, ...] } | null
 
-// List the resources inside this collection.
+// List the resources inside this collection. Transparently follows the
+// server's `next` pagination links, buffering every page into one listing.
 const resources = await collection.list()
 // { id, url, totalItems, items: [{ id, url, contentType }, ...], ... } | null
+
+// For a large collection, stream one page (or item) at a time instead of
+// buffering the whole thing -- follows `next` on demand, stops early on `break`.
+for await (const item of collection.listItems()) {
+  // item: { id, url, contentType, name? }
+}
+// `collection.listPages()` yields whole pages if you'd rather page yourself.
 
 await collection.delete() // deletes the whole collection; idempotent
 ```
@@ -274,8 +282,8 @@ Reads auto-parse: `get()` returns a parsed object for a JSON content-type and a
 A write value is a JSON object/array or binary (`Blob`/`Uint8Array`) -- the
 `ResourceData` type. A top-level JSON primitive (a bare `string`, `number`,
 `boolean`, or `null`) is **not** accepted; it is a compile-time error. To store
-one, either wrap it in an object (`put('greeting', { value: 'hello' })`) or write
-it as binary via a `Blob`:
+one, either wrap it in an object (`put('greeting', { value: 'hello' })`) or
+write it as binary via a `Blob`:
 
 ```ts
 await collection.put('greeting', new Blob(['hello'], { type: 'text/plain' }))
@@ -358,6 +366,14 @@ const doc = await was.publicRead({
 const listing = await was.publicListCollection({
   collectionUrl: 'https://was.example/space/s/c'
 }) // ResourceListing | null
+
+// Or stream a large public collection one item/page at a time:
+for await (const item of was.publicListCollectionItems({
+  collectionUrl: 'https://was.example/space/s/c'
+})) {
+  // item: { id, url, contentType, name? }
+}
+// (`was.publicListCollectionPages(...)` yields whole pages.)
 ```
 
 Both follow the read-method 404/null caveat: a missing or non-public target

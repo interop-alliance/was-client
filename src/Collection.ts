@@ -22,6 +22,8 @@ import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { resolveCodec } from './internal/codec.js'
 import type { MarkerReadResult } from './internal/codec.js'
+import { collectPages, walkPages } from './internal/pagination.js'
+import type { PageWalk } from './internal/pagination.js'
 import { describeCollection } from './internal/describe.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { ResourceCodec } from './codec.js'
@@ -42,7 +44,8 @@ import type {
   ResourceData,
   LinkSet,
   PolicyDocument,
-  CollectionResourcesList
+  CollectionResourcesList,
+  ResourceSummary
 } from './types.js'
 
 export class Collection {
@@ -357,19 +360,87 @@ export class Collection {
   }
 
   /**
-   * Lists the items in the collection. Returns `null` if the collection is
-   * missing or not visible to you (404 conflation caveat).
+   * Reads the first page of the listing and packages the means to follow its
+   * `next` links (each page fetched with the same authorization). Returns `null`
+   * if the collection is missing or not visible to you (404 conflation caveat).
    *
-   * @returns {Promise<CollectionResourcesList | null>}
+   * @returns {Promise<PageWalk | null>}
    */
-  async list(): Promise<CollectionResourcesList | null> {
+  private async _listWalk(): Promise<PageWalk | null> {
     const response = await send(this._context, {
       path: this._itemsPath,
       method: 'GET',
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as CollectionResourcesList)
+    if (response === null) {
+      return null
+    }
+    return {
+      first: response.data as CollectionResourcesList,
+      firstUrl: toUrl({
+        serverUrl: this._context.serverUrl,
+        path: this._itemsPath
+      }),
+      fetchPage: async url => {
+        const pageResponse = await send(this._context, {
+          url,
+          method: 'GET',
+          capability: this._capability,
+          read: true
+        })
+        return pageResponse === null
+          ? null
+          : (pageResponse.data as CollectionResourcesList)
+      }
+    }
+  }
+
+  /**
+   * Lists the items in the collection. Transparently follows the server's `next`
+   * pagination links, buffering every page into a single list (the returned
+   * envelope omits `next`). Convenient, but holds the whole collection in memory
+   * -- for a large collection prefer `listPages()` or `listItems()`, which stream
+   * one page at a time and allow stopping early. Returns `null` if the collection
+   * is missing or not visible to you (404 conflation caveat).
+   *
+   * @returns {Promise<CollectionResourcesList | null>}
+   */
+  async list(): Promise<CollectionResourcesList | null> {
+    const walk = await this._listWalk()
+    return walk === null ? null : collectPages(walk)
+  }
+
+  /**
+   * Lazily yields the listing one page at a time, following the server's `next`
+   * links on demand (each page fetched with the same authorization). Use this to
+   * stream a large collection in constant memory or to stop early. Yields nothing
+   * if the collection is missing or not visible to you (404 conflation caveat) --
+   * unlike `list()`, the iterator does not distinguish that from an empty
+   * collection.
+   *
+   * @returns {AsyncGenerator<CollectionResourcesList>}
+   */
+  async *listPages(): AsyncGenerator<CollectionResourcesList> {
+    const walk = await this._listWalk()
+    if (walk === null) {
+      return
+    }
+    yield* walkPages(walk)
+  }
+
+  /**
+   * Lazily yields each item across every page, flattening `listPages()`. Yields
+   * the listing's `ResourceSummary` entries (id / url / contentType / name), not
+   * the resource bodies -- call `get(id)` to read a body. Yields nothing if the
+   * collection is missing or not visible to you (404 conflation caveat).
+   *
+   * @returns {AsyncGenerator<ResourceSummary>}
+   */
+  async *listItems(): AsyncGenerator<ResourceSummary> {
+    for await (const page of this.listPages()) {
+      yield* page.items
+    }
   }
 
   /**
