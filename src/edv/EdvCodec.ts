@@ -53,7 +53,7 @@ import type {
 } from '../codec.js'
 import { ValidationError } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
-import type { Json } from '../types.js'
+import type { Json, ResourceData } from '../types.js'
 import { JOSE_CONTENT_TYPE } from './WasTransport.js'
 
 /**
@@ -172,7 +172,7 @@ export class EdvCodec implements ResourceCodec {
     current
   }: {
     id?: string
-    data: Json | Blob | Uint8Array
+    data: ResourceData
     contentType?: string
     current?: HttpResponse | null
   }): Promise<EncodedWrite> {
@@ -245,12 +245,12 @@ export class EdvCodec implements ResourceCodec {
    * base64 blob record; a bare primitive is rejected (mirroring the plaintext
    * `prepareBody` contract).
    *
-   * @param data {Json | Blob | Uint8Array}
+   * @param data {ResourceData}
    * @param [contentType] {string}
    * @returns {Promise<object>}
    */
   private async _toContent(
-    data: Json | Blob | Uint8Array,
+    data: ResourceData,
     contentType?: string
   ): Promise<object> {
     if (isBlob(data)) {

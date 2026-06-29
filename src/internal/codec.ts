@@ -24,7 +24,8 @@ import { EncryptionError } from '../errors.js'
 import type {
   CollectionEncryption,
   EncryptionOverride,
-  Json
+  Json,
+  ResourceData
 } from '../types.js'
 
 /**
@@ -57,7 +58,7 @@ export const identityCodec: ResourceCodec = {
     contentType
   }: {
     id?: string
-    data: Json | Blob | Uint8Array
+    data: ResourceData
     contentType?: string
   }): Promise<EncodedWrite> {
     const prepared = prepareBody(data, { contentType, filename: id })

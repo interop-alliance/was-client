@@ -271,6 +271,16 @@ await resource.getBytes() // Uint8Array
 Reads auto-parse: `get()` returns a parsed object for a JSON content-type and a
 `Blob` otherwise; `getText()` / `getBytes()` are explicit escape hatches.
 
+A write value is a JSON object/array or binary (`Blob`/`Uint8Array`) -- the
+`ResourceData` type. A top-level JSON primitive (a bare `string`, `number`,
+`boolean`, or `null`) is **not** accepted; it is a compile-time error. To store
+one, either wrap it in an object (`put('greeting', { value: 'hello' })`) or write
+it as binary via a `Blob`:
+
+```ts
+await collection.put('greeting', new Blob(['hello'], { type: 'text/plain' }))
+```
+
 ### Delegation and sharing
 
 `was.grant(...)` is the general delegation primitive; `space.grant(...)` and

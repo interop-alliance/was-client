@@ -36,6 +36,7 @@ export type {
   JsonPrimitive,
   JsonObject,
   JsonArray,
+  ResourceData,
   Action,
   ActionInput,
   SpaceDescription,

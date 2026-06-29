@@ -11,7 +11,7 @@
  */
 import type { HttpResponse } from '@interop/http-client'
 import { ValidationError } from '../errors.js'
-import type { Json } from '../types.js'
+import type { Json, ResourceData } from '../types.js'
 
 const OCTET_STREAM = 'application/octet-stream'
 
@@ -115,7 +115,7 @@ function toPlainBytes(bytes: Uint8Array): Uint8Array {
  * with `||` rather than `??` so an empty-string `Blob.type` -- a typeless Blob
  * -- falls through to the guess instead of becoming an empty content-type.)
  *
- * @param data {Json | Blob | Uint8Array}   the resource content
+ * @param data {ResourceData}                the resource content
  * @param options {object}
  * @param [options.contentType] {string}    overrides the inferred content-type
  *   for binary data
@@ -124,7 +124,7 @@ function toPlainBytes(bytes: Uint8Array): Uint8Array {
  * @returns {PreparedBody}
  */
 export function prepareBody(
-  data: Json | Blob | Uint8Array,
+  data: ResourceData,
   options: { contentType?: string; filename?: string } = {}
 ): PreparedBody {
   const guessed = options.filename
