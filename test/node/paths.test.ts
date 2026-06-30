@@ -127,9 +127,9 @@ describe('toUrl', () => {
   })
 
   it('preserves a base-path prefix on the server URL', () => {
-    expect(
-      toUrl({ serverUrl: 'https://host/was/', path: '/space/x' })
-    ).toBe('https://host/was/space/x')
+    expect(toUrl({ serverUrl: 'https://host/was/', path: '/space/x' })).toBe(
+      'https://host/was/space/x'
+    )
   })
 
   it('preserves a base-path prefix without a trailing slash', () => {

@@ -8,12 +8,13 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import { ValidationError } from '../../src/index.js'
 import {
   RESERVED_COLLECTION_IDS,
-  RESERVED_RESOURCE_IDS,
-  assertNotReserved
-} from '../../src/internal/reserved.js'
+  RESERVED_RESOURCE_IDS
+} from '@interop/storage-core'
+
+import { ValidationError } from '../../src/index.js'
+import { assertNotReserved } from '../../src/internal/reserved.js'
 
 describe('assertNotReserved', () => {
   it('throws a ValidationError for a reserved collection id', () => {

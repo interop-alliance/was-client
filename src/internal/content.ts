@@ -176,8 +176,7 @@ export function prepareBody(
  */
 export function createdId(response: HttpResponse | null): string {
   const data = (response as { data?: unknown } | null)?.data as
-    | { id?: unknown }
-    | undefined
+    { id?: unknown } | undefined
   if (
     data !== null &&
     typeof data === 'object' &&
