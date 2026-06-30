@@ -20,10 +20,12 @@ import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { prepareBody, parseResource } from './content.js'
+import { describeCollection } from './describe.js'
 import { EncryptionError } from '../errors.js'
 import type {
   CollectionEncryption,
   EncryptionOverride,
+  IZcap,
   Json,
   ResourceData
 } from '../types.js'
@@ -41,6 +43,89 @@ import type {
  */
 export type MarkerReadResult =
   { readable: false } | { readable: true; encryption?: CollectionEncryption }
+
+/**
+ * Reads a Collection's declared `encryption` marker as a {@link MarkerReadResult},
+ * mapping an unreadable description (null/404 -- also what WAS returns for an
+ * unauthorized read) to `{ readable: false }`. The lazy `readMarker` thunk both
+ * the Collection and the standalone-Resource codec resolution pass to
+ * {@link resolveCodec}.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.capability] {IZcap}
+ * @returns {Promise<MarkerReadResult>}
+ */
+export async function readCollectionMarker(
+  context: ClientContext,
+  {
+    spaceId,
+    collectionId,
+    capability
+  }: { spaceId: string; collectionId: string; capability?: IZcap }
+): Promise<MarkerReadResult> {
+  const description = await describeCollection(context, {
+    spaceId,
+    collectionId,
+    capability
+  })
+  return description === null
+    ? { readable: false }
+    : { readable: true, encryption: description.encryption }
+}
+
+/**
+ * A per-handle codec cache. Memoizes the in-flight resolution so concurrent
+ * callers share one round-trip, but drops it on rejection so a transient
+ * failure (e.g. a 500/network error during marker discovery) does not
+ * permanently poison the handle, and exposes `reset()` for when a handle's
+ * encryption state changes (e.g. `Collection.configure()` adds the marker).
+ */
+export class CodecHolder {
+  private _promise?: Promise<ResourceCodec>
+  private readonly _resolve: () => Promise<ResourceCodec>
+
+  /**
+   * @param resolve {function}   resolves a fresh codec; re-invoked after a
+   *   rejection or a `reset()`, else called at most once
+   */
+  constructor(resolve: () => Promise<ResourceCodec>) {
+    this._resolve = resolve
+  }
+
+  /**
+   * Returns the memoized codec, resolving it on first use.
+   *
+   * @returns {Promise<ResourceCodec>}
+   */
+  get(): Promise<ResourceCodec> {
+    if (this._promise) {
+      return this._promise
+    }
+    const promise = this._resolve()
+    // Memoize the in-flight promise so concurrent callers share one round-trip,
+    // but drop it on rejection so a transient failure does not permanently
+    // poison the handle. The identity guard avoids clobbering a newer promise.
+    this._promise = promise
+    promise.catch((): void => {
+      if (this._promise === promise) {
+        this._promise = undefined
+      }
+    })
+    return promise
+  }
+
+  /**
+   * Drops any memoized codec so the next `get()` re-resolves.
+   *
+   * @returns {void}
+   */
+  reset(): void {
+    this._promise = undefined
+  }
+}
 
 /**
  * The default codec: passes plaintext through unchanged. `encode` echoes the

@@ -71,7 +71,9 @@ export class ValidationError extends WasError {
 }
 
 /**
- * Authorization headers were missing or could not be verified (HTTP 401).
+ * Authorization headers were missing or could not be verified (HTTP 401), or
+ * the caller is authenticated but not permitted to act on the target (HTTP
+ * 403).
  */
 export class AuthRequiredError extends WasError {
   constructor(message: string, options: WasErrorOptions = {}) {
@@ -289,7 +291,7 @@ export function mapError(err: unknown): WasError {
   const message = title ?? httpError.message ?? 'WAS request failed'
   const options = { status, type, title, details, requestUrl, cause: err }
 
-  const kind = typeof type === 'string' ? type.split('#')[1] : undefined
+  const kind = typeof type === 'string' ? problemFragment(type) : undefined
   const byKind = errorForKind(kind, message, options)
   if (byKind !== null) {
     return byKind
@@ -299,9 +301,12 @@ export function mapError(err: unknown): WasError {
     case 400:
       return new ValidationError(message, options)
     case 401:
+    case 403:
       return new AuthRequiredError(message, options)
     case 404:
       return new NotFoundError(message, options)
+    case 415:
+      return new ValidationError(message, options)
     case 409:
       return new ConflictError(message, options)
     case 412:

@@ -19,10 +19,12 @@ import type { ActionInput } from '@interop/storage-core'
 
 export type { IZcap, IDelegatedZcap, ISigner }
 
-// Re-export the shared WAS wire model from `@interop/storage-core`. The
-// resources-in-a-collection listing is `CollectionResourcesList` (formerly
-// `ResourceListing`) and the collections-in-a-space listing is `CollectionsList`
-// (formerly `CollectionListing`).
+/**
+ * Re-export the shared WAS wire model from `@interop/storage-core`. The
+ * resources-in-a-collection listing is `CollectionResourcesList` (formerly
+ * `ResourceListing`) and the collections-in-a-space listing is `CollectionsList`
+ * (formerly `CollectionListing`).
+ */
 export type {
   Action,
   ActionInput,

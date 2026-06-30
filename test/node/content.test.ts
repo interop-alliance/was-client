@@ -9,11 +9,12 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { ValidationError } from '../../src/index.js'
+import { ValidationError, WasServerError } from '../../src/index.js'
 import {
   prepareBody,
   parseResource,
-  guessContentTypeFromId
+  guessContentTypeFromId,
+  createdId
 } from '../../src/internal/content.js'
 
 /**
@@ -217,5 +218,51 @@ describe('parseResource', () => {
       }
     } as unknown as HttpResponse
     expect(await parseResource(response)).toBeNull()
+  })
+})
+
+describe('createdId', () => {
+  /**
+   * Builds a minimal create-response stub.
+   *
+   * @param options {object}
+   * @param [options.data] {unknown}      the pre-parsed JSON body, if any
+   * @param [options.location] {string}   the `Location` header, if any
+   * @returns {HttpResponse}
+   */
+  function createResponse({
+    data,
+    location
+  }: {
+    data?: unknown
+    location?: string
+  }): HttpResponse {
+    return {
+      headers: new Headers(location ? { location } : {}),
+      data
+    } as unknown as HttpResponse
+  }
+
+  it("prefers the body's id", () => {
+    expect(createdId(createResponse({ data: { id: 'abc' } }))).toBe('abc')
+  })
+
+  it('falls back to the last (decoded) Location segment for a body-less 2xx', () => {
+    expect(
+      createdId(
+        createResponse({ location: 'https://was.example/space/s/c/a%20b' })
+      )
+    ).toBe('a b')
+  })
+
+  it('ignores a trailing slash on the Location header', () => {
+    expect(
+      createdId(createResponse({ location: 'https://was.example/space/s/' }))
+    ).toBe('s')
+  })
+
+  it('throws a WasServerError when neither body id nor Location is present', () => {
+    expect(() => createdId(createResponse({}))).toThrow(WasServerError)
+    expect(() => createdId(null)).toThrow(WasServerError)
   })
 })

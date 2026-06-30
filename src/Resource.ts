@@ -11,10 +11,10 @@ import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import { resolveCodec } from './internal/codec.js'
-import type { MarkerReadResult } from './internal/codec.js'
-import { describeCollection } from './internal/describe.js'
+import { CodecHolder, resolveCodec, readCollectionMarker } from './internal/codec.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
+import { sendEncodedWrite } from './internal/write.js'
+import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import type { ResourceCodec } from './codec.js'
 import { ValidationError } from './errors.js'
 import type {
@@ -36,7 +36,7 @@ export class Resource {
   private readonly _capability?: IZcap
   private readonly _codecThunk?: () => Promise<ResourceCodec>
   private readonly _encryptionOverride?: EncryptionOverride
-  private _codecPromise?: Promise<ResourceCodec>
+  private readonly _codecHolder: CodecHolder
 
   /**
    * @param options {object}
@@ -86,6 +86,19 @@ export class Resource {
     this._capability = capability
     this._codecThunk = codec
     this._encryptionOverride = encryption
+    this._codecHolder = new CodecHolder(() =>
+      resolveCodec(this._context, {
+        spaceId: this.spaceId,
+        collectionId: this.collectionId,
+        override: this._encryptionOverride,
+        readMarker: () =>
+          readCollectionMarker(this._context, {
+            spaceId: this.spaceId,
+            collectionId: this.collectionId,
+            capability: this._capability
+          })
+      })
+    )
   }
 
   private get _path(): string {
@@ -115,34 +128,7 @@ export class Resource {
     if (this._codecThunk) {
       return this._codecThunk()
     }
-    if (this._codecPromise) {
-      return this._codecPromise
-    }
-    const promise = resolveCodec(this._context, {
-      spaceId: this.spaceId,
-      collectionId: this.collectionId,
-      override: this._encryptionOverride,
-      readMarker: async (): Promise<MarkerReadResult> => {
-        const description = await describeCollection(this._context, {
-          spaceId: this.spaceId,
-          collectionId: this.collectionId,
-          capability: this._capability
-        })
-        return description === null
-          ? { readable: false }
-          : { readable: true, encryption: description.encryption }
-      }
-    })
-    // Memoize the in-flight promise so concurrent callers share one round-trip,
-    // but drop it on rejection so a transient failure does not permanently
-    // poison the handle. The identity guard avoids clobbering a newer promise.
-    this._codecPromise = promise
-    promise.catch((): void => {
-      if (this._codecPromise === promise) {
-        this._codecPromise = undefined
-      }
-    })
-    return promise
+    return this._codecHolder.get()
   }
 
   /**
@@ -259,13 +245,12 @@ export class Resource {
     const precondition = codec.conditionalWrites
       ? { ifMatch: encoded.ifMatch, ifNoneMatch: encoded.ifNoneMatch }
       : { ifMatch: options.ifMatch, ifNoneMatch: options.ifNoneMatch }
-    const response = await send(this._context, {
+    const response = await sendEncodedWrite(this._context, {
       path: this._path,
       method: 'PUT',
       capability: this._capability,
-      json: encoded.json,
-      body: encoded.body,
-      headers: writeHeaders(encoded.contentType, precondition)
+      encoded,
+      precondition
     })
     return { etag: readEtag(response) }
   }
@@ -390,13 +375,10 @@ export class Resource {
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
-    const response = await send(this._context, {
-      path: this._policyPath,
-      method: 'GET',
-      capability: this._capability,
-      read: true
+    return readPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
     })
-    return response === null ? null : (response.data as PolicyDocument)
   }
 
   /**
@@ -406,11 +388,10 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setPolicy(policy: PolicyDocument): Promise<void> {
-    await send(this._context, {
-      path: this._policyPath,
-      method: 'PUT',
-      capability: this._capability,
-      json: policy
+    return writePolicy(this._context, {
+      policyPath: this._policyPath,
+      policy,
+      capability: this._capability
     })
   }
 
@@ -441,11 +422,9 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async clearPolicy(): Promise<void> {
-    await send(this._context, {
-      path: this._policyPath,
-      method: 'DELETE',
-      capability: this._capability,
-      idempotent: true
+    return deletePolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
     })
   }
 }

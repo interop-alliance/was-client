@@ -40,35 +40,15 @@ import type { WasClient } from '../WasClient.js'
 import { httpStatus } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
 import { resourcePath } from '../internal/paths.js'
+import { DEFAULT_CONTENT_TYPE, ENCODER, JOSE_CONTENT_TYPE } from './constants.js'
 
-/**
- * The preferred content type marking a stored EDV-encrypted document: the JWE
- * JSON Serialization media type (`application/jose+json`, RFC 7516), which is
- * the wire format the WAS spec's Encryption Scheme Registry maps the `edv`
- * scheme to. The stored envelope's `jwe` property carries the ciphertext.
- * Requires the server to register an `application/*+json` content-type parser;
- * otherwise use the default `application/json` (see `WasTransport`'s
- * `contentType` option).
- */
-export const JOSE_CONTENT_TYPE = 'application/jose+json'
-
-/**
- * The content type used by default: plain JSON, which an unmodified WAS server
- * accepts. The stored envelope is still self-identifying by its `jwe` field.
- */
-const DEFAULT_CONTENT_TYPE = 'application/json'
+export { JOSE_CONTENT_TYPE }
 
 /**
  * The subset of `WasClient` this transport depends on: the signed-request
  * escape hatch. Declared structurally so tests can supply a lightweight stub.
  */
 type WasRequester = Pick<WasClient, 'request'>
-
-/**
- * A shared `TextEncoder` for serializing envelope bytes (stateless, so one
- * instance is reused across every `_put`).
- */
-const ENCODER = new TextEncoder()
 
 /**
  * Builds an `Error` carrying the `name` that `EdvClientCore` (and the reference

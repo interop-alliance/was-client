@@ -24,12 +24,13 @@ import { assertNotReserved } from './internal/reserved.js'
 import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
+import { createdId, dataOrNull, toPlainBytes } from './internal/content.js'
+import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import { Collection } from './Collection.js'
 import type {
   BackendDescriptor,
   BackendReference,
   BackendRegistration,
-  CollectionDescription,
   CollectionEncryption,
   CollectionsList,
   GrantOptions,
@@ -73,6 +74,10 @@ export class Space {
     return spacePath(this.id)
   }
 
+  private get _policyPath(): string {
+    return spacePolicy(this.id)
+  }
+
   /**
    * Reads the Space Description. Returns `null` if the space is missing or not
    * visible to you (WAS returns 404 for both not-found and unauthorized).
@@ -86,7 +91,7 @@ export class Space {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as SpaceDescription)
+    return dataOrNull<SpaceDescription>(response)
   }
 
   /**
@@ -198,13 +203,13 @@ export class Space {
       capability: this._capability,
       json: body
     })
-    const created = (response as { data?: unknown })
-      .data as CollectionDescription
     // Pre-seed the handle with an override matching the just-declared scheme so
     // the first write encrypts immediately (keys come from the keystore); no
     // describe() round-trip needed before the marker is locally known. A
     // `CollectionEncryption` marker is itself a valid `EncryptionOverride`.
-    return this.collection(created.id, { encryption: desc.encryption })
+    return this.collection(createdId(response), {
+      encryption: desc.encryption
+    })
   }
 
   /**
@@ -220,7 +225,7 @@ export class Space {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as CollectionsList)
+    return dataOrNull<CollectionsList>(response)
   }
 
   /**
@@ -241,7 +246,7 @@ export class Space {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as BackendDescriptor[])
+    return dataOrNull<BackendDescriptor[]>(response)
   }
 
   /**
@@ -350,7 +355,7 @@ export class Space {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as SpaceQuotaReport)
+    return dataOrNull<SpaceQuotaReport>(response)
   }
 
   /**
@@ -395,10 +400,7 @@ export class Space {
    * @returns {Promise<ImportStats>}
    */
   async import(tar: Uint8Array | Blob): Promise<ImportStats> {
-    const body =
-      tar instanceof Uint8Array && tar.constructor !== Uint8Array
-        ? new Uint8Array(tar.buffer, tar.byteOffset, tar.byteLength)
-        : tar
+    const body = tar instanceof Uint8Array ? toPlainBytes(tar) : tar
     const response = await send(this._context, {
       path: spaceImport(this.id),
       method: 'POST',
@@ -418,13 +420,10 @@ export class Space {
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
-    const response = await send(this._context, {
-      path: spacePolicy(this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+    return readPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
     })
-    return response === null ? null : (response.data as PolicyDocument)
   }
 
   /**
@@ -434,11 +433,10 @@ export class Space {
    * @returns {Promise<void>}
    */
   async setPolicy(policy: PolicyDocument): Promise<void> {
-    await send(this._context, {
-      path: spacePolicy(this.id),
-      method: 'PUT',
-      capability: this._capability,
-      json: policy
+    return writePolicy(this._context, {
+      policyPath: this._policyPath,
+      policy,
+      capability: this._capability
     })
   }
 
@@ -470,11 +468,9 @@ export class Space {
    * @returns {Promise<void>}
    */
   async clearPolicy(): Promise<void> {
-    await send(this._context, {
-      path: spacePolicy(this.id),
-      method: 'DELETE',
-      capability: this._capability,
-      idempotent: true
+    return deletePolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
     })
   }
 
@@ -491,6 +487,6 @@ export class Space {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as LinkSet)
+    return dataOrNull<LinkSet>(response)
   }
 }

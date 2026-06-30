@@ -10,33 +10,56 @@ import { describe, it, expect } from 'vitest'
 
 import { ValidationError } from '../../src/index.js'
 import {
-  RESERVED_SEGMENTS,
+  RESERVED_COLLECTION_IDS,
+  RESERVED_RESOURCE_IDS,
   assertNotReserved
 } from '../../src/internal/reserved.js'
 
 describe('assertNotReserved', () => {
   it('throws a ValidationError for a reserved collection id', () => {
-    expect(() => assertNotReserved('policy', 'collection')).toThrow(
+    expect(() => assertNotReserved('export', 'collection')).toThrow(
       ValidationError
     )
-    expect(() => assertNotReserved('policy', 'collection')).toThrow(
-      /reserved path segment "policy" as a collection id/
+    expect(() => assertNotReserved('export', 'collection')).toThrow(
+      /reserved path segment "export" as a collection id/
     )
   })
 
   it('throws a ValidationError for a reserved resource id', () => {
-    expect(() => assertNotReserved('meta', 'resource')).toThrow(ValidationError)
-    expect(() => assertNotReserved('meta', 'resource')).toThrow(
-      /reserved path segment "meta" as a resource id/
+    expect(() => assertNotReserved('backend', 'resource')).toThrow(
+      ValidationError
+    )
+    expect(() => assertNotReserved('backend', 'resource')).toThrow(
+      /reserved path segment "backend" as a resource id/
     )
   })
 
-  it('rejects every segment in the registry', () => {
-    for (const segment of RESERVED_SEGMENTS) {
+  it('rejects every segment in the collection registry', () => {
+    for (const segment of RESERVED_COLLECTION_IDS) {
       expect(() => assertNotReserved(segment, 'collection')).toThrow(
         ValidationError
       )
     }
+  })
+
+  it('rejects every segment in the resource registry', () => {
+    for (const segment of RESERVED_RESOURCE_IDS) {
+      expect(() => assertNotReserved(segment, 'resource')).toThrow(
+        ValidationError
+      )
+    }
+  })
+
+  it('splits reserved sets by kind to match the server', () => {
+    // `export`/`collections` are reserved for collections but accepted for
+    // resources; `backend` is reserved for resources but accepted for
+    // collections; `import` is reserved for collections.
+    expect(() => assertNotReserved('export', 'resource')).not.toThrow()
+    expect(() => assertNotReserved('collections', 'resource')).not.toThrow()
+    expect(() => assertNotReserved('backend', 'collection')).not.toThrow()
+    expect(() => assertNotReserved('import', 'collection')).toThrow(
+      ValidationError
+    )
   })
 
   it('accepts an ordinary id', () => {

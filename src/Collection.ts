@@ -20,12 +20,14 @@ import { assertNotReserved } from './internal/reserved.js'
 import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import { resolveCodec } from './internal/codec.js'
-import type { MarkerReadResult } from './internal/codec.js'
+import { CodecHolder, resolveCodec, readCollectionMarker } from './internal/codec.js'
 import { collectPages, walkPages } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { describeCollection } from './internal/describe.js'
-import { writeHeaders, readEtag } from './internal/conditional.js'
+import { readEtag } from './internal/conditional.js'
+import { sendEncodedWrite } from './internal/write.js'
+import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
+import { createdId, dataOrNull } from './internal/content.js'
 import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
 import type {
@@ -55,7 +57,7 @@ export class Collection {
   private readonly _context: ClientContext
   private readonly _capability?: IZcap
   private readonly _encryptionOverride?: EncryptionOverride
-  private _codecPromise?: Promise<ResourceCodec>
+  private readonly _codecHolder: CodecHolder
 
   /**
    * @param options {object}
@@ -86,6 +88,19 @@ export class Collection {
     this.id = collectionId
     this._capability = capability
     this._encryptionOverride = encryption
+    this._codecHolder = new CodecHolder(() =>
+      resolveCodec(this._context, {
+        spaceId: this.spaceId,
+        collectionId: this.id,
+        override: this._encryptionOverride,
+        readMarker: () =>
+          readCollectionMarker(this._context, {
+            spaceId: this.spaceId,
+            collectionId: this.id,
+            capability: this._capability
+          })
+      })
+    )
   }
 
   private get _path(): string {
@@ -94,6 +109,10 @@ export class Collection {
 
   private get _itemsPath(): string {
     return collectionItems(this.spaceId, this.id)
+  }
+
+  private get _policyPath(): string {
+    return collectionPolicy(this.spaceId, this.id)
   }
 
   /**
@@ -111,30 +130,7 @@ export class Collection {
    * @returns {Promise<ResourceCodec>}
    */
   private _codec(): Promise<ResourceCodec> {
-    if (this._codecPromise) {
-      return this._codecPromise
-    }
-    const promise = resolveCodec(this._context, {
-      spaceId: this.spaceId,
-      collectionId: this.id,
-      override: this._encryptionOverride,
-      readMarker: async (): Promise<MarkerReadResult> => {
-        const description = await this.describe()
-        return description === null
-          ? { readable: false }
-          : { readable: true, encryption: description.encryption }
-      }
-    })
-    // Memoize the in-flight promise so concurrent callers share one round-trip,
-    // but drop it on rejection so a transient failure does not permanently
-    // poison the handle. The identity guard avoids clobbering a newer promise.
-    this._codecPromise = promise
-    promise.catch((): void => {
-      if (this._codecPromise === promise) {
-        this._codecPromise = undefined
-      }
-    })
-    return promise
+    return this._codecHolder.get()
   }
 
   /**
@@ -199,7 +195,7 @@ export class Collection {
     // the now-encrypted collection. Child resource handles share this codec via
     // their thunk, so resetting here propagates to them too.
     if (desc.encryption) {
-      this._codecPromise = undefined
+      this._codecHolder.reset()
     }
     return {
       id: this.id,
@@ -276,23 +272,22 @@ export class Collection {
     // A codec may attach a create-if-absent precondition for its minted id (the
     // EDV codec guards a fresh insert with `If-None-Match: *`); plaintext add
     // carries none.
-    const headers = writeHeaders(encoded.contentType, {
+    const precondition = {
       ifMatch: encoded.ifMatch,
       ifNoneMatch: encoded.ifNoneMatch
-    })
+    }
 
     // A codec that mints its own id (e.g. the encrypting codec's EDV id) writes
     // by `PUT`; the identity codec returns no id and lets the server mint one
     // via `POST`.
     if (encoded.id !== undefined) {
       const path = resourcePath(this.spaceId, this.id, encoded.id)
-      const response = await send(this._context, {
+      const response = await sendEncodedWrite(this._context, {
         path,
         method: 'PUT',
         capability: this._capability,
-        json: encoded.json,
-        body: encoded.body,
-        headers
+        encoded,
+        precondition
       })
       return {
         id: encoded.id,
@@ -302,31 +297,30 @@ export class Collection {
       }
     }
 
-    const response = await send(this._context, {
+    const response = await sendEncodedWrite(this._context, {
       path: this._itemsPath,
       method: 'POST',
       capability: this._capability,
-      json: encoded.json,
-      body: encoded.body,
-      headers
+      encoded,
+      precondition
     })
-    // POST always returns a response (404/errors throw via send()).
-    const created = (response as { data?: unknown }).data as {
-      id: string
-      'content-type'?: string
-      url?: string
-    }
+    // POST always returns a response (404/errors throw via send()). The id is
+    // the body's `id`, or -- for a body-less 2xx -- the `Location` header.
+    const id = createdId(response)
+    const responseBody = (
+      response as { data?: { 'content-type'?: string } } | null
+    )?.data
     const location =
       (response as { headers: Headers }).headers.get('location') ?? undefined
     return {
-      id: created.id,
+      id,
       url:
         location ??
         toUrl({
           serverUrl: this._context.serverUrl,
-          path: resourcePath(this.spaceId, this.id, created.id)
+          path: resourcePath(this.spaceId, this.id, id)
         }),
-      contentType: created['content-type'],
+      contentType: responseBody?.['content-type'],
       etag: readEtag(response)
     }
   }
@@ -405,9 +399,7 @@ export class Collection {
           capability: this._capability,
           read: true
         })
-        return pageResponse === null
-          ? null
-          : (pageResponse.data as CollectionResourcesList)
+        return dataOrNull<CollectionResourcesList>(pageResponse)
       }
     }
   }
@@ -485,13 +477,10 @@ export class Collection {
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
-    const response = await send(this._context, {
-      path: collectionPolicy(this.spaceId, this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+    return readPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
     })
-    return response === null ? null : (response.data as PolicyDocument)
   }
 
   /**
@@ -501,11 +490,10 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setPolicy(policy: PolicyDocument): Promise<void> {
-    await send(this._context, {
-      path: collectionPolicy(this.spaceId, this.id),
-      method: 'PUT',
-      capability: this._capability,
-      json: policy
+    return writePolicy(this._context, {
+      policyPath: this._policyPath,
+      policy,
+      capability: this._capability
     })
   }
 
@@ -537,11 +525,9 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async clearPolicy(): Promise<void> {
-    await send(this._context, {
-      path: collectionPolicy(this.spaceId, this.id),
-      method: 'DELETE',
-      capability: this._capability,
-      idempotent: true
+    return deletePolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
     })
   }
 
@@ -558,7 +544,7 @@ export class Collection {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as LinkSet)
+    return dataOrNull<LinkSet>(response)
   }
 
   /**
@@ -583,7 +569,7 @@ export class Collection {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as BackendDescriptor)
+    return dataOrNull<BackendDescriptor>(response)
   }
 
   /**
@@ -601,6 +587,6 @@ export class Collection {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : (response.data as BackendUsage)
+    return dataOrNull<BackendUsage>(response)
   }
 }

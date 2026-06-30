@@ -45,7 +45,9 @@ export interface SendInput {
   json?: object
   body?: Blob | Uint8Array
   capability?: IZcap
-  /** When true, a 404 response resolves to `null` instead of throwing. */
+  /**
+   * When true, a 404 response resolves to `null` instead of throwing.
+   */
   read?: boolean
   /**
    * When true, a 404 response resolves to `null` instead of throwing, so a
@@ -102,7 +104,7 @@ export async function rawRequest(
  * @param input.url {string}                    absolute URL to read
  * @param [input.method] {string}               HTTP method (defaults to `GET`)
  * @param [input.headers] {Record<string,string>}
- * @param [input.read] {boolean}                when true, a 404 resolves to `null`
+ * @param [input.read] {boolean}                when true, a 404/401/403 resolves to `null`
  * @returns {Promise<HttpResponse | null>}
  */
 export async function unsignedRequest(input: {
@@ -123,7 +125,16 @@ export async function unsignedRequest(input: {
   if (response.ok) {
     return response as HttpResponse
   }
-  if (input.read && response.status === 404) {
+  // A public read resolves to `null` for any "not readable by you" status, not
+  // just 404: a conformant WAS masks unauthorized as 404, but a server that
+  // answers a missing capability with 401/403 should honor the same
+  // null-if-not-publicly-readable contract rather than throw.
+  if (
+    input.read &&
+    (response.status === 404 ||
+      response.status === 401 ||
+      response.status === 403)
+  ) {
     return null
   }
   // Reconstruct a problem+json-shaped error so mapError can dispatch on it.

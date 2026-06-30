@@ -102,4 +102,19 @@ describe('fromCapability', () => {
       } as never)
     ).toThrow(ValidationError)
   })
+
+  it('throws a ValidationError (not a raw TypeError) on a malformed target', () => {
+    expect(() =>
+      client.fromCapability({ invocationTarget: 'not a url' } as never)
+    ).toThrow(ValidationError)
+  })
+
+  it('decodes percent-encoded id segments so they are not double-encoded', () => {
+    const handle = client.fromCapability({
+      invocationTarget: 'https://was.example/space/a%20b/c%2Fd'
+    } as never)
+    expect(handle).toBeInstanceOf(Collection)
+    expect((handle as Collection).spaceId).toBe('a b')
+    expect((handle as Collection).id).toBe('c/d')
+  })
 })

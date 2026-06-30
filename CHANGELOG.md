@@ -22,6 +22,15 @@
 
 ### Fixed
 
+- **Reserved-id rejection is now split by kind to match the reference server.**
+  The client guarded both collections and resources against one flat union of
+  reserved segments, so it over-rejected ids the server accepts
+  (`resource('export')`, `resource('collections')`,
+  `createCollection({ id: 'backend' })`) and omitted the server's non-spec
+  `import` endpoint, letting `createCollection({ id: 'import' })` pass the
+  client guard only to 409 at the server. `assertNotReserved` now selects
+  `RESERVED_COLLECTION_IDS` or `RESERVED_RESOURCE_IDS` by kind, mirroring the
+  server's per-kind sets.
 - **A non-envelope document in an encrypted collection now throws a typed
   `EncryptionError`.** `EdvCodec.decode` passed whatever JSON it read straight to
   the cipher, and the conditional-write update path did the same with the
@@ -41,7 +50,7 @@
   `resourcePath(s, c, 'policy')` is byte-identical to the collection policy
   path, so `collection.resource('policy').delete()` silently wiped the
   collection's access-control policy (same collision for `backend` / `quota` /
-  `linkset` / `meta`). The reserved-id guard now runs at `Resource`
+  `linkset`). The reserved-id guard now runs at `Resource`
   construction, covering read / delete / meta / policy / put uniformly.
 - **`configure()` now invalidates the memoized codec when it enables
   encryption.** A read caches the identity (plaintext) codec while a collection
@@ -105,6 +114,27 @@
   WAS deployment mounted under a sub-path. The path is now joined onto the
   server's base path (a trailing slash is ensured and the path made relative), so
   a sub-path mount is preserved; a bare-origin `serverUrl` is unaffected.
+- **`fromCapability` now validates `invocationTarget` and round-trips encoded
+  ids.** A missing / relative / malformed target threw a raw `TypeError` from
+  `new URL(...)`; it now throws a typed `ValidationError` (carrying the original
+  error as `cause`). Each path segment is also `decodeURIComponent`'d before the
+  path builders re-encode it, so an id containing non-unreserved characters is no
+  longer double-encoded.
+- **Create responses no longer assume a JSON body with `id`.** `createSpace` /
+  `createCollection` / `add` read `data.id` directly, so a body-less 2xx that
+  returned the id only in the `Location` header threw a `TypeError`. A shared
+  `createdId` helper now prefers the body `id`, falls back to the last (decoded)
+  segment of the `Location` header, and throws a typed `WasServerError` when the
+  response carries neither.
+- **`publicRead` / public listing now return `null` on 401/403, not just 404.**
+  `unsignedRequest`'s read mode mapped only 404 to `null`, so a server that
+  answers a missing capability with 401/403 made these methods throw instead of
+  honoring their "null if not publicly readable" contract. Reads now resolve
+  401/403 to `null` alongside 404.
+- **`mapError` now maps 403 and 415.** A bare 403 fell through to the base
+  `WasError`, so `instanceof AuthRequiredError` missed an authenticated-but-
+  forbidden response; 403 now maps to `AuthRequiredError` and 415 (unsupported
+  media type) to `ValidationError`.
 
 ### Added
 

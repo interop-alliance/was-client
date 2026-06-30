@@ -10,7 +10,7 @@
  * `application/octet-stream`.
  */
 import type { HttpResponse } from '@interop/http-client'
-import { ValidationError } from '../errors.js'
+import { ValidationError, WasServerError } from '../errors.js'
 import type { Json, ResourceData } from '../types.js'
 
 const OCTET_STREAM = 'application/octet-stream'
@@ -88,7 +88,14 @@ export interface PreparedBody {
   contentType?: string
 }
 
-function isBlob(value: unknown): value is Blob {
+/**
+ * Whether a value is a `Blob`, guarding for environments where `Blob` is
+ * undefined.
+ *
+ * @param value {unknown}
+ * @returns {boolean}
+ */
+export function isBlob(value: unknown): value is Blob {
   return typeof Blob !== 'undefined' && value instanceof Blob
 }
 
@@ -99,7 +106,7 @@ function isBlob(value: unknown): value is Blob {
  * @param bytes {Uint8Array}
  * @returns {Uint8Array}
  */
-function toPlainBytes(bytes: Uint8Array): Uint8Array {
+export function toPlainBytes(bytes: Uint8Array): Uint8Array {
   if (bytes.constructor === Uint8Array) {
     return bytes
   }
@@ -154,6 +161,54 @@ export function prepareBody(
     'Resource data must be a plain object/array (JSON) or a ' +
       'Blob/Uint8Array (binary).'
   )
+}
+
+/**
+ * Extracts the id of a just-created resource from a create response. Prefers
+ * the response body's `id`; for a body-less 2xx falls back to the last path
+ * segment of the `Location` header (decoded, since the server emits a
+ * percent-encoded path). Throws a `WasServerError` when the response carries
+ * neither -- a malformed create response -- rather than letting an absent body
+ * surface as a raw `TypeError` on `data.id`.
+ *
+ * @param response {HttpResponse | null}
+ * @returns {string}
+ */
+export function createdId(response: HttpResponse | null): string {
+  const data = (response as { data?: unknown } | null)?.data as
+    | { id?: unknown }
+    | undefined
+  if (
+    data !== null &&
+    typeof data === 'object' &&
+    typeof data.id === 'string'
+  ) {
+    return data.id
+  }
+  const location = response?.headers.get('location')
+  const segment = location
+    ? location.split('/').filter(Boolean).pop()
+    : undefined
+  if (segment) {
+    return decodeURIComponent(segment)
+  }
+  throw new WasServerError(
+    'Create response carried no resource id: the body has no `id` and there ' +
+      'is no `Location` header.'
+  )
+}
+
+/**
+ * Unwraps a read response's pre-parsed JSON `data` as `T`, mapping a `null`
+ * response (a 404 that a `read` request resolved to `null`) to `null`. Captures
+ * the `response === null ? null : response.data as T` idiom shared across the
+ * handle read methods.
+ *
+ * @param response {HttpResponse | null}
+ * @returns {T | null}
+ */
+export function dataOrNull<T>(response: HttpResponse | null): T | null {
+  return response === null ? null : (response.data as T)
 }
 
 /**
