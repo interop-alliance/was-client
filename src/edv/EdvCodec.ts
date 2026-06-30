@@ -52,9 +52,9 @@ import type {
   ResourceCodec
 } from '../codec.js'
 import { EncryptionError, ValidationError } from '../errors.js'
-import { readJsonData } from '../internal/content.js'
+import { isBlob, readJsonData } from '../internal/content.js'
 import type { Json, ResourceData } from '../types.js'
-import { JOSE_CONTENT_TYPE } from './WasTransport.js'
+import { DEFAULT_CONTENT_TYPE, ENCODER } from './constants.js'
 
 /**
  * Default ceiling for a single-document (unchunked) encrypted binary write.
@@ -62,15 +62,6 @@ import { JOSE_CONTENT_TYPE } from './WasTransport.js'
  * supported. 1 MiB before the ~33% base64 inflation.
  */
 const DEFAULT_MAX_BLOB_BYTES = 1024 * 1024
-
-/**
- * The default stored content type. Plain JSON keeps the codec portable across
- * any document-capable server (the envelope is still self-identifying by its
- * `jwe` field). Pass `contentType: JOSE_CONTENT_TYPE`
- * (`application/jose+json`) against a server that registers an
- * `application/*+json` parser to mark envelopes distinctly in listings.
- */
-const DEFAULT_CONTENT_TYPE = 'application/json'
 
 /**
  * Marker property tagging an encrypted document whose decrypted content is a
@@ -87,12 +78,6 @@ const BLOB_MARKER = '@interop/was-client:edvBlob'
  * decode-and-length verification.
  */
 const EDV_DOC_ID = /^z[1-9A-HJ-NP-Za-km-z]{21,}$/
-
-const ENCODER = new TextEncoder()
-
-function isBlob(value: unknown): value is Blob {
-  return typeof Blob !== 'undefined' && value instanceof Blob
-}
 
 /**
  * Encodes bytes to standard base64 using the platform `btoa` (present in modern
@@ -217,8 +202,13 @@ export class EdvCodec implements ResourceCodec {
       body: ENCODER.encode(JSON.stringify(encrypted)),
       contentType: this._contentType,
       // Pin an update to the server's current ETag; guard a fresh insert with
-      // create-if-absent. (An ETag is absent only against a backend without the
-      // conditional-writes feature, where this degrades to an advisory write.)
+      // create-if-absent. An update's `If-Match` carries a server-provided ETag,
+      // so it degrades to an advisory write against a backend without the
+      // conditional-writes feature (the ETag is absent). A fresh insert's
+      // `If-None-Match: *` needs no server-provided validator and so is emitted
+      // unconditionally by design -- it expresses the insert's intent
+      // (create-only-if-absent); a backend that does not honor it simply ignores
+      // it, leaving the write harmless rather than degraded.
       ...(priorDoc
         ? { ifMatch: current!.headers.get('etag') ?? undefined }
         : { ifNoneMatch: true })
@@ -348,10 +338,14 @@ export class EdvCodec implements ResourceCodec {
   }
 }
 
-/** The EDV scheme tag this provider handles (matches the Collection marker). */
+/**
+ * The EDV scheme tag this provider handles (matches the Collection marker).
+ */
 const EDV_SCHEME = 'edv'
 
-/** The per-collection key material an EDV codec is built from. */
+/**
+ * The per-collection key material an EDV codec is built from.
+ */
 export interface EdvKeys {
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
@@ -420,5 +414,3 @@ export function createEdvEncryption({
     }
   }
 }
-
-export { JOSE_CONTENT_TYPE }

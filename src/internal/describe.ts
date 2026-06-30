@@ -8,6 +8,7 @@
  */
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
+import { dataOrNull } from './content.js'
 import { collectionPath } from './paths.js'
 import type { CollectionDescription, IZcap } from '../types.js'
 
@@ -36,5 +37,5 @@ export async function describeCollection(
     capability,
     read: true
   })
-  return response === null ? null : (response.data as CollectionDescription)
+  return dataOrNull<CollectionDescription>(response)
 }

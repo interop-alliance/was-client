@@ -407,7 +407,7 @@ describe('Resource reserved-id guard (path-collision safety)', () => {
     // synchronously, before any request, for every reserved segment that
     // collides with a collection-level path.
     const { client, calls } = clientWithRequestSpy()
-    for (const reserved of ['policy', 'backend', 'quota', 'linkset', 'meta']) {
+    for (const reserved of ['policy', 'backend', 'quota', 'linkset', 'query']) {
       expect(() =>
         client.space('s').collection('c').resource(reserved)
       ).toThrow(ValidationError)

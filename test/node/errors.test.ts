@@ -31,8 +31,16 @@ describe('mapError', () => {
     expect(mapError({ status: 401 })).toBeInstanceOf(AuthRequiredError)
   })
 
+  it('maps 403 to AuthRequiredError (authenticated but forbidden)', () => {
+    expect(mapError({ status: 403 })).toBeInstanceOf(AuthRequiredError)
+  })
+
   it('maps 404 to NotFoundError', () => {
     expect(mapError({ status: 404 })).toBeInstanceOf(NotFoundError)
+  })
+
+  it('maps 415 to ValidationError', () => {
+    expect(mapError({ status: 415 })).toBeInstanceOf(ValidationError)
   })
 
   it('maps 501 to NotImplementedError', () => {

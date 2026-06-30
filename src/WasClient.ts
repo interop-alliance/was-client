@@ -15,7 +15,7 @@ import type { HttpResponse } from '@interop/http-client'
 import { spacesRoot } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
-import { parseResource, readJsonData } from './internal/content.js'
+import { createdId, parseResource, readJsonData } from './internal/content.js'
 import { collectPages, walkPages } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
@@ -164,8 +164,7 @@ export class WasClient {
       method: 'POST',
       json: body
     })
-    const created = (response as { data?: unknown }).data as { id: string }
-    return this.space(created.id)
+    return this.space(createdId(response))
   }
 
   /**
@@ -322,8 +321,20 @@ export class WasClient {
    * @returns {Space | Collection | Resource}
    */
   fromCapability(zcap: IZcap): Space | Collection | Resource {
-    const { pathname } = new URL(zcap.invocationTarget)
-    const segments = pathname.split('/').filter(Boolean)
+    let pathname: string
+    try {
+      ;({ pathname } = new URL(zcap.invocationTarget))
+    } catch (err) {
+      throw new ValidationError(
+        `invocationTarget "${zcap.invocationTarget}" is not a valid ` +
+          'absolute URL.',
+        { cause: err }
+      )
+    }
+    // Decode each path segment before splitting it back into handle ids: the
+    // path builders re-encode every id with encodeURIComponent, so passing a
+    // still-encoded segment through would double-encode it.
+    const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent)
     if (segments[0] !== 'space') {
       throw new ValidationError(
         `Cannot derive a handle from invocationTarget "${zcap.invocationTarget}".`

@@ -79,6 +79,16 @@ describe('publicRead()', () => {
     expect(result).toBeNull()
   })
 
+  it('returns null on a 401/403 (not publicly readable)', async () => {
+    for (const status of [401, 403]) {
+      stubFetch(new Response('', { status }))
+      const result = await publicClient().publicRead({
+        resourceUrl: 'https://was.example/space/s/c/private'
+      })
+      expect(result).toBeNull()
+    }
+  })
+
   it('throws a mapped error for a non-404 failure', async () => {
     stubFetch(new Response('', { status: 500 }))
     await expect(
