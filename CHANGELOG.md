@@ -32,8 +32,8 @@
   `RESERVED_COLLECTION_IDS` or `RESERVED_RESOURCE_IDS` by kind, mirroring the
   server's per-kind sets.
 - **A non-envelope document in an encrypted collection now throws a typed
-  `EncryptionError`.** `EdvCodec.decode` passed whatever JSON it read straight to
-  the cipher, and the conditional-write update path did the same with the
+  `EncryptionError`.** `EdvCodec.decode` passed whatever JSON it read straight
+  to the cipher, and the conditional-write update path did the same with the
   pre-read prior document; a plaintext or foreign resource (one with no `jwe`
   field) made the EDV core throw a raw `TypeError` instead of a `WasError`. Both
   paths now validate the EDV envelope shape and surface an `EncryptionError`.
@@ -50,8 +50,8 @@
   `resourcePath(s, c, 'policy')` is byte-identical to the collection policy
   path, so `collection.resource('policy').delete()` silently wiped the
   collection's access-control policy (same collision for `backend` / `quota` /
-  `linkset`). The reserved-id guard now runs at `Resource`
-  construction, covering read / delete / meta / policy / put uniformly.
+  `linkset`). The reserved-id guard now runs at `Resource` construction,
+  covering read / delete / meta / policy / put uniformly.
 - **`configure()` now invalidates the memoized codec when it enables
   encryption.** A read caches the identity (plaintext) codec while a collection
   is still plaintext; `configure({ encryption: { scheme: 'edv' } })` flipped the
@@ -112,14 +112,14 @@
   origin-absolute, silently dropping the `/was` prefix, so every signed request
   and derived zcap `invocationTarget` targeted the wrong path and 404'd for any
   WAS deployment mounted under a sub-path. The path is now joined onto the
-  server's base path (a trailing slash is ensured and the path made relative), so
-  a sub-path mount is preserved; a bare-origin `serverUrl` is unaffected.
+  server's base path (a trailing slash is ensured and the path made relative),
+  so a sub-path mount is preserved; a bare-origin `serverUrl` is unaffected.
 - **`fromCapability` now validates `invocationTarget` and round-trips encoded
   ids.** A missing / relative / malformed target threw a raw `TypeError` from
   `new URL(...)`; it now throws a typed `ValidationError` (carrying the original
   error as `cause`). Each path segment is also `decodeURIComponent`'d before the
-  path builders re-encode it, so an id containing non-unreserved characters is no
-  longer double-encoded.
+  path builders re-encode it, so an id containing non-unreserved characters is
+  no longer double-encoded.
 - **Create responses no longer assume a JSON body with `id`.** `createSpace` /
   `createCollection` / `add` read `data.id` directly, so a body-less 2xx that
   returned the id only in the `Location` header threw a `TypeError`. A shared

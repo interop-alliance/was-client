@@ -20,7 +20,11 @@ import { assertNotReserved } from './internal/reserved.js'
 import { delegateGrant } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import { CodecHolder, resolveCodec, readCollectionMarker } from './internal/codec.js'
+import {
+  CodecHolder,
+  resolveCodec,
+  readCollectionMarker
+} from './internal/codec.js'
 import { collectPages, walkPages } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { describeCollection } from './internal/describe.js'

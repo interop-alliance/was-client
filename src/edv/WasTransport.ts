@@ -40,7 +40,11 @@ import type { WasClient } from '../WasClient.js'
 import { httpStatus } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
 import { resourcePath } from '../internal/paths.js'
-import { DEFAULT_CONTENT_TYPE, ENCODER, JOSE_CONTENT_TYPE } from './constants.js'
+import {
+  DEFAULT_CONTENT_TYPE,
+  ENCODER,
+  JOSE_CONTENT_TYPE
+} from './constants.js'
 
 export { JOSE_CONTENT_TYPE }
 

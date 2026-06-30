@@ -11,7 +11,11 @@ import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import { CodecHolder, resolveCodec, readCollectionMarker } from './internal/codec.js'
+import {
+  CodecHolder,
+  resolveCodec,
+  readCollectionMarker
+} from './internal/codec.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import { sendEncodedWrite } from './internal/write.js'
 import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
