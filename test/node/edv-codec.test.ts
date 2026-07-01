@@ -554,3 +554,48 @@ describe('createEdvEncryption: provider (keystore)', () => {
     expect(keystoreCalls).toBe(0)
   })
 })
+
+describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
+  it('reports metadataMode "encrypted"', async () => {
+    const codec = await makeCodec()
+    expect(codec.metadataMode).toBe('encrypted')
+  })
+
+  it('encrypts custom into an EDV Document envelope (no plaintext leak)', async () => {
+    const codec = await makeCodec()
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'Secret Name', tags: { project: 'x' } }
+    })
+    // The stored `custom` is an EDV Document envelope (`{ jwe, ... }`), not the
+    // plaintext name/tags.
+    expect((custom as { jwe?: unknown }).jwe).toBeTruthy()
+    expect(JSON.stringify(custom)).not.toContain('Secret Name')
+  })
+
+  it('round-trips custom through encodeMeta then decodeMeta', async () => {
+    const codec = await makeCodec()
+    const original = { name: 'Hello', tags: { a: 'b', c: 'd' } }
+    const { custom } = await codec.encodeMeta({ custom: original })
+    expect(await codec.decodeMeta({ custom })).toEqual(original)
+  })
+
+  it('round-trips an empty custom (envelope on the wire, {} decoded)', async () => {
+    const codec = await makeCodec()
+    const { custom } = await codec.encodeMeta({ custom: {} })
+    expect((custom as { jwe?: unknown }).jwe).toBeTruthy()
+    expect(await codec.decodeMeta({ custom })).toEqual({})
+  })
+
+  it('decodeMeta returns {} for an absent custom (no metadata written)', async () => {
+    const codec = await makeCodec()
+    expect(await codec.decodeMeta({})).toEqual({})
+    expect(await codec.decodeMeta({ custom: undefined })).toEqual({})
+  })
+
+  it('decodeMeta fails closed on a foreign plaintext custom (no `jwe`)', async () => {
+    const codec = await makeCodec()
+    await expect(
+      codec.decodeMeta({ custom: { name: 'plaintext' } })
+    ).rejects.toThrow(EncryptionError)
+  })
+})

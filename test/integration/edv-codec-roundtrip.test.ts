@@ -13,9 +13,10 @@
  *
  * Proves: the value round-trips decrypted; what the server stores is an opaque
  * JWE envelope (the raw `getBytes()` escape hatch shows ciphertext, no
- * cleartext); a small blob round-trips; and the stricter contract holds
- * (human-readable `put()` ids and `setName` are rejected on an encrypted
- * collection).
+ * cleartext); a small blob round-trips; user metadata (`setName`/`setTags`) is
+ * likewise encrypted -- round-tripping decrypted for a keyed reader but opaque at
+ * rest -- with its own `/meta` ETag; and the stricter contract holds
+ * (human-readable `put()` ids are rejected on an encrypted collection).
  *
  * Requires a running server: set `TEST_SERVER_URL`. The suite skips when it is
  * unset, so a bare `pnpm test:integration` (no server) is not a failure.
@@ -234,11 +235,48 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     )
   })
 
-  it('forbids setName() on an encrypted collection', async () => {
+  it('encrypts setName/setTags metadata: decrypted round-trip, opaque at rest', async () => {
     const { id } = await collection.add({ a: 1 })
+    const resource = collection.resource(id)
+
+    // setName / setTags now succeed on an encrypted collection (they no longer
+    // throw): the codec encrypts `custom` into an envelope before it is sent.
+    await resource.setName('My Secret Label')
+    await resource.setTags({ project: 'demo' })
+
+    // The keyed client reads the metadata back decrypted.
+    const meta = await resource.meta()
+    expect(meta?.custom).toEqual({
+      name: 'My Secret Label',
+      tags: { project: 'demo' }
+    })
+    // The /meta ETag (the server's `metaVersion`) is surfaced.
+    expect(meta?.etag).toBeTruthy()
+
+    // At rest the server stores an opaque envelope: a plaintext client (same
+    // authorization, no keys) reading `/meta` sees a `custom` envelope carrying a
+    // `jwe`, never the cleartext name.
+    const rawMeta = await plaintext
+      .space(space.id)
+      .collection('vault')
+      .resource(id)
+      .meta()
+    expect((rawMeta?.custom as { jwe?: unknown }).jwe).toBeTruthy()
+    expect(JSON.stringify(rawMeta?.custom)).not.toContain('My Secret Label')
+  })
+
+  it('conditional metadata write: stale If-Match on /meta is rejected (412)', async () => {
+    const { id } = await collection.add({ a: 1 })
+    const resource = collection.resource(id)
+    const first = await resource.setMeta({ custom: { name: 'v1' } })
+    expect(first.etag).toBeTruthy()
+
+    // A second write with the now-stale /meta ETag is a lost-update 412.
+    await resource.setMeta({ custom: { name: 'v2' } }, { ifMatch: first.etag })
     await expect(
-      collection.resource(id).setName('a-plaintext-name')
-    ).rejects.toThrow(ValidationError)
+      resource.setMeta({ custom: { name: 'v3' } }, { ifMatch: first.etag })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
+    expect((await resource.meta())?.custom).toEqual({ name: 'v2' })
   })
 })
 
@@ -263,16 +301,37 @@ describeLive('plaintext conditional writes (live server)', () => {
     }
   })
 
-  it('surfaces the ETag on write and meta(), advancing on each write', async () => {
+  it('surfaces the content ETag on write, advancing on each write', async () => {
     const first = await collection.put('etag-doc', { v: 1 })
     expect(first.etag).toBeTruthy()
-
-    const meta = await collection.resource('etag-doc').meta()
-    expect(meta?.etag).toBe(first.etag)
 
     const second = await collection.put('etag-doc', { v: 2 })
     expect(second.etag).toBeTruthy()
     expect(second.etag).not.toBe(first.etag)
+  })
+
+  it('meta() carries an independent /meta ETag (metaVersion), not the content ETag', async () => {
+    // V2 metadata versioning: `/meta` has its own ETag (`metaVersion`),
+    // independent of the content `version` -- absent until a metadata write, and
+    // NOT advanced by a content write.
+    await collection.put('meta-etag-doc', { v: 1 })
+    const before = await collection.resource('meta-etag-doc').meta()
+    expect(before?.etag).toBeUndefined() // no metadata written yet
+
+    const set = await collection
+      .resource('meta-etag-doc')
+      .setMeta({ custom: { name: 'labeled' } })
+    expect(set.etag).toBeTruthy()
+    expect((await collection.resource('meta-etag-doc').meta())?.etag).toBe(
+      set.etag
+    )
+
+    // A subsequent CONTENT write advances the content ETag but leaves the /meta
+    // ETag untouched -- proving the two versions are independent.
+    const contentWrite = await collection.put('meta-etag-doc', { v: 2 })
+    const afterContent = await collection.resource('meta-etag-doc').meta()
+    expect(afterContent?.etag).toBe(set.etag) // metaVersion unchanged
+    expect(contentWrite.etag).not.toBe(afterContent?.etag) // content ETag diverged
   })
 
   it('an ifMatch update succeeds when current and 412s when stale', async () => {

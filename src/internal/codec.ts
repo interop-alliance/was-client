@@ -27,7 +27,8 @@ import type {
   EncryptionOverride,
   IZcap,
   Json,
-  ResourceData
+  ResourceData,
+  ResourceMetadataCustom
 } from '../types.js'
 
 /**
@@ -132,10 +133,11 @@ export class CodecHolder {
  * caller's `id` (so `put(id, ...)` is a `PUT` and `add(...)`, with no id, stays
  * a server-minting `POST`) and reuses `prepareBody` -- including the
  * filename-extension content-type guess when an id is present. `decode` reuses
- * `parseResource`.
+ * `parseResource`. `encodeMeta` / `decodeMeta` are the identity transform, so
+ * metadata round-trips as server-visible plaintext byte-for-byte.
  */
 export const identityCodec: ResourceCodec = {
-  allowsServerMetadata: true,
+  metadataMode: 'plaintext',
 
   async encode({
     id,
@@ -157,6 +159,18 @@ export const identityCodec: ResourceCodec = {
 
   async decode(response: HttpResponse): Promise<Json | Blob> {
     return (await parseResource(response)) as Json | Blob
+  },
+
+  async encodeMeta({
+    custom
+  }: {
+    custom: ResourceMetadataCustom
+  }): Promise<{ custom: object }> {
+    return { custom }
+  },
+
+  async decodeMeta(stored: { custom?: unknown }): Promise<ResourceMetadataCustom> {
+    return (stored.custom ?? {}) as ResourceMetadataCustom
   }
 }
 

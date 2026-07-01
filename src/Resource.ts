@@ -20,7 +20,6 @@ import { writeHeaders, readEtag } from './internal/conditional.js'
 import { sendEncodedWrite } from './internal/write.js'
 import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import type { ResourceCodec } from './codec.js'
-import { ValidationError } from './errors.js'
 import type {
   EncryptionOverride,
   IZcap,
@@ -290,13 +289,19 @@ export class Resource {
    * resource is missing or not visible to you (404 conflation caveat). A server
    * without metadata support surfaces its 501 as `NotImplementedError`.
    *
+   * On an encrypted collection the stored `custom` is an opaque envelope; this
+   * decodes it (decrypts, via the codec) so a caller always sees plaintext
+   * `{ name, tags }`. A resource with no user metadata reports `custom` as `{}`.
+   *
    * Against a backend with the `conditional-writes` feature the result also
-   * carries the resource's current `etag` (the strong validator) -- pass it as
-   * `put(data, { ifMatch })` for a lost-update-safe update.
+   * carries the metadata's current `etag` (the `/meta` `metaVersion` validator)
+   * -- pass it as `setMeta(meta, { ifMatch })` for a lost-update-safe metadata
+   * update.
    *
    * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(ResourceMetadata & { etag?: string }) | null> {
+    const codec = await this._codec()
     const response = await send(this._context, {
       path: this._metaPath,
       method: 'GET',
@@ -307,8 +312,12 @@ export class Resource {
       return null
     }
     const metadata = response.data as ResourceMetadata
+    // Decode the user-writable `custom` (decrypting it on an encrypted
+    // collection) so callers uniformly see plaintext `{ name, tags }`.
+    const custom = await codec.decodeMeta({ custom: metadata.custom })
+    const decoded = { ...metadata, custom }
     const etag = readEtag(response)
-    return etag !== undefined ? { ...metadata, etag } : metadata
+    return etag !== undefined ? { ...decoded, etag } : decoded
   }
 
   /**
@@ -318,29 +327,42 @@ export class Resource {
    * metadata of a nonexistent resource throws `NotFoundError`. Servers without
    * metadata support surface their 501 as `NotImplementedError`.
    *
-   * On an encrypted collection this throws a `ValidationError`: `custom`
-   * (`name` / `tags`) would be stored as server-visible plaintext, defeating the
-   * encryption. Carry those values inside the encrypted content instead.
+   * On an encrypted collection `custom` is encrypted into an opaque envelope by
+   * the codec before it is sent, so `name` / `tags` are never stored as
+   * server-visible plaintext -- transparently, the same call works on plaintext
+   * and encrypted collections alike.
+   *
+   * Conditional metadata writes (the backend's `conditional-writes` feature):
+   * pass `ifMatch` (the `etag` from a prior `meta()`) for an
+   * update-if-unchanged, or `ifNoneMatch: true` for a write-only-if-no-metadata.
+   * A failed precondition throws `PreconditionFailedError` (412). The `/meta`
+   * ETag (`metaVersion`) is independent of the content ETag. Returns the new
+   * `etag`.
    *
    * @param meta {object}
    * @param [meta.custom] {ResourceMetadataCustom}   the user-writable properties
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}       update only if the `/meta` ETag matches
+   * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
+   * @returns {Promise<{ etag?: string }>}   the metadata's new ETag
    */
-  async setMeta(meta: { custom?: ResourceMetadataCustom } = {}): Promise<void> {
+  async setMeta(
+    meta: { custom?: ResourceMetadataCustom } = {},
+    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+  ): Promise<{ etag?: string }> {
     const codec = await this._codec()
-    if (!codec.allowsServerMetadata) {
-      throw new ValidationError(
-        'Cannot set server-visible metadata (name/tags) on an encrypted ' +
-          'collection -- it would be stored as plaintext. Carry these values ' +
-          'inside the encrypted content instead.'
-      )
-    }
-    await send(this._context, {
+    const { custom } = await codec.encodeMeta({ custom: meta.custom ?? {} })
+    const response = await send(this._context, {
       path: this._metaPath,
       method: 'PUT',
       capability: this._capability,
-      json: { custom: meta.custom ?? {} }
+      json: { custom },
+      headers: writeHeaders(undefined, {
+        ifMatch: options.ifMatch,
+        ifNoneMatch: options.ifNoneMatch
+      })
     })
+    return { etag: readEtag(response) }
   }
 
   /**

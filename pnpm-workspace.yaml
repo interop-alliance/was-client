@@ -2,3 +2,4 @@ allowBuilds:
   core-js: false
 minimumReleaseAgeExclude:
   - '@interop/edv-client@17.3.1'
+  - '@interop/storage-core@0.3.1'
