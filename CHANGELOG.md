@@ -4,6 +4,13 @@
 
 ### Changed
 
+- **`EdvCodec` now uses edv-client's public `documentCipher` surface.** It
+  encrypts/decrypts through `EdvClientCore.documentCipher`
+  (`createDefaultRecipients` / `encrypt` / `decrypt`, the new public
+  `EdvDocumentCipher` added in `@interop/edv-client@17.3.0`) instead of the
+  private `_createDefaultRecipients` / `_encrypt` / `_decrypt` methods. The
+  codec seam is unchanged (the WAS `Collection`/`Resource` remains the
+  transport); no public API or behavior change.
 - **The preferred EDV envelope content type is now `application/jose+json`**
   (the JWE JSON Serialization media type, RFC 7516), replacing the previous
   `application/edv+json`. This aligns with the WAS spec's Encryption Scheme

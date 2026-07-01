@@ -11,11 +11,11 @@
  * app's `resolveKeys`; they never reach the server, which stores only opaque
  * JWE envelopes.
  *
- * This reuses `EdvClientCore`'s encrypt/decrypt primitives (the same JWE
- * machinery as the standalone `WasTransport`), but here the WAS Resource CRUD --
- * the transport role -- is played by core was-client's `Collection`/`Resource`
- * I/O, so the codec is a pure encode/decode transform and needs no transport of
- * its own.
+ * This reuses `EdvClientCore`'s transport-free `documentCipher` (its public
+ * `EdvDocumentCipher` -- the same JWE machinery as the standalone
+ * `WasTransport`), but here the WAS Resource CRUD -- the transport role -- is
+ * played by core was-client's `Collection`/`Resource` I/O, so the codec is a
+ * pure encode/decode transform and needs no transport of its own.
  *
  * Scope (documents-only):
  *
@@ -111,7 +111,7 @@ function base64ToBytes(base64: string): Uint8Array {
 
 /**
  * A {@link ResourceCodec} that encrypts on write and decrypts on read using an
- * `EdvClientCore`'s JWE primitives. One instance is bound per encrypted
+ * `EdvClientCore`'s public `documentCipher`. One instance is bound per encrypted
  * collection handle.
  */
 export class EdvCodec implements ResourceCodec {
@@ -172,7 +172,7 @@ export class EdvCodec implements ResourceCodec {
     const content = await this._toContent(data, contentType)
 
     // When the write path pre-read a current envelope, advance `sequence` from
-    // its prior value (`_encrypt({ update: true })` increments it) and pin the
+    // its prior value (`encrypt({ update: true })` increments it) and pin the
     // write to the server's current ETag with `If-Match`. With no prior envelope
     // this is a fresh insert (`sequence: 0`) guarded by `If-None-Match: *`
     // (create-if-absent), so a concurrent first writer cannot be clobbered.
@@ -185,11 +185,16 @@ export class EdvCodec implements ResourceCodec {
       priorDoc = read
     }
 
-    const recipients = this._edv._createDefaultRecipients(this._keyAgreementKey)
-    const encrypted = await this._edv._encrypt({
+    const { documentCipher } = this._edv
+    const recipients = documentCipher.createDefaultRecipients(
+      this._keyAgreementKey
+    )
+    const encrypted = await documentCipher.encrypt({
       doc: {
         id: docId,
-        content,
+        // EDV models `content` as an object record; a JSON array is also a
+        // valid encrypted value here, so widen to the envelope's content type.
+        content: content as Record<string, unknown>,
         ...(priorDoc && { sequence: priorDoc.sequence })
       },
       recipients,
@@ -226,7 +231,7 @@ export class EdvCodec implements ResourceCodec {
       response as Parameters<typeof readJsonData>[0]
     )
     this._assertEnvelope(encryptedDoc, 'read')
-    const decrypted = await this._edv._decrypt({
+    const decrypted = await this._edv.documentCipher.decrypt({
       encryptedDoc,
       keyAgreementKey: this._keyAgreementKey
     })
