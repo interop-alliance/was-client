@@ -9,7 +9,8 @@
  *    per-collection client concern, not a backend capability);
  *  - a bound codec's `encode`/`decode` are actually invoked on write/read, and a
  *    codec that mints an id turns `add()` from a POST into a PUT;
- *  - `setMeta`/`setName`/`setTags` throw when the codec forbids server metadata.
+ *  - `setMeta` / `meta` route user metadata through the codec's `encodeMeta` /
+ *    `decodeMeta`, so `name`/`tags` are encrypted on an encrypted collection.
  *
  * A stub `ZcapClient` routes by URL, recording every call, so no signer or
  * server is involved.
@@ -17,13 +18,15 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient, ValidationError, EncryptionError } from '../../src/index.js'
+import { WasClient, EncryptionError } from '../../src/index.js'
 import type {
   CollectionEncryption,
   EncryptionProvider,
   ResourceCodec,
-  EncodedWrite
+  EncodedWrite,
+  ResourceMetadataCustom
 } from '../../src/index.js'
+import { identityCodec } from '../../src/internal/codec.js'
 
 interface RequestArgs {
   url?: string
@@ -129,14 +132,16 @@ function clientWithRouter({
 
 /**
  * A fake encrypting codec that records its calls and mints a fixed id, so the
- * tests can assert routing without any real crypto.
+ * tests can assert routing without any real crypto. `encodeMeta` wraps `custom`
+ * in a fake `{ jwe }` envelope and `decodeMeta` unwraps it, mirroring how a real
+ * encrypting codec keeps `name`/`tags` off the wire.
  */
 function fakeCodec(
   log: string[],
-  { allowsServerMetadata = false }: { allowsServerMetadata?: boolean } = {}
+  { metadataMode = 'encrypted' }: { metadataMode?: 'plaintext' | 'encrypted' } = {}
 ): ResourceCodec {
   return {
-    allowsServerMetadata,
+    metadataMode,
     async encode({ id, data }): Promise<EncodedWrite> {
       log.push(`encode:${id ?? 'mint'}`)
       return {
@@ -148,6 +153,14 @@ function fakeCodec(
     async decode(): Promise<{ decrypted: true }> {
       log.push('decode')
       return { decrypted: true }
+    },
+    async encodeMeta({ custom }): Promise<{ custom: object }> {
+      log.push('encodeMeta')
+      return { custom: { jwe: custom } }
+    },
+    async decodeMeta({ custom }): Promise<ResourceMetadataCustom> {
+      log.push('decodeMeta')
+      return ((custom as { jwe?: unknown })?.jwe ?? {}) as ResourceMetadataCustom
     }
   }
 }
@@ -615,23 +628,51 @@ describe('codec seam: a transient marker-read failure does not poison the handle
   })
 })
 
-describe('codec seam: encrypted metadata is forbidden', () => {
-  it('setMeta throws a ValidationError on an encrypted collection', async () => {
+describe('codec seam: encrypted metadata round-trips through the codec', () => {
+  it('setMeta encrypts custom via the codec (no plaintext name/tags on the wire)', async () => {
+    const log: string[] = []
     const encryption: EncryptionProvider = {
       async codecFor() {
-        return fakeCodec([])
+        return fakeCodec(log)
       }
     }
-    const { client } = clientWithRouter({ encryption })
+    const { client, calls } = clientWithRouter({ encryption })
     const resource = client
       .space('s')
       .collection('c', { encryption: { scheme: 'edv' } })
       .resource('zDoc')
-    await expect(resource.setMeta({ custom: { name: 'x' } })).rejects.toThrow(
-      ValidationError
-    )
-    await expect(resource.setName('x')).rejects.toThrow(ValidationError)
-    await expect(resource.setTags({ a: 'b' })).rejects.toThrow(ValidationError)
+    await resource.setMeta({ custom: { name: 'x', tags: { a: 'b' } } })
+    const write = calls.find(call => call.method === 'PUT')
+    // The wire body's `custom` is the codec envelope, not plaintext name/tags.
+    expect(write?.json).toEqual({
+      custom: { jwe: { name: 'x', tags: { a: 'b' } } }
+    })
+    expect(log).toContain('encodeMeta')
+  })
+
+  it('meta decrypts the stored custom envelope back to plaintext', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    // The stored `/meta` custom is the opaque envelope the fake codec produces.
+    const { client } = clientWithRouter({
+      encryption,
+      readData: {
+        contentType: 'application/json',
+        size: 2,
+        custom: { jwe: { name: 'decoded' } }
+      }
+    })
+    const meta = await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .resource('zDoc')
+      .meta()
+    expect(meta?.custom).toEqual({ name: 'decoded' })
+    expect(log).toContain('decodeMeta')
   })
 
   it('setMeta still works on a plaintext (no-provider) collection', async () => {
@@ -654,7 +695,7 @@ describe('codec seam: encrypted metadata is forbidden', () => {
  */
 function conditionalFakeCodec(log: string[]): ResourceCodec {
   return {
-    allowsServerMetadata: false,
+    metadataMode: 'encrypted',
     conditionalWrites: true,
     async encode({ id, data, current }): Promise<EncodedWrite> {
       const etag = current?.headers.get('etag') ?? undefined
@@ -668,6 +709,12 @@ function conditionalFakeCodec(log: string[]): ResourceCodec {
     },
     async decode(): Promise<{ decrypted: true }> {
       return { decrypted: true }
+    },
+    async encodeMeta({ custom }): Promise<{ custom: object }> {
+      return { custom: { jwe: custom } }
+    },
+    async decodeMeta({ custom }): Promise<ResourceMetadataCustom> {
+      return ((custom as { jwe?: unknown })?.jwe ?? {}) as ResourceMetadataCustom
     }
   }
 }
@@ -776,5 +823,22 @@ describe('conditional writes: conditional codec wiring', () => {
     const write = calls.find(call => call.method === 'PUT')
     expect(log).toContain('encode:zDoc:etag=none')
     expect(write?.headers?.['if-none-match']).toBe('*')
+  })
+})
+
+describe('identityCodec: metadata identity (byte-for-byte)', () => {
+  it('encodeMeta returns custom unchanged; decodeMeta inverts it', async () => {
+    const custom = { name: 'Hello', tags: { project: 'demo' } }
+    expect(await identityCodec.encodeMeta({ custom })).toEqual({ custom })
+    expect(await identityCodec.decodeMeta({ custom })).toEqual(custom)
+  })
+
+  it('decodeMeta returns {} for an absent custom', async () => {
+    expect(await identityCodec.decodeMeta({})).toEqual({})
+    expect(await identityCodec.decodeMeta({ custom: undefined })).toEqual({})
+  })
+
+  it('reports metadataMode "plaintext"', () => {
+    expect(identityCodec.metadataMode).toBe('plaintext')
   })
 })

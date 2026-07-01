@@ -1,5 +1,31 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Changed
+
+- **Encrypted resource metadata (`name` / `tags`).** On an encrypted collection,
+  a resource's user-writable metadata (`custom`) is now encrypted into an EDV
+  Document envelope by the codec before it is sent, symmetric with how content is
+  stored -- so `setName` / `setTags` / `setMeta` **no longer throw** on an
+  encrypted collection (the previous behavior) but instead round-trip
+  transparently: `meta()` decrypts `custom` back to plaintext `{ name, tags }`
+  for a keyed reader, while the server only ever sees an opaque envelope. The
+  codec seam's `allowsServerMetadata: boolean` is replaced by
+  `metadataMode: 'plaintext' | 'encrypted'`, with new `encodeMeta` / `decodeMeta`
+  transforms (identity for the plaintext codec, encrypt/decrypt for `EdvCodec`).
+- **`resource.setMeta()` returns the `/meta` ETag and accepts conditional
+  options.** It now returns `{ etag }` (the metadata's own `metaVersion`,
+  independent of the content ETag) and accepts `{ ifMatch, ifNoneMatch }` for a
+  lost-update-safe metadata write (412 on a stale precondition). `meta().etag` is
+  now this `/meta` validator (absent until a metadata write), not the content
+  version -- use the content write/read ETag for conditional content writes.
+- **EDV content is stored as `application/json`.** No client change was needed
+  (the codec already defaulted to `application/json`); this note records that the
+  server's `edv` scheme profile was corrected to match what the codec stores (an
+  EDV Encrypted Document, `{ jwe, ... }`), so the codec's content writes now pass
+  a marker-enforcing server end-to-end.
+
 ## 0.10.0 - 2026-07-01
 
 ### Changed

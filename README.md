@@ -606,9 +606,11 @@ scope for now):
   as the WAS resource id). `put(id, ...)` accepts only an EDV-format id; a
   human-readable id is rejected (it would leak onto the URL) -- carry a
   human-readable label inside the encrypted content instead.
-- **Metadata.** `resource.setName()` / `setTags()` throw on an encrypted
-  collection (they write server-visible plaintext); store those values inside
-  the encrypted content.
+- **Metadata.** `resource.setName()` / `setTags()` / `setMeta()` work on an
+  encrypted collection: the user-writable `custom` (`name` / `tags`) is encrypted
+  into an envelope before it is sent, so the server never sees the plaintext, and
+  `meta()` decrypts it back for a keyed reader. The `/meta` endpoint has its own
+  ETag (`metaVersion`), independent of the content ETag.
 - **Binary.** A small `Blob`/`Uint8Array` is encrypted as a single document;
   larger binaries are rejected until chunked encrypted blobs land.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches

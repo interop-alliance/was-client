@@ -38,9 +38,12 @@
  *   surfaces as a `PreconditionFailedError` (412) -- the lost-update guard --
  *   rather than the old advisory last-writer-wins. Against a backend that does
  *   not advertise `conditional-writes` (no ETag) it degrades to advisory.
- * - **No server-visible metadata.** `allowsServerMetadata` is `false`, so
- *   `setName`/`setTags` throw on an encrypted collection (the core seam enforces
- *   this).
+ * - **Encrypted metadata.** `metadataMode` is `'encrypted'`, so a Resource's
+ *   user-writable `custom` (`name`/`tags`, via `setName`/`setTags`/`setMeta`) is
+ *   encrypted into an EDV Document envelope with the same `documentCipher` used
+ *   for content and stored opaquely under `/meta`; the server never sees
+ *   plaintext `name`/`tags`. A reader with the keys decrypts it back
+ *   transparently via `meta()`.
  */
 import { EdvClientCore } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
@@ -61,7 +64,7 @@ import {
   isTextContentType,
   readJsonData
 } from '../internal/content.js'
-import type { Json, ResourceData } from '../types.js'
+import type { Json, ResourceData, ResourceMetadataCustom } from '../types.js'
 import { DEFAULT_CONTENT_TYPE, ENCODER } from './constants.js'
 
 /**
@@ -125,7 +128,7 @@ function base64ToBytes(base64: string): Uint8Array {
  * collection handle.
  */
 export class EdvCodec implements ResourceCodec {
-  readonly allowsServerMetadata = false
+  readonly metadataMode = 'encrypted' as const
   readonly conditionalWrites = true
 
   private readonly _edv: EdvClientCore
@@ -251,6 +254,62 @@ export class EdvCodec implements ResourceCodec {
       keyAgreementKey: this._keyAgreementKey
     })
     return this._fromDocument(decrypted.content, decrypted.meta)
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * Encrypts the user-writable `custom` into an EDV Document envelope
+   * (`{ jwe, ... }`) with the same `documentCipher.encrypt` used for content --
+   * `custom` becomes the document `content`. The envelope's own `sequence` is
+   * inert (metadata concurrency is the server's plaintext `metaVersion`, not the
+   * envelope), so each write re-encrypts fresh with no `update`.
+   */
+  async encodeMeta({
+    custom
+  }: {
+    custom: ResourceMetadataCustom
+  }): Promise<{ custom: object }> {
+    const { documentCipher } = this._edv
+    const recipients = documentCipher.createDefaultRecipients(
+      this._keyAgreementKey
+    )
+    // The document needs an EDV id (the cipher asserts one on decrypt). It is
+    // opaque to the server -- carried inside the un-decryptable envelope -- and
+    // minted fresh each write, since the metadata envelope is never updated in
+    // place (concurrency is the server's plaintext `metaVersion`, Decision 3).
+    const id = (await this._edv.generateId()) as string
+    const encrypted = await documentCipher.encrypt({
+      doc: { id, content: custom as Record<string, unknown> },
+      recipients,
+      keyResolver: this._edv.keyResolver,
+      hmac: undefined
+    })
+    return { custom: encrypted }
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * Decrypts the stored `custom` envelope back to plaintext `{ name, tags }`. An
+   * absent `custom` (no metadata written yet, or cleared) decodes to `{}`; a
+   * present value must be an EDV envelope (else {@link EncryptionError}, the
+   * `_assertEnvelope` guard), so a foreign plaintext `custom` fails closed.
+   */
+  async decodeMeta({
+    custom
+  }: {
+    custom?: unknown
+  }): Promise<ResourceMetadataCustom> {
+    if (custom === undefined || custom === null) {
+      return {}
+    }
+    this._assertEnvelope(custom, 'read')
+    const decrypted = await this._edv.documentCipher.decrypt({
+      encryptedDoc: custom,
+      keyAgreementKey: this._keyAgreementKey
+    })
+    return (decrypted.content ?? {}) as ResourceMetadataCustom
   }
 
   /**

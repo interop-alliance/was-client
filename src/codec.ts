@@ -31,7 +31,7 @@
  *   silently writing plaintext.
  */
 import type { HttpResponse } from '@interop/http-client'
-import type { Json, ResourceData } from './types.js'
+import type { Json, ResourceData, ResourceMetadataCustom } from './types.js'
 
 /**
  * The result of {@link ResourceCodec.encode}: the stored representation of a
@@ -74,12 +74,15 @@ export interface EncodedWrite {
  */
 export interface ResourceCodec {
   /**
-   * Whether server-visible custom metadata (`resource.setName` / `setTags` /
-   * `setMeta`) is permitted. The identity codec allows it; an encrypting codec
-   * forbids it (the values would be stored as server-visible plaintext -- a
-   * leak), so those methods throw on an encrypted collection.
+   * How this codec stores a Resource's user-writable metadata (`custom`:
+   * `name` / `tags`, set via `resource.setName` / `setTags` / `setMeta`). The
+   * identity codec stores it as server-visible plaintext (`'plaintext'`); an
+   * encrypting codec stores it as an opaque envelope (`'encrypted'`) -- the same
+   * way it stores content -- so `name` / `tags` never reach the server in the
+   * clear. A mode rather than a boolean so a future scheme that stores metadata
+   * differently can extend the union.
    */
-  readonly allowsServerMetadata: boolean
+  readonly metadataMode: 'plaintext' | 'encrypted'
 
   /**
    * Whether this codec drives optimistic-concurrency (conditional) writes. When
@@ -122,6 +125,33 @@ export interface ResourceCodec {
    * @returns {Promise<Json | Blob>}
    */
   decode(response: HttpResponse): Promise<Json | Blob>
+
+  /**
+   * Transforms a caller's user-writable metadata (`custom`) into the value to
+   * store under `custom` on a `PUT .../meta` write. The identity codec returns
+   * `custom` unchanged (server-visible plaintext `{ name, tags }`); an
+   * encrypting codec returns an opaque encryption envelope, so `name` / `tags`
+   * are never server-visible.
+   *
+   * @param input {object}
+   * @param input.custom {ResourceMetadataCustom}   the plaintext user metadata
+   * @returns {Promise<{ custom: object }>}   the value to store under `custom`
+   */
+  encodeMeta(input: {
+    custom: ResourceMetadataCustom
+  }): Promise<{ custom: object }>
+
+  /**
+   * Inverts {@link encodeMeta}: transforms the stored `custom` value read from
+   * `.../meta` back into the caller's plaintext `{ name, tags }`. The identity
+   * codec returns `stored.custom ?? {}` unchanged; an encrypting codec decrypts
+   * the envelope. An absent `custom` (no metadata written) decodes to `{}`.
+   *
+   * @param stored {object}
+   * @param [stored.custom] {unknown}   the stored `custom` value from `/meta`
+   * @returns {Promise<ResourceMetadataCustom>}
+   */
+  decodeMeta(stored: { custom?: unknown }): Promise<ResourceMetadataCustom>
 }
 
 /**

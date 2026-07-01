@@ -24,8 +24,8 @@ importers:
         specifier: ^1.0.4
         version: 1.0.4
       '@interop/storage-core':
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.3.1
+        version: 0.3.1
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -56,7 +56,7 @@ importers:
         version: 17.7.0
       prettier:
         specifier: ^3.8.3
-        version: 3.9.3
+        version: 3.9.4
       rimraf:
         specifier: ^6.1.3
         version: 6.1.3
@@ -68,10 +68,10 @@ importers:
         version: 8.62.1(eslint@10.6.0)(typescript@5.9.3)
       vite:
         specifier: ^8.0.14
-        version: 8.1.0(@types/node@25.9.4)
+        version: 8.1.2(@types/node@25.9.4)
       vitest:
         specifier: ^4.1.7
-        version: 4.1.9(@types/node@25.9.4)(@vitest/coverage-v8@4.1.9)(vite@8.1.0(@types/node@25.9.4))
+        version: 4.1.9(@types/node@25.9.4)(@vitest/coverage-v8@4.1.9)(vite@8.1.2(@types/node@25.9.4))
 
 packages:
 
@@ -260,8 +260,8 @@ packages:
     resolution: {integrity: sha512-cYFwelF+HCH1dS48l3w0YEhU+Z/5kJEj52sNoT1ObiMX6hSEJUM0q/b7rDDJ0R7uxqWeaHzx6sKN8PLDNGWVLQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.3.0':
-    resolution: {integrity: sha512-XTsLMRRPXoMDIbwwJM/Vx5m1iGn7RG0CJ3N6hX7xUR4bCuy+QcNfrQgsFQaPP3GYgb1vNdE/YI5lH7yp1KTT3w==}
+  '@interop/storage-core@0.3.1':
+    resolution: {integrity: sha512-CFVIjqOQQP+LZ8+RS1zQpPhJH5D9zS9NHz5+UBXH7VEmdeXK3mvjYQScnqiwBv/r5ODZ7XqSfR84ihZVPND4Dw==}
     engines: {node: '>=22.0'}
 
   '@interop/x25519-key-agreement-key@5.1.1':
@@ -982,8 +982,8 @@ packages:
     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
     engines: {node: '>= 0.8.0'}
 
-  prettier@3.9.3:
-    resolution: {integrity: sha512-HWmu+K+zvHNpaMfSnYeqdqrDbR16cuIXaPx8WoHaviQkDJh1/0BNtOZmHVQI5jc3wXv0H1yXc9wjvFdXh+n3hQ==}
+  prettier@3.9.4:
+    resolution: {integrity: sha512-yWG/o/4oJfo036EKAfK6ACAoDOfHeRHx4tuxkfBZiauURiaSmYwlpOr5LQqKtIkRD2z1PLteme2WoxEnj4tHTg==}
     engines: {node: '>=14'}
     hasBin: true
 
@@ -1100,8 +1100,8 @@ packages:
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
 
-  vite@8.1.0:
-    resolution: {integrity: sha512-BuJcQK/56NQTWDGn4ABea3q4SSBdNPWwNZKTkkUpcMPnLoquSYH8llRtSUIgoL1KSCpHt5eghLShn50mH36y7Q==}
+  vite@8.1.2:
+    resolution: {integrity: sha512-6YYPbRXTxx6bRXmOn7XdnQAy5DQNHhDgtjhDHI13oe4pY93kkcdGJWxpGwOm++/Wh0QpQhDrpIoVMrmrsI5AGQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -1409,7 +1409,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/storage-core@0.3.0':
+  '@interop/storage-core@0.3.1':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 
@@ -1666,7 +1666,7 @@ snapshots:
       obug: 2.1.3
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.9(@types/node@25.9.4)(@vitest/coverage-v8@4.1.9)(vite@8.1.0(@types/node@25.9.4))
+      vitest: 4.1.9(@types/node@25.9.4)(@vitest/coverage-v8@4.1.9)(vite@8.1.2(@types/node@25.9.4))
 
   '@vitest/expect@4.1.9':
     dependencies:
@@ -1677,13 +1677,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.9(vite@8.1.0(@types/node@25.9.4))':
+  '@vitest/mocker@4.1.9(vite@8.1.2(@types/node@25.9.4))':
     dependencies:
       '@vitest/spy': 4.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.0(@types/node@25.9.4)
+      vite: 8.1.2(@types/node@25.9.4)
 
   '@vitest/pretty-format@4.1.9':
     dependencies:
@@ -2073,7 +2073,7 @@ snapshots:
 
   prelude-ls@1.2.1: {}
 
-  prettier@3.9.3: {}
+  prettier@3.9.4: {}
 
   punycode@2.3.1: {}
 
@@ -2180,7 +2180,7 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  vite@8.1.0(@types/node@25.9.4):
+  vite@8.1.2(@types/node@25.9.4):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.4
@@ -2191,10 +2191,10 @@ snapshots:
       '@types/node': 25.9.4
       fsevents: 2.3.3
 
-  vitest@4.1.9(@types/node@25.9.4)(@vitest/coverage-v8@4.1.9)(vite@8.1.0(@types/node@25.9.4)):
+  vitest@4.1.9(@types/node@25.9.4)(@vitest/coverage-v8@4.1.9)(vite@8.1.2(@types/node@25.9.4)):
     dependencies:
       '@vitest/expect': 4.1.9
-      '@vitest/mocker': 4.1.9(vite@8.1.0(@types/node@25.9.4))
+      '@vitest/mocker': 4.1.9(vite@8.1.2(@types/node@25.9.4))
       '@vitest/pretty-format': 4.1.9
       '@vitest/runner': 4.1.9
       '@vitest/snapshot': 4.1.9
@@ -2211,7 +2211,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.0(@types/node@25.9.4)
+      vite: 8.1.2(@types/node@25.9.4)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 25.9.4
