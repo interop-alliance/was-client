@@ -296,7 +296,10 @@ export class Collection {
       return {
         id: encoded.id,
         url: toUrl({ serverUrl: this._context.serverUrl, path }),
-        contentType: encoded.contentType,
+        // Report the plaintext resource type when the codec resolved one (the
+        // EDV codec's `resourceContentType`); otherwise the wire `contentType`,
+        // which for the identity codec already is the resource type.
+        contentType: encoded.resourceContentType ?? encoded.contentType,
         etag: readEtag(response)
       }
     }

@@ -4,6 +4,28 @@
 
 ### Changed
 
+- **BREAKING**: Encrypted resources now carry their content type and encoding in
+  the EDV document `meta`, with the payload inline in `content`. A decrypted EDV
+  document is `{ content, meta }`: `meta.contentType` holds the plaintext MIME
+  type and `meta.encoding` is the payload discriminator -- absent for JSON
+  (`content` is the value verbatim), `"utf-8"` for text (`content.text` is a
+  legible UTF-8 string, no base64 inflation), `"base64"` for binary
+  (`content.bytes`). This replaces the in-band `@interop/was-client:edvBlob`
+  marker record, which lived in the caller's `content` namespace. The change (1)
+  closes a caller-data collision -- a JSON object shaped like `{ bytes: '…' }` /
+  `{ text: '…' }` now round-trips as itself rather than being reconstructed as a
+  `Blob`; (2) makes encrypted resources readable by any profile-conformant
+  client (the format is a documented profile, not a private key); and (3) adds
+  first-class encrypted **text** (HTML / plain-text / CSS / SVG / XML) stored
+  legibly without the ~33% base64 inflation. Text and binary both read back as a
+  `Blob` typed `meta.contentType`, matching the plaintext `get()` contract.
+  Breaking: binary previously written with the old marker will not decode under
+  the new reader (a clean cut -- the EDV inner-document profile was still being
+  drafted). The single-document inline cap is raised from 1 MiB to 5 MiB.
+- **`collection.add()` reports the plaintext content type of an encrypted
+  resource.** `add(png, { contentType: 'image/png' })` now returns
+  `AddResult.contentType: 'image/png'` (from the resolved `meta.contentType`)
+  instead of the opaque envelope type `application/json`.
 - **`EdvCodec` now uses edv-client's public `documentCipher` surface.** It
   encrypts/decrypts through `EdvClientCore.documentCipher`
   (`createDefaultRecipients` / `encrypt` / `decrypt`, the new public

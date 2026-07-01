@@ -45,6 +45,12 @@ import type { Json, ResourceData } from './types.js'
  *   layer: `json` for a structured body, `body` for raw bytes.
  * - `contentType` -- the content type to send for a `body` write (e.g.
  *   `application/jose+json` for an encrypted envelope).
+ * - `resourceContentType` -- the plaintext content type of the resource, when it
+ *   differs from the stored `contentType`. An encrypting codec sets this to the
+ *   caller's resolved type (e.g. `image/png`) while `contentType` stays the
+ *   opaque envelope type, so `add()` can report the real type in
+ *   {@link AddResult.contentType}. Absent for the identity codec (its
+ *   `contentType` already is the resource type).
  * - `ifMatch` / `ifNoneMatch` -- an optional conditional-write precondition the
  *   codec computed (e.g. the EDV codec maps its `sequence` onto an `If-Match`
  *   ETag for lost-update-safe updates, or `If-None-Match: *` for a fresh
@@ -56,6 +62,7 @@ export interface EncodedWrite {
   json?: object
   body?: Uint8Array | Blob
   contentType?: string
+  resourceContentType?: string
   ifMatch?: string
   ifNoneMatch?: boolean
 }

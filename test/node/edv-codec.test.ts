@@ -12,7 +12,12 @@
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
-import type { IKeyAgreementKey } from '@interop/data-integrity-core'
+import { EdvClientCore } from '@interop/edv-client'
+import type {
+  IEDVDocument,
+  IKeyAgreementKey,
+  IKeyResolver
+} from '@interop/data-integrity-core'
 import type { HttpResponse } from '@interop/http-client'
 
 import { EncryptionError, ValidationError } from '../../src/index.js'
@@ -20,20 +25,15 @@ import type { ResourceCodec } from '../../src/index.js'
 import { createEdvEncryption, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
 /**
- * Builds an EDV codec over a fresh real X25519 key (so encrypt/decrypt actually
- * run), via the public `createEdvEncryption` provider.
+ * Generates a fresh real X25519 key agreement key and a matching resolver, so
+ * the codec's encrypt/decrypt actually run.
  *
- * @param [options] {object}
- * @param [options.contentType] {string}
- * @param [options.maxBlobBytes] {number}
- * @returns {Promise<ResourceCodec>}
+ * @returns {Promise<{ kak: IKeyAgreementKey; keyResolver: function }>}
  */
-async function makeCodec(
-  options: {
-    contentType?: string
-    maxBlobBytes?: number
-  } = {}
-): Promise<ResourceCodec> {
+async function makeKeys(): Promise<{
+  kak: IKeyAgreementKey
+  keyResolver: IKeyResolver
+}> {
   const kak = await X25519KeyAgreementKey2020.generate({
     controller: 'did:example:alice'
   })
@@ -47,14 +47,30 @@ async function makeCodec(
       publicKeyMultibase: kak.publicKeyMultibase
     }
   }
+  // `X25519KeyAgreementKey2020.id` is typed optional, but a key generated with a
+  // `controller` always derives one, so narrow it to the `IKeyAgreementKey`
+  // contract the EDV keystore expects.
+  return { kak: kak as IKeyAgreementKey, keyResolver }
+}
+
+/**
+ * Builds an EDV codec over a fresh real X25519 key, via the public
+ * `createEdvEncryption` provider.
+ *
+ * @param [options] {object}
+ * @param [options.contentType] {string}
+ * @param [options.maxBlobBytes] {number}
+ * @returns {Promise<ResourceCodec>}
+ */
+async function makeCodec(
+  options: {
+    contentType?: string
+    maxBlobBytes?: number
+  } = {}
+): Promise<ResourceCodec> {
+  const { kak, keyResolver } = await makeKeys()
   const provider = createEdvEncryption({
-    // `X25519KeyAgreementKey2020.id` is typed optional, but a key generated with
-    // a `controller` always derives one, so narrow it to the `IKeyAgreementKey`
-    // contract the EDV keystore expects.
-    resolveKeys: async () => ({
-      keyAgreementKey: kak as IKeyAgreementKey,
-      keyResolver
-    }),
+    resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
     ...options
   })
   // Core decides policy (marker/override) and then asks the provider to build
@@ -68,6 +84,46 @@ async function makeCodec(
     throw new Error('expected a codec')
   }
   return codec
+}
+
+/**
+ * Builds a codec plus a `decrypt` helper that unseals an encoded envelope back
+ * to its decrypted `{ content, meta }`, so a test can assert the on-the-wire
+ * inner document (e.g. that text is stored verbatim, not base64).
+ *
+ * @param [options] {object}
+ * @param [options.maxBlobBytes] {number}
+ * @returns {Promise<{ codec: ResourceCodec; decrypt: function }>}
+ */
+async function makeInspectableCodec(
+  options: { maxBlobBytes?: number } = {}
+): Promise<{
+  codec: ResourceCodec
+  decrypt: (body: Uint8Array | Blob | undefined) => Promise<IEDVDocument>
+}> {
+  const { kak, keyResolver } = await makeKeys()
+  const provider = createEdvEncryption({
+    resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
+    ...options
+  })
+  const codec = await provider.codecFor({
+    spaceId: 's',
+    collectionId: 'c',
+    scheme: 'edv'
+  })
+  if (!codec) {
+    throw new Error('expected a codec')
+  }
+  const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
+  const decrypt = async (
+    body: Uint8Array | Blob | undefined
+  ): Promise<IEDVDocument> => {
+    const encryptedDoc = JSON.parse(
+      new TextDecoder().decode(body as Uint8Array)
+    )
+    return edv.documentCipher.decrypt({ encryptedDoc, keyAgreementKey: kak })
+  }
+  return { codec, decrypt }
 }
 
 /**
@@ -96,7 +152,9 @@ describe('EdvCodec: JSON round trip', () => {
 
     // add(): a fresh EDV multibase id is minted and the body is an opaque JWE.
     expect(encoded.id).toMatch(/^z/)
+    // The wire type is the opaque envelope; the resource type is the plaintext.
     expect(encoded.contentType).toBe('application/json')
+    expect(encoded.resourceContentType).toBe('application/json')
     const json = new TextDecoder().decode(encoded.body as Uint8Array)
     expect(json).not.toContain('do not leak')
     const envelope = JSON.parse(json)
@@ -105,6 +163,19 @@ describe('EdvCodec: JSON round trip', () => {
 
     const decoded = await codec.decode(responseFrom(encoded.body))
     expect(decoded).toEqual({ secret: 'do not leak', n: 42 })
+  })
+
+  it('stores JSON content verbatim and typed application/json in meta', async () => {
+    const { codec, decrypt } = await makeInspectableCodec()
+    const value = { type: ['VerifiableCredential'], claim: 'legible' }
+    const encoded = await codec.encode({ data: value })
+
+    // Inside the JWE: content is the value verbatim (no wrapper), meta carries
+    // the JSON content type and NO encoding discriminator.
+    const doc = await decrypt(encoded.body)
+    expect(doc.content).toEqual(value)
+    expect(doc.meta).toEqual({ contentType: 'application/json' })
+    expect(doc.meta?.encoding).toBeUndefined()
   })
 
   it('honors an opted-in application/jose+json content type', async () => {
@@ -133,18 +204,38 @@ describe('EdvCodec: id strategy', () => {
 })
 
 describe('EdvCodec: binary', () => {
-  it('round-trips a small blob as a single JWE document', async () => {
-    const codec = await makeCodec()
+  it('round-trips a small blob as base64 in a single JWE document', async () => {
+    const { codec, decrypt } = await makeInspectableCodec()
     const bytes = new Uint8Array([1, 2, 3, 4, 250])
     const encoded = await codec.encode({
       data: bytes,
       contentType: 'application/octet-stream'
     })
+    // Stored inline as base64 under `content.bytes`, typed in meta.
+    const doc = await decrypt(encoded.body)
+    expect(doc.meta).toEqual({
+      contentType: 'application/octet-stream',
+      encoding: 'base64'
+    })
+    expect(typeof (doc.content as { bytes?: unknown }).bytes).toBe('string')
+    expect(encoded.resourceContentType).toBe('application/octet-stream')
+
     const decoded = await codec.decode(responseFrom(encoded.body))
     expect(decoded).toBeInstanceOf(Blob)
     const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
     expect(out).toEqual(bytes)
     expect((decoded as Blob).type).toBe('application/octet-stream')
+  })
+
+  it('surfaces the resolved content type of a typed blob', async () => {
+    const codec = await makeCodec()
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: 'image/png'
+    })
+    const encoded = await codec.encode({ data: png })
+    // Finding 15: add() reports the plaintext type, not the envelope type.
+    expect(encoded.contentType).toBe('application/json')
+    expect(encoded.resourceContentType).toBe('image/png')
   })
 
   it('rejects an oversized binary write', async () => {
@@ -156,9 +247,124 @@ describe('EdvCodec: binary', () => {
 
   it('rejects a bare primitive', async () => {
     const codec = await makeCodec()
-    await expect(codec.encode({ data: 'just a string' })).rejects.toThrow(
-      ValidationError
+    await expect(
+      // A bare string is excluded by the `ResourceData` type; cast to prove the
+      // runtime guard still rejects it.
+      codec.encode({ data: 'just a string' as unknown as Uint8Array })
+    ).rejects.toThrow(ValidationError)
+  })
+})
+
+describe('EdvCodec: text', () => {
+  it('stores text as a legible UTF-8 string (no base64) and reads a Blob', async () => {
+    const { codec, decrypt } = await makeInspectableCodec()
+    const html = '<!doctype html><h1>héllo</h1>'
+    const encoded = await codec.encode({
+      data: new Blob([html], { type: 'text/html' })
+    })
+    expect(encoded.resourceContentType).toBe('text/html')
+
+    // Stored verbatim under `content.text` with `encoding: 'utf-8'` -- legible,
+    // not base64.
+    const doc = await decrypt(encoded.body)
+    expect(doc.meta).toEqual({ contentType: 'text/html', encoding: 'utf-8' })
+    expect((doc.content as { text?: unknown }).text).toBe(html)
+
+    // Reads back as a Blob typed text/html whose .text() matches.
+    const decoded = await codec.decode(responseFrom(encoded.body))
+    expect(decoded).toBeInstanceOf(Blob)
+    expect((decoded as Blob).type).toBe('text/html')
+    expect(await (decoded as Blob).text()).toBe(html)
+  })
+
+  it('falls back to base64 for a text-typed blob carrying invalid UTF-8', async () => {
+    const { codec, decrypt } = await makeInspectableCodec()
+    // 0xff is not valid UTF-8; the text gate must reject it and store base64.
+    const encoded = await codec.encode({
+      data: new Blob([new Uint8Array([0xff, 0xfe, 0x00])], {
+        type: 'text/plain'
+      })
+    })
+    const doc = await decrypt(encoded.body)
+    expect(doc.meta).toEqual({ contentType: 'text/plain', encoding: 'base64' })
+    expect(typeof (doc.content as { bytes?: unknown }).bytes).toBe('string')
+  })
+})
+
+describe('EdvCodec: caller-data collision (no in-band marker)', () => {
+  it('round-trips a JSON object shaped like the binary container as itself', async () => {
+    const codec = await makeCodec()
+    const value = { bytes: 'aGk=' }
+    const encoded = await codec.encode({ data: value })
+    const decoded = await codec.decode(responseFrom(encoded.body))
+    // No `meta.encoding`, so it is JSON -- returned verbatim, not a Blob.
+    expect(decoded).not.toBeInstanceOf(Blob)
+    expect(decoded).toEqual(value)
+  })
+
+  it('round-trips a JSON object shaped like the text container as itself', async () => {
+    const codec = await makeCodec()
+    const value = { text: 'hi' }
+    const encoded = await codec.encode({ data: value })
+    const decoded = await codec.decode(responseFrom(encoded.body))
+    expect(decoded).not.toBeInstanceOf(Blob)
+    expect(decoded).toEqual(value)
+  })
+})
+
+describe('EdvCodec: malformed inner document', () => {
+  /**
+   * Encrypts an arbitrary `{ content, meta }` under a fresh key and returns a
+   * `{ codec, response }` pair so `decode` can be exercised against a
+   * deliberately malformed inner shape.
+   *
+   * @param content {Record<string, unknown>}
+   * @param meta {Record<string, unknown>}
+   * @returns {Promise<{ codec: ResourceCodec; response: HttpResponse }>}
+   */
+  async function encodedDocWith(
+    content: Record<string, unknown>,
+    meta: Record<string, unknown>
+  ): Promise<{ codec: ResourceCodec; response: HttpResponse }> {
+    const { kak, keyResolver } = await makeKeys()
+    const provider = createEdvEncryption({
+      resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
+    })
+    const codec = (await provider.codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'edv'
+    })) as ResourceCodec
+    const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
+    const recipients = edv.documentCipher.createDefaultRecipients(kak)
+    const encrypted = await edv.documentCipher.encrypt({
+      doc: { id: 'z' + 'A'.repeat(21), content, meta },
+      recipients,
+      keyResolver,
+      update: false
+    })
+    return {
+      codec,
+      response: responseFrom(
+        new TextEncoder().encode(JSON.stringify(encrypted))
+      )
+    }
+  }
+
+  it('throws EncryptionError when encoding is base64 but content.bytes is not a string', async () => {
+    const { codec, response } = await encodedDocWith(
+      { bytes: 123 },
+      { contentType: 'image/png', encoding: 'base64' }
     )
+    await expect(codec.decode(response)).rejects.toThrow(EncryptionError)
+  })
+
+  it('throws EncryptionError when encoding is utf-8 but content.text is not a string', async () => {
+    const { codec, response } = await encodedDocWith(
+      { text: 42 },
+      { contentType: 'text/html', encoding: 'utf-8' }
+    )
+    await expect(codec.decode(response)).rejects.toThrow(EncryptionError)
   })
 })
 
