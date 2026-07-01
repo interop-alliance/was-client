@@ -605,12 +605,17 @@ scope for now):
 - **Ids.** `add()` mints an EDV id (a `z`-prefixed multibase value used verbatim
   as the WAS resource id). `put(id, ...)` accepts only an EDV-format id; a
   human-readable id is rejected (it would leak onto the URL) -- carry a
-  human-readable label inside the encrypted content instead.
+  human-readable label inside the encrypted content instead. By default the
+  minted id is random (the classic mutable-document model); pass
+  `createEdvEncryption({ idDerivation: 'content' })` to derive it from the
+  envelope's JWE ciphertext instead, making documents content-addressed -- the
+  id is then stable across replicas (no mapping table), at the cost of
+  immutability (an "update" is delete-old + add-new).
 - **Metadata.** `resource.setName()` / `setTags()` / `setMeta()` work on an
-  encrypted collection: the user-writable `custom` (`name` / `tags`) is encrypted
-  into an envelope before it is sent, so the server never sees the plaintext, and
-  `meta()` decrypts it back for a keyed reader. The `/meta` endpoint has its own
-  ETag (`metaVersion`), independent of the content ETag.
+  encrypted collection: the user-writable `custom` (`name` / `tags`) is
+  encrypted into an envelope before it is sent, so the server never sees the
+  plaintext, and `meta()` decrypts it back for a keyed reader. The `/meta`
+  endpoint has its own ETag (`metaVersion`), independent of the content ETag.
 - **Binary.** A small `Blob`/`Uint8Array` is encrypted as a single document;
   larger binaries are rejected until chunked encrypted blobs land.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches

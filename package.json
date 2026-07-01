@@ -44,7 +44,7 @@
   "dependencies": {
     "@interop/data-integrity-core": "^8.1.0",
     "@interop/ed25519-signature": "^7.1.3",
-    "@interop/edv-client": "^17.3.1",
+    "@interop/edv-client": "^17.4.0",
     "@interop/ezcap": "^7.3.2",
     "@interop/http-client": "^1.0.4",
     "@interop/storage-core": "^0.3.1"

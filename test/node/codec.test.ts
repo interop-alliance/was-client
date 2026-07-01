@@ -138,7 +138,9 @@ function clientWithRouter({
  */
 function fakeCodec(
   log: string[],
-  { metadataMode = 'encrypted' }: { metadataMode?: 'plaintext' | 'encrypted' } = {}
+  {
+    metadataMode = 'encrypted'
+  }: { metadataMode?: 'plaintext' | 'encrypted' } = {}
 ): ResourceCodec {
   return {
     metadataMode,
@@ -160,7 +162,8 @@ function fakeCodec(
     },
     async decodeMeta({ custom }): Promise<ResourceMetadataCustom> {
       log.push('decodeMeta')
-      return ((custom as { jwe?: unknown })?.jwe ?? {}) as ResourceMetadataCustom
+      return ((custom as { jwe?: unknown })?.jwe ??
+        {}) as ResourceMetadataCustom
     }
   }
 }
@@ -714,7 +717,8 @@ function conditionalFakeCodec(log: string[]): ResourceCodec {
       return { custom: { jwe: custom } }
     },
     async decodeMeta({ custom }): Promise<ResourceMetadataCustom> {
-      return ((custom as { jwe?: unknown })?.jwe ?? {}) as ResourceMetadataCustom
+      return ((custom as { jwe?: unknown })?.jwe ??
+        {}) as ResourceMetadataCustom
     }
   }
 }

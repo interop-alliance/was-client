@@ -169,7 +169,9 @@ export const identityCodec: ResourceCodec = {
     return { custom }
   },
 
-  async decodeMeta(stored: { custom?: unknown }): Promise<ResourceMetadataCustom> {
+  async decodeMeta(stored: {
+    custom?: unknown
+  }): Promise<ResourceMetadataCustom> {
     return (stored.custom ?? {}) as ResourceMetadataCustom
   }
 }

@@ -1,30 +1,53 @@
 # @interop/was-client Changelog
 
+## 0.12.0 - TBD
+
+### Added
+
+- **Content-derived EDV document ids**
+  (`createEdvEncryption({ idDerivation: 'content' })`). In `'content'` mode,
+  `add()` on an encrypted collection encrypts first, derives the document id
+  from the envelope's JWE ciphertext (`EdvDocumentCipher.deriveId` from
+  `@interop/edv-client` 17.4.0 -- a truncated SHA-256 in the standard 128-bit
+  multibase id format), stamps it on the envelope, and writes under that id --
+  making documents content-addressed: the id is byte-stable across replicas with
+  no mapping table, and hashing only the ciphertext leaks nothing about the
+  plaintext (and survives adding a recipient). The trade-off is immutability --
+  an "update" is delete-old + add-new -- so `'content'` suits write-once /
+  append-only collections (e.g. a replicating credential store). The default
+  stays `'random'` (the classic mutable-document `generateId()` model), and the
+  explicit-id `put(id, ...)` path is unchanged in both modes.
+
+### Changed
+
+- Bumped `@interop/edv-client` to `^17.4.0` (adds `EdvDocumentCipher.deriveId`).
+
 ## 0.11.0 - 2026-07-01
 
 ### Changed
 
 - **Encrypted resource metadata (`name` / `tags`).** On an encrypted collection,
   a resource's user-writable metadata (`custom`) is now encrypted into an EDV
-  Document envelope by the codec before it is sent, symmetric with how content is
-  stored -- so `setName` / `setTags` / `setMeta` **no longer throw** on an
+  Document envelope by the codec before it is sent, symmetric with how content
+  is stored -- so `setName` / `setTags` / `setMeta` **no longer throw** on an
   encrypted collection (the previous behavior) but instead round-trip
   transparently: `meta()` decrypts `custom` back to plaintext `{ name, tags }`
   for a keyed reader, while the server only ever sees an opaque envelope. The
   codec seam's `allowsServerMetadata: boolean` is replaced by
-  `metadataMode: 'plaintext' | 'encrypted'`, with new `encodeMeta` / `decodeMeta`
-  transforms (identity for the plaintext codec, encrypt/decrypt for `EdvCodec`).
+  `metadataMode: 'plaintext' | 'encrypted'`, with new `encodeMeta` /
+  `decodeMeta` transforms (identity for the plaintext codec, encrypt/decrypt for
+  `EdvCodec`).
 - **`resource.setMeta()` returns the `/meta` ETag and accepts conditional
   options.** It now returns `{ etag }` (the metadata's own `metaVersion`,
   independent of the content ETag) and accepts `{ ifMatch, ifNoneMatch }` for a
-  lost-update-safe metadata write (412 on a stale precondition). `meta().etag` is
-  now this `/meta` validator (absent until a metadata write), not the content
+  lost-update-safe metadata write (412 on a stale precondition). `meta().etag`
+  is now this `/meta` validator (absent until a metadata write), not the content
   version -- use the content write/read ETag for conditional content writes.
 - **EDV content is stored as `application/json`.** No client change was needed
-  (the codec already defaulted to `application/json`); this note records that the
-  server's `edv` scheme profile was corrected to match what the codec stores (an
-  EDV Encrypted Document, `{ jwe, ... }`), so the codec's content writes now pass
-  a marker-enforcing server end-to-end.
+  (the codec already defaulted to `application/json`); this note records that
+  the server's `edv` scheme profile was corrected to match what the codec stores
+  (an EDV Encrypted Document, `{ jwe, ... }`), so the codec's content writes now
+  pass a marker-enforcing server end-to-end.
 
 ## 0.10.0 - 2026-07-01
 
