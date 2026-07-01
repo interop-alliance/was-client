@@ -22,8 +22,13 @@
  * - **Restrict-mode ids.** `add()` mints a 128-bit multibase EDV id; the WAS
  *   resource id IS that EDV id. `put(id, ...)` accepts only an EDV-format id --
  *   a human-readable id is rejected (it would leak onto the URL). Carry a
- *   human-readable label inside the encrypted content instead. (Blind-derived
- *   ids are a deferred future item.)
+ *   human-readable label inside the encrypted content instead. By default the
+ *   minted id is random (`generateId()`, the classic mutable-document model);
+ *   with `idDerivation: 'content'` it is content-derived instead -- encrypt
+ *   first, then `deriveId()` a truncated SHA-256 of the JWE ciphertext and
+ *   stamp it on the envelope -- making the document content-addressed (and so
+ *   immutable: an "update" is delete-old + add-new). Both formats pass the same
+ *   EDV id check and are indistinguishable on the wire.
  * - **Inline non-JSON as a single JWE.** A `Blob`/`Uint8Array` under the size cap
  *   is encrypted as one document -- stored as a legible UTF-8 string for a
  *   text-family type (else base64) -- with the plaintext content type and the
@@ -135,6 +140,7 @@ export class EdvCodec implements ResourceCodec {
   private readonly _keyAgreementKey: IKeyAgreementKey
   private readonly _contentType: string
   private readonly _maxBlobBytes: number
+  private readonly _idDerivation: 'random' | 'content'
 
   /**
    * @param options {object}
@@ -142,22 +148,28 @@ export class EdvCodec implements ResourceCodec {
    * @param options.keyAgreementKey {IKeyAgreementKey}   the recipient/decrypt key
    * @param options.contentType {string}            stored envelope content type
    * @param options.maxBlobBytes {number}           single-document binary cap
+   * @param options.idDerivation {string}           how `add()` mints a document
+   *   id: `'random'` (classic `generateId()`) or `'content'` (derived from the
+   *   JWE ciphertext, content-addressed)
    */
   constructor({
     edv,
     keyAgreementKey,
     contentType,
-    maxBlobBytes
+    maxBlobBytes,
+    idDerivation
   }: {
     edv: EdvClientCore
     keyAgreementKey: IKeyAgreementKey
     contentType: string
     maxBlobBytes: number
+    idDerivation: 'random' | 'content'
   }) {
     this._edv = edv
     this._keyAgreementKey = keyAgreementKey
     this._contentType = contentType
     this._maxBlobBytes = maxBlobBytes
+    this._idDerivation = idDerivation
   }
 
   /**
@@ -181,7 +193,14 @@ export class EdvCodec implements ResourceCodec {
           'id, or carry the human-readable label inside the encrypted content.'
       )
     }
-    const docId = id ?? ((await this._edv.generateId()) as string)
+    // `add()` (no caller id): mint a random id up front, or -- in `'content'`
+    // mode -- leave it unset and stamp the content-derived id after encryption
+    // (the id is a function of the ciphertext, which does not exist yet).
+    let docId =
+      id ??
+      (this._idDerivation === 'content'
+        ? undefined
+        : ((await this._edv.generateId()) as string))
     const { content, meta } = await this._toDocument(data, contentType, docId)
 
     // When the write path pre-read a current envelope, advance `sequence` from
@@ -204,7 +223,7 @@ export class EdvCodec implements ResourceCodec {
     )
     const encrypted = await documentCipher.encrypt({
       doc: {
-        id: docId,
+        ...(docId !== undefined && { id: docId }),
         content,
         // `content` and `meta` are both sealed inside the JWE; `meta` carries the
         // plaintext content type and the inline-encoding discriminator, taken
@@ -217,6 +236,13 @@ export class EdvCodec implements ResourceCodec {
       hmac: undefined,
       update: priorDoc !== null
     })
+    if (docId === undefined) {
+      // Encrypt-then-stamp: the id lives in the cleartext envelope, outside the
+      // JWE, so deriving it from the ciphertext and setting it afterwards does
+      // not invalidate the envelope.
+      docId = await documentCipher.deriveId({ jwe: encrypted.jwe })
+      encrypted.id = docId
+    }
     return {
       id: docId,
       body: ENCODER.encode(JSON.stringify(encrypted)),
@@ -536,12 +562,22 @@ export interface EdvKeys {
  *   `application/*+json` parser.
  * @param [options.maxBlobBytes] {number}   single-document binary cap (default
  *   1 MiB)
+ * @param [options.idDerivation] {string}   how `add()` mints a document id.
+ *   `'random'` (default) is the classic mutable-document model: a random
+ *   `generateId()` id, updated in place via `sequence`. `'content'` derives the
+ *   id from the encrypted envelope's JWE ciphertext
+ *   (`EdvDocumentCipher.deriveId`), making documents content-addressed and
+ *   therefore immutable (an "update" is delete-old + add-new) -- the model a
+ *   replicating store wants, since the id is stable across replicas with no
+ *   mapping table. Both formats pass the same EDV id check; the explicit-id
+ *   `put(id, ...)` path is unaffected either way.
  * @returns {EncryptionProvider}
  */
 export function createEdvEncryption({
   resolveKeys,
   contentType = DEFAULT_CONTENT_TYPE,
-  maxBlobBytes = DEFAULT_MAX_BLOB_BYTES
+  maxBlobBytes = DEFAULT_MAX_BLOB_BYTES,
+  idDerivation = 'random'
 }: {
   resolveKeys: (ref: {
     spaceId: string
@@ -549,6 +585,7 @@ export function createEdvEncryption({
   }) => Promise<EdvKeys | null>
   contentType?: string
   maxBlobBytes?: number
+  idDerivation?: 'random' | 'content'
 }): EncryptionProvider {
   return {
     async codecFor({ spaceId, collectionId, scheme, keys }) {
@@ -570,7 +607,8 @@ export function createEdvEncryption({
         edv,
         keyAgreementKey: resolved.keyAgreementKey,
         contentType,
-        maxBlobBytes
+        maxBlobBytes,
+        idDerivation
       })
     }
   }

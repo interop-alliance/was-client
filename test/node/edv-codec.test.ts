@@ -6,13 +6,14 @@
  * keys and the real `EdvClientCore` cipher (no network) to prove that the codec
  * genuinely encrypts/decrypts at the seam: `encode` produces an opaque JWE
  * envelope (no plaintext leak) and `decode` round-trips it back. Also covers the
- * documents-only contract decisions: minted EDV ids on add, human ids rejected
- * on put, small binary as a single JWE, oversized binary rejected, and the
- * provider's null (no-keys) path.
+ * documents-only contract decisions: minted EDV ids on add (random by default,
+ * content-derived with `idDerivation: 'content'`), human ids rejected on put,
+ * small binary as a single JWE, oversized binary rejected, and the provider's
+ * null (no-keys) path.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
-import { EdvClientCore } from '@interop/edv-client'
+import { EdvClientCore, EdvDocumentCipher } from '@interop/edv-client'
 import type {
   IEDVDocument,
   IKeyAgreementKey,
@@ -60,12 +61,14 @@ async function makeKeys(): Promise<{
  * @param [options] {object}
  * @param [options.contentType] {string}
  * @param [options.maxBlobBytes] {number}
+ * @param [options.idDerivation] {string}
  * @returns {Promise<ResourceCodec>}
  */
 async function makeCodec(
   options: {
     contentType?: string
     maxBlobBytes?: number
+    idDerivation?: 'random' | 'content'
   } = {}
 ): Promise<ResourceCodec> {
   const { kak, keyResolver } = await makeKeys()
@@ -200,6 +203,53 @@ describe('EdvCodec: id strategy', () => {
     expect(updated.id).toBe(minted)
     const decoded = await codec.decode(responseFrom(updated.body))
     expect(decoded).toEqual({ v: 2 })
+  })
+})
+
+describe("EdvCodec: content-derived ids (idDerivation: 'content')", () => {
+  it("derives the add() id from the envelope's JWE ciphertext and stamps it", async () => {
+    const codec = await makeCodec({ idDerivation: 'content' })
+    const encoded = await codec.encode({ data: { secret: 'addressed' } })
+    const envelope = JSON.parse(
+      new TextDecoder().decode(encoded.body as Uint8Array)
+    )
+    // The write id IS the stamped envelope id, in the standard EDV format...
+    expect(encoded.id).toMatch(/^z[1-9A-HJ-NP-Za-km-z]{21,}$/)
+    expect(envelope.id).toBe(encoded.id)
+    // ...and recomputes from the ciphertext (content-derived, not random).
+    await expect(
+      EdvDocumentCipher.deriveId({ jwe: envelope.jwe })
+    ).resolves.toBe(encoded.id)
+  })
+
+  it('guards the content-derived insert with If-None-Match: * and round-trips', async () => {
+    const codec = await makeCodec({ idDerivation: 'content' })
+    const encoded = await codec.encode({ data: { v: 1 } })
+    expect(encoded.ifNoneMatch).toBe(true)
+    expect(encoded.ifMatch).toBeUndefined()
+    // The stamped id satisfies the cipher's decrypt-side id assertion.
+    const decoded = await codec.decode(responseFrom(encoded.body))
+    expect(decoded).toEqual({ v: 1 })
+  })
+
+  it('accepts an explicit EDV-format id and still rejects a human-readable one', async () => {
+    const codec = await makeCodec({ idDerivation: 'content' })
+    const derived = (await codec.encode({ data: { v: 1 } })).id as string
+    const rewrite = await codec.encode({ id: derived, data: { v: 1 } })
+    expect(rewrite.id).toBe(derived)
+    await expect(
+      codec.encode({ id: '2020-01-01-hello', data: { a: 1 } })
+    ).rejects.toThrow(ValidationError)
+  })
+
+  it("default 'random' mode does not content-derive the id", async () => {
+    const codec = await makeCodec()
+    const encoded = await codec.encode({ data: { v: 1 } })
+    const envelope = JSON.parse(
+      new TextDecoder().decode(encoded.body as Uint8Array)
+    )
+    const derived = await EdvDocumentCipher.deriveId({ jwe: envelope.jwe })
+    expect(encoded.id).not.toBe(derived)
   })
 })
 
