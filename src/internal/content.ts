@@ -28,8 +28,30 @@ const OCTET_STREAM = 'application/octet-stream'
  * @param contentType {string}
  * @returns {boolean}
  */
-function isJsonContentType(contentType: string): boolean {
+export function isJsonContentType(contentType: string): boolean {
   return /^application\/([^+\s;]+\+)?json\s*(;.*)?$/i.test(contentType)
+}
+
+/**
+ * Whether a content type denotes UTF-8-safe text that should be stored inline as
+ * a plain string (legible, no ~33% base64 inflation) rather than as opaque
+ * binary -- `text/*`, plus the XML/SVG family that is textual despite an
+ * `application/` or `image/` prefix (`application/xml`, any `+xml` structured
+ * suffix such as `image/svg+xml` / `application/atom+xml`). Kept deliberately
+ * narrow: an unlisted type is treated as binary (base64), which is always
+ * byte-safe, and the caller additionally gates on valid UTF-8 before choosing
+ * text. Any `; charset=…` parameter is ignored.
+ *
+ * @param contentType {string}
+ * @returns {boolean}
+ */
+export function isTextContentType(contentType: string): boolean {
+  const type = (contentType.split(';')[0] ?? '').trim().toLowerCase()
+  return (
+    type.startsWith('text/') ||
+    type === 'application/xml' ||
+    type.endsWith('+xml')
+  )
 }
 
 /**

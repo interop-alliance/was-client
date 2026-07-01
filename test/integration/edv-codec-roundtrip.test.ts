@@ -216,6 +216,18 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     expect(out).toEqual(bytes)
   })
 
+  it('round-trips a text/html resource as a Blob', async () => {
+    const html = '<!doctype html><h1>héllo</h1>'
+    const { id, contentType } = await collection.add(
+      new Blob([html], { type: 'text/html' })
+    )
+    expect(contentType).toBe('text/html')
+    const got = await collection.get(id)
+    expect(got).toBeInstanceOf(Blob)
+    expect((got as Blob).type).toBe('text/html')
+    expect(await (got as Blob).text()).toBe(html)
+  })
+
   it('rejects a human-readable id on put()', async () => {
     await expect(collection.put('2020-01-01-hello', { a: 1 })).rejects.toThrow(
       ValidationError
