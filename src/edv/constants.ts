@@ -30,3 +30,14 @@ export const JOSE_CONTENT_TYPE = 'application/jose+json'
  * instance is reused across every write).
  */
 export const ENCODER = new TextEncoder()
+
+/**
+ * Serializes an encrypted envelope to its wire bytes -- the single source of
+ * the envelope encoding shared by `EdvCodec` and `WasTransport`.
+ *
+ * @param envelope {object}   the encrypted EDV document envelope
+ * @returns {Uint8Array}
+ */
+export function envelopeBytes(envelope: object): Uint8Array {
+  return ENCODER.encode(JSON.stringify(envelope))
+}

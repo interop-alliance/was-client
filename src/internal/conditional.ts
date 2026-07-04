@@ -25,14 +25,19 @@ export interface WritePrecondition {
  * Returns `undefined` when no header is needed, matching the request layer's
  * optional `headers`.
  *
- * @param contentType {string | undefined}   the body content-type, if any
- * @param [precondition] {WritePrecondition}   the conditional-write precondition
+ * @param options {object}
+ * @param [options.contentType] {string}          the body content-type, if any
+ * @param [options.precondition] {WritePrecondition}   the conditional-write
+ *   precondition
  * @returns {Record<string, string> | undefined}
  */
-export function writeHeaders(
-  contentType: string | undefined,
-  precondition: WritePrecondition = {}
-): Record<string, string> | undefined {
+export function writeHeaders({
+  contentType,
+  precondition = {}
+}: {
+  contentType?: string
+  precondition?: WritePrecondition
+}): Record<string, string> | undefined {
   const headers: Record<string, string> = {}
   if (contentType) {
     headers['content-type'] = contentType

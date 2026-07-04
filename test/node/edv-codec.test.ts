@@ -339,6 +339,30 @@ describe('EdvCodec: text', () => {
     expect(doc.meta).toEqual({ contentType: 'text/plain', encoding: 'base64' })
     expect(typeof (doc.content as { bytes?: unknown }).bytes).toBe('string')
   })
+
+  it('preserves a leading UTF-8 BOM through the text round trip', async () => {
+    // BOM-prefixed UTF-8 is valid UTF-8, so the text gate stores it as a
+    // string -- and the decoder must not strip the BOM (`ignoreBOM: true`), or
+    // the round-tripped bytes come back 3 bytes short, corrupting any hash or
+    // signature over the original file.
+    const { codec, decrypt } = await makeInspectableCodec()
+    const bytes = new Uint8Array([
+      0xef,
+      0xbb,
+      0xbf,
+      ...new TextEncoder().encode('hello')
+    ])
+    const encoded = await codec.encode({
+      data: bytes,
+      contentType: 'text/plain'
+    })
+    const doc = await decrypt(encoded.body)
+    expect(doc.meta).toEqual({ contentType: 'text/plain', encoding: 'utf-8' })
+
+    const decoded = await codec.decode(responseFrom(encoded.body))
+    const roundTripped = new Uint8Array(await (decoded as Blob).arrayBuffer())
+    expect(roundTripped).toEqual(bytes)
+  })
 })
 
 describe('EdvCodec: caller-data collision (no in-band marker)', () => {
@@ -454,6 +478,43 @@ describe('EdvCodec: non-envelope guard', () => {
         id: minted,
         data: { v: 2 },
         current: jsonResponse({ hello: 'plaintext, no jwe' })
+      })
+    ).rejects.toThrow(EncryptionError)
+  })
+
+  it('throws a typed EncryptionError when the prior envelope has no sequence', async () => {
+    // A foreign `{ id, jwe }` envelope without a `sequence`: spreading its
+    // undefined `sequence` onto the update doc would make the cipher's
+    // `'sequence' in encrypted` check throw a raw untyped Error.
+    const codec = await makeCodec()
+    const first = await codec.encode({ data: { v: 1 } })
+    const envelope = JSON.parse(
+      new TextDecoder().decode(first.body as Uint8Array)
+    ) as { sequence?: number }
+    delete envelope.sequence
+    const failure = await codec
+      .encode({
+        id: first.id as string,
+        data: { v: 2 },
+        current: jsonResponse(envelope)
+      })
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(EncryptionError)
+    expect((failure as Error).message).toMatch(/sequence/)
+  })
+
+  it('throws a typed EncryptionError for a malformed prior sequence', async () => {
+    const codec = await makeCodec()
+    const first = await codec.encode({ data: { v: 1 } })
+    const envelope = JSON.parse(
+      new TextDecoder().decode(first.body as Uint8Array)
+    ) as { sequence?: unknown }
+    envelope.sequence = 'not-a-number'
+    await expect(
+      codec.encode({
+        id: first.id as string,
+        data: { v: 2 },
+        current: jsonResponse(envelope)
       })
     ).rejects.toThrow(EncryptionError)
   })

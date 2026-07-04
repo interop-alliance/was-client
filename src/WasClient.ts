@@ -12,11 +12,24 @@
 import { ZcapClient } from '@interop/ezcap'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import type { HttpResponse } from '@interop/http-client'
-import { spacesRoot } from './internal/paths.js'
+import {
+  collectionItemsUrl,
+  parseSpacePath,
+  spacesRoot
+} from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
-import { createdId, parseResource, readJsonData } from './internal/content.js'
-import { collectPages, walkPages } from './internal/pagination.js'
+import {
+  createdId,
+  dataOrNull,
+  parseResource,
+  readJsonData
+} from './internal/content.js'
+import {
+  buildPageWalk,
+  collectPages,
+  walkPages
+} from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
 import { ValidationError } from './errors.js'
@@ -182,7 +195,9 @@ export class WasClient {
       path: spacesRoot(),
       method: 'GET'
     })
-    return (response as { data?: unknown }).data as SpaceListing
+    // A successful list always carries the listing body (an unauthorized
+    // caller still gets an empty `items` list, not an error).
+    return dataOrNull<SpaceListing>(response)!
   }
 
   /**
@@ -220,28 +235,22 @@ export class WasClient {
   private async _publicListWalk(
     collectionUrl: string
   ): Promise<PageWalk | null> {
-    // The collection listing endpoint is the trailing-slash items URL.
-    const url = collectionUrl.endsWith('/')
-      ? collectionUrl
-      : `${collectionUrl}/`
-    const response = await unsignedRequest({ url, method: 'GET', read: true })
-    if (response === null) {
-      return null
-    }
-    return {
-      first: (await readJsonData(response)) as CollectionResourcesList,
-      firstUrl: url,
+    return buildPageWalk({
+      // The collection listing endpoint is the trailing-slash items URL.
+      firstUrl: collectionItemsUrl(collectionUrl),
       fetchPage: async pageUrl => {
         const pageResponse = await unsignedRequest({
           url: pageUrl,
           method: 'GET',
           read: true
         })
+        // An unsigned response is a raw `fetch` `Response` (no pre-parsed
+        // `data`), so the page body is read via `readJsonData`.
         return pageResponse === null
           ? null
           : ((await readJsonData(pageResponse)) as CollectionResourcesList)
       }
-    }
+    })
   }
 
   /**
@@ -331,40 +340,45 @@ export class WasClient {
         { cause: err }
       )
     }
-    // Decode each path segment before splitting it back into handle ids: the
-    // path builders re-encode every id with encodeURIComponent, so passing a
-    // still-encoded segment through would double-encode it.
-    const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent)
-    if (segments[0] !== 'space') {
+    // `parseSpacePath` owns the path grammar (and percent-decodes each segment,
+    // since the path builders re-encode every id). Classifying the full segment
+    // list -- rather than destructuring the first three ids -- keeps a
+    // sub-resource target (`/space/s/policy`, `/space/s/c/r/meta`, ...) from
+    // being silently truncated to the nearest containment handle, whose derived
+    // URLs would mismatch the capability's invocation target.
+    const parsed = parseSpacePath(pathname)
+    if (parsed === null) {
       throw new ValidationError(
         `Cannot derive a handle from invocationTarget "${zcap.invocationTarget}".`
       )
     }
-    const [, spaceId, collectionId, resourceId] = segments
-    if (!spaceId) {
+    if (parsed.kind === 'sub-resource') {
       throw new ValidationError(
-        `invocationTarget "${zcap.invocationTarget}" has no space id.`
+        `invocationTarget "${zcap.invocationTarget}" addresses a reserved ` +
+          'sub-resource, which has no navigational handle. Invoke it via the ' +
+          'owning handle instead (e.g. `space.getPolicy()` / ' +
+          '`resource.meta()`), or use the `was.request()` escape hatch.'
       )
     }
     const context = this._context
-    if (resourceId) {
+    if (parsed.kind === 'resource') {
       return new Resource({
         context,
-        spaceId,
-        collectionId: collectionId as string,
-        resourceId,
+        spaceId: parsed.spaceId,
+        collectionId: parsed.collectionId,
+        resourceId: parsed.resourceId,
         capability: zcap
       })
     }
-    if (collectionId) {
+    if (parsed.kind === 'collection') {
       return new Collection({
         context,
-        spaceId,
-        collectionId,
+        spaceId: parsed.spaceId,
+        collectionId: parsed.collectionId,
         capability: zcap
       })
     }
-    return new Space({ context, spaceId, capability: zcap })
+    return new Space({ context, spaceId: parsed.spaceId, capability: zcap })
   }
 
   /**

@@ -192,6 +192,20 @@ describe('mapError', () => {
     expect(mapped.details).toBeUndefined()
   })
 
+  it('tolerates malformed `errors` entries without masking the real error', () => {
+    // Each entry is unvalidated server JSON: a `null` or primitive entry must
+    // not make `mapError` itself throw a `TypeError` on `.detail`.
+    const mapped = mapError({
+      status: 409,
+      data: {
+        title: 'Conflict',
+        errors: [null, 'boom', 42, { detail: 'id already exists' }]
+      }
+    })
+    expect(mapped).toBeInstanceOf(ConflictError)
+    expect(mapped.details).toEqual(['id already exists'])
+  })
+
   it('preserves the original error as the cause', () => {
     const original = { status: 500, message: 'boom' }
     expect(mapError(original).cause).toBe(original)

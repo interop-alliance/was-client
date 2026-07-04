@@ -17,15 +17,16 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { delegateGrant } from './internal/grant.js'
+import { ValidationError } from './errors.js'
+import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
-import { send } from './internal/request.js'
+import { send, readData } from './internal/request.js'
+import { CodecHolder, resolveCodec } from './internal/codec.js'
 import {
-  CodecHolder,
-  resolveCodec,
-  readCollectionMarker
-} from './internal/codec.js'
-import { collectPages, walkPages } from './internal/pagination.js'
+  buildPageWalk,
+  collectPages,
+  walkPages
+} from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { describeCollection } from './internal/describe.js'
 import { readEtag } from './internal/conditional.js'
@@ -87,6 +88,16 @@ export class Collection {
     capability?: IZcap
     encryption?: EncryptionOverride
   }) {
+    // Guard the id against the Reserved Path Segment Registry up front
+    // (mirroring the `Resource` constructor), so a reserved id from caller
+    // input can never be mis-targeted at a space-level endpoint.
+    // `collectionPath(s, 'policy')` is byte-identical to the space policy path,
+    // so an unguarded `collection('policy').delete()` would silently wipe the
+    // space's access-control policy; the same collision exists for `backends` /
+    // `quotas` / `linkset` / `export` / `import` / `query`. Guarding in the
+    // constructor covers every operation (describe, delete, list, grant, ...),
+    // not just writes.
+    assertNotReserved({ id: collectionId, kind: 'collection' })
     this._context = context
     this.spaceId = spaceId
     this.id = collectionId
@@ -97,12 +108,7 @@ export class Collection {
         spaceId: this.spaceId,
         collectionId: this.id,
         override: this._encryptionOverride,
-        readMarker: () =>
-          readCollectionMarker(this._context, {
-            spaceId: this.spaceId,
-            collectionId: this.id,
-            capability: this._capability
-          })
+        capability: this._capability
       })
     )
   }
@@ -156,6 +162,16 @@ export class Collection {
    * Creates or updates the collection by id (upsert). Merges the given fields
    * over the current description.
    *
+   * The merge needs a readable current description to be lost-update-safe, and
+   * `describe()` cannot distinguish "absent" from "unreadable" (WAS masks
+   * unauthorized reads as 404). When it returns `null` and neither `backend`
+   * nor `encryption` is supplied, this fails closed rather than sending a PUT
+   * body that would silently drop an existing collection's `backend` (a
+   * data-placement change) or trip `encryption-immutable` by clearing its
+   * marker on a replace-semantics server. Pass `force: true` to proceed anyway
+   * -- e.g. when creating a new collection through a handle (or use
+   * `space.createCollection()`, which does not merge).
+   *
    * @param desc {object}
    * @param [desc.name] {string}
    * @param [desc.backend] {BackendReference}
@@ -163,15 +179,33 @@ export class Collection {
    *   encryption marker. Set-once on the server: it may be added to a Collection
    *   that lacks one, but changing/clearing an existing marker is rejected
    *   (`ConflictError`, `encryption-immutable`).
+   * @param [desc.force] {boolean}   proceed even when the current description
+   *   is unreadable and `backend`/`encryption` are omitted (see above)
    * @returns {Promise<CollectionDescription>}
    */
   async configure(desc: {
     name?: string
     backend?: BackendReference
     encryption?: CollectionEncryption
+    force?: boolean
   }): Promise<CollectionDescription> {
-    assertNotReserved(this.id, 'collection')
     const current = await this.describe()
+    if (
+      current === null &&
+      desc.backend === undefined &&
+      desc.encryption === undefined &&
+      !desc.force
+    ) {
+      throw new ValidationError(
+        `Cannot configure collection "${this.id}": its current description ` +
+          'is not readable with this capability (WAS returns 404 for both ' +
+          'not-found and unauthorized), so merging forward could silently ' +
+          "drop an existing collection's backend or encryption marker. " +
+          'Supply `backend`/`encryption` explicitly, use a read-capable ' +
+          'capability, or pass `force: true` if you are creating a new ' +
+          'collection.'
+      )
+    }
     // Merge every current field forward (mirror `Space.configure`): a
     // replace-semantics server drops anything omitted from the PUT body, so
     // `configure({ name })` on an EDV collection would otherwise wipe its
@@ -321,12 +355,18 @@ export class Collection {
       (response as { headers: Headers }).headers.get('location') ?? undefined
     return {
       id,
-      url:
-        location ??
-        toUrl({
-          serverUrl: this._context.serverUrl,
-          path: resourcePath(this.spaceId, this.id, id)
-        }),
+      // RFC 9110 permits a relative `Location`; resolve it against the request
+      // URL so `AddResult.url` is always absolute (consumers like
+      // `was.publicRead({ resourceUrl })` require an absolute URL).
+      url: location
+        ? new URL(
+            location,
+            toUrl({ serverUrl: this._context.serverUrl, path: this._itemsPath })
+          ).toString()
+        : toUrl({
+            serverUrl: this._context.serverUrl,
+            path: resourcePath(this.spaceId, this.id, id)
+          }),
       contentType: responseBody?.['content-type'],
       etag: readEtag(response)
     }
@@ -341,14 +381,9 @@ export class Collection {
    * @returns {Promise<Json | Blob | null>}
    */
   async get(resourceId: string): Promise<Json | Blob | null> {
-    const codec = await this._codec()
-    const response = await send(this._context, {
-      path: resourcePath(this.spaceId, this.id, resourceId),
-      method: 'GET',
-      capability: this._capability,
-      read: true
-    })
-    return response === null ? null : codec.decode(response)
+    // Delegate to the resource handle (the way `put()` does) so the reserved-id
+    // guard in the `Resource` constructor applies to reads and writes alike.
+    return this.resource(resourceId).get()
   }
 
   /**
@@ -384,17 +419,7 @@ export class Collection {
    * @returns {Promise<PageWalk | null>}
    */
   private async _listWalk(): Promise<PageWalk | null> {
-    const response = await send(this._context, {
-      path: this._itemsPath,
-      method: 'GET',
-      capability: this._capability,
-      read: true
-    })
-    if (response === null) {
-      return null
-    }
-    return {
-      first: response.data as CollectionResourcesList,
+    return buildPageWalk({
       firstUrl: toUrl({
         serverUrl: this._context.serverUrl,
         path: this._itemsPath
@@ -408,7 +433,7 @@ export class Collection {
         })
         return dataOrNull<CollectionResourcesList>(pageResponse)
       }
-    }
+    })
   }
 
   /**
@@ -466,12 +491,10 @@ export class Collection {
    * @returns {Promise<IDelegatedZcap>}
    */
   async grant(options: GrantOptions): Promise<IDelegatedZcap> {
-    return delegateGrant(this._context, {
-      ...options,
-      target:
-        options.target ??
-        toUrl({ serverUrl: this._context.serverUrl, path: this._path }),
-      capability: options.capability ?? this._capability
+    return delegateGrantAt(this._context, {
+      path: this._path,
+      options,
+      capability: this._capability
     })
   }
 
@@ -545,13 +568,10 @@ export class Collection {
    * @returns {Promise<LinkSet | null>}
    */
   async linkset(): Promise<LinkSet | null> {
-    const response = await send(this._context, {
+    return readData<LinkSet>(this._context, {
       path: collectionLinkset(this.spaceId, this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<LinkSet>(response)
   }
 
   /**
@@ -570,13 +590,10 @@ export class Collection {
    * @returns {Promise<BackendDescriptor | null>}
    */
   async backend(): Promise<BackendDescriptor | null> {
-    const response = await send(this._context, {
+    return readData<BackendDescriptor>(this._context, {
       path: collectionBackend(this.spaceId, this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<BackendDescriptor>(response)
   }
 
   /**
@@ -588,12 +605,9 @@ export class Collection {
    * @returns {Promise<BackendUsage | null>}
    */
   async quota(): Promise<BackendUsage | null> {
-    const response = await send(this._context, {
+    return readData<BackendUsage>(this._context, {
       path: collectionQuota(this.spaceId, this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<BackendUsage>(response)
   }
 }

@@ -234,16 +234,21 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
  * the `type` URI, e.g. `quota-exceeded`). Returns `null` for an unrecognized or
  * absent kind so the caller can fall back to status-based dispatch.
  *
- * @param kind {string | undefined}   the `type` URI fragment
- * @param message {string}
- * @param options {WasErrorOptions}
+ * @param options {object}
+ * @param [options.kind] {string}   the `type` URI fragment
+ * @param options.message {string}
+ * @param options.options {WasErrorOptions}
  * @returns {WasError | null}
  */
-function errorForKind(
-  kind: string | undefined,
-  message: string,
+function errorForKind({
+  kind,
+  message,
+  options
+}: {
+  kind?: string
+  message: string
   options: WasErrorOptions
-): WasError | null {
+}): WasError | null {
   const ErrorClass = kind === undefined ? undefined : ERROR_CLASS_BY_KIND[kind]
   return ErrorClass ? new ErrorClass(message, options) : null
 }
@@ -281,10 +286,12 @@ export function mapError(err: unknown): WasError {
   const title = data?.title
   // Guard with `Array.isArray`, not just optional chaining: a non-conformant
   // `problem+json` body with `errors` as a non-array (e.g. `"boom"`) is truthy,
-  // so `?.map` would throw a `TypeError` and mask the real `WasError`.
+  // so `?.map` would throw a `TypeError` and mask the real `WasError`. Each
+  // entry is likewise unvalidated server JSON (may be `null` or a primitive),
+  // so read `detail` defensively; the string filter drops the misses.
   const details = Array.isArray(data?.errors)
     ? data.errors
-        .map(entry => entry.detail)
+        .map(entry => (entry as { detail?: string } | null)?.detail)
         .filter((detail): detail is string => typeof detail === 'string')
     : undefined
   const requestUrl = httpError.requestUrl
@@ -292,7 +299,7 @@ export function mapError(err: unknown): WasError {
   const options = { status, type, title, details, requestUrl, cause: err }
 
   const kind = typeof type === 'string' ? problemFragment(type) : undefined
-  const byKind = errorForKind(kind, message, options)
+  const byKind = errorForKind({ kind, message, options })
   if (byKind !== null) {
     return byKind
   }

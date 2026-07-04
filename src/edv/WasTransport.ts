@@ -29,9 +29,11 @@
  * Scope: documents only (`insert` / `update` / `get`). Blinded `find` / `count`
  * / `updateIndex` and chunked streams (`storeChunk` / `getChunk`) require
  * server-side EDV affordances (blinded `/query`, the `/{id}/chunks/{n}`
- * sub-segment, conditional writes) that a plaintext WAS server does not yet
- * provide, so they throw here. Because there are no conditional writes, the EDV
- * `sequence` is advisory (last-writer-wins on `update`).
+ * sub-segment) that a plaintext WAS server does not yet provide, so they throw
+ * here. `insert` uses an atomic `If-None-Match: *` create when the backend
+ * advertises the optional `conditional-writes` feature; otherwise (and for
+ * `update`) writes are advisory -- the EDV `sequence` is not enforced
+ * (last-writer-wins on `update`).
  */
 import { Transport } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
@@ -39,10 +41,10 @@ import type { IEncryptedDocument } from '@interop/data-integrity-core'
 import type { WasClient } from '../WasClient.js'
 import { httpStatus } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
-import { resourcePath } from '../internal/paths.js'
+import { collectionBackend, resourcePath } from '../internal/paths.js'
 import {
   DEFAULT_CONTENT_TYPE,
-  ENCODER,
+  envelopeBytes,
   JOSE_CONTENT_TYPE
 } from './constants.js'
 
@@ -88,6 +90,7 @@ export class WasTransport extends Transport {
   readonly contentType: string
 
   private readonly _was: WasRequester
+  private _conditionalWritesPromise?: Promise<boolean>
 
   /**
    * @param options {object}
@@ -137,29 +140,64 @@ export class WasTransport extends Transport {
    *
    * @param id {string}
    * @param encrypted {IEncryptedDocument}
+   * @param [headers] {Record<string, string>}   extra request headers (e.g. a
+   *   conditional-write precondition)
    * @returns {Promise<HttpResponse>}
    */
   private async _put(
     id: string,
-    encrypted: IEncryptedDocument
+    encrypted: IEncryptedDocument,
+    headers: Record<string, string> = {}
   ): Promise<HttpResponse> {
-    const body = ENCODER.encode(JSON.stringify(encrypted))
+    const body = envelopeBytes(encrypted)
     return this._was.request({
       path: this._resourcePath(id),
       method: 'PUT',
       body,
-      headers: { 'content-type': this.contentType }
+      headers: { 'content-type': this.contentType, ...headers }
     })
+  }
+
+  /**
+   * Whether the collection's backend advertises the `conditional-writes`
+   * feature. Read once from the "Collection Backend Selected" descriptor and
+   * memoized for the transport's lifetime; any failure to read the descriptor
+   * (404, 501 on a server without backend support, network error) resolves
+   * `false`, so the caller falls back to the advisory path.
+   *
+   * @returns {Promise<boolean>}
+   */
+  private _conditionalWrites(): Promise<boolean> {
+    this._conditionalWritesPromise ??= (async () => {
+      try {
+        const response = await this._was.request({
+          path: collectionBackend(this.spaceId, this.collectionId),
+          method: 'GET'
+        })
+        const descriptor = (await readJsonData(response)) as {
+          features?: unknown
+        } | null
+        return (
+          Array.isArray(descriptor?.features) &&
+          descriptor.features.includes('conditional-writes')
+        )
+      } catch {
+        return false
+      }
+    })()
+    return this._conditionalWritesPromise
   }
 
   /**
    * @inheritdoc
    *
-   * Inserts a new encrypted document. WAS `PUT` is an upsert, so to preserve
-   * EDV insert semantics (`DuplicateError` if the id already exists) this first
-   * checks for an existing resource. The check + write is not atomic -- with no
-   * server-side conditional writes yet, this is an advisory, single-writer
-   * guard.
+   * Inserts a new encrypted document. WAS `PUT` is an upsert, so EDV insert
+   * semantics (`DuplicateError` if the id already exists) need a guard. When
+   * the backend advertises `conditional-writes`, the insert is a single atomic
+   * `PUT` with `If-None-Match: *`, and the server's 412 maps to
+   * `DuplicateError`. Otherwise it degrades to a bodiless existence check
+   * (`HEAD`) before the `PUT` -- advisory and non-atomic, but no longer
+   * downloading the whole stored envelope just to discard it.
    *
    * @param options {object}
    * @param options.encrypted {IEncryptedDocument}   the document to insert
@@ -170,6 +208,21 @@ export class WasTransport extends Transport {
   }: { encrypted?: IEncryptedDocument } = {}): Promise<void> {
     if (!encrypted) {
       throw new TypeError('"encrypted" is required.')
+    }
+    if (await this._conditionalWrites()) {
+      try {
+        await this._put(encrypted.id, encrypted, { 'if-none-match': '*' })
+      } catch (err) {
+        if (httpStatus(err) === 412) {
+          throw namedError({
+            name: 'DuplicateError',
+            message: `A document with id "${encrypted.id}" already exists.`,
+            cause: err
+          })
+        }
+        throw err
+      }
+      return
     }
     if (await this._exists(encrypted.id)) {
       throw namedError({
@@ -249,15 +302,16 @@ export class WasTransport extends Transport {
   }
 
   /**
-   * Resolves to `true` if a resource exists at the document's path. A 404
-   * resolves to `false`; any other error propagates.
+   * Resolves to `true` if a resource exists at the document's path, via a
+   * bodiless `HEAD` (the stored envelope is not needed, only its existence). A
+   * 404 resolves to `false`; any other error propagates.
    *
    * @param id {string}
    * @returns {Promise<boolean>}
    */
   private async _exists(id: string): Promise<boolean> {
     try {
-      await this._was.request({ path: this._resourcePath(id), method: 'GET' })
+      await this._was.request({ path: this._resourcePath(id), method: 'HEAD' })
       return true
     } catch (err) {
       if (httpStatus(err) === 404) {

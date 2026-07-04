@@ -21,15 +21,19 @@ import { ValidationError } from '../errors.js'
  * Throws a `ValidationError` if the given id collides with a reserved path
  * segment for its kind.
  *
- * @param id {string}     the proposed collection or resource id
- * @param kind {string}   'collection' or 'resource', selects the reserved set
- *                        and is used in the message
+ * @param options {object}
+ * @param options.id {string}     the proposed collection or resource id
+ * @param options.kind {string}   'collection' or 'resource', selects the
+ *   reserved set and is used in the message
  * @returns {void}
  */
-export function assertNotReserved(
-  id: string,
+export function assertNotReserved({
+  id,
+  kind
+}: {
+  id: string
   kind: 'collection' | 'resource'
-): void {
+}): void {
   const reserved =
     kind === 'collection' ? RESERVED_COLLECTION_IDS : RESERVED_RESOURCE_IDS
   if (reserved.has(id)) {

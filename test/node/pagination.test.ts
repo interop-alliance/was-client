@@ -128,6 +128,24 @@ describe('collectPages()', () => {
     })
     expect(result.items.map(item => item.id)).toEqual(['a'])
   })
+
+  it('detects a cycle even when the first URL is not in canonical form', async () => {
+    // The cycle guard seed must be canonicalized the same way followed links
+    // are: `https://host:443/...` (explicit default port) and the portless form
+    // are the same URL, so a next-link back to page 1 must end the traversal
+    // instead of yielding its items twice.
+    let calls = 0
+    const result = await collectPages({
+      first: page(['a'], 'https://was.example/space/s/c/'),
+      firstUrl: 'https://was.example:443/space/s/c/',
+      fetchPage: async () => {
+        calls += 1
+        return page(['b'])
+      }
+    })
+    expect(calls).toBe(0)
+    expect(result.items.map(item => item.id)).toEqual(['a'])
+  })
 })
 
 describe('Collection.list() pagination', () => {

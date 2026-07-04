@@ -117,4 +117,36 @@ describe('fromCapability', () => {
     expect((handle as Collection).spaceId).toBe('a b')
     expect((handle as Collection).id).toBe('c/d')
   })
+
+  it('throws for a 5-segment sub-resource target instead of dropping the tail', () => {
+    // A capability delegated against `/space/s/c/r/meta` must not come back as
+    // a Resource handle for `/space/s/c/r` -- the handle would sign invocations
+    // against the content URL with a capability targeting the meta URL.
+    expect(() =>
+      client.fromCapability({
+        invocationTarget: 'https://was.example/space/s/c/r/meta'
+      } as never)
+    ).toThrow(ValidationError)
+    expect(() =>
+      client.fromCapability({
+        invocationTarget: 'https://was.example/space/s/c/r/meta'
+      } as never)
+    ).toThrow(/sub-resource/)
+  })
+
+  it('throws for a collection-policy target instead of a reserved-id error', () => {
+    expect(() =>
+      client.fromCapability({
+        invocationTarget: 'https://was.example/space/s/c/policy'
+      } as never)
+    ).toThrow(/sub-resource/)
+  })
+
+  it('throws for a space-policy target instead of a Collection("policy")', () => {
+    expect(() =>
+      client.fromCapability({
+        invocationTarget: 'https://was.example/space/s/policy'
+      } as never)
+    ).toThrow(/sub-resource/)
+  })
 })
