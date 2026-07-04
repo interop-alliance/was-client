@@ -57,14 +57,30 @@ function transport(request: ReturnType<typeof vi.fn>, contentType?: string) {
   })
 }
 
-describe('WasTransport — insert', () => {
-  it('PUTs the envelope as application/json (default) at the resource path', async () => {
-    const request = vi.fn(async (input: { method?: string }) => {
+describe('WasTransport — insert (advisory fallback, no conditional-writes)', () => {
+  /**
+   * A request stub for a backend WITHOUT the `conditional-writes` feature: the
+   * backend-descriptor GET answers 404 (or 501-era servers -- any failure means
+   * "no feature"), the `HEAD` existence check answers `headStatus`, and writes
+   * succeed.
+   *
+   * @param [headStatus] {number}   status for the HEAD existence check
+   * @returns {ReturnType<typeof vi.fn>}
+   */
+  function advisoryRequest(headStatus?: number) {
+    return vi.fn(async (input: { method?: string }) => {
       if (input.method === 'GET') {
-        throw httpError(404) // existence check: absent
+        throw httpError(404) // no backend descriptor -> no feature
+      }
+      if (input.method === 'HEAD' && headStatus !== undefined) {
+        throw httpError(headStatus)
       }
       return {} as HttpResponse
     })
+  }
+
+  it('PUTs the envelope as application/json (default) at the resource path', async () => {
+    const request = advisoryRequest(404) // existence check: absent
     const doc = encryptedDoc('zAbc')
     await transport(request).insert({ encrypted: doc })
 
@@ -78,13 +94,18 @@ describe('WasTransport — insert', () => {
     expect(decodeBody(put.body)).toEqual(doc)
   })
 
+  it('checks existence with a bodiless HEAD, not a GET of the envelope', async () => {
+    const request = advisoryRequest(404)
+    await transport(request).insert({ encrypted: encryptedDoc('zAbc') })
+    const methods = request.mock.calls.map(
+      ([input]) => (input as { method?: string }).method
+    )
+    expect(methods).toContain('HEAD')
+    expect(methods.filter(method => method === 'PUT')).toHaveLength(1)
+  })
+
   it('honors a custom content type (JOSE_CONTENT_TYPE)', async () => {
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        throw httpError(404)
-      }
-      return {} as HttpResponse
-    })
+    const request = advisoryRequest(404)
     await transport(request, JOSE_CONTENT_TYPE).insert({
       encrypted: encryptedDoc('zEdv')
     })
@@ -95,15 +116,75 @@ describe('WasTransport — insert', () => {
   })
 
   it('throws DuplicateError when the document id already exists', async () => {
-    // GET (existence check) resolves -> the resource exists.
-    const request = vi.fn(
-      async (_input: Record<string, unknown>) => ({}) as HttpResponse
-    )
+    // HEAD (existence check) resolves -> the resource exists.
+    const request = advisoryRequest()
     await expect(
       transport(request).insert({ encrypted: encryptedDoc() })
     ).rejects.toMatchObject({ name: 'DuplicateError' })
     // It must NOT have attempted a PUT.
-    expect(request.mock.calls.every(([c]) => c.method === 'GET')).toBe(true)
+    expect(
+      request.mock.calls.every(
+        ([input]) => (input as { method?: string }).method !== 'PUT'
+      )
+    ).toBe(true)
+  })
+})
+
+describe('WasTransport — insert (conditional-writes backend)', () => {
+  /**
+   * A request stub for a backend WITH the `conditional-writes` feature: the
+   * backend-descriptor GET returns it, and the PUT answers `putStatus` (or
+   * succeeds when undefined).
+   *
+   * @param [putStatus] {number}   status the PUT fails with
+   * @returns {ReturnType<typeof vi.fn>}
+   */
+  function conditionalRequest(putStatus?: number) {
+    const descriptor = { id: 'default', features: ['conditional-writes'] }
+    return vi.fn(async (input: { method?: string }) => {
+      if (input.method === 'GET') {
+        return {
+          data: descriptor,
+          async json() {
+            return descriptor
+          }
+        } as unknown as HttpResponse
+      }
+      if (putStatus !== undefined) {
+        throw httpError(putStatus)
+      }
+      return {} as HttpResponse
+    })
+  }
+
+  it('inserts with a single atomic PUT + If-None-Match: * (no pre-check)', async () => {
+    const request = conditionalRequest()
+    await transport(request).insert({ encrypted: encryptedDoc('zAbc') })
+    const methods = request.mock.calls.map(
+      ([input]) => (input as { method?: string }).method
+    )
+    // One GET (the backend descriptor, memoized), then the PUT -- no HEAD.
+    expect(methods).toEqual(['GET', 'PUT'])
+    const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect((put.headers as Record<string, string>)['if-none-match']).toBe('*')
+  })
+
+  it('maps the 412 create-if-absent rejection to DuplicateError', async () => {
+    const request = conditionalRequest(412)
+    await expect(
+      transport(request).insert({ encrypted: encryptedDoc() })
+    ).rejects.toMatchObject({ name: 'DuplicateError' })
+  })
+
+  it('memoizes the backend-feature probe across inserts', async () => {
+    const request = conditionalRequest()
+    const wasTransport = transport(request)
+    await wasTransport.insert({ encrypted: encryptedDoc('zAbc') })
+    await wasTransport.insert({ encrypted: encryptedDoc('zDef') })
+    const gets = request.mock.calls.filter(
+      ([input]) => (input as { method?: string }).method === 'GET'
+    )
+    expect(gets).toHaveLength(1)
   })
 })
 

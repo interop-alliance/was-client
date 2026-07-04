@@ -64,13 +64,13 @@ import type {
 } from '../codec.js'
 import { EncryptionError, ValidationError } from '../errors.js'
 import {
-  guessContentTypeFromId,
   isBlob,
   isTextContentType,
-  readJsonData
+  readJsonData,
+  resolvePayload
 } from '../internal/content.js'
 import type { Json, ResourceData, ResourceMetadataCustom } from '../types.js'
-import { DEFAULT_CONTENT_TYPE, ENCODER } from './constants.js'
+import { DEFAULT_CONTENT_TYPE, ENCODER, envelopeBytes } from './constants.js'
 
 /**
  * Default ceiling for a single-document (unchunked) encrypted binary or text
@@ -83,10 +83,13 @@ const DEFAULT_MAX_BLOB_BYTES = 5 * 1024 * 1024
 /**
  * A shared strict UTF-8 decoder used to test whether a non-JSON payload is
  * valid UTF-8 (so it can be stored legibly as text rather than base64).
- * `fatal: true` makes `decode` throw on malformed input; the decoder is
- * stateless across non-streaming calls, so one instance is reused.
+ * `fatal: true` makes `decode` throw on malformed input; `ignoreBOM: true`
+ * keeps a leading BOM (`EF BB BF`) in the decoded string -- without it the
+ * decoder silently strips those 3 bytes and the text round-trip is no longer
+ * byte-exact. The decoder is stateless across non-streaming calls, so one
+ * instance is reused.
  */
-const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true })
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 /**
  * Heuristic for an EDV document id: multibase base58btc (leading `z`) of a
@@ -99,15 +102,20 @@ const EDV_DOC_ID = /^z[1-9A-HJ-NP-Za-km-z]{21,}$/
 
 /**
  * Encodes bytes to standard base64 using the platform `btoa` (present in modern
- * Node and browsers), via a binary string.
+ * Node and browsers), via a binary string built in 32 KiB
+ * `String.fromCharCode` chunks -- large enough to amortize the call overhead,
+ * small enough to stay under engines' argument-count limits. (Byte-by-byte
+ * string concatenation is quadratic-ish on the multi-MiB blobs the write path
+ * feeds this.)
  *
  * @param bytes {Uint8Array}
  * @returns {string}
  */
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
   }
   return btoa(binary)
 }
@@ -245,7 +253,7 @@ export class EdvCodec implements ResourceCodec {
     }
     return {
       id: docId,
-      body: ENCODER.encode(JSON.stringify(encrypted)),
+      body: envelopeBytes(encrypted),
       contentType: this._contentType,
       // Surface the plaintext content type (the server-opaque envelope type stays
       // `contentType`) so `add()` reports the real resource type.
@@ -345,6 +353,11 @@ export class EdvCodec implements ResourceCodec {
    * otherwise make the EDV core throw a raw `TypeError`. Surfacing a typed
    * `EncryptionError` keeps the fail-closed contract legible to callers.
    *
+   * For an `update`, the envelope's `sequence` is also validated: the cipher
+   * requires a non-negative safe integer to advance from, so a foreign envelope
+   * without one (or with a malformed one) must fail here as a typed
+   * `EncryptionError` rather than as the cipher's raw `Error`.
+   *
    * @param doc {unknown}
    * @param context {string}   the operation in progress (`read` / `update`),
    *   for the message
@@ -366,6 +379,21 @@ export class EdvCodec implements ResourceCodec {
           'collection.'
       )
     }
+    if (context === 'update') {
+      const { sequence } = doc as { sequence?: unknown }
+      if (
+        typeof sequence !== 'number' ||
+        !Number.isSafeInteger(sequence) ||
+        sequence < 0
+      ) {
+        throw new EncryptionError(
+          'Cannot update an encrypted resource: the stored EDV envelope ' +
+            'carries no valid `sequence` (a non-negative safe integer is ' +
+            'required to advance it). It was likely written by a foreign ' +
+            'tool that did not maintain the EDV document sequence.'
+        )
+      }
+    }
   }
 
   /**
@@ -383,9 +411,9 @@ export class EdvCodec implements ResourceCodec {
    *   `meta = { contentType, encoding: 'base64' }`.
    *
    * A bare primitive is rejected (mirroring the plaintext `prepareBody`
-   * contract). The binary/text content type resolves as
-   * `contentType || blob.type || guessContentTypeFromId(id) || octet-stream`,
-   * mirroring `prepareBody`.
+   * contract). The binary/text detection and content-type precedence are the
+   * shared `resolvePayload` rules, so the plaintext and encrypted write paths
+   * cannot drift.
    *
    * @param data {ResourceData}
    * @param [contentType] {string}   caller-supplied content type
@@ -401,24 +429,13 @@ export class EdvCodec implements ResourceCodec {
     content: Record<string, unknown>
     meta: Record<string, unknown>
   }> {
-    let bytes: Uint8Array | undefined
-    let resolvedType: string | undefined
-    if (isBlob(data)) {
-      bytes = new Uint8Array(await data.arrayBuffer())
-      resolvedType =
-        contentType ||
-        data.type ||
-        guessContentTypeFromId(id ?? '') ||
-        'application/octet-stream'
-    } else if (data instanceof Uint8Array) {
-      bytes = data
-      resolvedType =
-        contentType ||
-        guessContentTypeFromId(id ?? '') ||
-        'application/octet-stream'
-    }
+    const payload = resolvePayload({ data, contentType, id })
 
-    if (bytes !== undefined && resolvedType !== undefined) {
+    if (payload.kind === 'binary') {
+      const bytes = isBlob(payload.data)
+        ? new Uint8Array(await payload.data.arrayBuffer())
+        : payload.data
+      const resolvedType = payload.contentType
       if (bytes.length > this._maxBlobBytes) {
         throw new ValidationError(
           `Encrypted binary write of ${bytes.length} bytes exceeds the ` +
@@ -445,7 +462,7 @@ export class EdvCodec implements ResourceCodec {
       }
     }
 
-    if (data !== null && typeof data === 'object') {
+    if (payload.kind === 'json') {
       // JSON object/array: content verbatim, no encoding (the read side treats an
       // absent `meta.encoding` as JSON). EDV models `content` as an object
       // record; a JSON array is also a valid encrypted value here, so widen it.

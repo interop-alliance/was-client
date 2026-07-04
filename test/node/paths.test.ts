@@ -8,9 +8,9 @@
  */
 import { describe, it, expect } from 'vitest'
 
+import { ValidationError } from '../../src/index.js'
 import {
   spacesRoot,
-  spaceLocation,
   spacePath,
   spaceItems,
   spaceCollections,
@@ -30,16 +30,13 @@ import {
   resourcePath,
   resourcePolicy,
   resourceMeta,
-  toUrl
+  toUrl,
+  parseSpacePath
 } from '../../src/internal/paths.js'
 
 describe('path builders', () => {
   it('uses a trailing slash for the spaces repository (create / list)', () => {
     expect(spacesRoot()).toBe('/spaces/')
-  })
-
-  it('builds the canonical created-space location', () => {
-    expect(spaceLocation('home')).toBe('/spaces/home')
   })
 
   it('omits the trailing slash for get / update / delete of a space', () => {
@@ -110,6 +107,82 @@ describe('path builders', () => {
     expect(spacePath('a/b')).toBe('/space/a%2Fb')
     expect(collectionPath('s p', 'd?x')).toBe('/space/s%20p/d%3Fx')
     expect(resourcePath('s', 'c', 'r#1')).toBe('/space/s/c/r%231')
+  })
+
+  it('rejects dot-segment ids, which URL resolution would collapse', () => {
+    // `encodeURIComponent` leaves `.`/`..` intact, and `new URL()` collapses
+    // them -- `/space/s/c/.` is the collection items endpoint and
+    // `/space/s/c/..` the space -- so a delete would target the wrong thing.
+    expect(() => resourcePath('s', 'c', '.')).toThrow(ValidationError)
+    expect(() => resourcePath('s', 'c', '..')).toThrow(ValidationError)
+    expect(() => collectionPath('s', '.')).toThrow(ValidationError)
+    expect(() => spacePath('..')).toThrow(ValidationError)
+  })
+
+  it('rejects an empty id, which collapses into the parent endpoint', () => {
+    expect(() => resourcePath('s', 'c', '')).toThrow(ValidationError)
+    expect(() => collectionPath('s', '')).toThrow(ValidationError)
+    expect(() => spacePath('')).toThrow(ValidationError)
+  })
+})
+
+describe('parseSpacePath', () => {
+  it('classifies space / collection / resource depths', () => {
+    expect(parseSpacePath('/space/s')).toEqual({ kind: 'space', spaceId: 's' })
+    expect(parseSpacePath('/space/s/c')).toEqual({
+      kind: 'collection',
+      spaceId: 's',
+      collectionId: 'c'
+    })
+    expect(parseSpacePath('/space/s/c/r')).toEqual({
+      kind: 'resource',
+      spaceId: 's',
+      collectionId: 'c',
+      resourceId: 'r'
+    })
+  })
+
+  it('percent-decodes each segment (the builders re-encode them)', () => {
+    expect(parseSpacePath('/space/a%20b/c%2Fd')).toEqual({
+      kind: 'collection',
+      spaceId: 'a b',
+      collectionId: 'c/d'
+    })
+  })
+
+  it('classifies reserved space-level sub-endpoints as sub-resources', () => {
+    expect(parseSpacePath('/space/s/policy')).toMatchObject({
+      kind: 'sub-resource',
+      spaceId: 's'
+    })
+    expect(parseSpacePath('/space/s/backends/gdrive')).toMatchObject({
+      kind: 'sub-resource',
+      spaceId: 's'
+    })
+  })
+
+  it('classifies reserved collection-level sub-endpoints as sub-resources', () => {
+    expect(parseSpacePath('/space/s/c/policy')).toMatchObject({
+      kind: 'sub-resource'
+    })
+    expect(parseSpacePath('/space/s/c/backend')).toMatchObject({
+      kind: 'sub-resource'
+    })
+  })
+
+  it('classifies 5-segment resource sub-endpoints as sub-resources', () => {
+    expect(parseSpacePath('/space/s/c/r/meta')).toMatchObject({
+      kind: 'sub-resource'
+    })
+    expect(parseSpacePath('/space/s/c/r/policy')).toMatchObject({
+      kind: 'sub-resource'
+    })
+  })
+
+  it('returns null for a pathname outside the /space/ tree', () => {
+    expect(parseSpacePath('/other/x')).toBeNull()
+    expect(parseSpacePath('/space')).toBeNull()
+    expect(parseSpacePath('/spaces/')).toBeNull()
   })
 })
 

@@ -7,6 +7,7 @@
  * (`collection`/`createCollection`/`collections`), delegation (`grant`), and
  * whole-space `export`/`import`.
  */
+import type { HttpResponse } from '@interop/http-client'
 import {
   spacePath,
   spaceItems,
@@ -17,13 +18,13 @@ import {
   registeredBackend,
   spaceQuotas,
   spacePolicy,
-  spaceLinkset,
-  toUrl
+  spaceLinkset
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { delegateGrant } from './internal/grant.js'
+import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
-import { send } from './internal/request.js'
+import { send, readData } from './internal/request.js'
+import { WasServerError } from './errors.js'
 import { createdId, dataOrNull, toPlainBytes } from './internal/content.js'
 import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import { Collection } from './Collection.js'
@@ -85,13 +86,10 @@ export class Space {
    * @returns {Promise<SpaceDescription | null>}
    */
   async describe(): Promise<SpaceDescription | null> {
-    const response = await send(this._context, {
+    return readData<SpaceDescription>(this._context, {
       path: this._path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<SpaceDescription>(response)
   }
 
   /**
@@ -182,7 +180,7 @@ export class Space {
     } = {}
   ): Promise<Collection> {
     if (desc.id !== undefined) {
-      assertNotReserved(desc.id, 'collection')
+      assertNotReserved({ id: desc.id, kind: 'collection' })
     }
     const body: Record<string, unknown> = {}
     if (desc.id !== undefined) {
@@ -219,13 +217,10 @@ export class Space {
    * @returns {Promise<CollectionsList | null>}
    */
   async collections(): Promise<CollectionsList | null> {
-    const response = await send(this._context, {
+    return readData<CollectionsList>(this._context, {
       path: spaceCollections(this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<CollectionsList>(response)
   }
 
   /**
@@ -240,13 +235,10 @@ export class Space {
    * @returns {Promise<BackendDescriptor[] | null>}
    */
   async backends(): Promise<BackendDescriptor[] | null> {
-    const response = await send(this._context, {
+    return readData<BackendDescriptor[]>(this._context, {
       path: spaceBackends(this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<BackendDescriptor[]>(response)
   }
 
   /**
@@ -276,7 +268,8 @@ export class Space {
       capability: this._capability,
       json: registration
     })
-    return (response as { data?: unknown }).data as BackendDescriptor
+    // A successful registration always carries the sanitized descriptor body.
+    return dataOrNull<BackendDescriptor>(response)!
   }
 
   /**
@@ -306,9 +299,8 @@ export class Space {
       json: registration
     })
     // 201 (create) carries the sanitized descriptor; 204 (in-place replace)
-    // carries no body, so `data` is undefined.
-    return ((response as { data?: unknown } | null)?.data ??
-      null) as BackendDescriptor | null
+    // carries no body, which `dataOrNull` maps to `null`.
+    return dataOrNull<BackendDescriptor>(response)
   }
 
   /**
@@ -349,13 +341,10 @@ export class Space {
     const path = includeCollections
       ? `${spaceQuotas(this.id)}?include=collections`
       : spaceQuotas(this.id)
-    const response = await send(this._context, {
+    return readData<SpaceQuotaReport>(this._context, {
       path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<SpaceQuotaReport>(response)
   }
 
   /**
@@ -366,31 +355,98 @@ export class Space {
    * @returns {Promise<IDelegatedZcap>}
    */
   async grant(options: GrantOptions): Promise<IDelegatedZcap> {
-    return delegateGrant(this._context, {
-      ...options,
-      target:
-        options.target ??
-        toUrl({ serverUrl: this._context.serverUrl, path: this._path }),
-      capability: options.capability ?? this._capability
+    return delegateGrantAt(this._context, {
+      path: this._path,
+      options,
+      capability: this._capability
     })
+  }
+
+  /**
+   * Sends the export request and returns the raw response with its body stream
+   * intact, shared by `export`/`exportBlob`/`exportStream`.
+   *
+   * Guards the JSON-mislabel edge: `@interop/http-client` pre-consumes a
+   * response body into `.data` for JSON content-types, so a non-conformant
+   * server that labels the tar archive `application/json` would leave us a dead
+   * stream. Detecting the consumed body here fails with a typed `WasServerError`
+   * naming the mislabeled content-type, rather than a raw "body stream already
+   * read" `TypeError` downstream.
+   *
+   * @returns {Promise<HttpResponse>}
+   */
+  private async _exportResponse(): Promise<HttpResponse> {
+    const response = (await send(this._context, {
+      path: spaceExport(this.id),
+      method: 'POST',
+      capability: this._capability
+      // A successful export always returns a response (errors throw via send()).
+    })) as HttpResponse
+    if (response.bodyUsed || response.data !== undefined) {
+      const contentType =
+        response.headers.get('content-type') ?? 'an unknown content-type'
+      throw new WasServerError(
+        `Export response body was already consumed (mislabeled as ` +
+          `${contentType}); expected application/x-tar.`
+      )
+    }
+    return response
   }
 
   /**
    * Exports the whole space as a tar (`application/x-tar`) archive.
    *
+   * The entire archive is buffered into memory (a `Uint8Array` cannot be
+   * produced incrementally), so exporting a very large space costs its full
+   * size in RAM. For a constant-memory path use {@link exportStream}; for the
+   * `import()` companion container use {@link exportBlob}.
+   *
    * @returns {Promise<Uint8Array>}
    */
   async export(): Promise<Uint8Array> {
-    const response = await send(this._context, {
-      path: spaceExport(this.id),
-      method: 'POST',
-      capability: this._capability
-    })
-    // A successful export always returns a response (errors throw via send()).
-    const buffer = await (
-      response as { arrayBuffer(): Promise<ArrayBuffer> }
-    ).arrayBuffer()
-    return new Uint8Array(buffer)
+    const response = await this._exportResponse()
+    return new Uint8Array(await response.arrayBuffer())
+  }
+
+  /**
+   * Exports the whole space as a tar (`application/x-tar`) archive, as a Blob
+   * typed `application/x-tar`. Pairs directly with `import(tar)`, so copying a
+   * space is `spaceB.import(await spaceA.exportBlob())`.
+   *
+   * Note: in Node a Blob is memory-backed, so this does not reduce peak memory
+   * versus {@link export} -- it is a typed-container convenience (browsers may
+   * spill large Blobs to disk). For the true constant-memory path use
+   * {@link exportStream}.
+   *
+   * @returns {Promise<Blob>}
+   */
+  async exportBlob(): Promise<Blob> {
+    const blob = await (await this._exportResponse()).blob()
+    // Normalize the type: some servers omit or mislabel the content-type, and
+    // `Blob.type` is load-bearing for `import()` / anchor-download flows.
+    return blob.type === 'application/x-tar'
+      ? blob
+      : new Blob([blob], { type: 'application/x-tar' })
+  }
+
+  /**
+   * Exports the whole space as a tar (`application/x-tar`) archive, as a lazily
+   * consumed byte stream -- constant memory, for piping to a file, a
+   * `CompressionStream`, or another request.
+   *
+   * The stream must be consumed or cancelled; an abandoned stream holds its
+   * connection open.
+   *
+   * @returns {Promise<ReadableStream<Uint8Array>>}
+   */
+  async exportStream(): Promise<ReadableStream<Uint8Array>> {
+    const response = await this._exportResponse()
+    if (response.body === null) {
+      // A body-less 2xx (204, or an exotic fetch impl) -- fail with a typed
+      // error rather than returning a null stream.
+      throw new WasServerError('Export response carried no body stream.')
+    }
+    return response.body as ReadableStream<Uint8Array>
   }
 
   /**
@@ -408,7 +464,8 @@ export class Space {
       body,
       headers: { 'content-type': 'application/x-tar' }
     })
-    return (response as { data?: unknown }).data as ImportStats
+    // A successful import always carries the stats body.
+    return dataOrNull<ImportStats>(response)!
   }
 
   /**
@@ -481,12 +538,9 @@ export class Space {
    * @returns {Promise<LinkSet | null>}
    */
   async linkset(): Promise<LinkSet | null> {
-    const response = await send(this._context, {
+    return readData<LinkSet>(this._context, {
       path: spaceLinkset(this.id),
-      method: 'GET',
-      capability: this._capability,
-      read: true
+      capability: this._capability
     })
-    return dataOrNull<LinkSet>(response)
   }
 }

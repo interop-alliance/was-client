@@ -1,5 +1,97 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- **`space.exportStream()` and `space.exportBlob()`.** Two additive companions
+  to `export()` for large-space and container use cases:
+  - `exportStream()` returns the export response's `ReadableStream<Uint8Array>`
+    -- the constant-memory path, for piping the tar archive to a file, a
+    `CompressionStream`, or another request without buffering the whole space
+    into RAM. The stream must be consumed or cancelled.
+  - `exportBlob()` returns a `Blob` typed `application/x-tar` (normalizing the
+    type when the server omits or mislabels it), pairing directly with
+    `import(tar)` so a space copy is `spaceB.import(await spaceA.exportBlob())`.
+    Note: in Node a Blob is memory-backed, so it does not lower peak memory
+    versus `export()`; it is a typed-container convenience.
+
+  All three variants share one request helper that fails with a typed
+  `WasServerError` -- rather than a raw "body stream already read" `TypeError`
+  -- if a non-conformant server mislabels the archive as JSON (which makes the
+  transport pre-consume the body).
+
+### Fixed
+
+- **Wrong-target request safety.** Id validation now lives at the layer that
+  owns the path grammar, closing several silent path-collision holes:
+  - The `Collection` constructor rejects reserved ids (mirroring `Resource`), so
+    `space.collection('policy').delete()` can no longer silently DELETE the
+    space's access-control policy (same for `backends` / `quotas` / `linkset` /
+    `export` / `import` / `query`). The redundant guard inside `configure()` was
+    removed; `createCollection()` keeps its pre-flight guard.
+  - `collection.get(id)` delegates to the resource handle, so the reserved-id
+    guard applies to reads, not just writes.
+  - The path builders reject empty and dot-segment ids (`''` / `.` / `..`),
+    which WHATWG URL resolution would collapse into a different endpoint
+    (`resource('.').delete()` used to target the collection listing).
+  - `fromCapability()` classifies the invocation target with a real path parser
+    (`parseSpacePath`) instead of destructuring the first three segments: a
+    sub-resource target (`/space/s/policy`, `/space/s/c/r/meta`, ...) now throws
+    a clear `ValidationError` instead of silently returning a handle whose
+    derived URLs mismatch the capability.
+- **`getText()` / `getBytes()` no longer throw on JSON-typed resources.** The
+  request layer pre-consumes JSON bodies, so the raw escape hatches re-serialize
+  the parsed value instead of crashing on the consumed stream (documented
+  caveat: not byte-identical for JSON, since insignificant whitespace is not
+  preserved).
+- **UTF-8 BOM survives the encrypted text round-trip.** The EDV codec's decoder
+  no longer strips a leading BOM (`ignoreBOM: true`), so BOM-prefixed text/\*
+  bytes round-trip byte-exact.
+- **`configure()` fails closed when the current description is unreadable.**
+  When `describe()` is masked (404) and neither `backend` nor `encryption` is
+  supplied, `configure()` throws instead of sending a merge body that would
+  silently drop an existing collection's backend or trip `encryption-immutable`.
+  Pass `force: true` (new option) to create a new collection through a handle.
+- **Conditional writes against an unreadable existing document get a clear
+  error.** With a PUT-only capability on an existing encrypted document, the 412
+  from the fresh-insert precondition is re-thrown naming the real cause
+  (document exists but is unreadable), instead of an inexplicable failed create.
+- **`setName()` / `setTags()` are lost-update-safe.** Both now pin their
+  full-replacement metadata write to the `meta()` read's ETag (`If-Match`), so a
+  concurrent metadata write surfaces as `PreconditionFailedError` instead of
+  being silently erased.
+- **`put()`/`add()` honor an explicit content type for JSON data** (e.g.
+  `application/ld+json`) on plaintext collections, matching the encrypted path,
+  instead of silently storing `application/json`.
+- `mapError()` tolerates malformed `problem+json` `errors` entries (`null` /
+  primitives) instead of masking the real error with a `TypeError`.
+- `collection.add()` resolves a relative `Location` header against the request
+  URL, so `AddResult.url` is always absolute.
+- The pagination cycle guard canonicalizes the first page URL, so a next-link
+  back to page 1 cannot yield duplicate items when the caller-supplied URL was
+  not in canonical form.
+- The EDV codec validates the prior envelope's `sequence` on update, so a
+  foreign envelope without one fails as a typed `EncryptionError` instead of a
+  raw `Error` from the cipher.
+- `dataOrNull` maps an undefined response body (non-JSON content-type or 204) to
+  `null` instead of casting `undefined` through as the read result.
+
+### Changed
+
+- **`WasTransport.insert()` no longer doubles round trips.** When the
+  collection's backend advertises `conditional-writes`, an insert is a single
+  atomic `PUT` with `If-None-Match: *` (412 maps to `DuplicateError`); otherwise
+  the existence pre-check uses a bodiless `HEAD` instead of downloading the
+  stored envelope.
+- Base64 encoding of encrypted binary writes is chunked (no more per-byte string
+  concatenation on multi-MiB blobs).
+- Internal dedup: shared `readData` / `delegateGrantAt` / `buildPageWalk` /
+  `resolvePayload` / `envelopeBytes` helpers; the conditional-write
+  orchestration moved into `internal/write.ts` (`upsertResource`); the
+  `Resource` codec plumbing collapsed to a single resolver; `resolveCodec` reads
+  the marker itself. Removed the unused `spaceLocation()` builder.
+
 ## 0.12.0 - 2026-07-01
 
 ### Added

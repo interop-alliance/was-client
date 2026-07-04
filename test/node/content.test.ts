@@ -14,7 +14,8 @@ import {
   prepareBody,
   parseResource,
   guessContentTypeFromId,
-  createdId
+  createdId,
+  dataOrNull
 } from '../../src/internal/content.js'
 
 /**
@@ -56,6 +57,22 @@ describe('prepareBody', () => {
 
   it('sends an array as JSON', () => {
     expect(prepareBody([1, 2, 3])).toEqual({ json: [1, 2, 3] })
+  })
+
+  it('honors an explicit content-type for JSON data (e.g. JSON-LD)', () => {
+    // The bare `json` shorthand carries no content-type header, so the value
+    // would be stored as `application/json` -- silently losing the declared
+    // media type (which the encrypted path preserves). An explicit type must
+    // serialize the value and carry the type.
+    const prepared = prepareBody(
+      { '@context': 'https://www.w3.org/ns/did/v1' },
+      { contentType: 'application/ld+json' }
+    )
+    expect(prepared.contentType).toBe('application/ld+json')
+    expect(prepared.json).toBeUndefined()
+    expect(new TextDecoder().decode(prepared.body as Uint8Array)).toBe(
+      '{"@context":"https://www.w3.org/ns/did/v1"}'
+    )
   })
 
   it('sends a Blob as binary, defaulting the content-type to its type', () => {
@@ -264,5 +281,35 @@ describe('createdId', () => {
   it('throws a WasServerError when neither body id nor Location is present', () => {
     expect(() => createdId(createResponse({}))).toThrow(WasServerError)
     expect(() => createdId(null)).toThrow(WasServerError)
+  })
+})
+
+describe('dataOrNull', () => {
+  it('maps a null (404) response to null', () => {
+    expect(dataOrNull(null)).toBeNull()
+  })
+
+  it('unwraps pre-parsed JSON data', () => {
+    const response = responseStub({
+      contentType: 'application/json',
+      data: { id: 'c1' }
+    })
+    expect(dataOrNull(response)).toEqual({ id: 'c1' })
+  })
+
+  it('maps an undefined data (non-JSON content-type or 204) to null', () => {
+    // The http-client leaves `data` undefined when the response is not JSON
+    // (e.g. a misconfigured proxy answering `200 text/html`) or has no body.
+    // Casting that through as `T` would make callers dereference `undefined`.
+    const response = responseStub({ contentType: 'text/html' })
+    expect(dataOrNull(response)).toBeNull()
+  })
+
+  it('passes a stored top-level JSON null through as null', () => {
+    const response = responseStub({
+      contentType: 'application/json',
+      data: null
+    })
+    expect(dataOrNull(response)).toBeNull()
   })
 })

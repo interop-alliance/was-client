@@ -6,18 +6,13 @@
  * keyed by id within a Collection). Sugar over the Collection item operations,
  * with explicit `getText()` / `getBytes()` escape hatches.
  */
-import type { HttpResponse } from '@interop/http-client'
 import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import {
-  CodecHolder,
-  resolveCodec,
-  readCollectionMarker
-} from './internal/codec.js'
+import { CodecHolder, resolveCodec } from './internal/codec.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
-import { sendEncodedWrite } from './internal/write.js'
+import { upsertResource } from './internal/write.js'
 import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import type { ResourceCodec } from './codec.js'
 import type {
@@ -30,6 +25,12 @@ import type {
   ResourceMetadataCustom
 } from './types.js'
 
+/**
+ * A shared `TextEncoder` for re-serializing a pre-parsed JSON body to bytes in
+ * `getBytes()` (stateless, so one instance is reused).
+ */
+const ENCODER = new TextEncoder()
+
 export class Resource {
   readonly spaceId: string
   readonly collectionId: string
@@ -37,9 +38,24 @@ export class Resource {
 
   private readonly _context: ClientContext
   private readonly _capability?: IZcap
-  private readonly _codecThunk?: () => Promise<ResourceCodec>
-  private readonly _encryptionOverride?: EncryptionOverride
-  private readonly _codecHolder: CodecHolder
+  /**
+   * Resolves the codec for this resource: the parent collection's shared codec
+   * when this handle came from `collection.resource(id)`, otherwise one
+   * resolved (and memoized per handle) for its own collection. A standalone
+   * resource discovers its collection's `encryption` marker (one GET on the
+   * collection, cached per handle) unless a per-handle override is set, and
+   * fails closed if it cannot key an encrypted collection. A fresh standalone
+   * handle re-reads the marker, so retain the handle to reuse it. A failed
+   * resolution (e.g. a transient 500/network error during marker discovery) is
+   * not memoized: the cache is cleared so the next call retries rather than
+   * re-throwing the stale error forever.
+   *
+   * A handle obtained via `collection.resource(id)` delegates to the parent's
+   * shared resolver on every call rather than memoizing locally: the parent
+   * already memoizes (so this adds no round-trip), and delegating lets a parent
+   * reset (e.g. after `configure()` adds the encryption marker) propagate here.
+   */
+  private readonly _codec: () => Promise<ResourceCodec>
 
   /**
    * @param options {object}
@@ -81,57 +97,29 @@ export class Resource {
     // collision exists for `backend` / `quota` / `linkset` / `meta`. Guarding in
     // the constructor covers every operation (read, delete, meta, policy, put),
     // not just writes.
-    assertNotReserved(resourceId, 'resource')
+    assertNotReserved({ id: resourceId, kind: 'resource' })
     this._context = context
     this.spaceId = spaceId
     this.collectionId = collectionId
     this.id = resourceId
     this._capability = capability
-    this._codecThunk = codec
-    this._encryptionOverride = encryption
-    this._codecHolder = new CodecHolder(() =>
-      resolveCodec(this._context, {
-        spaceId: this.spaceId,
-        collectionId: this.collectionId,
-        override: this._encryptionOverride,
-        readMarker: () =>
-          readCollectionMarker(this._context, {
-            spaceId: this.spaceId,
-            collectionId: this.collectionId,
-            capability: this._capability
-          })
-      })
-    )
+    if (codec) {
+      this._codec = codec
+    } else {
+      const holder = new CodecHolder(() =>
+        resolveCodec(this._context, {
+          spaceId: this.spaceId,
+          collectionId: this.collectionId,
+          override: encryption,
+          capability: this._capability
+        })
+      )
+      this._codec = () => holder.get()
+    }
   }
 
   private get _path(): string {
     return resourcePath(this.spaceId, this.collectionId, this.id)
-  }
-
-  /**
-   * Resolves (once, then caches) the codec for this resource: the parent
-   * collection's shared codec when this handle came from
-   * `collection.resource(id)`, otherwise one resolved for its own collection. A
-   * standalone resource discovers its collection's `encryption` marker (one GET
-   * on the collection, cached per handle) unless a per-handle override is set,
-   * and fails closed if it cannot key an encrypted collection. A fresh
-   * standalone handle re-reads the marker, so retain the handle to reuse it. A
-   * failed resolution (e.g. a transient 500/network error during marker
-   * discovery) is not memoized: the cache is cleared so the next call retries
-   * rather than re-throwing the stale error forever.
-   *
-   * A handle obtained via `collection.resource(id)` delegates to the parent's
-   * shared thunk on every call rather than memoizing locally: the parent already
-   * memoizes (so this adds no round-trip), and delegating lets a parent reset
-   * (e.g. after `configure()` adds the encryption marker) propagate here.
-   *
-   * @returns {Promise<ResourceCodec>}
-   */
-  private _codec(): Promise<ResourceCodec> {
-    if (this._codecThunk) {
-      return this._codecThunk()
-    }
-    return this._codecHolder.get()
   }
 
   /**
@@ -158,6 +146,12 @@ export class Resource {
    * codec, so on an encrypted collection it never decrypts -- use `get()` to
    * decrypt.
    *
+   * For a JSON content-type the request layer has already consumed and parsed
+   * the body stream (`@interop/http-client` offers no opt-out through ezcap),
+   * so the text is re-serialized from the parsed value: semantically identical
+   * JSON, but not guaranteed byte-identical to what was uploaded (insignificant
+   * whitespace is not preserved).
+   *
    * @returns {Promise<string | null>}
    */
   async getText(): Promise<string | null> {
@@ -167,7 +161,13 @@ export class Resource {
       capability: this._capability,
       read: true
     })
-    return response === null ? null : response.text()
+    if (response === null) {
+      return null
+    }
+    if (response.data !== undefined) {
+      return JSON.stringify(response.data)
+    }
+    return response.text()
   }
 
   /**
@@ -175,6 +175,12 @@ export class Resource {
    * missing/unauthorized resource (404 conflation caveat). A raw escape hatch:
    * it does NOT run the codec, so on an encrypted collection it never decrypts
    * -- use `get()` to decrypt.
+   *
+   * For a JSON content-type the request layer has already consumed and parsed
+   * the body stream (`@interop/http-client` offers no opt-out through ezcap),
+   * so the bytes are re-serialized from the parsed value: semantically
+   * identical JSON, but not guaranteed byte-identical to what was uploaded
+   * (insignificant whitespace is not preserved).
    *
    * @returns {Promise<Uint8Array | null>}
    */
@@ -187,6 +193,9 @@ export class Resource {
     })
     if (response === null) {
       return null
+    }
+    if (response.data !== undefined) {
+      return ENCODER.encode(JSON.stringify(response.data))
     }
     return new Uint8Array(await response.arrayBuffer())
   }
@@ -207,7 +216,10 @@ export class Resource {
    * `ifNoneMatch: true` for a create-if-absent. A failed precondition throws
    * `PreconditionFailedError` (412). On an encrypted collection these are managed
    * automatically by the codec (the EDV `sequence` becomes the enforced ETag), so
-   * the explicit options are for plaintext collections. Returns the new `etag`.
+   * the explicit options are for plaintext collections -- and because the codec
+   * pre-reads the current document to compute them, updating an existing
+   * encrypted document needs read access (a PUT-only capability can only create;
+   * see `upsertResource`). Returns the new `etag`.
    *
    * @param data {ResourceData}
    * @param options {object}
@@ -225,35 +237,17 @@ export class Resource {
     } = {}
   ): Promise<{ etag?: string }> {
     const codec = await this._codec()
-    // A conditional codec (e.g. the EDV codec) needs the current stored envelope
-    // to advance its sequence and pin the write to the current ETag, so pre-read
-    // it. A plaintext codec needs no pre-read.
-    let current: HttpResponse | null | undefined
-    if (codec.conditionalWrites) {
-      current = await send(this._context, {
-        path: this._path,
-        method: 'GET',
-        capability: this._capability,
-        read: true
-      })
-    }
-    const encoded = await codec.encode({
+    const response = await upsertResource(this._context, {
+      path: this._path,
+      codec,
       id: this.id,
       data,
       contentType: options.contentType,
-      current
-    })
-    // A conditional codec computes the precondition itself (from the sequence /
-    // ETag); a plaintext codec defers to the caller's explicit options.
-    const precondition = codec.conditionalWrites
-      ? { ifMatch: encoded.ifMatch, ifNoneMatch: encoded.ifNoneMatch }
-      : { ifMatch: options.ifMatch, ifNoneMatch: options.ifNoneMatch }
-    const response = await sendEncodedWrite(this._context, {
-      path: this._path,
-      method: 'PUT',
       capability: this._capability,
-      encoded,
-      precondition
+      precondition: {
+        ifMatch: options.ifMatch,
+        ifNoneMatch: options.ifNoneMatch
+      }
     })
     return { etag: readEtag(response) }
   }
@@ -275,7 +269,7 @@ export class Resource {
       // A conditional delete is not idempotent: a stale `If-Match` must surface
       // as a 412 rather than being swallowed as an absent-target success.
       idempotent: options.ifMatch === undefined,
-      headers: writeHeaders(undefined, { ifMatch: options.ifMatch })
+      headers: writeHeaders({ precondition: { ifMatch: options.ifMatch } })
     })
   }
 
@@ -357,9 +351,11 @@ export class Resource {
       method: 'PUT',
       capability: this._capability,
       json: { custom },
-      headers: writeHeaders(undefined, {
-        ifMatch: options.ifMatch,
-        ifNoneMatch: options.ifNoneMatch
+      headers: writeHeaders({
+        precondition: {
+          ifMatch: options.ifMatch,
+          ifNoneMatch: options.ifNoneMatch
+        }
       })
     })
     return { etag: readEtag(response) }
@@ -368,25 +364,35 @@ export class Resource {
   /**
    * Sets the resource's human-readable `name` (the value surfaced in collection
    * listings), preserving any existing `tags`. Convenience over `setMeta()`.
+   * The write is pinned to the `etag` the `meta()` read returned (when the
+   * backend supports `conditional-writes`), so a concurrent metadata write
+   * surfaces as `PreconditionFailedError` instead of being silently erased by
+   * this full-replacement write.
    *
    * @param name {string}
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
     const current = await this.meta()
-    await this.setMeta({ custom: { ...current?.custom, name } })
+    await this.setMeta(
+      { custom: { ...current?.custom, name } },
+      { ifMatch: current?.etag }
+    )
   }
 
   /**
    * Sets the resource's `tags`, preserving any existing `name`. Convenience over
-   * `setMeta()`.
+   * `setMeta()`. Pinned to the `meta()` read's `etag` like {@link setName}.
    *
    * @param tags {Record<string, string>}
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
     const current = await this.meta()
-    await this.setMeta({ custom: { ...current?.custom, tags } })
+    await this.setMeta(
+      { custom: { ...current?.custom, tags } },
+      { ifMatch: current?.etag }
+    )
   }
 
   private get _policyPath(): string {

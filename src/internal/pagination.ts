@@ -24,6 +24,29 @@ export interface PageWalk {
 }
 
 /**
+ * Builds a {@link PageWalk} by fetching the first page with the same
+ * `fetchPage` used for every following page -- the shared shape of the signed
+ * (`Collection._listWalk`) and unsigned (`WasClient._publicListWalk`) walks,
+ * which differ only in how a single page URL is fetched. Returns `null` when
+ * the first page is missing/unauthorized (404 conflation caveat).
+ *
+ * @param options {object}
+ * @param options.firstUrl {string}      the absolute listing URL
+ * @param options.fetchPage {function}   fetches one page by absolute URL
+ * @returns {Promise<PageWalk | null>}
+ */
+export async function buildPageWalk({
+  firstUrl,
+  fetchPage
+}: {
+  firstUrl: string
+  fetchPage: PageWalk['fetchPage']
+}): Promise<PageWalk | null> {
+  const first = await fetchPage(firstUrl)
+  return first === null ? null : { first, firstUrl, fetchPage }
+}
+
+/**
  * Lazily walks a list response page by page, yielding the first page and then
  * each page reached by following `next`. Each `next` is resolved relative to the
  * URL of the page that produced it, and a self-referential or already-seen
@@ -38,7 +61,11 @@ export async function* walkPages(
 ): AsyncGenerator<CollectionResourcesList> {
   const { first, firstUrl, fetchPage } = walk
   yield first
-  const seen = new Set<string>([firstUrl])
+  // Seed the cycle guard with the canonicalized first URL -- every followed
+  // `next` is canonicalized via `new URL(...)`, so an equivalent-but-unequal
+  // seed (e.g. an explicit default port) would let a next-link back to page 1
+  // defeat the guard and yield its items twice.
+  const seen = new Set<string>([new URL(firstUrl).toString()])
   let baseUrl = firstUrl
   let next = first.next
   while (next) {

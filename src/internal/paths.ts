@@ -10,9 +10,40 @@
  * The zcap `invocationTarget` is derived from the request URL, so these
  * trailing-slash rules must match the server's per-operation `allowedTarget`
  * exactly or signature verification fails.
+ *
+ * This module also owns the inverse grammar: `parseSpacePath` classifies a
+ * server pathname back into the handle depth it addresses (space / collection /
+ * resource / sub-resource), so `WasClient.fromCapability` and the builders stay
+ * in lockstep.
  */
+import {
+  RESERVED_COLLECTION_IDS,
+  RESERVED_RESOURCE_IDS
+} from '@interop/storage-core'
+import { ValidationError } from '../errors.js'
+
+/**
+ * Rejects an id that would escape its path slot even after percent-encoding:
+ * `encodeURIComponent` leaves `.` and `..` intact, and WHATWG URL resolution
+ * collapses dot segments -- so `resource('.').delete()` would target the
+ * collection items endpoint and `'..'` the parent space. An empty id likewise
+ * collapses into the parent's trailing-slash endpoint. One guard here covers
+ * every builder.
+ *
+ * @param segment {string}   the proposed id
+ * @returns {void}
+ */
+function assertValidId(segment: string): void {
+  if (segment === '' || segment === '.' || segment === '..') {
+    throw new ValidationError(
+      `Invalid id ${JSON.stringify(segment)}: an empty or dot-segment id ` +
+        'would resolve to a different endpoint than its own.'
+    )
+  }
+}
 
 function encode(segment: string): string {
+  assertValidId(segment)
   return encodeURIComponent(segment)
 }
 
@@ -21,13 +52,6 @@ function encode(segment: string): string {
  */
 export function spacesRoot(): string {
   return '/spaces/'
-}
-
-/**
- * `/spaces/:spaceId` -- canonical location of a created space (POST response).
- */
-export function spaceLocation(spaceId: string): string {
-  return `/spaces/${encode(spaceId)}`
 }
 
 /**
@@ -221,4 +245,84 @@ export function toUrl({
   const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
   const relative = path.startsWith('/') ? path.slice(1) : path
   return new URL(relative, base).toString()
+}
+
+/**
+ * Canonicalizes an absolute collection URL to its items/listing endpoint --
+ * the trailing-slash form (`/space/:id/:collectionId/`). This module owns the
+ * trailing-slash rules, so callers that receive a collection URL from outside
+ * (e.g. a public link) normalize it here rather than re-encoding the rule.
+ *
+ * @param collectionUrl {string}   an absolute collection URL
+ * @returns {string}
+ */
+export function collectionItemsUrl(collectionUrl: string): string {
+  return collectionUrl.endsWith('/') ? collectionUrl : `${collectionUrl}/`
+}
+
+/**
+ * The classification of a WAS pathname by the depth it addresses. The three
+ * containment kinds map onto navigational handles; `sub-resource` covers every
+ * reserved sub-endpoint the builders above produce (`/space/:id/policy`,
+ * `/space/:id/:c/backend`, `/space/:id/:c/:r/meta`, ...), which has no handle of
+ * its own.
+ */
+export type ParsedSpacePath =
+  | { kind: 'space'; spaceId: string }
+  | { kind: 'collection'; spaceId: string; collectionId: string }
+  | {
+      kind: 'resource'
+      spaceId: string
+      collectionId: string
+      resourceId: string
+    }
+  | { kind: 'sub-resource'; spaceId: string; segments: string[] }
+
+/**
+ * Parses a server pathname back into the containment depth it addresses -- the
+ * inverse of the builders above, kept next to them so the grammar is owned in
+ * one place. Segments are percent-decoded (the builders re-encode them).
+ * Returns `null` for a pathname outside the `/space/...` tree; the caller
+ * chooses the error. A path that addresses a reserved sub-endpoint rather than
+ * a space/collection/resource -- e.g. `/space/s/policy`, `/space/s/c/backend`,
+ * or any 5-segment target like `/space/s/c/r/meta` -- is classified
+ * `sub-resource`, never silently truncated to the nearest handle.
+ *
+ * @param pathname {string}   a URL pathname (e.g. from `new URL(...).pathname`)
+ * @returns {ParsedSpacePath | null}
+ */
+export function parseSpacePath(pathname: string): ParsedSpacePath | null {
+  const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  if (segments[0] !== 'space' || segments[1] === undefined) {
+    return null
+  }
+  const [, spaceId, ...rest] = segments as [string, string, ...string[]]
+  if (rest.length === 0) {
+    return { kind: 'space', spaceId }
+  }
+  // A reserved segment directly under the space (`policy`, `backends`,
+  // `export`, ...) addresses a space-level sub-endpoint, as does anything
+  // nested beneath one (`/space/s/backends/:backendId`).
+  if (RESERVED_COLLECTION_IDS.has(rest[0] as string)) {
+    return { kind: 'sub-resource', spaceId, segments: rest }
+  }
+  if (rest.length === 1) {
+    return { kind: 'collection', spaceId, collectionId: rest[0] as string }
+  }
+  // A reserved segment under the collection (`policy`, `backend`, `quota`,
+  // ...) addresses a collection-level sub-endpoint.
+  if (RESERVED_RESOURCE_IDS.has(rest[1] as string)) {
+    return { kind: 'sub-resource', spaceId, segments: rest }
+  }
+  if (rest.length === 2) {
+    return {
+      kind: 'resource',
+      spaceId,
+      collectionId: rest[0] as string,
+      resourceId: rest[1] as string
+    }
+  }
+  // Anything deeper (`/space/s/c/r/meta`, `/space/s/c/r/policy`, chunk
+  // sub-segments, ...) is a resource-level sub-endpoint.
+  return { kind: 'sub-resource', spaceId, segments: rest }
 }

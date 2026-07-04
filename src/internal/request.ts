@@ -12,8 +12,9 @@ import type { ZcapClient } from '@interop/ezcap'
 import type { HttpResponse } from '@interop/http-client'
 import { mapError, httpStatus } from '../errors.js'
 import { toUrl } from './paths.js'
+import { dataOrNull } from './content.js'
 import type { EncryptionProvider } from '../codec.js'
-import type { IZcap } from '../types.js'
+import type { IZcap, RequestInput } from '../types.js'
 
 /**
  * The shared context threaded through every handle: the server base URL, the
@@ -29,22 +30,11 @@ export interface ClientContext {
 }
 
 /**
- * A single signed request. Either `path` (resolved against `serverUrl`) or
- * `url` (absolute) must be given.
+ * A single signed request: the public `RequestInput` shape (either `path`,
+ * resolved against `serverUrl`, or an absolute `url` must be given) plus the
+ * `send()`-level 404 translations.
  */
-export interface SendInput {
-  // Mutually exclusive - either path (resolved against serverUrl) or full url.
-  path?: string
-  url?: string
-  // HTTP Method (get, post, delete, etc.)
-  method?: string
-  // Action (if different from http method). If absent, defaults to http method.
-  action?: string
-  // HTTP Headers
-  headers?: Record<string, string>
-  json?: object
-  body?: Blob | Uint8Array
-  capability?: IZcap
+export interface SendInput extends RequestInput {
   /**
    * When true, a 404 response resolves to `null` instead of throwing.
    */
@@ -168,4 +158,29 @@ export async function send(
     }
     throw mapError(err)
   }
+}
+
+/**
+ * The GET-a-JSON-description read shared across the handles: a signed
+ * null-on-404 `GET` of `path` whose pre-parsed body is unwrapped as `T`. Both
+ * a missing/unauthorized target (404) and a bodyless/non-JSON response resolve
+ * to `null` (see `dataOrNull`).
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.path {string}          the path to read
+ * @param [options.capability] {IZcap}   capability attached to the request
+ * @returns {Promise<T | null>}
+ */
+export async function readData<T>(
+  context: ClientContext,
+  { path, capability }: { path: string; capability?: IZcap }
+): Promise<T | null> {
+  const response = await send(context, {
+    path,
+    method: 'GET',
+    capability,
+    read: true
+  })
+  return dataOrNull<T>(response)
 }

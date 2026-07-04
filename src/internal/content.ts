@@ -16,6 +16,12 @@ import type { Json, ResourceData } from '../types.js'
 const OCTET_STREAM = 'application/octet-stream'
 
 /**
+ * A shared `TextEncoder` for serializing an explicitly-typed JSON write to
+ * bytes (stateless, so one instance is reused).
+ */
+const ENCODER = new TextEncoder()
+
+/**
  * Whether a content-type denotes JSON -- `application/json` or any
  * `application/<prefix>+json` structured-suffix variant (e.g.
  * `application/ld+json`, `application/jose+json`), each optionally followed by
@@ -136,13 +142,67 @@ export function toPlainBytes(bytes: Uint8Array): Uint8Array {
 }
 
 /**
- * Inspects write data and resolves it to a JSON or binary payload.
+ * Write data classified by `resolvePayload`: binary (a `Blob`/`Uint8Array`
+ * with its resolved content-type), JSON (a plain object/array), or invalid (a
+ * bare primitive -- the caller throws its own error message).
+ */
+export type ResolvedPayload =
+  | { kind: 'binary'; data: Blob | Uint8Array; contentType: string }
+  | { kind: 'json' }
+  | { kind: 'invalid' }
+
+/**
+ * Classifies write data as binary or JSON and resolves the binary
+ * content-type -- the single source of the detection and precedence rules
+ * shared by the plaintext `prepareBody` and the EDV codec's document builder.
  *
  * The binary content-type resolves in precedence order: an explicit
- * `options.contentType`, then a non-empty `Blob.type`, then a guess from
- * `options.filename`'s extension, then `application/octet-stream`. (Coalescing
- * with `||` rather than `??` so an empty-string `Blob.type` -- a typeless Blob
- * -- falls through to the guess instead of becoming an empty content-type.)
+ * `contentType`, then a non-empty `Blob.type`, then a guess from the resource
+ * `id`'s extension, then `application/octet-stream`. (Coalescing with `||`
+ * rather than `??` so an empty-string `Blob.type` -- a typeless Blob -- falls
+ * through to the guess instead of becoming an empty content-type.)
+ *
+ * @param options {object}
+ * @param options.data {ResourceData}       the resource content
+ * @param [options.contentType] {string}    overrides the inferred content-type
+ *   for binary data
+ * @param [options.id] {string}             resource id used to guess a
+ *   content-type by extension when none is given (binary data only)
+ * @returns {ResolvedPayload}
+ */
+export function resolvePayload({
+  data,
+  contentType,
+  id
+}: {
+  data: ResourceData
+  contentType?: string
+  id?: string
+}): ResolvedPayload {
+  const guessed = id ? guessContentTypeFromId(id) : undefined
+  if (isBlob(data)) {
+    return {
+      kind: 'binary',
+      data,
+      contentType: contentType || data.type || guessed || OCTET_STREAM
+    }
+  }
+  if (data instanceof Uint8Array) {
+    return {
+      kind: 'binary',
+      data,
+      contentType: contentType || guessed || OCTET_STREAM
+    }
+  }
+  if (data !== null && typeof data === 'object') {
+    return { kind: 'json' }
+  }
+  return { kind: 'invalid' }
+}
+
+/**
+ * Inspects write data and resolves it to a JSON or binary payload, using
+ * {@link resolvePayload} for the detection and content-type precedence rules.
  *
  * @param data {ResourceData}                the resource content
  * @param options {object}
@@ -156,26 +216,31 @@ export function prepareBody(
   data: ResourceData,
   options: { contentType?: string; filename?: string } = {}
 ): PreparedBody {
-  const guessed = options.filename
-    ? guessContentTypeFromId(options.filename)
-    : undefined
+  const payload = resolvePayload({
+    data,
+    contentType: options.contentType,
+    id: options.filename
+  })
 
-  if (isBlob(data)) {
+  if (payload.kind === 'binary') {
     return {
-      body: data,
-      contentType: options.contentType || data.type || guessed || OCTET_STREAM
+      body: isBlob(payload.data) ? payload.data : toPlainBytes(payload.data),
+      contentType: payload.contentType
     }
   }
 
-  if (data instanceof Uint8Array) {
-    return {
-      body: toPlainBytes(data),
-      contentType: options.contentType || guessed || OCTET_STREAM
+  if (payload.kind === 'json') {
+    // Plain object or array -- send as JSON. An explicit `contentType` (e.g.
+    // `application/ld+json`) is honored by serializing the value ourselves and
+    // sending it with that content-type header; the bare `json` shorthand
+    // would silently store it as `application/json`, losing the declared media
+    // type (which the encrypted path preserves).
+    if (options.contentType !== undefined) {
+      return {
+        body: ENCODER.encode(JSON.stringify(data)),
+        contentType: options.contentType
+      }
     }
-  }
-
-  if (data !== null && typeof data === 'object') {
-    // Plain object or array -- send as JSON.
     return { json: data as object }
   }
 
@@ -221,15 +286,18 @@ export function createdId(response: HttpResponse | null): string {
 
 /**
  * Unwraps a read response's pre-parsed JSON `data` as `T`, mapping a `null`
- * response (a 404 that a `read` request resolved to `null`) to `null`. Captures
- * the `response === null ? null : response.data as T` idiom shared across the
- * handle read methods.
+ * response (a 404 that a `read` request resolved to `null`) to `null`. The
+ * http-client leaves `data` undefined for a non-JSON content-type or a 204;
+ * that is also mapped to `null`, so the declared `T | null` is honest and a
+ * caller never dereferences `undefined` cast as `T`.
  *
  * @param response {HttpResponse | null}
  * @returns {T | null}
  */
 export function dataOrNull<T>(response: HttpResponse | null): T | null {
-  return response === null ? null : (response.data as T)
+  return response === null || response.data === undefined
+    ? null
+    : (response.data as T)
 }
 
 /**

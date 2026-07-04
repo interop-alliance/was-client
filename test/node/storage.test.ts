@@ -4,8 +4,8 @@
 /**
  * Unit tests for the storage-introspection and metadata handle methods:
  * `space.backends()` / `space.quotas()`, `resource.meta()` / `setMeta()` /
- * `setName()` / `setTags()`, and the reserved-id guard on
- * `Collection.configure()`. A stub `ZcapClient` captures the request args and
+ * `setName()` / `setTags()`, and the reserved-id guard on the `Collection`
+ * constructor. A stub `ZcapClient` captures the request args and
  * returns canned `HttpResponse`s, so no signer or server is involved.
  */
 import { describe, it, expect } from 'vitest'
@@ -17,6 +17,7 @@ interface RequestArgs {
   url?: string
   method?: string
   json?: unknown
+  headers?: Record<string, string>
 }
 
 /**
@@ -28,12 +29,15 @@ interface RequestArgs {
  * @param options {object}
  * @param [options.data] {unknown}     the response `data` payload
  * @param [options.fail] {number}      an HTTP status to throw instead
+ * @param [options.etag] {string}      an `ETag` header to return on every
+ *   response (the backend's `conditional-writes` validator)
  * @returns {object} { client, calls }
  */
 function clientWithRequestSpy({
   data,
-  fail
-}: { data?: unknown; fail?: number } = {}): {
+  fail,
+  etag
+}: { data?: unknown; fail?: number; etag?: string } = {}): {
   client: WasClient
   calls: RequestArgs[]
 } {
@@ -47,7 +51,7 @@ function clientWithRequestSpy({
       }
       return {
         status: 200,
-        headers: new Headers(),
+        headers: new Headers(etag !== undefined ? { etag } : {}),
         data,
         async json() {
           return data
@@ -328,6 +332,35 @@ describe('resource.setName() / setTags()', () => {
       custom: { name: 'Keep', tags: { status: 'final' } }
     })
   })
+
+  it('setName() pins the write to the meta etag (lost-update guard)', async () => {
+    // The read-modify-write must thread the `meta()` etag as `If-Match`, or a
+    // concurrent `setTags()` would be silently erased by this full-replacement
+    // write even on a conditional-writes backend.
+    const { client, calls } = clientWithRequestSpy({
+      data: { contentType: 'application/json', custom: { name: 'Old' } },
+      etag: '"meta-v1"'
+    })
+    await client.space('s').collection('c').resource('r').setName('New')
+    expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
+  })
+
+  it('setTags() pins the write to the meta etag (lost-update guard)', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: { contentType: 'application/json', custom: {} },
+      etag: '"meta-v1"'
+    })
+    await client.space('s').collection('c').resource('r').setTags({ k: 'v' })
+    expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
+  })
+
+  it('setName() omits If-Match when the backend returned no etag', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: { contentType: 'application/json', custom: {} }
+    })
+    await client.space('s').collection('c').resource('r').setName('New')
+    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
+  })
 })
 
 describe('was.listSpaces()', () => {
@@ -356,11 +389,33 @@ describe('was.listSpaces()', () => {
   })
 })
 
-describe('Collection.configure() reserved-id guard', () => {
-  it('rejects a handle built on a reserved id before any request', async () => {
+describe('Collection reserved-id guard', () => {
+  it('rejects a reserved id at handle construction, before any request', () => {
+    const { client, calls } = clientWithRequestSpy()
+    expect(() => client.space('s').collection('export')).toThrow(
+      ValidationError
+    )
+    expect(calls).toHaveLength(0)
+  })
+
+  it('rejects collection("policy") so delete() cannot wipe the space policy', () => {
+    // `collectionPath(s, 'policy')` is byte-identical to the space policy path,
+    // so an unguarded handle's DELETE would be wire-identical to
+    // `space.clearPolicy()`.
+    const { client, calls } = clientWithRequestSpy()
+    expect(() => client.space('s').collection('policy')).toThrow(
+      ValidationError
+    )
+    expect(calls).toHaveLength(0)
+  })
+
+  it('rejects a reserved resource id on the Collection.get() read path', async () => {
+    // `get()` must enforce the same reserved-id rule as `put()`: an unguarded
+    // `get('policy')` would fetch the collection's policy sub-resource and
+    // return it as if it were resource content.
     const { client, calls } = clientWithRequestSpy()
     await expect(
-      client.space('s').collection('export').configure({ name: 'X' })
+      client.space('s').collection('c').get('policy')
     ).rejects.toThrow(ValidationError)
     expect(calls).toHaveLength(0)
   })
@@ -397,6 +452,213 @@ describe('Collection.configure() reserved-id guard', () => {
     })
     expect(result.backend).toEqual({ id: 'custom' })
     expect(result.encryption).toEqual({ scheme: 'edv' })
+  })
+})
+
+describe('Collection.configure() unreadable-description guard', () => {
+  it('fails closed when describe() is masked and backend/encryption omitted', async () => {
+    // A PUT-only capability cannot read the current description (WAS masks
+    // unauthorized reads as 404), so the merge would send a body without
+    // `backend`/`encryption` -- silently dropping them on a replace-semantics
+    // server. That is exactly the clobber the merge exists to prevent.
+    const { client, calls } = clientWithRequestSpy({ fail: 404 })
+    await expect(
+      client.space('s').collection('docs').configure({ name: 'x' })
+    ).rejects.toThrow(ValidationError)
+    // Only the describe() GET went out; no blind PUT.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('GET')
+  })
+
+  it('proceeds with force: true (deliberate create through a handle)', async () => {
+    const calls: RequestArgs[] = []
+    // The describe() GET 404s (absent collection); the PUT then succeeds.
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        if (args.method === 'GET') {
+          throw { status: 404, response: { status: 404 } }
+        }
+        return {
+          status: 200,
+          headers: new Headers(),
+          data: undefined,
+          async json() {
+            return undefined
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient
+    })
+    const result = await client
+      .space('s')
+      .collection('docs')
+      .configure({ name: 'x', force: true })
+    expect(calls.some(call => call.method === 'PUT')).toBe(true)
+    expect(result.name).toBe('x')
+  })
+
+  it('proceeds when the caller supplies backend/encryption explicitly', async () => {
+    const calls: RequestArgs[] = []
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        if (args.method === 'GET') {
+          throw { status: 404, response: { status: 404 } }
+        }
+        return {
+          status: 200,
+          headers: new Headers(),
+          data: undefined,
+          async json() {
+            return undefined
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient
+    })
+    await client
+      .space('s')
+      .collection('docs')
+      .configure({ name: 'x', backend: { id: 'custom' } })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toMatchObject({ backend: { id: 'custom' } })
+  })
+})
+
+describe('resource.getText() / getBytes() on a JSON-typed resource', () => {
+  /**
+   * Builds a client whose GET response carries pre-parsed JSON `data` and a
+   * consumed body stream, mirroring `@interop/http-client`'s behavior for any
+   * JSON content-type (it reads the stream into `.data` with no `clone()`).
+   *
+   * @param data {unknown}   the pre-parsed JSON body
+   * @returns {WasClient}
+   */
+  function clientWithConsumedJsonBody(data: unknown): WasClient {
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request() {
+        return {
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          data,
+          async json() {
+            return data
+          },
+          async text() {
+            throw new TypeError('Body is unusable: Body has already been read')
+          },
+          async arrayBuffer() {
+            throw new TypeError('Body is unusable: Body has already been read')
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  }
+
+  it('getText() re-serializes the pre-parsed data instead of crashing', async () => {
+    const client = clientWithConsumedJsonBody({ a: 1 })
+    const text = await client.space('s').collection('c').resource('r').getText()
+    expect(text).toBe('{"a":1}')
+  })
+
+  it('getBytes() re-serializes the pre-parsed data instead of crashing', async () => {
+    const client = clientWithConsumedJsonBody({ a: 1 })
+    const bytes = await client
+      .space('s')
+      .collection('c')
+      .resource('r')
+      .getBytes()
+    expect(bytes).toEqual(new TextEncoder().encode('{"a":1}'))
+  })
+
+  it('still reads a non-JSON body from the (unconsumed) stream', async () => {
+    const body = 'hello, raw text'
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request() {
+        return {
+          status: 200,
+          headers: new Headers({ 'content-type': 'text/plain' }),
+          data: undefined,
+          async text() {
+            return body
+          },
+          async arrayBuffer() {
+            return new TextEncoder().encode(body).buffer
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient
+    })
+    const resource = client.space('s').collection('c').resource('r')
+    expect(await resource.getText()).toBe(body)
+    expect(await resource.getBytes()).toEqual(new TextEncoder().encode(body))
+  })
+})
+
+describe('collection.add() Location resolution', () => {
+  /**
+   * Builds a client whose POST answers 201 with the given `Location` header
+   * and no body (so the id comes from the header).
+   *
+   * @param location {string}   the `Location` header value
+   * @returns {WasClient}
+   */
+  function clientWithLocation(location: string): WasClient {
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request() {
+        return {
+          status: 201,
+          headers: new Headers({ location }),
+          data: undefined,
+          async json() {
+            return undefined
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  }
+
+  /**
+   * Runs a plaintext `add()` through the given client.
+   *
+   * @param client {WasClient}
+   * @returns {Promise<object>}   the `AddResult`
+   */
+  async function addThrough(client: WasClient) {
+    return client.space('s').collection('c').add({ hello: 'world' })
+  }
+
+  it('resolves a relative Location header to an absolute AddResult.url', async () => {
+    // RFC 9110 permits a relative `Location`; consumers of `AddResult.url`
+    // (e.g. `was.publicRead({ resourceUrl })`) are documented to receive an
+    // absolute URL.
+    const result = await addThrough(clientWithLocation('/space/s/c/r1'))
+    expect(result.id).toBe('r1')
+    expect(result.url).toBe('https://was.example/space/s/c/r1')
+  })
+
+  it('passes an absolute Location through unchanged', async () => {
+    const result = await addThrough(
+      clientWithLocation('https://cdn.example/space/s/c/r1')
+    )
+    expect(result.url).toBe('https://cdn.example/space/s/c/r1')
   })
 })
 

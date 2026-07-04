@@ -630,6 +630,27 @@ const stats = await otherSpace.import(archive)
 //   policiesCreated, policiesSkipped }
 ```
 
+`export()` buffers the whole tar archive into memory, which is the simplest
+shape for small spaces. Two additive companions cover the large-space and
+container cases:
+
+```ts
+// Constant memory: pipe the archive straight to a file / upload / compressor,
+// without buffering the whole space into RAM. The stream must be consumed or
+// cancelled (an abandoned stream holds the connection open).
+const stream = await space.exportStream() // ReadableStream<Uint8Array>
+
+// A Blob typed `application/x-tar`, the direct companion to import(). Copying a
+// space is a one-liner:
+const stats = await otherSpace.import(await space.exportBlob())
+```
+
+Pick by size: `exportStream()` for a large space, `exportBlob()` when you want
+the `import()` companion or a browser download, and `export()` for a small space
+or when you need the bytes anyway. (In Node a Blob is memory-backed, so
+`exportBlob()` does not lower peak memory versus `export()`; browsers may spill
+large Blobs to disk.)
+
 ### The manual-request escape hatch
 
 `was.request(...)` mirrors ezcap's generic `request()` for hand-built calls. As
