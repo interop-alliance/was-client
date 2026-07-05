@@ -1,5 +1,12 @@
 # @interop/was-client Changelog
 
+## 0.13.1 - 2026-07-04
+
+### Changed
+
+- Update to latest `edv-client` and `minimal-cipher` (with AES-KW pure JS
+  fallback).
+
 ## 0.13.0 - 2026-07-04
 
 ### Added
