@@ -184,6 +184,14 @@ export function collectionQuota(spaceId: string, collectionId: string): string {
 }
 
 /**
+ * `/space/:spaceId/:collectionId/query` -- the collection-level query endpoint,
+ * whose body's `profile` selects the query (e.g. `changes`, `blinded-index`).
+ */
+export function collectionQuery(spaceId: string, collectionId: string): string {
+  return `/space/${encode(spaceId)}/${encode(collectionId)}/query`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId` -- get / put / delete a resource
  * (no trailing slash).
  */

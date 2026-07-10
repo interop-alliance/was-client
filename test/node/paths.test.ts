@@ -27,6 +27,7 @@ import {
   collectionLinkset,
   collectionBackend,
   collectionQuota,
+  collectionQuery,
   resourcePath,
   resourcePolicy,
   resourceMeta,
@@ -95,6 +96,11 @@ describe('path builders', () => {
   it('builds the backend and quota paths (collection level)', () => {
     expect(collectionBackend('home', 'docs')).toBe('/space/home/docs/backend')
     expect(collectionQuota('home', 'docs')).toBe('/space/home/docs/quota')
+  })
+
+  it('builds the collection query path and encodes its ids', () => {
+    expect(collectionQuery('home', 'docs')).toBe('/space/home/docs/query')
+    expect(collectionQuery('a b', 'c/d')).toBe('/space/a%20b/c%2Fd/query')
   })
 
   it('builds the resource metadata path', () => {

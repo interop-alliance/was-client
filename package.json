@@ -47,7 +47,7 @@
     "@interop/edv-client": "^17.5.0",
     "@interop/ezcap": "^7.3.2",
     "@interop/http-client": "^1.0.4",
-    "@interop/storage-core": "^0.3.2"
+    "@interop/storage-core": "^0.3.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
