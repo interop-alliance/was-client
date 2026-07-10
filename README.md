@@ -17,6 +17,7 @@
   - [Collections](#collections)
   - [Resources: JSON and binary](#resources-json-and-binary)
   - [Delegation and sharing](#delegation-and-sharing)
+  - [Revoking a capability](#revoking-a-capability)
   - [Public sharing and access-control policies](#public-sharing-and-access-control-policies)
   - [Resource metadata](#resource-metadata)
   - [Conditional writes (optimistic concurrency)](#conditional-writes-optimistic-concurrency)
@@ -314,6 +315,38 @@ Actions are HTTP verbs (`GET` / `PUT` / `POST` / `DELETE`). The WAS server
 authorizes on these case-sensitively (uppercase), but `grant()` also accepts the
 lowercase forms and normalizes them to uppercase in the signed zcap -- so
 `actions: ['get']` still validates server-side.
+
+### Revoking a capability
+
+`space.revoke(zcap)` undoes a `grant()`, so a leaked capability need not be
+waited out to its `expires`. `was.revoke(zcap)` is the same operation with the
+Space derived from the capability.
+
+```ts
+const zcap = await collection.grant({ to: appDid, actions: ['GET', 'PUT'] })
+// ... the capability leaks ...
+await space.revoke(zcap) // from now on the capability is rejected
+```
+
+Two parties may revoke: the Space's controller, and any controller in the
+capability's own delegation chain -- so an application can revoke the capability
+it holds, without being granted anything extra. Anyone else gets a
+`NotFoundError`, WAS's mask for "not visible to you".
+
+Three properties are easy to get wrong:
+
+- **Revocation is Space-scoped.** There is no global or cross-Space revocation;
+  submitting a capability rooted in another Space throws `ValidationError`.
+- **It withdraws the capability, not a policy grant.** Access-control policies
+  are permissive, so a `PublicCanRead` target stays world-readable after you
+  revoke a capability naming it. What dies is the capability: on such a target
+  the revoked zcap's read still succeeds while its write does not.
+- **It is prospective, and not idempotent.** A revoked reader of an encrypted
+  Collection keeps the keys for ciphertext it already fetched. And revoking an
+  already-revoked capability throws `ValidationError`: the server reports it
+  with the same 400 it uses for a tampered or expired capability, so the client
+  cannot tell them apart and does not swallow any of them. Catch
+  `ValidationError` if you want revoking twice to be a no-op.
 
 ### Public sharing and access-control policies
 

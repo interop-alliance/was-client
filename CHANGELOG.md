@@ -1,5 +1,49 @@
 # @interop/was-client Changelog
 
+## 0.14.0 - TBD
+
+### Added
+
+- **Capability revocation.** `space.revoke(zcap)` submits a delegated capability
+  to its Space's revocation endpoint
+  (`POST /space/:spaceId/zcaps/revocations/:capabilityId`); from then on the
+  capability is rejected wherever a Space-rooted chain is verified -- writes,
+  privileged routes, and the capability leg of reads. Previously the only lever
+  against a leaked capability was a short `expires` and waiting it out.
+  `was.revoke(zcap)` is the same operation with the Space derived from the
+  capability's `invocationTarget`.
+
+  Both parties the server authorizes can call it: the Space controller, and any
+  controller in the capability's own delegation chain (so an application can
+  revoke the capability it holds, without being granted anything extra). The
+  client invokes the revocation URL's own root capability, whose synthesized
+  controller covers both, so there is no shape to choose and no extra
+  round-trip.
+
+  Revocation is scoped to one Space -- there is no cross-Space or global
+  revocation -- and it withdraws only what the _capability_ granted: because
+  access-control policies are permissive, a `PublicCanRead` target stays
+  publicly readable afterwards. It is also prospective: a revoked reader of an
+  encrypted Collection still holds the keys for ciphertext it already fetched.
+
+  `revoke()` is deliberately **not** idempotent. Revoking an already-revoked
+  capability throws `ValidationError` (the server's 400), which it reports with
+  the same problem type it uses for a tampered, expired, or foreign-rooted
+  capability -- indistinguishable to the client, so none of them are swallowed.
+
+### Changed
+
+- **A grant into the Space tree now roots its chain at the Space.** When no
+  parent capability is given, `collection.grant(...)` (and a `was.grant(...)`
+  whose `target` lies under the server's `/space` tree) delegates from the
+  **Space's** root capability, carrying the narrower target as an attenuated
+  `invocationTarget`, instead of delegating from the target's own root
+  capability. Both forms grant exactly the same access, but only a Space-rooted
+  chain can be revoked, so capabilities minted by the previous shape -- the
+  leaked-session-key case revocation exists for -- could not be revoked at all.
+  A grant that re-delegates a held capability, or whose target lies outside the
+  Space tree (e.g. `/kms`, or another origin), is unaffected.
+
 ## 0.13.3 - 2026-07-09
 
 ### Added

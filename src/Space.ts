@@ -22,6 +22,7 @@ import {
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
 import { delegateGrantAt } from './internal/grant.js'
+import { submitRevocation } from './internal/revoke.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
 import { WasServerError } from './errors.js'
@@ -360,6 +361,36 @@ export class Space {
       options,
       capability: this._capability
     })
+  }
+
+  /**
+   * Revokes a capability rooted in this space -- the inverse of {@link grant}.
+   * From then on the capability is rejected wherever a Space-rooted chain is
+   * verified: writes, privileged routes, and the capability leg of reads.
+   *
+   * Two callers are authorized: this space's controller, and any controller in
+   * the capability's own delegation chain (so a delegee can revoke the
+   * capability it holds, without a separate grant). Anyone else gets a
+   * `NotFoundError`, as does a capability rooted in a different space.
+   *
+   * Revocation withdraws only what the *capability* granted. Access an
+   * access-control policy grants independently survives it, so a `PublicCanRead`
+   * target stays publicly readable afterwards. It is also prospective: a revoked
+   * reader of an encrypted collection still holds the keys for ciphertext it
+   * already fetched.
+   *
+   * **Not idempotent.** Revoking an already-revoked capability throws
+   * `ValidationError` (the server's 400), because its chain now contains a
+   * revoked link. The server reports that with the same problem type it uses for
+   * a tampered, expired, or foreign-rooted capability, so this method cannot
+   * distinguish them and does not swallow any of them. Catch `ValidationError`
+   * if you want revoking twice to be a no-op.
+   *
+   * @param zcap {IDelegatedZcap}   the delegated capability to revoke
+   * @returns {Promise<void>}
+   */
+  async revoke(zcap: IDelegatedZcap): Promise<void> {
+    return submitRevocation(this._context, { spaceId: this.id, zcap })
   }
 
   /**

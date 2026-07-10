@@ -74,3 +74,113 @@ describe('was.grant (delegation)', () => {
     expect(args?.capability).toBe(parent)
   })
 })
+
+/**
+ * An unparented grant into the Space tree roots at the *Space's* root
+ * capability, carrying the narrower target as an attenuated `invocationTarget`.
+ * Both forms grant the same access, but only a Space-rooted chain can be revoked
+ * (revocation is Space-scoped and the endpoint requires the chain to root
+ * exactly in the Space), so a collection-rooted grant would be un-revocable.
+ */
+describe('grant rooting (revocability)', () => {
+  const spaceRoot = `urn:zcap:root:${encodeURIComponent('https://was.example/space/s')}`
+
+  it('roots a collection grant at its space, attenuating the target', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    await client
+      .space('s')
+      .collection('c')
+      .grant({
+        to: 'did:example:bob',
+        actions: ['GET']
+      })
+
+    const args = lastDelegate()
+    expect(args?.capability).toBe(spaceRoot)
+    expect(args?.invocationTarget).toBe('https://was.example/space/s/c')
+  })
+
+  it('roots a resource-targeted was.grant at its space', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    await client.grant({
+      to: 'did:example:bob',
+      actions: ['GET'],
+      target: 'https://was.example/space/s/c/r'
+    })
+
+    expect(lastDelegate()?.capability).toBe(spaceRoot)
+  })
+
+  it('roots a space grant at itself', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    await client.space('s').grant({ to: 'did:example:bob', actions: ['GET'] })
+
+    const args = lastDelegate()
+    expect(args?.capability).toBe(spaceRoot)
+    expect(args?.invocationTarget).toBe('https://was.example/space/s')
+  })
+
+  it('re-delegation keeps the bound capability as the parent', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    const held = { id: 'urn:uuid:held' }
+    await client
+      .space('s', { capability: held as never })
+      .collection('c')
+      .grant({ to: 'did:example:bob', actions: ['GET'] })
+
+    expect(lastDelegate()?.capability).toBe(held)
+  })
+
+  it('leaves a target outside the space tree to the ezcap default root', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    await client.grant({
+      to: 'did:example:bob',
+      actions: ['GET'],
+      target: 'https://was.example/kms/keystores/k1'
+    })
+
+    expect(lastDelegate()?.capability).toBeUndefined()
+  })
+
+  it('leaves a target on another origin to the ezcap default root', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    await client.grant({
+      to: 'did:example:bob',
+      actions: ['GET'],
+      target: 'https://elsewhere.example/space/s/c'
+    })
+
+    expect(lastDelegate()?.capability).toBeUndefined()
+  })
+
+  it('roots at the space under a server mounted on a base path', async () => {
+    let captured: DelegateArgs | undefined
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async delegate(args: DelegateArgs) {
+        captured = args
+        return { ...args, allowedAction: args.allowedActions }
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://host.example/was/',
+      zcapClient
+    })
+
+    await client
+      .space('s')
+      .collection('c')
+      .grant({
+        to: 'did:example:bob',
+        actions: ['GET']
+      })
+
+    // The base path is preserved in the Space URL the chain roots at.
+    expect(captured?.capability).toBe(
+      `urn:zcap:root:${encodeURIComponent('https://host.example/was/space/s')}`
+    )
+    expect(captured?.invocationTarget).toBe(
+      'https://host.example/was/space/s/c'
+    )
+  })
+})
