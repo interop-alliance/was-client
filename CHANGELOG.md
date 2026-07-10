@@ -1,6 +1,6 @@
 # @interop/was-client Changelog
 
-## Unreleased - TBD
+## 0.13.3 - 2026-07-09
 
 ### Added
 
