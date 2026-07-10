@@ -26,22 +26,34 @@
  *   server that does not will reject it with 415). Pass `contentType:
  *   JOSE_CONTENT_TYPE` to opt into it where the server supports it.
  *
- * Scope: documents only (`insert` / `update` / `get`). Blinded `find` / `count`
- * / `updateIndex` and chunked streams (`storeChunk` / `getChunk`) require
- * server-side EDV affordances (blinded `/query`, the `/{id}/chunks/{n}`
- * sub-segment) that a plaintext WAS server does not yet provide, so they throw
- * here. `insert` uses an atomic `If-None-Match: *` create when the backend
+ * Scope: documents (`insert` / `update` / `get`) plus blinded-index content
+ * query (`find`, the `blinded-index` profile of the reserved Collection
+ * `POST .../query` endpoint -- the server's `blinded-index-query` backend
+ * feature). `updateIndex` throws: in this profile the `indexed` array rides
+ * inside the stored document envelope, so `update()` IS the re-index
+ * operation and no separate index endpoint exists. Chunked streams
+ * (`storeChunk` / `getChunk`) still require the server's `chunked-streams`
+ * affordance (the reserved `/{id}/chunks/{n}` sub-segment), which neither
+ * reference backend provides, so they throw.
+ * `insert` uses an atomic `If-None-Match: *` create when the backend
  * advertises the optional `conditional-writes` feature; otherwise (and for
  * `update`) writes are advisory -- the EDV `sequence` is not enforced
  * (last-writer-wins on `update`).
  */
 import { Transport } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
-import type { IEncryptedDocument } from '@interop/data-integrity-core'
+import type {
+  IEDVQuery,
+  IEncryptedDocument
+} from '@interop/data-integrity-core'
 import type { WasClient } from '../WasClient.js'
 import { httpStatus } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
-import { collectionBackend, resourcePath } from '../internal/paths.js'
+import {
+  collectionBackend,
+  collectionQuery,
+  resourcePath
+} from '../internal/paths.js'
 import {
   DEFAULT_CONTENT_TYPE,
   envelopeBytes,
@@ -90,7 +102,7 @@ export class WasTransport extends Transport {
   readonly contentType: string
 
   private readonly _was: WasRequester
-  private _conditionalWritesPromise?: Promise<boolean>
+  private _backendFeaturesPromise?: Promise<string[]>
 
   /**
    * @param options {object}
@@ -159,16 +171,17 @@ export class WasTransport extends Transport {
   }
 
   /**
-   * Whether the collection's backend advertises the `conditional-writes`
-   * feature. Read once from the "Collection Backend Selected" descriptor and
-   * memoized for the transport's lifetime; any failure to read the descriptor
-   * (404, 501 on a server without backend support, network error) resolves
-   * `false`, so the caller falls back to the advisory path.
+   * The feature tokens the collection's backend advertises in its "Collection
+   * Backend Selected" descriptor (e.g. `conditional-writes`,
+   * `blinded-index-query`). Read once and memoized for the transport's
+   * lifetime; any failure to read the descriptor (404, 501 on a server without
+   * backend support, network error) resolves `[]`, so every affordance gate
+   * falls closed.
    *
-   * @returns {Promise<boolean>}
+   * @returns {Promise<string[]>}
    */
-  private _conditionalWrites(): Promise<boolean> {
-    this._conditionalWritesPromise ??= (async () => {
+  private _backendFeatures(): Promise<string[]> {
+    this._backendFeaturesPromise ??= (async () => {
       try {
         const response = await this._was.request({
           path: collectionBackend(this.spaceId, this.collectionId),
@@ -177,15 +190,27 @@ export class WasTransport extends Transport {
         const descriptor = (await readJsonData(response)) as {
           features?: unknown
         } | null
-        return (
-          Array.isArray(descriptor?.features) &&
-          descriptor.features.includes('conditional-writes')
-        )
+        return Array.isArray(descriptor?.features)
+          ? descriptor.features.filter(
+              (feature): feature is string => typeof feature === 'string'
+            )
+          : []
       } catch {
-        return false
+        return []
       }
     })()
-    return this._conditionalWritesPromise
+    return this._backendFeaturesPromise
+  }
+
+  /**
+   * Whether the collection's backend advertises the optional
+   * `conditional-writes` feature, so `insert` can use an atomic
+   * `If-None-Match: *` create instead of the advisory existence-check path.
+   *
+   * @returns {Promise<boolean>}
+   */
+  private async _conditionalWrites(): Promise<boolean> {
+    return (await this._backendFeatures()).includes('conditional-writes')
   }
 
   /**
@@ -197,7 +222,9 @@ export class WasTransport extends Transport {
    * `PUT` with `If-None-Match: *`, and the server's 412 maps to
    * `DuplicateError`. Otherwise it degrades to a bodiless existence check
    * (`HEAD`) before the `PUT` -- advisory and non-atomic, but no longer
-   * downloading the whole stored envelope just to discard it.
+   * downloading the whole stored envelope just to discard it. In either path a
+   * 409 (a `unique: true` blinded attribute already held by another document)
+   * likewise maps to `DuplicateError`.
    *
    * @param options {object}
    * @param options.encrypted {IEncryptedDocument}   the document to insert
@@ -220,6 +247,15 @@ export class WasTransport extends Transport {
             cause: err
           })
         }
+        if (httpStatus(err) === 409) {
+          throw namedError({
+            name: 'DuplicateError',
+            message:
+              'A unique indexed attribute value is already held by another ' +
+              'document in this collection.',
+            cause: err
+          })
+        }
         throw err
       }
       return
@@ -230,7 +266,20 @@ export class WasTransport extends Transport {
         message: `A document with id "${encrypted.id}" already exists.`
       })
     }
-    await this._put(encrypted.id, encrypted)
+    try {
+      await this._put(encrypted.id, encrypted)
+    } catch (err) {
+      if (httpStatus(err) === 409) {
+        throw namedError({
+          name: 'DuplicateError',
+          message:
+            'A unique indexed attribute value is already held by another ' +
+            'document in this collection.',
+          cause: err
+        })
+      }
+      throw err
+    }
   }
 
   /**
@@ -239,6 +288,14 @@ export class WasTransport extends Transport {
    * Updates (upserts) an encrypted document. The EDV `sequence` is advisory
    * here -- without server-side conditional writes, a stale write is not
    * rejected (last-writer-wins).
+   *
+   * Two write-time conflicts are mapped to the names `EdvClientCore` dispatches
+   * on. A server enforcing conditional writes rejects a stale/sequence
+   * conflict with 412 (precondition-failed), which surfaces as
+   * `InvalidStateError` -- the recoverable case, by re-fetching the current
+   * document and retrying. A 409 is the EDV unique-attribute collision (a
+   * `unique: true` blinded attribute already held by another document), which
+   * is NOT recoverable by re-fetch-and-retry; it surfaces as `DuplicateError`.
    *
    * @param options {object}
    * @param options.encrypted {IEncryptedDocument}   the document to update
@@ -253,12 +310,21 @@ export class WasTransport extends Transport {
     try {
       await this._put(encrypted.id, encrypted)
     } catch (err) {
-      // A server that DOES enforce conditional writes signals a stale update
-      // with 409; surface it the way `EdvClientCore` expects.
-      if (httpStatus(err) === 409) {
+      if (httpStatus(err) === 412) {
         throw namedError({
           name: 'InvalidStateError',
-          message: 'Conflict error.',
+          message:
+            'Document update conflict: the stored document changed since it ' +
+            'was read. Re-fetch the current document and retry.',
+          cause: err
+        })
+      }
+      if (httpStatus(err) === 409) {
+        throw namedError({
+          name: 'DuplicateError',
+          message:
+            'A unique indexed attribute value is already held by another ' +
+            'document in this collection.',
           cause: err
         })
       }
@@ -324,20 +390,83 @@ export class WasTransport extends Transport {
   /**
    * @inheritdoc
    *
-   * Blinded-index query is not part of the documents-only EDV-over-WAS profile;
-   * it needs the server's `/query` affordance.
+   * Runs a blinded-index content query: a signed `POST` of
+   * `{ profile: 'blinded-index', ...query }` to the Collection's reserved
+   * `/query` endpoint. Requires the backend's `blinded-index-query` affordance
+   * (throws `NotSupportedError` when it is absent). The server evaluates the
+   * blinded `equals` / `has` filters against the `indexed` entries of stored
+   * documents (opaque string comparison -- it does no crypto) and returns
+   * `{ documents, hasMore, cursor? }` (the encrypted envelopes verbatim, in
+   * ascending resource-id order, with `cursor` present iff `hasMore`), or a
+   * bare `{ count }` when `query.count` is `true`. The body is returned
+   * untouched: `EdvClientCore.find` decrypts `documents` and passes
+   * `hasMore` / `cursor` through.
+   *
+   * @param options {object}
+   * @param options.query {IEDVQuery}   the blinded query (`index` plus one of
+   *   `equals` / `has`, and optional `count` / `limit` / `cursor`), as built
+   *   by `EdvClientCore`'s `IndexHelper.buildQuery`
+   * @returns {Promise<object>}   the server's response body verbatim
    */
-  override async find(): Promise<never> {
-    return this._unsupported('find (blinded-index query)')
+  override async find({ query }: { query?: IEDVQuery } = {}): Promise<object> {
+    if (!query) {
+      throw new TypeError('"query" is required.')
+    }
+    if (!(await this._backendFeatures()).includes('blinded-index-query')) {
+      throw namedError({
+        name: 'NotSupportedError',
+        message:
+          "Blinded-index query is not supported: the collection's backend " +
+          'does not advertise the "blinded-index-query" affordance.'
+      })
+    }
+    // `returnDocuments` is a first-class `IEDVQuery` field, but the WAS profile
+    // has no ids-only mode, so it is dropped (whatever its value) and full
+    // documents come back -- the best-effort degradation `EdvClientCore.find`
+    // documents for this option.
+    const { returnDocuments: _returnDocuments, ...blindedQuery } = query
+    let response: HttpResponse
+    try {
+      response = await this._was.request({
+        path: collectionQuery(this.spaceId, this.collectionId),
+        method: 'POST',
+        json: { profile: 'blinded-index', ...blindedQuery }
+      })
+    } catch (err) {
+      if (httpStatus(err) === 404) {
+        throw namedError({
+          name: 'NotFoundError',
+          message: 'Collection not found.',
+          cause: err
+        })
+      }
+      throw err
+    }
+    const result = await readJsonData(response)
+    if (result === null || typeof result !== 'object') {
+      throw new Error('Malformed blinded-index query response.')
+    }
+    return result
   }
 
   /**
    * @inheritdoc
    *
-   * Index updates need the server's `/{id}/index` affordance.
+   * Not supported, deliberately: in the EDV-over-WAS profile, index entries
+   * are not a separate server-side resource -- the `indexed` array rides
+   * inside the stored document envelope, and every `insert` / `update`
+   * already carries it. Re-indexing a document is therefore an ordinary
+   * `update()` of the full envelope; there is no `/{id}/index` endpoint to
+   * bind this to.
    */
   override async updateIndex(): Promise<never> {
-    return this._unsupported('updateIndex')
+    throw namedError({
+      name: 'NotSupportedError',
+      message:
+        '"updateIndex" is not supported by the EDV-over-WAS profile: index ' +
+        'entries ride inside the stored document envelope, so re-index a ' +
+        'document with an ordinary "update()" of the full document.'
+    })
   }
 
   /**
@@ -359,8 +488,10 @@ export class WasTransport extends Transport {
   }
 
   /**
-   * Throws a uniform "not supported in this profile" error for EDV operations
-   * that depend on server-side affordances absent from a plaintext WAS server.
+   * Throws a uniform "not supported in this profile" error for the chunked-
+   * stream operations, which depend on a server-side affordance (the reserved
+   * `/{id}/chunks/{n}` sub-segment, the `chunked-streams` backend feature)
+   * that neither reference backend provides yet.
    *
    * @param operation {string}
    * @returns {never}
@@ -369,8 +500,8 @@ export class WasTransport extends Transport {
     throw namedError({
       name: 'NotSupportedError',
       message:
-        `"${operation}" is not supported by the documents-only ` +
-        'EDV-over-WAS profile (requires server-side EDV affordances).'
+        `"${operation}" is not supported by the EDV-over-WAS profile ` +
+        '(requires the server\'s "chunked-streams" affordance).'
     })
   }
 }

@@ -4,6 +4,42 @@
 
 ### Added
 
+- **Blinded-index content query (EDV `find` over WAS).** `WasTransport.find()`
+  now binds the EDV-over-WAS profile to the server's `blinded-index` query
+  profile (`POST .../query`, the `blinded-index-query` backend feature) instead
+  of throwing. `EdvClientCore.find({ equals | has, count, limit })` therefore
+  works against a WAS server: the client blinds the query with its HMAC key, the
+  server matches it against the blinded `indexed` entries of stored documents by
+  opaque string comparison (it does no crypto and never sees an attribute name
+  or value in plaintext), and the matching encrypted envelopes come back and are
+  decrypted client-side. Count queries return a bare `{ count }`.
+
+  Pagination is native: `EdvClientCore.find` accepts a `cursor` option and
+  surfaces the server's opaque `cursor` on its result alongside `hasMore: true`,
+  so pages past the first are walked entirely through the client -- pass the
+  previous page's `cursor` back in and read the next one off the (decrypted)
+  result -- without reaching for the transport directly. This requires
+  `@interop/edv-client` >= 17.6.0 and `@interop/data-integrity-core`
+
+  > = 8.2.0. The profile has no ids-only mode, so an explicit
+  > `returnDocuments: false` is dropped (like `returnDocuments: true`) and full
+  > documents are returned -- the core's documented best-effort degradation for
+  > that option.
+
+  `find()` gates on the backend affordance: it throws `NotSupportedError` when
+  the Collection's backend does not advertise `blinded-index-query` (without
+  issuing the query), and maps a 404 from the query endpoint to `NotFoundError`.
+
+  The server side also enforces the EDV unique-attribute invariant on writes: an
+  insert (or update) claiming a `unique: true` blinded attribute already held by
+  another live document in the Collection is rejected with a 409, which the
+  client surfaces as `DuplicateError`. On `update`, a stale-write 412 (the
+  stored document changed since it was read) surfaces as `InvalidStateError`,
+  the recoverable re-fetch-and-retry case. (Note the codec-based encrypted
+  collections -- `createEdvEncryption` -- construct their cipher without an HMAC
+  and blind nothing at write time, so nothing they store is findable by this
+  query yet; content search for that path is a separate follow-up.)
+
 - **Capability revocation.** `space.revoke(zcap)` submits a delegated capability
   to its Space's revocation endpoint
   (`POST /space/:spaceId/zcaps/revocations/:capabilityId`); from then on the
@@ -32,6 +68,15 @@
   capability -- indistinguishable to the client, so none of them are swallowed.
 
 ### Changed
+
+- **`WasTransport.updateIndex()` now says why it throws.** It still throws
+  `NotSupportedError`, but the message (and JSDoc) now explain that this is by
+  design, not a missing server affordance: in the EDV-over-WAS profile, index
+  entries are not a separate server-side resource -- the `indexed` array rides
+  inside the stored document envelope, so an ordinary `update()` of the full
+  document is the re-index operation. Chunked streams (`storeChunk` /
+  `getChunk`) remain unsupported, still pending the server's `chunked-streams`
+  affordance.
 
 - **A grant into the Space tree now roots its chain at the Space.** When no
   parent capability is given, `collection.grant(...)` (and a `was.grant(...)`
