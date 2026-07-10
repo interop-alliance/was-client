@@ -32,6 +32,7 @@ import {
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
+import { spaceIdOf, submitRevocation } from './internal/revoke.js'
 import { ValidationError } from './errors.js'
 import type { EncryptionProvider } from './codec.js'
 import { Space } from './Space.js'
@@ -392,6 +393,27 @@ export class WasClient {
    */
   async grant(options: GrantOptions): Promise<IDelegatedZcap> {
     return delegateGrant(this._context, options)
+  }
+
+  /**
+   * The general revocation primitive -- the inverse of {@link grant}. Derives the
+   * owning space from the capability's `invocationTarget` (which a Space-rooted
+   * capability always addresses at or beneath) and submits it to that space's
+   * revocation endpoint. Equivalent to `was.space(id).revoke(zcap)`.
+   *
+   * Revocation is scoped to one space: there is no cross-space or global
+   * revocation. See {@link Space.revoke} for who may call it, what it does and
+   * does not withdraw, and why it is not idempotent.
+   *
+   * @param zcap {IDelegatedZcap}   the delegated capability to revoke
+   * @returns {Promise<void>}
+   */
+  async revoke(zcap: IDelegatedZcap): Promise<void> {
+    const context = this._context
+    return submitRevocation(context, {
+      spaceId: spaceIdOf(context, zcap),
+      zcap
+    })
   }
 
   /**

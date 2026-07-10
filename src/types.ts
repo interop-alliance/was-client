@@ -12,12 +12,16 @@
  * the handle/delegation options, and the low-level `request()` input. ZCap and
  * signer types are re-used from `@interop/data-integrity-core`.
  */
-import type { IZcap, IDelegatedZcap } from '@interop/data-integrity-core/zcap'
+import type {
+  IZcap,
+  IDelegatedZcap,
+  IRootZcap
+} from '@interop/data-integrity-core/zcap'
 import type { ISigner } from '@interop/data-integrity-core'
 
 import type { ActionInput } from '@interop/storage-core'
 
-export type { IZcap, IDelegatedZcap, ISigner }
+export type { IZcap, IDelegatedZcap, IRootZcap, ISigner }
 
 /**
  * Re-export the shared WAS wire model from `@interop/storage-core`. The

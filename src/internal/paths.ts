@@ -127,6 +127,18 @@ export function spaceLinkset(spaceId: string): string {
 }
 
 /**
+ * `/space/:spaceId/zcaps/revocations/:capabilityId` -- submit a revocation of a
+ * Space-rooted capability. The capability's `id` (typically a `urn:uuid:`) is
+ * percent-encoded into the single final segment.
+ *
+ * `zcaps` is not a reserved path segment: the route sits four segments deep,
+ * deeper than any Collection or Resource route, so it shadows nothing.
+ */
+export function spaceRevocation(spaceId: string, capabilityId: string): string {
+  return `/space/${encode(spaceId)}/zcaps/revocations/${encode(capabilityId)}`
+}
+
+/**
  * `/space/:spaceId/:collectionId` -- get / update / delete a collection
  * (no trailing slash).
  */
@@ -285,6 +297,42 @@ export type ParsedSpacePath =
       resourceId: string
     }
   | { kind: 'sub-resource'; spaceId: string; segments: string[] }
+
+/**
+ * Classifies an absolute `target` URL that is expected to live on this server,
+ * relative to `serverUrl`'s base path -- so a WAS mounted under a sub-path (e.g.
+ * `https://host/was/`) resolves just as a bare-origin deployment does, which
+ * `parseSpacePath` alone cannot do (it would see a leading `was` segment).
+ *
+ * Returns `null` when `target` is not beneath `serverUrl` (another origin, or
+ * another base path) or addresses something outside the `/space` tree (e.g.
+ * `/kms`). The caller chooses whether that is an error.
+ *
+ * @param options {object}
+ * @param options.serverUrl {string}   the client's server base URL
+ * @param options.target {string}      an absolute URL on that server
+ * @returns {ParsedSpacePath | null}
+ */
+export function parseSpaceTarget({
+  serverUrl,
+  target
+}: {
+  serverUrl: string
+  target: string
+}): ParsedSpacePath | null {
+  const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
+  if (!target.startsWith(base)) {
+    return null
+  }
+  let pathname: string
+  try {
+    ;({ pathname } = new URL(target))
+  } catch {
+    return null
+  }
+  const basePathname = new URL(base).pathname
+  return parseSpacePath(`/${pathname.slice(basePathname.length)}`)
+}
 
 /**
  * Parses a server pathname back into the containment depth it addresses -- the
