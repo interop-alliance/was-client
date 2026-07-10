@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.13.2 - TBD
+
+### Changed
+
+- Update to latest `storage-core` (adds `createdBy` field).
+
 ## 0.13.1 - 2026-07-04
 
 ### Changed
