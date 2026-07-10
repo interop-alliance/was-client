@@ -24,8 +24,8 @@ importers:
         specifier: ^1.0.4
         version: 1.0.4
       '@interop/storage-core':
-        specifier: ^0.3.2
-        version: 0.3.2
+        specifier: ^0.3.3
+        version: 0.3.3
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -260,8 +260,8 @@ packages:
     resolution: {integrity: sha512-fvX0udPj3SsnE/qDe00eqmIUWvZQ4nxr+0KZW/HYBvHMM7t/AjjC+ew5NC/f2zy4f+4HDSpAfnKild7z027dBA==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.3.2':
-    resolution: {integrity: sha512-yqxnWkWbkss8JgCuXG2/bBVfAehhuOYY27RWx40N5nnNEdcs4kL4h1jV0yeavLMG1Sv33DFIm4PnA7RdgO4+nw==}
+  '@interop/storage-core@0.3.3':
+    resolution: {integrity: sha512-dSdYREbmJIiu4hffZktF/KI6H+aP3aWB8LnTw56GcA5j7+EzPgY1YD5eTcHD5g9igkI0NcT5CAmWLEYttv6KHg==}
     engines: {node: '>=22.0'}
 
   '@interop/x25519-key-agreement-key@5.1.1':
@@ -1414,7 +1414,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/storage-core@0.3.2':
+  '@interop/storage-core@0.3.3':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 

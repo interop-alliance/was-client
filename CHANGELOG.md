@@ -1,5 +1,29 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- `collection.changes({ checkpoint, limit })` -- reads one page of a
+  Collection's replication change feed (the `changes` query profile), returning
+  `{ documents, checkpoint }`. Each `ChangeDocument` carries `id`, `_deleted`,
+  `updatedAt`, `version`, and the optional `metaVersion` / `createdBy` / `data`
+  / `custom`, so a replica learns each Resource's creator from the feed rather
+  than fetching `/meta` per Resource; a tombstone keeps its `createdBy`.
+
+  Deliberately a single page rather than an iterator: it is shaped for an RxDB
+  `pull.handler(checkpoint, batchSize)`, which owns the iteration and persists
+  the checkpoint between batches. Resume by passing the returned `checkpoint`
+  back; a page shorter than `limit` means the caller has caught up.
+
+  Requires the Collection's backend to advertise the `changes-query` feature (a
+  backend without it answers `501`). On an encrypted Collection the documents'
+  `data` / `custom` are the scheme's opaque envelopes -- `changes()` does not
+  decrypt them, unlike `get()`.
+
+  The `ChangeDocument` / `ChangesPage` / `ChangesCheckpoint` wire shapes are
+  `@interop/storage-core` exports; import them from there.
+
 ## 0.13.2 - 2026-07-09
 
 ### Changed

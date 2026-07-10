@@ -13,6 +13,7 @@ import {
   collectionLinkset,
   collectionBackend,
   collectionQuota,
+  collectionQuery,
   resourcePath,
   toUrl
 } from './internal/paths.js'
@@ -35,6 +36,7 @@ import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import { createdId, dataOrNull } from './internal/content.js'
 import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
+import type { ChangesCheckpoint, ChangesPage } from '@interop/storage-core'
 import type {
   AddResult,
   BackendDescriptor,
@@ -481,6 +483,49 @@ export class Collection {
     for await (const page of this.listPages()) {
       yield* page.items
     }
+  }
+
+  /**
+   * Reads one page of the collection's replication change feed (the `changes`
+   * query profile): the JSON-document resources and tombstones changed strictly
+   * after `checkpoint`, in change order, at most `limit` of them. With no
+   * `checkpoint` the feed starts from the beginning.
+   *
+   * This is deliberately a single page, not an iterator: it is shaped for an
+   * RxDB `pull.handler(checkpoint, batchSize)`, which owns the iteration and
+   * persists the checkpoint between batches. Resume by passing the returned
+   * `checkpoint` back; a page shorter than `limit` means you have caught up.
+   *
+   * Requires the collection's backend to advertise the `changes-query` feature
+   * (see `backend()`); a backend without it answers `501`. On an encrypted
+   * collection the documents' `data` / `custom` are the scheme's opaque
+   * envelopes (an EDV encrypted document under the v1 `edv` scheme) -- this
+   * method does not decrypt them, unlike `get()`.
+   *
+   * @param [options] {object}
+   * @param [options.checkpoint] {ChangesCheckpoint}   resume strictly after this
+   * @param [options.limit] {number}   max documents; the server clamps its own maximum
+   * @returns {Promise<ChangesPage>}
+   */
+  async changes(
+    options: { checkpoint?: ChangesCheckpoint; limit?: number } = {}
+  ): Promise<ChangesPage> {
+    const { checkpoint, limit } = options
+    const response = await send(this._context, {
+      path: collectionQuery(this.spaceId, this.id),
+      method: 'POST',
+      capability: this._capability,
+      json: {
+        profile: 'changes',
+        ...(checkpoint !== undefined && { checkpoint }),
+        ...(limit !== undefined && { limit })
+      }
+    })
+    // A `changes` query is a POST, so it never carries the null-on-404 `read`
+    // flag: a missing or unauthorized collection throws, as every other write
+    // -shaped call on this handle does.
+    const page = dataOrNull<ChangesPage>(response)
+    return page ?? { documents: [], checkpoint: null }
   }
 
   /**
