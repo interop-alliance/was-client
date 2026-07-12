@@ -23,6 +23,7 @@ import { prepareBody, parseResource } from './content.js'
 import { describeCollection } from './describe.js'
 import { EncryptionError } from '../errors.js'
 import type {
+  CollectionEncryption,
   EncryptionOverride,
   IZcap,
   Json,
@@ -206,7 +207,8 @@ export async function resolveCodec(
   return buildEncryptingCodec(context, {
     spaceId,
     collectionId,
-    scheme: description.encryption.scheme
+    scheme: description.encryption.scheme,
+    encryption: description.encryption
   })
 }
 
@@ -230,8 +232,15 @@ async function buildEncryptingCodec(
     spaceId,
     collectionId,
     scheme,
+    encryption,
     keys
-  }: { spaceId: string; collectionId: string; scheme: string; keys?: unknown }
+  }: {
+    spaceId: string
+    collectionId: string
+    scheme: string
+    encryption?: CollectionEncryption
+    keys?: unknown
+  }
 ): Promise<ResourceCodec> {
   const where = `${spaceId}/${collectionId}`
   if (!context.encryption) {
@@ -245,6 +254,7 @@ async function buildEncryptingCodec(
     spaceId,
     collectionId,
     scheme,
+    encryption,
     keys
   })
   if (!codec) {

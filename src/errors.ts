@@ -162,6 +162,27 @@ export class EncryptionError extends WasError {
 }
 
 /**
+ * A fail-closed key-epoch error: a reader could not unwrap any epoch key it
+ * needs to decrypt a resource on a multi-recipient encrypted Collection -- none
+ * of the marker's `recipients` entries yielded a key for this reader's
+ * key-agreement key (it was never a recipient, or has been removed and the
+ * epoch rotated). A subtype of {@link EncryptionError}, so existing
+ * `catch (EncryptionError)` fail-closed handling still catches it.
+ *
+ * This is the **read** axis only. It says nothing about **pull**: the reader may
+ * still be served the ciphertext by the server (a separate zcap decision) and
+ * may still hold earlier epochs' keys for resources written before it was
+ * removed -- rotation is prospective and never claws back what a reader can
+ * already decrypt.
+ */
+export class KeyUnwrapError extends EncryptionError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'KeyUnwrapError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {

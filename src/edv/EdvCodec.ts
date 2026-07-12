@@ -62,7 +62,9 @@ import type {
   EncryptionProvider,
   ResourceCodec
 } from '../codec.js'
-import { EncryptionError, ValidationError } from '../errors.js'
+import { EncryptionError, KeyUnwrapError, ValidationError } from '../errors.js'
+import { resolveEpochKeys } from './epochKeys.js'
+import { didKeyResolver } from './epochCrypto.js'
 import {
   isBlob,
   isTextContentType,
@@ -145,7 +147,9 @@ export class EdvCodec implements ResourceCodec {
   readonly conditionalWrites = true
 
   private readonly _edv: EdvClientCore
-  private readonly _keyAgreementKey: IKeyAgreementKey
+  private readonly _writeKey: IKeyAgreementKey
+  private readonly _readKeys: IKeyAgreementKey[]
+  private readonly _writeEpoch?: string
   private readonly _contentType: string
   private readonly _maxBlobBytes: number
   private readonly _idDerivation: 'random' | 'content'
@@ -153,7 +157,18 @@ export class EdvCodec implements ResourceCodec {
   /**
    * @param options {object}
    * @param options.edv {EdvClientCore}             holds the cipher + key resolver
-   * @param options.keyAgreementKey {IKeyAgreementKey}   the recipient/decrypt key
+   * @param options.keyAgreementKey {IKeyAgreementKey}   the key writes encrypt
+   *   under and the default read key. On a single-key collection this is the
+   *   wallet's own key-agreement key; on a multi-recipient (key-epoch)
+   *   collection it is the reconstructed `currentEpoch` key pair.
+   * @param [options.readKeys] {IKeyAgreementKey[]}   the candidate keys a read
+   *   may decrypt with, one per epoch this reader can unwrap (defaults to just
+   *   `keyAgreementKey`). A read selects the one whose id matches the stored
+   *   envelope's recipient, so a resource written under an older epoch still
+   *   decrypts.
+   * @param [options.writeEpoch] {string}   the key-epoch id to stamp on writes
+   *   (the `currentEpoch`), surfaced as {@link EncodedWrite.epoch}; absent on a
+   *   single-key collection.
    * @param options.contentType {string}            stored envelope content type
    * @param options.maxBlobBytes {number}           single-document binary cap
    * @param options.idDerivation {string}           how `add()` mints a document
@@ -163,18 +178,24 @@ export class EdvCodec implements ResourceCodec {
   constructor({
     edv,
     keyAgreementKey,
+    readKeys,
+    writeEpoch,
     contentType,
     maxBlobBytes,
     idDerivation
   }: {
     edv: EdvClientCore
     keyAgreementKey: IKeyAgreementKey
+    readKeys?: IKeyAgreementKey[]
+    writeEpoch?: string
     contentType: string
     maxBlobBytes: number
     idDerivation: 'random' | 'content'
   }) {
     this._edv = edv
-    this._keyAgreementKey = keyAgreementKey
+    this._writeKey = keyAgreementKey
+    this._readKeys = readKeys ?? [keyAgreementKey]
+    this._writeEpoch = writeEpoch
     this._contentType = contentType
     this._maxBlobBytes = maxBlobBytes
     this._idDerivation = idDerivation
@@ -226,9 +247,7 @@ export class EdvCodec implements ResourceCodec {
     }
 
     const { documentCipher } = this._edv
-    const recipients = documentCipher.createDefaultRecipients(
-      this._keyAgreementKey
-    )
+    const recipients = documentCipher.createDefaultRecipients(this._writeKey)
     const encrypted = await documentCipher.encrypt({
       doc: {
         ...(docId !== undefined && { id: docId }),
@@ -268,7 +287,11 @@ export class EdvCodec implements ResourceCodec {
       // it, leaving the write harmless rather than degraded.
       ...(priorDoc
         ? { ifMatch: current!.headers.get('etag') ?? undefined }
-        : { ifNoneMatch: true })
+        : { ifNoneMatch: true }),
+      // Stamp the key epoch this write encrypted under (the `currentEpoch`), so
+      // the server records it and a reader can pick the epoch key. Absent on a
+      // single-key collection.
+      ...(this._writeEpoch !== undefined && { epoch: this._writeEpoch })
     }
   }
 
@@ -283,11 +306,62 @@ export class EdvCodec implements ResourceCodec {
       response as Parameters<typeof readJsonData>[0]
     )
     this._assertEnvelope(encryptedDoc, 'read')
-    const decrypted = await this._edv.documentCipher.decrypt({
-      encryptedDoc,
-      keyAgreementKey: this._keyAgreementKey
-    })
+    const decrypted = await this._decrypt(encryptedDoc)
     return this._fromDocument(decrypted.content, decrypted.meta)
+  }
+
+  /**
+   * Decrypts a stored EDV envelope, selecting which read key to use by matching
+   * the envelope's JWE recipient `kid` against this reader's candidate keys
+   * (one per epoch it can unwrap). On a single-key collection there is exactly
+   * one candidate; on a multi-recipient collection a resource written under an
+   * older epoch selects that epoch's key, so history stays readable.
+   *
+   * A stored envelope naming an epoch this reader holds no key for (it was never
+   * a recipient of that epoch, or was removed and the epoch rotated) fails with
+   * {@link KeyUnwrapError} -- the **read** axis only; it says nothing about
+   * whether the server will still serve (pull) the ciphertext.
+   *
+   * @param encryptedDoc {IEncryptedDocument}
+   * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown> }>}
+   */
+  private async _decrypt(
+    encryptedDoc: IEncryptedDocument
+  ): Promise<{ content?: unknown; meta?: Record<string, unknown> }> {
+    const recipients =
+      (
+        encryptedDoc.jwe as {
+          recipients?: Array<{ header?: { kid?: string } }>
+        }
+      ).recipients ?? []
+    const kids = new Set(
+      recipients
+        .map(recipient => recipient.header?.kid)
+        .filter((kid): kid is string => typeof kid === 'string')
+    )
+    // Prefer the read key whose id names a recipient of this envelope; fall back
+    // to trying the remaining candidates (defensive -- exact-match should always
+    // hit) before surfacing the typed failure.
+    const preferred = this._readKeys.filter(key => kids.has(key.id))
+    const rest = this._readKeys.filter(key => !kids.has(key.id))
+    for (const keyAgreementKey of [...preferred, ...rest]) {
+      try {
+        return await this._edv.documentCipher.decrypt({
+          encryptedDoc,
+          keyAgreementKey
+        })
+      } catch {
+        // This candidate is not a recipient of this envelope (or its unwrap
+        // failed); try the next.
+      }
+    }
+    throw new KeyUnwrapError(
+      "Cannot decrypt this resource: none of this reader's epoch keys unwrap " +
+        'it. It was encrypted under a key epoch this reader holds no key for ' +
+        '(it was never a recipient of that epoch, or it was removed from the ' +
+        'collection and the epoch was rotated). This is the read axis only -- ' +
+        'the server may still serve the ciphertext (a separate zcap decision).'
+    )
   }
 
   /**
@@ -305,9 +379,7 @@ export class EdvCodec implements ResourceCodec {
     custom: ResourceMetadataCustom
   }): Promise<{ custom: object }> {
     const { documentCipher } = this._edv
-    const recipients = documentCipher.createDefaultRecipients(
-      this._keyAgreementKey
-    )
+    const recipients = documentCipher.createDefaultRecipients(this._writeKey)
     // The document needs an EDV id (the cipher asserts one on decrypt). It is
     // opaque to the server -- carried inside the un-decryptable envelope -- and
     // minted fresh each write, since the metadata envelope is never updated in
@@ -339,10 +411,7 @@ export class EdvCodec implements ResourceCodec {
       return {}
     }
     this._assertEnvelope(custom, 'read')
-    const decrypted = await this._edv.documentCipher.decrypt({
-      encryptedDoc: custom,
-      keyAgreementKey: this._keyAgreementKey
-    })
+    const decrypted = await this._decrypt(custom as IEncryptedDocument)
     return (decrypted.content ?? {}) as ResourceMetadataCustom
   }
 
@@ -605,7 +674,7 @@ export function createEdvEncryption({
   idDerivation?: 'random' | 'content'
 }): EncryptionProvider {
   return {
-    async codecFor({ spaceId, collectionId, scheme, keys }) {
+    async codecFor({ spaceId, collectionId, scheme, encryption, keys }) {
       if (scheme !== EDV_SCHEME) {
         return null
       }
@@ -616,6 +685,37 @@ export function createEdvEncryption({
       if (!resolved) {
         return null
       }
+      // Multi-recipient (key-epoch) collection: resolve the reader's per-epoch
+      // keys from the marker -- the `currentEpoch` key pair for writes, every
+      // epoch key it can unwrap for reads -- and drive the cipher with those.
+      // The reader's own key-agreement key is used only to unwrap the epoch
+      // keys, never to encrypt resources.
+      if (encryption?.epochs && encryption.epochs.length > 0) {
+        const epochKeys = await resolveEpochKeys({
+          encryption,
+          keyAgreementKey: resolved.keyAgreementKey
+        })
+        if (epochKeys) {
+          // Epoch keys are self-describing did:key key-agreement keys, so a
+          // resource's recipient (the epoch public key) resolves through the
+          // standard did:key resolver, independent of the reader's own keystore.
+          const edv = new EdvClientCore({
+            keyAgreementKey: epochKeys.writeKey,
+            keyResolver: didKeyResolver
+          })
+          return new EdvCodec({
+            edv,
+            keyAgreementKey: epochKeys.writeKey,
+            readKeys: epochKeys.readKeys,
+            writeEpoch: epochKeys.writeEpoch,
+            contentType,
+            maxBlobBytes,
+            idDerivation
+          })
+        }
+      }
+      // Single-key collection (no epochs on the marker): the wallet's own
+      // key-agreement key encrypts and decrypts directly, unchanged.
       const edv = new EdvClientCore({
         keyAgreementKey: resolved.keyAgreementKey,
         keyResolver: resolved.keyResolver

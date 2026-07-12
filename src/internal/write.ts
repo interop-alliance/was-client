@@ -56,7 +56,11 @@ export async function sendEncodedWrite(
     capability,
     json: encoded.json,
     body: encoded.body,
-    headers: writeHeaders({ contentType: encoded.contentType, precondition })
+    headers: writeHeaders({
+      contentType: encoded.contentType,
+      precondition,
+      epoch: encoded.epoch
+    })
   })
   return response as HttpResponse
 }

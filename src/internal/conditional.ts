@@ -29,14 +29,20 @@ export interface WritePrecondition {
  * @param [options.contentType] {string}          the body content-type, if any
  * @param [options.precondition] {WritePrecondition}   the conditional-write
  *   precondition
+ * @param [options.epoch] {string}   the key-epoch id an encrypting codec
+ *   encrypted this write under; emitted as the `WAS-Key-Epoch` header so the
+ *   server stamps the Resource's epoch. Omitted when absent (which clears any
+ *   prior stamp on the server).
  * @returns {Record<string, string> | undefined}
  */
 export function writeHeaders({
   contentType,
-  precondition = {}
+  precondition = {},
+  epoch
 }: {
   contentType?: string
   precondition?: WritePrecondition
+  epoch?: string
 }): Record<string, string> | undefined {
   const headers: Record<string, string> = {}
   if (contentType) {
@@ -47,6 +53,9 @@ export function writeHeaders({
   }
   if (precondition.ifNoneMatch) {
     headers['if-none-match'] = '*'
+  }
+  if (epoch !== undefined) {
+    headers['was-key-epoch'] = epoch
   }
   return Object.keys(headers).length > 0 ? headers : undefined
 }
