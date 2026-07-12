@@ -190,6 +190,14 @@ describe('parseSpacePath', () => {
     expect(parseSpacePath('/space')).toBeNull()
     expect(parseSpacePath('/spaces/')).toBeNull()
   })
+
+  it('returns null (not a raw URIError) for a malformed percent-escape', () => {
+    // `decodeURIComponent('%ff')` throws a `URIError`; a malformed escape makes
+    // the pathname an unparseable target, which callers convert to their own
+    // typed error rather than a raw crash.
+    expect(parseSpacePath('/space/%ff')).toBeNull()
+    expect(parseSpacePath('/space/s/%c3%28')).toBeNull()
+  })
 })
 
 describe('toUrl', () => {

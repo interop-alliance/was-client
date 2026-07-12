@@ -91,8 +91,6 @@ export class CodecHolder {
  * metadata round-trips as server-visible plaintext byte-for-byte.
  */
 export const identityCodec: ResourceCodec = {
-  metadataMode: 'plaintext',
-
   async encode({
     id,
     data,
@@ -171,7 +169,14 @@ export async function resolveCodec(
       spaceId,
       collectionId,
       scheme: override.scheme,
-      keys: override.keys
+      keys: override.keys,
+      // A full `CollectionEncryption` marker is itself a valid override
+      // (Space.createCollection pre-seeds exactly this). Forward the whole
+      // override as the `encryption` marker so an epoch-bearing override
+      // resolves the epoch codec -- the provider's `codecFor` selects the epoch
+      // path solely on `encryption?.epochs?.length > 0`, so dropping it here
+      // would force the single-key path and break epoch reads/writes.
+      encryption: override as CollectionEncryption
     })
   }
   // 2. A plaintext-only client (no keystore) never encrypts; no round-trip.

@@ -183,6 +183,24 @@ export class KeyUnwrapError extends EncryptionError {
 }
 
 /**
+ * A fail-closed integrity error: a stored EDV envelope this reader DOES hold a
+ * key for failed to authenticate on decrypt -- its AEAD tag did not verify, so
+ * the ciphertext is corrupt or has been tampered with. Distinct from
+ * {@link KeyUnwrapError}: that is the read/membership axis ("no key for this
+ * epoch"), whereas this is a data-integrity failure by a legitimate recipient.
+ * A subtype of {@link EncryptionError}, so existing `catch (EncryptionError)`
+ * fail-closed handling still catches it, but a security-conscious caller can
+ * `instanceof IntegrityError` to tell tampering apart from an authorization
+ * problem. Raised client-side before/independent of any HTTP status.
+ */
+export class IntegrityError extends EncryptionError {
+  constructor(message: string, options: WasErrorOptions = {}) {
+    super(message, options)
+    this.name = 'IntegrityError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {

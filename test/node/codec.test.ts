@@ -136,14 +136,8 @@ function clientWithRouter({
  * in a fake `{ jwe }` envelope and `decodeMeta` unwraps it, mirroring how a real
  * encrypting codec keeps `name`/`tags` off the wire.
  */
-function fakeCodec(
-  log: string[],
-  {
-    metadataMode = 'encrypted'
-  }: { metadataMode?: 'plaintext' | 'encrypted' } = {}
-): ResourceCodec {
+function fakeCodec(log: string[]): ResourceCodec {
   return {
-    metadataMode,
     async encode({ id, data }): Promise<EncodedWrite> {
       log.push(`encode:${id ?? 'mint'}`)
       return {
@@ -698,7 +692,6 @@ describe('codec seam: encrypted metadata round-trips through the codec', () => {
  */
 function conditionalFakeCodec(log: string[]): ResourceCodec {
   return {
-    metadataMode: 'encrypted',
     conditionalWrites: true,
     async encode({ id, data, current }): Promise<EncodedWrite> {
       const etag = current?.headers.get('etag') ?? undefined
@@ -840,9 +833,5 @@ describe('identityCodec: metadata identity (byte-for-byte)', () => {
   it('decodeMeta returns {} for an absent custom', async () => {
     expect(await identityCodec.decodeMeta({})).toEqual({})
     expect(await identityCodec.decodeMeta({ custom: undefined })).toEqual({})
-  })
-
-  it('reports metadataMode "plaintext"', () => {
-    expect(identityCodec.metadataMode).toBe('plaintext')
   })
 })

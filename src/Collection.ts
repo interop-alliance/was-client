@@ -30,7 +30,7 @@ import {
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { describeCollection } from './internal/describe.js'
-import { readEtag } from './internal/conditional.js'
+import { readEtag, writeHeaders } from './internal/conditional.js'
 import { sendEncodedWrite } from './internal/write.js'
 import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import { createdId, dataOrNull } from './internal/content.js'
@@ -128,6 +128,36 @@ export class Collection {
   }
 
   /**
+   * The writable Collection Description fields, present only when set. The one
+   * inclusion rule (`!== undefined`) shared by the `configure` /
+   * `replaceDescription` request bodies and their echoed return descriptions, so
+   * the two paths cannot drift and a new writable field is added in one place.
+   *
+   * @param fields {object}
+   * @param [fields.name] {string}
+   * @param [fields.backend] {BackendReference}
+   * @param [fields.encryption] {CollectionEncryption}
+   * @returns {object}
+   */
+  private _writableFields(fields: {
+    name?: string
+    backend?: BackendReference
+    encryption?: CollectionEncryption
+  }): {
+    name?: string
+    backend?: BackendReference
+    encryption?: CollectionEncryption
+  } {
+    return {
+      ...(fields.name !== undefined ? { name: fields.name } : {}),
+      ...(fields.backend !== undefined ? { backend: fields.backend } : {}),
+      ...(fields.encryption !== undefined
+        ? { encryption: fields.encryption }
+        : {})
+    }
+  }
+
+  /**
    * Resolves (once, then caches) the codec for this collection's reads and
    * writes: the identity codec for a plaintext collection, or the encrypting
    * codec when this collection is declared encrypted -- by a per-handle override
@@ -215,18 +245,12 @@ export class Collection {
     const name = desc.name ?? current?.name
     const backend = desc.backend ?? current?.backend
     const encryption = desc.encryption ?? current?.encryption
-    const body: Record<string, unknown> = { id: this.id, name }
-    if (backend) {
-      body.backend = backend
-    }
-    if (encryption) {
-      body.encryption = encryption
-    }
+    const fields = this._writableFields({ name, backend, encryption })
     await send(this._context, {
       path: this._path,
       method: 'PUT',
       capability: this._capability,
-      json: body
+      json: { id: this.id, ...fields }
     })
     // Adding the encryption marker flips this collection from plaintext to
     // encrypted server-side. Drop any codec memoized from the prior (plaintext)
@@ -240,9 +264,7 @@ export class Collection {
     return {
       id: this.id,
       type: current?.type ?? ['Collection'],
-      ...(name !== undefined ? { name } : {}),
-      ...(backend !== undefined ? { backend } : {}),
-      ...(encryption !== undefined ? { encryption } : {})
+      ...fields
     }
   }
 
@@ -274,7 +296,7 @@ export class Collection {
     }
     return {
       description,
-      etag: response.headers.get('etag') ?? undefined
+      etag: readEtag(response)
     }
   }
 
@@ -307,39 +329,32 @@ export class Collection {
     },
     options: { ifMatch?: string } = {}
   ): Promise<{ description: CollectionDescription; etag?: string }> {
-    const body: Record<string, unknown> = { id: this.id }
-    if (description.name !== undefined) {
-      body.name = description.name
-    }
-    if (description.backend !== undefined) {
-      body.backend = description.backend
-    }
-    if (description.encryption !== undefined) {
-      body.encryption = description.encryption
-    }
+    const fields = this._writableFields(description)
     const response = await send(this._context, {
       path: this._path,
       method: 'PUT',
       capability: this._capability,
-      json: body,
-      headers:
-        options.ifMatch !== undefined
-          ? { 'if-match': options.ifMatch }
-          : undefined
+      json: { id: this.id, ...fields },
+      headers: writeHeaders({ precondition: { ifMatch: options.ifMatch } })
     })
+    // Writing the `encryption` marker can rotate the key epoch (the recipient
+    // operations CAS this field) or flip the collection from plaintext to
+    // encrypted. Drop any memoized codec -- bound at construction to the prior
+    // marker's write key/epoch -- so the next read/write re-resolves it under
+    // the new marker; otherwise a `put` on the same handle would keep encrypting
+    // under the stale epoch, whose key a just-removed reader still holds. Child
+    // resource handles share this codec via their thunk, so resetting here
+    // propagates to them too.
+    if (description.encryption !== undefined) {
+      this._codecHolder.reset()
+    }
     return {
       description: {
         id: this.id,
         type: ['Collection'],
-        ...(description.name !== undefined && { name: description.name }),
-        ...(description.backend !== undefined && {
-          backend: description.backend
-        }),
-        ...(description.encryption !== undefined && {
-          encryption: description.encryption
-        })
+        ...fields
       },
-      etag: (response as { headers: Headers }).headers.get('etag') ?? undefined
+      etag: readEtag(response)
     }
   }
 
@@ -466,7 +481,10 @@ export class Collection {
             serverUrl: this._context.serverUrl,
             path: resourcePath(this.spaceId, this.id, id)
           }),
-      contentType: responseBody?.['content-type'],
+      contentType:
+        responseBody?.['content-type'] ??
+        encoded.resourceContentType ??
+        encoded.contentType,
       etag: readEtag(response)
     }
   }

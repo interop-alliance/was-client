@@ -85,17 +85,6 @@ export interface EncodedWrite {
  */
 export interface ResourceCodec {
   /**
-   * How this codec stores a Resource's user-writable metadata (`custom`:
-   * `name` / `tags`, set via `resource.setName` / `setTags` / `setMeta`). The
-   * identity codec stores it as server-visible plaintext (`'plaintext'`); an
-   * encrypting codec stores it as an opaque envelope (`'encrypted'`) -- the same
-   * way it stores content -- so `name` / `tags` never reach the server in the
-   * clear. A mode rather than a boolean so a future scheme that stores metadata
-   * differently can extend the union.
-   */
-  readonly metadataMode: 'plaintext' | 'encrypted'
-
-  /**
    * Whether this codec drives optimistic-concurrency (conditional) writes. When
    * `true`, the write path pre-reads the current stored resource and passes it
    * to {@link encode} as `current`, then forwards the precondition `encode`

@@ -25,7 +25,7 @@ import { delegateGrantAt } from './internal/grant.js'
 import { submitRevocation } from './internal/revoke.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
-import { WasServerError } from './errors.js'
+import { ValidationError, WasServerError } from './errors.js'
 import { createdId, dataOrNull, toPlainBytes } from './internal/content.js'
 import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
 import { Collection } from './Collection.js'
@@ -97,16 +97,44 @@ export class Space {
    * Creates or updates the space by id (upsert). Merges the given fields over
    * the current description; `controller` defaults to the wrapped signer's DID.
    *
+   * Fails closed when the current description is unreadable and the caller did
+   * not supply a full description (both `name` and `controller`), mirroring
+   * {@link Collection.configure}: WAS returns 404 for both not-found and
+   * unauthorized, so a write-capable but not read-capable caller invoking
+   * `configure({ name })` would otherwise merge forward from a `null` current --
+   * silently defaulting `controller` to the wrapped signer's DID (a stealth
+   * ownership change) and dropping the existing `name`. Pass `force: true` to
+   * proceed anyway (a deliberate create through a handle), or supply both
+   * `name` and `controller` explicitly so nothing is merged from the unreadable
+   * current.
+   *
    * @param desc {object}
    * @param [desc.name] {string}
    * @param [desc.controller] {string}
+   * @param [desc.force] {boolean}   proceed even when the current description is
+   *   unreadable and a full description is not supplied (see above)
    * @returns {Promise<SpaceDescription>}
    */
   async configure(desc: {
     name?: string
     controller?: string
+    force?: boolean
   }): Promise<SpaceDescription> {
     const current = await this.describe()
+    if (
+      current === null &&
+      !desc.force &&
+      !(desc.name !== undefined && desc.controller !== undefined)
+    ) {
+      throw new ValidationError(
+        `Cannot configure space "${this.id}": its current description is not ` +
+          'readable with this capability (WAS returns 404 for both not-found ' +
+          'and unauthorized), so merging forward could silently change the ' +
+          'controller or drop the existing name. Supply both `name` and ' +
+          '`controller` explicitly, use a read-capable capability, or pass ' +
+          '`force: true` if you are creating a new space.'
+      )
+    }
     const name = desc.name ?? current?.name
     const controller =
       desc.controller ?? current?.controller ?? this._context.controllerDid
@@ -256,7 +284,7 @@ export class Space {
    * connection (the re-consent path), use {@link updateBackend}.
    *
    * @param registration {BackendRegistration}   the backend to register
-   *   (`{ id, provider, connection: { kind, … }, name?, storageMode?, features? }`)
+   *   (`{ id, provider, connection: { kind, ... }, name?, storageMode?, features? }`)
    * @returns {Promise<BackendDescriptor>}   the sanitized descriptor of the
    *   newly registered backend
    */

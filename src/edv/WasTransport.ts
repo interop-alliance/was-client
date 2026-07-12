@@ -63,6 +63,18 @@ import {
 export { JOSE_CONTENT_TYPE }
 
 /**
+ * HTTP statuses that mean the backend-descriptor endpoint is legitimately
+ * absent (or explicitly unimplemented), as opposed to transiently failing:
+ * `404` (no such endpoint), `405` (endpoint does not answer `GET`), `501`
+ * (not implemented). These are a definitive "this server advertises no
+ * backend features" answer and are safe to cache -- every affordance gate
+ * then falls closed against a server that has no backend descriptors. Any
+ * other failure (network error, timeout, `401`, `429`, other `5xx`) is
+ * transient/ambiguous and is re-probed instead of cached.
+ */
+const DESCRIPTOR_ABSENT_STATUSES = new Set([404, 405, 501])
+
+/**
  * The subset of `WasClient` this transport depends on: the signed-request
  * escape hatch. Declared structurally so tests can supply a lightweight stub.
  */
@@ -173,33 +185,58 @@ export class WasTransport extends Transport {
   /**
    * The feature tokens the collection's backend advertises in its "Collection
    * Backend Selected" descriptor (e.g. `conditional-writes`,
-   * `blinded-index-query`). Read once and memoized for the transport's
-   * lifetime; any failure to read the descriptor (404, 501 on a server without
-   * backend support, network error) resolves `[]`, so every affordance gate
-   * falls closed.
+   * `blinded-index-query`). Memoized once it produces a definitive answer: a
+   * successful read (including one that lists no features) and a definitive
+   * "endpoint absent" (`404` / `405` / `501`) both resolve to a cached feature
+   * list, so every affordance gate falls closed against a server that has no
+   * backend descriptors.
+   *
+   * A transient/ambiguous failure (network error, timeout, `401`, `429`, other
+   * `5xx`) is NOT cached: the memo is cleared so the next call re-probes, and
+   * the error is rethrown so the caller fails loud rather than silently
+   * degrading atomicity against a server that may well be capable. (A single
+   * transient failure must not poison the transport for its lifetime.)
    *
    * @returns {Promise<string[]>}
    */
   private _backendFeatures(): Promise<string[]> {
-    this._backendFeaturesPromise ??= (async () => {
-      try {
-        const response = await this._was.request({
-          path: collectionBackend(this.spaceId, this.collectionId),
-          method: 'GET'
-        })
-        const descriptor = (await readJsonData(response)) as {
-          features?: unknown
-        } | null
-        return Array.isArray(descriptor?.features)
-          ? descriptor.features.filter(
-              (feature): feature is string => typeof feature === 'string'
-            )
-          : []
-      } catch {
+    this._backendFeaturesPromise ??= this._probeBackendFeatures()
+    return this._backendFeaturesPromise
+  }
+
+  /**
+   * Reads and parses the backend descriptor once. On a definitive answer
+   * (success, or a `404` / `405` / `501` that means the endpoint is legitimately
+   * absent) resolves the feature list, which `_backendFeatures` then caches. On
+   * a transient failure, clears the memo (so the next call re-probes) and
+   * rethrows.
+   *
+   * @returns {Promise<string[]>}
+   */
+  private async _probeBackendFeatures(): Promise<string[]> {
+    try {
+      const response = await this._was.request({
+        path: collectionBackend(this.spaceId, this.collectionId),
+        method: 'GET'
+      })
+      const descriptor = (await readJsonData(response)) as {
+        features?: unknown
+      } | null
+      return Array.isArray(descriptor?.features)
+        ? descriptor.features.filter(
+            (feature): feature is string => typeof feature === 'string'
+          )
+        : []
+    } catch (err) {
+      const status = httpStatus(err)
+      if (status !== undefined && DESCRIPTOR_ABSENT_STATUSES.has(status)) {
         return []
       }
-    })()
-    return this._backendFeaturesPromise
+      // Transient/ambiguous: do not cache this failure -- drop the memo so the
+      // next call re-probes -- and rethrow.
+      this._backendFeaturesPromise = undefined
+      throw err
+    }
   }
 
   /**

@@ -30,8 +30,8 @@ importers:
         specifier: ^0.3.4
         version: 0.3.4
       '@interop/x25519-key-agreement-key':
-        specifier: ^5.1.2
-        version: 5.1.2
+        specifier: ^5.2.0
+        version: 5.2.0
       '@scure/base':
         specifier: ^2.2.0
         version: 2.2.0
@@ -274,8 +274,8 @@ packages:
     resolution: {integrity: sha512-QhAC/O5veP1GlPIWdcjVJKIeggsSh6BcFhJjviGDXdky/fwskm1xxDhyJ/6ZaILleM9nxNq/V/q6U9AwDduKlQ==}
     engines: {node: '>=22.0'}
 
-  '@interop/x25519-key-agreement-key@5.1.2':
-    resolution: {integrity: sha512-M6BCgz1kcYn474hGykxBGxm3lNGXQw/F5cfbvMBZ8EHgDqxmUsskCjUtMeGbQz1pDe0gyi6ZD28njv7S5RLeJQ==}
+  '@interop/x25519-key-agreement-key@5.2.0':
+    resolution: {integrity: sha512-e8yYMYnK2Ok0FpAqiTs/rJoIStPZ+0L4mMPh6mkKwyLaEc/yYBg9le89uhgoj4vS5gpjL23yGkfG/WoEESO+9Q==}
     engines: {node: '>=24.0'}
 
   '@interop/zcap@11.0.4':
@@ -1438,7 +1438,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.2.0
 
-  '@interop/x25519-key-agreement-key@5.1.2':
+  '@interop/x25519-key-agreement-key@5.2.0':
     dependencies:
       '@interop/data-integrity-core': 8.2.0
       '@noble/curves': 2.2.0

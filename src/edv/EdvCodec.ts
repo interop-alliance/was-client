@@ -43,13 +43,14 @@
  *   surfaces as a `PreconditionFailedError` (412) -- the lost-update guard --
  *   rather than the old advisory last-writer-wins. Against a backend that does
  *   not advertise `conditional-writes` (no ETag) it degrades to advisory.
- * - **Encrypted metadata.** `metadataMode` is `'encrypted'`, so a Resource's
- *   user-writable `custom` (`name`/`tags`, via `setName`/`setTags`/`setMeta`) is
+ * - **Encrypted metadata.** A Resource's user-writable `custom`
+ *   (`name`/`tags`, via `setName`/`setTags`/`setMeta`) is
  *   encrypted into an EDV Document envelope with the same `documentCipher` used
  *   for content and stored opaquely under `/meta`; the server never sees
  *   plaintext `name`/`tags`. A reader with the keys decrypts it back
  *   transparently via `meta()`.
  */
+import { base64 } from '@scure/base'
 import { EdvClientCore } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
 import type {
@@ -62,7 +63,13 @@ import type {
   EncryptionProvider,
   ResourceCodec
 } from '../codec.js'
-import { EncryptionError, KeyUnwrapError, ValidationError } from '../errors.js'
+import {
+  EncryptionError,
+  IntegrityError,
+  KeyUnwrapError,
+  ValidationError
+} from '../errors.js'
+import { readEtag } from '../internal/conditional.js'
 import { resolveEpochKeys } from './epochKeys.js'
 import { didKeyResolver } from './epochCrypto.js'
 import {
@@ -103,38 +110,33 @@ const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 const EDV_DOC_ID = /^z[1-9A-HJ-NP-Za-km-z]{21,}$/
 
 /**
- * Encodes bytes to standard base64 using the platform `btoa` (present in modern
- * Node and browsers), via a binary string built in 32 KiB
- * `String.fromCharCode` chunks -- large enough to amortize the call overhead,
- * small enough to stay under engines' argument-count limits. (Byte-by-byte
- * string concatenation is quadratic-ish on the multi-MiB blobs the write path
- * feeds this.)
- *
- * @param bytes {Uint8Array}
- * @returns {string}
+ * The exact messages `@interop/minimal-cipher` / `@interop/edv-client` throw
+ * when a candidate key simply does not open an envelope -- a wrong or rotated
+ * key, not a corrupted one. `'Decryption failed.'` is the null-CEK unwrap path
+ * (the key could not unwrap the content-encryption key); `'No matching
+ * recipient found ...'` is the earlier kid-mismatch. These are the only two
+ * decrypt failures the `_decrypt` loop treats as "try the next key". Any OTHER
+ * decrypt failure means the key DID select a recipient and unwrap, but the
+ * content's AEAD tag did not verify -- a data-integrity failure (WebCrypto's
+ * `OperationError` in browsers, Node's "unable to authenticate data") -- which
+ * must surface as an {@link IntegrityError}, not be masked as a key miss.
  */
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
-  }
-  return btoa(binary)
-}
+const KEY_MISS_MESSAGES = new Set([
+  'Decryption failed.',
+  'No matching recipient found for key agreement key.'
+])
 
 /**
- * Decodes standard base64 to bytes using the platform `atob`.
+ * Whether a decrypt error means "this candidate key does not open the envelope"
+ * (so the loop should try the next key) rather than an integrity failure. True
+ * only for the closed set of {@link KEY_MISS_MESSAGES}; every other error is
+ * treated as an integrity failure and surfaces immediately.
  *
- * @param base64 {string}
- * @returns {Uint8Array}
+ * @param err {unknown}
+ * @returns {boolean}
  */
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index++) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-  return bytes
+function isKeyMiss(err: unknown): boolean {
+  return err instanceof Error && KEY_MISS_MESSAGES.has(err.message)
 }
 
 /**
@@ -143,7 +145,6 @@ function base64ToBytes(base64: string): Uint8Array {
  * collection handle.
  */
 export class EdvCodec implements ResourceCodec {
-  readonly metadataMode = 'encrypted' as const
   readonly conditionalWrites = true
 
   private readonly _edv: EdvClientCore
@@ -286,7 +287,7 @@ export class EdvCodec implements ResourceCodec {
       // (create-only-if-absent); a backend that does not honor it simply ignores
       // it, leaving the write harmless rather than degraded.
       ...(priorDoc
-        ? { ifMatch: current!.headers.get('etag') ?? undefined }
+        ? { ifMatch: readEtag(current ?? null) }
         : { ifNoneMatch: true }),
       // Stamp the key epoch this write encrypted under (the `currentEpoch`), so
       // the server records it and a reader can pick the epoch key. Absent on a
@@ -339,9 +340,13 @@ export class EdvCodec implements ResourceCodec {
         .map(recipient => recipient.header?.kid)
         .filter((kid): kid is string => typeof kid === 'string')
     )
-    // Prefer the read key whose id names a recipient of this envelope; fall back
-    // to trying the remaining candidates (defensive -- exact-match should always
-    // hit) before surfacing the typed failure.
+    // Prefer the read key whose id names a recipient of this envelope. The
+    // `rest` fallback then tries the remaining candidates: it serves an envelope
+    // whose recipient `kid` matches no local key id -- format drift, or a
+    // single-key envelope read with a differently-labeled key -- where the
+    // exact-match partition is empty even though a candidate can still unwrap it.
+    // For a well-formed epoch envelope the exact match always hits, so `rest` is
+    // normally unreached.
     const preferred = this._readKeys.filter(key => kids.has(key.id))
     const rest = this._readKeys.filter(key => !kids.has(key.id))
     for (const keyAgreementKey of [...preferred, ...rest]) {
@@ -350,9 +355,26 @@ export class EdvCodec implements ResourceCodec {
           encryptedDoc,
           keyAgreementKey
         })
-      } catch {
-        // This candidate is not a recipient of this envelope (or its unwrap
-        // failed); try the next.
+      } catch (err) {
+        if (isKeyMiss(err)) {
+          // This candidate is not a recipient of this envelope, or could not
+          // unwrap its content-encryption key; try the next candidate.
+          continue
+        }
+        // The candidate DID select a recipient and unwrap the CEK, but the
+        // content's AEAD tag failed to authenticate: the stored ciphertext is
+        // corrupt or has been tampered with. Surface this immediately as an
+        // integrity failure rather than masking it as a membership/key miss by
+        // continuing into `rest` (a real key miss never reaches AEAD, so this
+        // can only be a genuine integrity failure on a key that matched).
+        throw new IntegrityError(
+          'Cannot decrypt this resource: its ciphertext failed to authenticate ' +
+            '(the AEAD integrity tag did not verify). This reader holds a key ' +
+            'that unwrapped the envelope, so this is not a key-epoch/membership ' +
+            'problem -- the stored envelope is corrupt or has been tampered ' +
+            'with.',
+          { cause: err }
+        )
       }
     }
     throw new KeyUnwrapError(
@@ -526,7 +548,7 @@ export class EdvCodec implements ResourceCodec {
         }
       }
       return {
-        content: { bytes: bytesToBase64(bytes) },
+        content: { bytes: base64.encode(bytes) },
         meta: { contentType: resolvedType, encoding: 'base64' }
       }
     }
@@ -581,14 +603,14 @@ export class EdvCodec implements ResourceCodec {
       return new Blob([ENCODER.encode(text) as BlobPart], { type: contentType })
     }
     if (encoding === 'base64') {
-      const base64 = (content as { bytes?: unknown } | null)?.bytes
-      if (typeof base64 !== 'string') {
+      const base64Text = (content as { bytes?: unknown } | null)?.bytes
+      if (typeof base64Text !== 'string') {
         throw new EncryptionError(
           'Malformed encrypted binary document: meta.encoding is "base64" but ' +
             'content.bytes is not a string.'
         )
       }
-      return new Blob([base64ToBytes(base64) as BlobPart], {
+      return new Blob([base64.decode(base64Text) as BlobPart], {
         type: contentType
       })
     }

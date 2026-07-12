@@ -12,7 +12,11 @@ import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 
-import { KeyUnwrapError, PreconditionFailedError } from '../../src/index.js'
+import {
+  KeyUnwrapError,
+  PreconditionFailedError,
+  ValidationError
+} from '../../src/index.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionRecipient
@@ -24,7 +28,7 @@ import {
   wrapEpochSecret,
   unwrapEpochSecret,
   epochKeyIdFor,
-  epochIdFromKid
+  reconstructEpochKeyPair
 } from '../../src/edv/epochCrypto.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
@@ -121,7 +125,25 @@ describe('epoch key wrap/unwrap round-trip', () => {
   it('epoch id encodes the epoch public key (kid round-trips)', async () => {
     const { epochId } = await mintEpoch()
     expect(epochId.startsWith('did:key:z')).toBe(true)
-    expect(epochIdFromKid(epochKeyIdFor(epochId))).toBe(epochId)
+    // The kid is `<did:key>#<fingerprint>`; the did:key portion before the `#`
+    // is the epoch id.
+    const kid = epochKeyIdFor(epochId)
+    expect(kid.startsWith(`${epochId}#`)).toBe(true)
+    expect(kid.slice(0, kid.indexOf('#'))).toBe(epochId)
+  })
+
+  it('reconstructs the epoch key pair from the minted secret (round-trip)', async () => {
+    const { epochId, secret } = await mintEpoch()
+    const keyPair = reconstructEpochKeyPair({ epochId, secret })
+    expect(keyPair.id).toBe(epochKeyIdFor(epochId))
+    // The reconstructed pair carries the same raw secret it was built from, and
+    // its public key is the epoch's did:key fingerprint.
+    const reconstructed = keyPair as unknown as X25519KeyAgreementKey2020
+    expect(reconstructed.controller).toBe(epochId)
+    expect(
+      Buffer.from(reconstructed.rawSecret).equals(Buffer.from(secret))
+    ).toBe(true)
+    expect(`did:key:${reconstructed.publicKeyMultibase}`).toBe(epochId)
   })
 })
 
@@ -447,5 +469,190 @@ describe('initRecipients', () => {
       keyAgreementKey: alice.kak
     })
     expect(aliceKeys!.readKeys.length).toBe(1)
+  })
+})
+
+describe('removeRecipient security', () => {
+  /**
+   * A minimal in-memory Collection whose description read returns the evolving
+   * marker and whose write applies it (no CAS races, no network). The optional
+   * `staleForever` makes every write reject with a 412 so the CAS loop exhausts
+   * its retries (simulating a permanently-losing compare-and-swap).
+   *
+   * @param initial {CollectionEncryption}
+   * @param [options] {object}
+   * @param [options.staleForever] {boolean}
+   * @returns {object}
+   */
+  function mutableCollection(
+    initial: CollectionEncryption,
+    { staleForever = false }: { staleForever?: boolean } = {}
+  ) {
+    const state = { encryption: initial }
+    return {
+      describeWithEtag: async () => ({
+        description: {
+          id: 'c',
+          type: ['Collection'],
+          encryption: state.encryption
+        },
+        etag: '"v1"'
+      }),
+      replaceDescription: async (desc: {
+        encryption?: CollectionEncryption
+      }) => {
+        if (staleForever) {
+          throw new PreconditionFailedError('stale', { status: 412 })
+        }
+        state.encryption = desc.encryption!
+        return { description: { id: 'c', type: ['Collection'] }, etag: '"v2"' }
+      },
+      _state: state
+    }
+  }
+
+  /**
+   * Seeds a one-epoch marker wrapping the epoch key to each of `readers`.
+   *
+   * @param readers {Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>}
+   * @returns {Promise<CollectionEncryption>}
+   */
+  async function seedMarker(
+    readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
+  ): Promise<CollectionEncryption> {
+    const { epochId, secret } = await mintEpoch()
+    return {
+      scheme: 'edv',
+      epochs: [
+        {
+          id: epochId,
+          recipients: await Promise.all(
+            readers.map(reader =>
+              wrapEpochSecret({
+                epochSecret: secret,
+                recipient: {
+                  id: reader.kak.id,
+                  publicKeyMultibase: reader.publicKeyMultibase
+                }
+              })
+            )
+          )
+        }
+      ],
+      currentEpoch: epochId
+    }
+  }
+
+  it('does not re-add a previously removed reader on a later removal', async () => {
+    // Readers {A, X, Y} in epoch1. Remove X, then remove Y. The survivor set of
+    // the second removal must come from the CURRENT epoch (which no longer holds
+    // X), not the union across all epochs, so X must not silently regain access.
+    const alice = await makeReader()
+    const xavier = await makeReader()
+    const yolanda = await makeReader()
+    const fake = mutableCollection(await seedMarker([alice, xavier, yolanda]))
+    const fakeSpace = { revoke: async () => undefined }
+
+    await removeRecipient({
+      collection: fake as unknown as Collection,
+      space: fakeSpace as unknown as Space,
+      recipientId: xavier.kak.id,
+      revoke: []
+    })
+    const afterY = await removeRecipient({
+      collection: fake as unknown as Collection,
+      space: fakeSpace as unknown as Space,
+      recipientId: yolanda.kak.id,
+      revoke: []
+    })
+
+    const currentEpoch = afterY.epochs!.find(
+      epoch => epoch.id === afterY.currentEpoch
+    )!
+    const kids = currentEpoch.recipients.map(entry => entry.header.kid)
+    expect(kids).toEqual([alice.kak.id])
+    expect(kids).not.toContain(xavier.kak.id)
+    expect(kids).not.toContain(yolanda.kak.id)
+  })
+
+  it('rotates the epoch BEFORE revoking capabilities', async () => {
+    // At revoke time the marker must already be rotated (rotation is durable
+    // first), so a revoke failure cannot leave the reader revoked but the epoch
+    // un-rotated.
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const seed = await seedMarker([alice, bob])
+    const seedEpoch = seed.currentEpoch
+    const fake = mutableCollection(seed)
+    const epochsAtRevoke: string[] = []
+    const fakeSpace = {
+      revoke: async () => {
+        epochsAtRevoke.push(fake._state.encryption.currentEpoch!)
+      }
+    }
+    const revokedZcap = { id: 'urn:zcap:x' }
+
+    const rotated = await removeRecipient({
+      collection: fake as unknown as Collection,
+      space: fakeSpace as unknown as Space,
+      recipientId: bob.kak.id,
+      revoke: revokedZcap as never
+    })
+    // Revoke ran once, and the epoch it observed is the NEW one (already rotated).
+    expect(epochsAtRevoke).toEqual([rotated.currentEpoch])
+    expect(rotated.currentEpoch).not.toBe(seedEpoch)
+  })
+
+  it('tolerates an already-revoked capability (retryable to convergence)', async () => {
+    // A retry after a transient failure re-revokes; the non-idempotent revoke
+    // then throws ValidationError. removeRecipient must swallow only that and
+    // still complete the rotation.
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const fake = mutableCollection(await seedMarker([alice, bob]))
+    const fakeSpace = {
+      revoke: async () => {
+        throw new ValidationError('already revoked')
+      }
+    }
+
+    const rotated = await removeRecipient({
+      collection: fake as unknown as Collection,
+      space: fakeSpace as unknown as Space,
+      recipientId: bob.kak.id,
+      revoke: { id: 'urn:zcap:x' } as never
+    })
+    const currentEpoch = rotated.epochs!.find(
+      epoch => epoch.id === rotated.currentEpoch
+    )!
+    expect(currentEpoch.recipients.map(entry => entry.header.kid)).toEqual([
+      alice.kak.id
+    ])
+  })
+
+  it('does not revoke when the rotation CAS never lands (no half-removal)', async () => {
+    // Rotation is attempted first; if it exhausts its retries and throws, the
+    // capability must NOT have been revoked, so the operation is safely
+    // retryable.
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const fake = mutableCollection(await seedMarker([alice, bob]), {
+      staleForever: true
+    })
+    let revoked = false
+    const fakeSpace = {
+      revoke: async () => {
+        revoked = true
+      }
+    }
+    await expect(
+      removeRecipient({
+        collection: fake as unknown as Collection,
+        space: fakeSpace as unknown as Space,
+        recipientId: bob.kak.id,
+        revoke: { id: 'urn:zcap:x' } as never
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
+    expect(revoked).toBe(false)
   })
 })

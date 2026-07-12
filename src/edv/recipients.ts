@@ -186,12 +186,19 @@ export async function addRecipient({
  * Removes a reader from a multi-recipient encrypted Collection -- one
  * indivisible operation doing BOTH halves of a removal:
  *
- * 1. **Revoke the reader's zcap(s)** via `space.revoke()`, so the server stops
+ * 1. **Rotate the epoch**: mint a fresh epoch key, wrap it to each REMAINING
+ *    recipient (the current epoch's roster minus the removed reader), append it
+ *    as a new epoch, and repoint `currentEpoch`, with a compare-and-swap.
+ *    Resources written afterward are unreadable to the removed reader (the read
+ *    axis; prospective).
+ * 2. **Revoke the reader's zcap(s)** via `space.revoke()`, so the server stops
  *    serving it ciphertext (the pull axis; immediate).
- * 2. **Rotate the epoch**: mint a fresh epoch key, wrap it to each REMAINING
- *    recipient, append it as a new epoch, and repoint `currentEpoch`, with a
- *    compare-and-swap. Resources written afterward are unreadable to the
- *    removed reader (the read axis; prospective).
+ *
+ * The rotation runs first so it is durable before the irreversible revocation:
+ * a rotation that keeps losing the compare-and-swap throws with nothing revoked,
+ * leaving the operation safely retryable rather than half-applied. The revoke
+ * step tolerates an already-revoked capability (a retry re-revokes) so the
+ * operation converges.
  *
  * Important: this does not re-encrypt existing resources, so the removed
  * reader keeps every earlier epoch's key and can still decrypt any pre-rotation
@@ -224,17 +231,13 @@ export async function removeRecipient({
   revoke: IDelegatedZcap | IDelegatedZcap[]
   resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey>
 }): Promise<CollectionEncryption> {
-  // 1. Pull axis: revoke the reader's capability/capabilities first, so it can
-  // no longer fetch ciphertext even before the rotation lands.
-  const toRevoke = Array.isArray(revoke) ? revoke : [revoke]
-  for (const zcap of toRevoke) {
-    await space.revoke(zcap)
-  }
-
-  // 2. Read axis: mint a fresh epoch, wrap it to every remaining recipient,
+  // 1. Read axis: mint a fresh epoch, wrap it to every remaining recipient,
   // append it, and repoint `currentEpoch` (compare-and-swap, retried on race).
+  // Rotate FIRST so the rotation is durable before any irreversible revocation:
+  // if the CAS keeps losing the race and throws, the reader is neither revoked
+  // nor rotated, so `removeRecipient` is safely retryable to convergence.
   const { epochId, secret } = await mintEpoch()
-  return casUpdateMarker({
+  const rotatedMarker = await casUpdateMarker({
     collection,
     mutate: async marker => {
       const epochs = marker.epochs
@@ -243,14 +246,19 @@ export async function removeRecipient({
           'Cannot removeRecipient: this collection has no key epochs.'
         )
       }
-      // Remaining recipients: every distinct kid across existing epochs except
-      // the removed reader. The fresh epoch is wrapped to each of them.
+      // Remaining recipients: the CURRENT epoch's recipients (the authoritative
+      // roster by construction), minus the removed reader. Deliberately NOT the
+      // union across all epochs -- a reader dropped in an earlier rotation is
+      // still present in that older epoch, so unioning would silently re-escrow
+      // it into the fresh epoch and hand it back read access. Older epochs exist
+      // only so existing readers can decrypt history.
+      const currentEpoch =
+        epochs.find(epoch => epoch.id === marker.currentEpoch) ??
+        epochs[epochs.length - 1]!
       const remaining = new Set<string>()
-      for (const epoch of epochs) {
-        for (const entry of epoch.recipients) {
-          if (entry.header.kid !== recipientId) {
-            remaining.add(entry.header.kid)
-          }
+      for (const entry of currentEpoch.recipients) {
+        if (entry.header.kid !== recipientId) {
+          remaining.add(entry.header.kid)
         }
       }
       if (remaining.size === 0) {
@@ -278,6 +286,27 @@ export async function removeRecipient({
       }
     }
   })
+
+  // 2. Pull axis: revoke the reader's capability/capabilities AFTER the rotation
+  // is durable. Tolerate an already-revoked capability so a retry (after a
+  // transient revoke failure) converges rather than throwing in the loop:
+  // `space.revoke` is not idempotent and reports an already-revoked capability
+  // as ValidationError. That same status also covers tampered/expired/foreign
+  // capabilities, which the client cannot distinguish here, so this swallows
+  // only ValidationError and re-throws anything else.
+  const toRevoke = Array.isArray(revoke) ? revoke : [revoke]
+  for (const zcap of toRevoke) {
+    try {
+      await space.revoke(zcap)
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        continue
+      }
+      throw err
+    }
+  }
+
+  return rotatedMarker
 }
 
 /**

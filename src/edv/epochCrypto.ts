@@ -32,14 +32,13 @@
  */
 import { base64urlnopad } from '@scure/base'
 import { createKek, deriveKey } from '@interop/minimal-cipher/algorithms'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
-import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import {
+  X25519KeyAgreementKey2020,
   multibaseDecode,
   multibaseEncode,
-  X25519_PRIV_HEADER,
-  X25519_PUB_HEADER
-} from './multibase.js'
+  MULTICODEC_X25519_PUB_HEADER
+} from '@interop/x25519-key-agreement-key'
+import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { CollectionEncryptionRecipient } from '../types.js'
 
 /**
@@ -84,7 +83,7 @@ export async function wrapEpochSecret({
 }): Promise<CollectionEncryptionRecipient> {
   const ephemeral = await X25519KeyAgreementKey2020.generate()
   const ephemeralPublicKey = multibaseDecode(
-    X25519_PUB_HEADER,
+    MULTICODEC_X25519_PUB_HEADER,
     ephemeral.publicKeyMultibase
   )
   const secret = await ephemeral.deriveSecret({
@@ -142,7 +141,7 @@ export async function unwrapEpochSecret({
       publicKey: {
         type: X25519_TYPE,
         publicKeyMultibase: multibaseEncode(
-          X25519_PUB_HEADER,
+          MULTICODEC_X25519_PUB_HEADER,
           ephemeralPublicKey
         )
       }
@@ -159,30 +158,23 @@ export async function unwrapEpochSecret({
 
 /**
  * Mints a fresh key epoch: a new random X25519 key pair whose `did:key` is the
- * epoch id. Returns the id, the raw 32-byte secret (to wrap to recipients), and
- * the reconstructed key pair (to encrypt resources under).
+ * epoch id. Returns the id and the raw 32-byte secret (to wrap to recipients);
+ * `resolveEpochKeys` reconstructs the epoch key pair from the id and secret when
+ * a resource must be encrypted or decrypted under the epoch.
  *
- * @returns {Promise<{ epochId: string, secret: Uint8Array, keyPair: X25519KeyAgreementKey2020 }>}
+ * @returns {Promise<{ epochId: string, secret: Uint8Array }>}
  */
 export async function mintEpoch(): Promise<{
   epochId: string
   secret: Uint8Array
-  keyPair: IKeyAgreementKey
 }> {
   const generated = await X25519KeyAgreementKey2020.generate()
   if (generated.privateKeyMultibase === undefined) {
     throw new Error('Generated epoch key is missing its private key.')
   }
-  const secret = multibaseDecode(
-    X25519_PRIV_HEADER,
-    generated.privateKeyMultibase
-  )
+  const secret = generated.rawSecret
   const epochId = `did:key:${generated.publicKeyMultibase}`
-  return {
-    epochId,
-    secret,
-    keyPair: reconstructEpochKeyPair({ epochId, secret })
-  }
+  return { epochId, secret }
 }
 
 /**
@@ -202,41 +194,27 @@ export function reconstructEpochKeyPair({
   epochId: string
   secret: Uint8Array
 }): IKeyAgreementKey {
-  const publicKeyMultibase = publicKeyMultibaseFromEpochId(epochId)
   // The concrete instance always carries a defined `id` (set here), so it
   // satisfies `IKeyAgreementKey` (whose `id` is required); the suite's type
   // declares `id` optional, hence the assertion.
-  return new X25519KeyAgreementKey2020({
+  return X25519KeyAgreementKey2020.fromRawSecret({
+    secret,
     controller: epochId,
-    id: epochKeyIdFor(epochId),
-    publicKeyMultibase,
-    privateKeyMultibase: multibaseEncode(X25519_PRIV_HEADER, secret)
+    id: epochKeyIdFor(epochId)
   }) as IKeyAgreementKey
 }
 
 /**
  * The verification-method id of an epoch key: `<did:key>#<fingerprint>`. This is
  * the `kid` the EDV `documentCipher` stamps on a resource encrypted under the
- * epoch, so a reader maps it back to the epoch via {@link epochIdFromKid}.
+ * epoch; a reader maps it back to the epoch by taking the `did:key` portion
+ * before the `#` fragment.
  *
  * @param epochId {string}   the epoch's `did:key`
  * @returns {string}
  */
 export function epochKeyIdFor(epochId: string): string {
   return `${epochId}#${publicKeyMultibaseFromEpochId(epochId)}`
-}
-
-/**
- * Recovers an epoch id (a `did:key`) from a resource JWE recipient `kid`
- * (`<did:key>#<fragment>`), so the read path can pick the epoch key before
- * decrypting.
- *
- * @param kid {string}
- * @returns {string}
- */
-export function epochIdFromKid(kid: string): string {
-  const hash = kid.indexOf('#')
-  return hash === -1 ? kid : kid.slice(0, hash)
 }
 
 /**
@@ -278,7 +256,15 @@ export async function didKeyResolver({
   if (!fragment.startsWith('z')) {
     throw new Error(`Cannot resolve non-did:key key id "${id}".`)
   }
-  // Validate the fragment is a well-formed X25519 public multibase.
-  multibaseDecode(X25519_PUB_HEADER, fragment)
-  return { id, type: X25519_TYPE, publicKeyMultibase: fragment }
+  // Validate the fragment is a well-formed X25519 public key fingerprint; the
+  // suite throws on invalid header bytes.
+  const keyPair = X25519KeyAgreementKey2020.fromFingerprint({
+    fingerprint: fragment
+  })
+  keyPair.verifyFingerprint({ fingerprint: fragment })
+  return {
+    id,
+    type: X25519_TYPE,
+    publicKeyMultibase: keyPair.publicKeyMultibase
+  }
 }
