@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.14.4 - TBD
+
+### Added
+
+- Export `parseSpaceTarget` (with its `ParsedSpacePath` result type) and
+  `readEtag` from the root entry point, so consumers can reuse the server-URL
+  target parsing and ETag reading instead of keeping parallel copies.
+
 ## 0.14.3 - 2026-07-11
 
 ### Changed
