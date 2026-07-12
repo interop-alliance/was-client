@@ -288,7 +288,7 @@ export function createdId(response: HttpResponse | null): string {
  * Unwraps a read response's pre-parsed JSON `data` as `T`, mapping a `null`
  * response (a 404 that a `read` request resolved to `null`) to `null`. The
  * http-client leaves `data` undefined for a non-JSON content-type or a 204;
- * that is also mapped to `null`, so the declared `T | null` is honest and a
+ * that is also mapped to `null`, so the declared `T | null` is correct and a
  * caller never dereferences `undefined` cast as `T`.
  *
  * @param response {HttpResponse | null}

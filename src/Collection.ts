@@ -247,6 +247,103 @@ export class Collection {
   }
 
   /**
+   * Reads the Collection Description together with its `ETag` validator (the
+   * server's `conditional-writes` / description-version support). The `ETag` is
+   * the opaque validator to pass to {@link replaceDescription}'s `ifMatch` for a
+   * lost-update-safe (compare-and-swap) description write. Returns `null` if the
+   * collection is missing or not visible to you (404 conflation caveat); `etag`
+   * is absent against a server that does not version the description.
+   *
+   * @returns {Promise<{ description: CollectionDescription; etag?: string } | null>}
+   */
+  async describeWithEtag(): Promise<{
+    description: CollectionDescription
+    etag?: string
+  } | null> {
+    const response = await send(this._context, {
+      path: this._path,
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+    // `send({ read: true })` returns null on a masked 404; otherwise the body is
+    // the description and the response carries the ETag header.
+    const description = dataOrNull<CollectionDescription>(response)
+    if (response === null || description === null) {
+      return null
+    }
+    return {
+      description,
+      etag: response.headers.get('etag') ?? undefined
+    }
+  }
+
+  /**
+   * Writes (replaces) the Collection Description, optionally as a compare-and-swap
+   * against a prior `ETag` (`ifMatch`, from {@link describeWithEtag}) so a
+   * concurrent writer cannot be silently clobbered -- a stale validator surfaces
+   * as `PreconditionFailedError` (412). Sends the writable fields as the full
+   * body; omit a field to drop it (replace semantics), so callers doing CAS pass
+   * every field forward. Returns the new `ETag` and the fields written.
+   *
+   * This is the generic description-CAS primitive the key-epoch recipient
+   * operations build on (add/remove a reader is a CAS of the `encryption`
+   * marker); it is not epoch-specific.
+   *
+   * @param description {object}
+   * @param [description.name] {string}
+   * @param [description.backend] {BackendReference}
+   * @param [description.encryption] {CollectionEncryption}
+   * @param options {object}
+   * @param [options.ifMatch] {string}   the prior `ETag`; the write applies only
+   *   if the description is unchanged
+   * @returns {Promise<{ description: CollectionDescription; etag?: string }>}
+   */
+  async replaceDescription(
+    description: {
+      name?: string
+      backend?: BackendReference
+      encryption?: CollectionEncryption
+    },
+    options: { ifMatch?: string } = {}
+  ): Promise<{ description: CollectionDescription; etag?: string }> {
+    const body: Record<string, unknown> = { id: this.id }
+    if (description.name !== undefined) {
+      body.name = description.name
+    }
+    if (description.backend !== undefined) {
+      body.backend = description.backend
+    }
+    if (description.encryption !== undefined) {
+      body.encryption = description.encryption
+    }
+    const response = await send(this._context, {
+      path: this._path,
+      method: 'PUT',
+      capability: this._capability,
+      json: body,
+      headers:
+        options.ifMatch !== undefined
+          ? { 'if-match': options.ifMatch }
+          : undefined
+    })
+    return {
+      description: {
+        id: this.id,
+        type: ['Collection'],
+        ...(description.name !== undefined && { name: description.name }),
+        ...(description.backend !== undefined && {
+          backend: description.backend
+        }),
+        ...(description.encryption !== undefined && {
+          encryption: description.encryption
+        })
+      },
+      etag: (response as { headers: Headers }).headers.get('etag') ?? undefined
+    }
+  }
+
+  /**
    * Deletes the whole collection. Idempotent. To delete a single resource, use
    * `collection.resource(id).delete()`.
    *

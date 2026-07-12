@@ -1,5 +1,53 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- **Multi-recipient encrypted Collections and key epochs.** An encrypted
+  Collection can now give several apps read access, each holding its own X25519
+  key-agreement key, and removing one of them means something cryptographically
+  -- not only at the authorization layer. On the `@interop/was-client/edv`
+  subpath:
+  - `initRecipients({ collection, recipients })` mints the first key epoch and
+    wraps its collection key to each initial reader.
+  - `addRecipient({ collection, recipient, owner })` wraps every epoch's key to
+    a new reader -- escrow semantics, so "add a reader" means it can read the
+    Collection, history included. No rotation: adds are inexpensive.
+  - `removeRecipient({ collection, space, recipientId, revoke })` is the full,
+    indivisible removal: it revokes the reader's zcap(s) (the pull axis --
+    immediate, server-enforced) AND rotates the epoch, minting a fresh key
+    wrapped only to the remaining readers (the read axis -- prospective).
+    Resources written after the removal are unreadable to the removed reader
+    even if it gets the ciphertext.
+
+  The same `createEdvEncryption` provider transparently encrypts each write
+  under the current epoch and decrypts any epoch a reader still holds, so
+  `collection.put` / `get` are unchanged. Each write stamps the epoch it used
+  (the `WAS-Key-Epoch` header), surfaced on `meta()`, listings, and the
+  `changes` feed. Recipient edits use a compare-and-swap (`If-Match`) on the
+  Collection Description and retry on a concurrent change, so two racing adds
+  cannot clobber one another. A read that unwraps no epoch key throws the new
+  `KeyUnwrapError` (a subtype of `EncryptionError`), never plaintext.
+
+  Important: Rotation protects post-rotation writes only. It never claws back
+  data a reader already downloaded, and a removed reader keeps every earlier
+  epoch's key, so a pre-rotation resource whose ciphertext it gets stays
+  readable to it. The pull axis (the zcap) and the read axis (the epoch key) are
+  kept separate everywhere; neither alone removes a reader.
+
+- **`Collection.describeWithEtag()` / `Collection.replaceDescription()`** --
+  read the Collection Description with its `ETag`, and write it back with an
+  optional `If-Match` compare-and-swap (`PreconditionFailedError` on a stale
+  validator). The generic description-CAS primitive the recipient operations
+  build on.
+
+- New exports: `KeyUnwrapError`; the `CollectionEncryptionEpoch` /
+  `CollectionEncryptionRecipient` marker types; and, from the `edv` subpath,
+  `initRecipients` / `addRecipient` / `removeRecipient`, `mintEpoch` /
+  `epochKeyIdFor` / `epochIdFromKid`, and the `OwnerKey` / `RecipientPublicKey`
+  types.
+
 ## 0.14.0 - 2026-07-10
 
 ### Added

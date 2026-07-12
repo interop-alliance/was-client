@@ -15,7 +15,15 @@
  *   override), so `collection.put`/`get` transparently encrypt/decrypt.
  * - `WasTransport` -- the standalone `@interop/edv-client`
  *   transport, for driving an `EdvClient` directly against WAS.
+ *
+ * Multi-recipient (key-epoch) collections layer on top: `initRecipients` /
+ * `addRecipient` / `removeRecipient` manage the readers and rotate the epoch
+ * key, so the same `createEdvEncryption` provider transparently encrypts each
+ * write under the current epoch and decrypts any epoch a reader still holds.
  */
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
 export { WasTransport, JOSE_CONTENT_TYPE } from './WasTransport.js'
+export { initRecipients, addRecipient, removeRecipient } from './recipients.js'
+export type { OwnerKey, RecipientPublicKey } from './recipients.js'
+export { mintEpoch, epochKeyIdFor, epochIdFromKid } from './epochCrypto.js'

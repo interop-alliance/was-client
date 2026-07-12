@@ -31,7 +31,12 @@
  *   silently writing plaintext.
  */
 import type { HttpResponse } from '@interop/http-client'
-import type { Json, ResourceData, ResourceMetadataCustom } from './types.js'
+import type {
+  CollectionEncryption,
+  Json,
+  ResourceData,
+  ResourceMetadataCustom
+} from './types.js'
 
 /**
  * The result of {@link ResourceCodec.encode}: the stored representation of a
@@ -56,6 +61,11 @@ import type { Json, ResourceData, ResourceMetadataCustom } from './types.js'
  *   ETag for lost-update-safe updates, or `If-None-Match: *` for a fresh
  *   insert). The write path forwards these as the request's conditional headers.
  *   Only honored for a codec that sets {@link ResourceCodec.conditionalWrites}.
+ * - `epoch` -- the key-epoch id the codec encrypted this write under, on a
+ *   multi-recipient encrypted collection. The write path emits it as the
+ *   `WAS-Key-Epoch` request header, so the server stamps
+ *   {@link ResourceMetadata.epoch}. Absent for a plaintext or single-key
+ *   encrypted write (the header is then not sent, which clears any prior stamp).
  */
 export interface EncodedWrite {
   id?: string
@@ -65,6 +75,7 @@ export interface EncodedWrite {
   resourceContentType?: string
   ifMatch?: string
   ifNoneMatch?: boolean
+  epoch?: string
 }
 
 /**
@@ -175,6 +186,12 @@ export interface EncryptionProvider {
    * @param input.spaceId {string}
    * @param input.collectionId {string}
    * @param input.scheme {string}   the declared encryption scheme (e.g. `edv`)
+   * @param [input.encryption] {CollectionEncryption}   the full encryption
+   *   marker read from the Collection Description (when core discovered it via
+   *   the marker rather than an override). Carries the key-epoch public
+   *   references (`epochs` / `currentEpoch`) a multi-recipient provider needs to
+   *   resolve per-epoch keys; absent on an override-driven resolution, where the
+   *   provider falls back to its single-key path.
    * @param [input.keys] {unknown}   override-supplied key material (a per-handle
    *   `encryption` override); when present the provider uses it instead of its
    *   keystore. Opaque to core; the provider interprets it per `scheme`.
@@ -185,6 +202,7 @@ export interface EncryptionProvider {
     spaceId: string
     collectionId: string
     scheme: string
+    encryption?: CollectionEncryption
     keys?: unknown
   }): Promise<ResourceCodec | null>
 }

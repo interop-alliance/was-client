@@ -21,6 +21,7 @@ export {
   PayloadTooLargeError,
   QuotaExceededError,
   EncryptionError,
+  KeyUnwrapError,
   WasServerError,
   mapError
 } from './errors.js'
@@ -42,6 +43,8 @@ export type {
   SpaceDescription,
   CollectionDescription,
   CollectionEncryption,
+  CollectionEncryptionEpoch,
+  CollectionEncryptionRecipient,
   CollectionSummary,
   CollectionsList,
   SpaceSummary,
