@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.14.2 -
+
+### Changed
+
+- Bump to latest `@interop/minimal-cipher` and `@interop/edv-client` deps.
+
 ## 0.14.1 - 2026-07-11
 
 ### Added
