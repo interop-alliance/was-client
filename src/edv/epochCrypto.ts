@@ -30,12 +30,11 @@
  * zcap layer, enforced immediately at request time. Neither alone removes a
  * reader; see `removeRecipient`.
  */
+import { base64urlnopad } from '@scure/base'
 import { createKek, deriveKey } from '@interop/minimal-cipher/algorithms'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import {
-  base64urlDecode,
-  base64urlEncode,
   multibaseDecode,
   multibaseEncode,
   X25519_PRIV_HEADER,
@@ -103,10 +102,10 @@ export async function wrapEpochSecret({
       epk: {
         kty: 'OKP',
         crv: 'X25519',
-        x: base64urlEncode(ephemeralPublicKey)
+        x: base64urlnopad.encode(ephemeralPublicKey)
       },
-      apu: base64urlEncode(producerInfo),
-      apv: base64urlEncode(consumerInfo)
+      apu: base64urlnopad.encode(producerInfo),
+      apv: base64urlnopad.encode(consumerInfo)
     },
     encrypted_key: encryptedKey
   }
@@ -136,7 +135,7 @@ export async function unwrapEpochSecret({
   if (!epk || typeof epk.x !== 'string') {
     return null
   }
-  const ephemeralPublicKey = base64urlDecode(epk.x)
+  const ephemeralPublicKey = base64urlnopad.decode(epk.x)
   let secret: Uint8Array
   try {
     secret = await keyAgreementKey.deriveSecret({
