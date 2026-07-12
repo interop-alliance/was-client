@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.14.3 -
+
+### Changed
+
+- Remove storage-core temporary type shims.
+
 ## 0.14.2 - 2026-07-11
 
 ### Changed

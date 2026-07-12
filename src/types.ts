@@ -19,107 +19,24 @@ import type {
 } from '@interop/data-integrity-core/zcap'
 import type { ISigner } from '@interop/data-integrity-core'
 
-import type {
-  ActionInput,
-  CollectionDescription as CoreCollectionDescription
-} from '@interop/storage-core'
+import type { ActionInput } from '@interop/storage-core'
 
 export type { IZcap, IDelegatedZcap, IRootZcap, ISigner }
-
-// TEMPORARY SHIM until @interop/storage-core 0.3.4 is published (then delete
-// this block, drop the `CoreCollectionDescription` alias, add
-// `CollectionEncryption` / `CollectionDescription` back to the plain re-export
-// below, and import the recipient/epoch shapes from the package). 0.3.4 adds
-// the key-epoch surface: `CollectionEncryption.epochs` / `currentEpoch`
-// (wrapped per-recipient epoch keys on the marker) and a client-declared
-// `epoch` on `ResourceMetadata` / `ChangeDocument` / `ResourceSummary`.
-declare module '@interop/storage-core' {
-  interface ResourceMetadata {
-    /**
-     * The key-epoch id the Resource's content was encrypted under (an id from
-     * the Collection's `encryption.epochs`). Client-declared: the server stores
-     * it opaquely, never computes or verifies it. A sibling of `custom`, which
-     * on an encrypted Collection is the opaque envelope and is full-replaced on
-     * every metadata write.
-     */
-    epoch?: string
-  }
-  interface ChangeDocument {
-    /**
-     * The key-epoch id the Resource was encrypted under, when the writer
-     * declared one. Rides the feed so a replicating reader picks the right
-     * epoch key without a `/meta` fetch per Resource.
-     */
-    epoch?: string
-  }
-  interface ResourceSummary {
-    /**
-     * The key-epoch id the Resource was encrypted under, when the writer
-     * declared one. Surfaced in listings so a reader can pick the right epoch
-     * key without a `/meta` fetch per item.
-     */
-    epoch?: string
-  }
-}
-
-/**
- * One recipient's wrapped copy of an epoch's collection key -- the JWE
- * general-serialization `recipients` entry shape verbatim (`header` with
- * `kid`/`alg`/key-agreement members, plus the wrapped key as `encrypted_key`),
- * the same shape an EDV envelope's `recipients` array carries. Nothing secret:
- * public keys and wrapped-key ciphertext only.
- */
-export interface CollectionEncryptionRecipient {
-  header: { kid: string; alg: string; [member: string]: unknown }
-  encrypted_key: string
-}
-
-/**
- * One key epoch of an encrypted Collection: an opaque epoch `id` plus the
- * epoch's collection key wrapped once per recipient. Epochs are append-only;
- * removing a reader appends a fresh epoch that excludes it.
- */
-export interface CollectionEncryptionEpoch {
-  id: string
-  recipients: CollectionEncryptionRecipient[]
-}
-
-/**
- * The client-side encryption marker for a Collection (see the storage-core doc
- * comment). Locally widened with the key-epoch public references (`epochs` /
- * `currentEpoch`) that a multi-recipient Collection carries: each epoch wraps a
- * collection key to every recipient, writes use `currentEpoch`, and removing a
- * reader appends a fresh epoch that excludes it.
- */
-export type CollectionEncryption = {
-  scheme: 'edv'
-  currentEpoch?: string
-  epochs?: CollectionEncryptionEpoch[]
-}
-
-/**
- * A Collection Description (see the storage-core doc comment), with the
- * locally-widened {@link CollectionEncryption} marker.
- */
-export type CollectionDescription = Omit<
-  CoreCollectionDescription,
-  'encryption'
-> & {
-  encryption?: CollectionEncryption
-}
-// END TEMPORARY SHIM
 
 /**
  * Re-export the shared WAS wire model from `@interop/storage-core`. The
  * resources-in-a-collection listing is `CollectionResourcesList` (formerly
  * `ResourceListing`) and the collections-in-a-space listing is `CollectionsList`
- * (formerly `CollectionListing`). (`CollectionDescription` / `CollectionEncryption`
- * are temporarily the locally-widened shapes above, until storage-core 0.3.4.)
+ * (formerly `CollectionListing`).
  */
 export type {
   Action,
   ActionInput,
   SpaceDescription,
+  CollectionDescription,
+  CollectionEncryption,
+  CollectionEncryptionEpoch,
+  CollectionEncryptionRecipient,
   PolicyDocument,
   LinkSet,
   LinkSetEntry,
