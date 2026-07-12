@@ -465,6 +465,117 @@ describe('WasTransport -- find (blinded-index query)', () => {
   })
 })
 
+describe('WasTransport -- backend-feature probe resilience', () => {
+  it('re-probes after a transient failure (503) and then uses the atomic insert path', async () => {
+    let getCalls = 0
+    const descriptor = { id: 'default', features: ['conditional-writes'] }
+    const request = vi.fn(async (input: { method?: string }) => {
+      if (input.method === 'GET') {
+        getCalls += 1
+        if (getCalls === 1) {
+          throw httpError(503) // transient descriptor read failure
+        }
+        return dataResponse(descriptor)
+      }
+      return {} as HttpResponse // PUT (or HEAD) succeeds
+    })
+    const wasTransport = transport(request)
+
+    // First insert: the probe fails transiently, so insert fails loud rather
+    // than silently degrading to the non-atomic HEAD+PUT path -- and makes no
+    // PUT at all.
+    await expect(
+      wasTransport.insert({ encrypted: encryptedDoc('zAbc') })
+    ).rejects.toMatchObject({ status: 503 })
+    expect(
+      request.mock.calls.some(
+        ([input]) => (input as { method?: string }).method === 'PUT'
+      )
+    ).toBe(false)
+
+    // Second insert: the memo was cleared, so it re-probes, learns
+    // `conditional-writes`, and uses the atomic `If-None-Match: *` create.
+    await wasTransport.insert({ encrypted: encryptedDoc('zDef') })
+    const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect(put.method).toBe('PUT')
+    expect((put.headers as Record<string, string>)['if-none-match']).toBe('*')
+    expect(getCalls).toBe(2)
+  })
+
+  it('after a transient probe failure then success, find() works', async () => {
+    let getCalls = 0
+    const request = vi.fn(async (input: { method?: string }) => {
+      if (input.method === 'GET') {
+        getCalls += 1
+        if (getCalls === 1) {
+          throw httpError(503)
+        }
+        return dataResponse({
+          id: 'default',
+          features: ['blinded-index-query']
+        })
+      }
+      return dataResponse({ documents: [], hasMore: false })
+    })
+    const wasTransport = transport(request)
+
+    // First find: the probe fails transiently, so the transport error surfaces
+    // (fail loud) instead of a spurious NotSupportedError.
+    await expect(
+      wasTransport.find({ query: { index: 'urn:hmac:1', has: ['bName'] } })
+    ).rejects.toMatchObject({ status: 503 })
+
+    // Second find: the re-probe succeeds and the blinded query runs.
+    const result = await wasTransport.find({
+      query: { index: 'urn:hmac:1', has: ['bName'] }
+    })
+    expect(result).toEqual({ documents: [], hasMore: false })
+    expect(getCalls).toBe(2)
+  })
+
+  it('caches a successful probe that lists no features (single GET across calls)', async () => {
+    const request = vi.fn(async (input: { method?: string }) => {
+      if (input.method === 'GET') {
+        return dataResponse({ id: 'default', features: [] })
+      }
+      return dataResponse({ documents: [], hasMore: false })
+    })
+    const wasTransport = transport(request)
+    const query = { index: 'urn:hmac:1', has: ['bName'] }
+    await expect(wasTransport.find({ query })).rejects.toMatchObject({
+      name: 'NotSupportedError'
+    })
+    await expect(wasTransport.find({ query })).rejects.toMatchObject({
+      name: 'NotSupportedError'
+    })
+    const gets = request.mock.calls.filter(
+      ([input]) => (input as { method?: string }).method === 'GET'
+    )
+    expect(gets).toHaveLength(1)
+  })
+
+  it('caches a definitive "endpoint absent" (404) probe (single GET across calls)', async () => {
+    const request = vi.fn(async (input: { method?: string }) => {
+      if (input.method === 'GET') {
+        throw httpError(404) // descriptor endpoint legitimately absent
+      }
+      return dataResponse({ documents: [], hasMore: false })
+    })
+    const wasTransport = transport(request)
+    const query = { index: 'urn:hmac:1', has: ['bName'] }
+    await expect(wasTransport.find({ query })).rejects.toMatchObject({
+      name: 'NotSupportedError'
+    })
+    await expect(wasTransport.find({ query })).rejects.toMatchObject({
+      name: 'NotSupportedError'
+    })
+    const gets = request.mock.calls.filter(
+      ([input]) => (input as { method?: string }).method === 'GET'
+    )
+    expect(gets).toHaveLength(1)
+  })
+})
+
 describe('WasTransport -- updateIndex (unsupported, sharpened message)', () => {
   it('rejects with NotSupportedError pointing at update()', async () => {
     await expect(transport(vi.fn()).updateIndex()).rejects.toMatchObject({

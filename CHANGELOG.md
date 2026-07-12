@@ -14,11 +14,13 @@
   - `addRecipient({ collection, recipient, owner })` wraps every epoch's key to
     a new reader -- escrow semantics, so "add a reader" means it can read the
     Collection, history included. No rotation: adds are inexpensive.
-  - `removeRecipient({ collection, space, recipientId, revoke })` is the full,
-    indivisible removal: it revokes the reader's zcap(s) (the pull axis --
-    immediate, server-enforced) AND rotates the epoch, minting a fresh key
-    wrapped only to the remaining readers (the read axis -- prospective).
-    Resources written after the removal are unreadable to the removed reader
+  - `removeRecipient({ collection, space, recipientId, revoke })` is the full
+    removal: it rotates the epoch, minting a fresh key wrapped only to the
+    remaining readers (the read axis -- prospective), and once the rotation is
+    durable revokes the reader's zcap(s) (the pull axis -- immediate,
+    server-enforced). Already-revoked capabilities are tolerated, so the
+    operation is safely retryable if a concurrent description update interrupts
+    it. Resources written after the removal are unreadable to the removed reader
     even if it gets the ciphertext.
 
   The same `createEdvEncryption` provider transparently encrypts each write
@@ -42,11 +44,80 @@
   validator). The generic description-CAS primitive the recipient operations
   build on.
 
-- New exports: `KeyUnwrapError`; the `CollectionEncryptionEpoch` /
-  `CollectionEncryptionRecipient` marker types; and, from the `edv` subpath,
-  `initRecipients` / `addRecipient` / `removeRecipient`, `mintEpoch` /
-  `epochKeyIdFor` / `epochIdFromKid`, and the `OwnerKey` / `RecipientPublicKey`
-  types.
+- New exports: `KeyUnwrapError` and `IntegrityError`; the
+  `CollectionEncryptionEpoch` / `CollectionEncryptionRecipient` marker types;
+  and, from the `edv` subpath, `initRecipients` / `addRecipient` /
+  `removeRecipient`, `mintEpoch` / `epochKeyIdFor`, and the `OwnerKey` /
+  `RecipientPublicKey` types.
+
+- **`IntegrityError`** (a subtype of `EncryptionError`): reading a tampered or
+  corrupted encrypted resource with a valid key now throws it, instead of
+  misreporting the failure as a recipient-membership problem (`KeyUnwrapError`).
+
+- `Space.configure()` now fails closed, like `Collection.configure()` already
+  did: when the current description cannot be read (missing or unauthorized), it
+  throws a `ValidationError` unless a full description or the new `force: true`
+  option is supplied -- instead of silently defaulting the controller to the
+  caller and dropping the existing name.
+
+### Changed
+
+- Recipient edits made through `Collection.replaceDescription()` (including
+  `initRecipients` / `addRecipient` / `removeRecipient`) now take effect on the
+  same Collection handle immediately: the handle re-resolves its codec after an
+  encryption change instead of reusing the one from before the rotation.
+
+- Historical epoch keys are unwrapped lazily on the first decrypt that names
+  them (and cached); writes only unwrap the current epoch. The write-key
+  fallback also selects the current epoch by id instead of relying on array
+  order.
+
+- `mintEpoch` no longer returns a `keyPair` property (both in-repo callers only
+  used `epochId` / `secret`).
+
+- Removed the unused `metadataMode` property from the `ResourceCodec` interface
+  and both codecs; the metadata transform is fully owned by `encodeMeta` /
+  `decodeMeta`.
+
+- The X25519 multibase framing, raw-secret handling, and did:key resolution in
+  the `edv` subpath now come from `@interop/x25519-key-agreement-key` (>= 5.2.0)
+  instead of local implementations.
+
+### Fixed
+
+- `removeRecipient` now derives the surviving reader set from the current epoch
+  only. Previously it unioned recipients across all epochs, so a reader removed
+  in an earlier rotation was silently re-added (re-escrowed) by a later removal.
+
+- An epoch-bearing `encryption` override passed to
+  `space.collection(name, { encryption })` now resolves the epoch codec.
+  Previously the epoch marker was dropped and the single-key path taken,
+  breaking reads (spurious `KeyUnwrapError`) and writes (undecryptable by
+  marker-based readers) -- including the override `Space.createCollection`
+  pre-seeds.
+
+- A transient failure probing the server's backend features no longer
+  permanently degrades `WasTransport` for its lifetime (non-atomic inserts,
+  `find()` throwing `NotSupportedError`). Definitive absence (404/405/501) is
+  still cached as "no features"; transient errors now surface to the caller and
+  the next call re-probes.
+
+- `WasClient.fromCapability()` now resolves capability targets on servers
+  mounted under a base path (e.g. `https://host/was/`), matching `revoke` and
+  `grant`.
+
+- Malformed percent-escapes in a space path (e.g. `%ff`) are treated as an
+  invalid path and reported through the usual typed errors instead of crashing
+  with a raw `URIError`.
+
+- `Resource.meta()` throws a typed `WasServerError` on an empty or non-JSON 200
+  response instead of crashing with a `TypeError`.
+
+- Ids parsed from a `Location` response header no longer retain a query string
+  or fragment.
+
+- `AddResult.contentType` is populated on POST adds even when the server omits
+  `content-type` from the 201 response body.
 
 ## 0.14.0 - 2026-07-10
 

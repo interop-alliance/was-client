@@ -22,6 +22,7 @@ export {
   QuotaExceededError,
   EncryptionError,
   KeyUnwrapError,
+  IntegrityError,
   WasServerError,
   mapError
 } from './errors.js'

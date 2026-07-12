@@ -6,8 +6,10 @@
  * keyed by id within a Collection). Sugar over the Collection item operations,
  * with explicit `getText()` / `getBytes()` escape hatches.
  */
+import type { HttpResponse } from '@interop/http-client'
 import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
+import { WasServerError } from './errors.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { CodecHolder, resolveCodec } from './internal/codec.js'
@@ -30,6 +32,22 @@ import type {
  * `getBytes()` (stateless, so one instance is reused).
  */
 const ENCODER = new TextEncoder()
+
+/**
+ * Re-serializes a read response's pre-parsed JSON body to a string, or returns
+ * `undefined` when the body was not pre-parsed (a non-JSON content-type, whose
+ * raw stream the caller reads directly). `@interop/http-client` consumes a JSON
+ * content-type's body into `.data`, leaving the stream spent, so `getText()` /
+ * `getBytes()` reconstruct the text from the parsed value rather than re-reading
+ * the stream -- semantically identical JSON, but not guaranteed byte-identical
+ * (insignificant whitespace is not preserved).
+ *
+ * @param response {HttpResponse}
+ * @returns {string | undefined}
+ */
+function preParsedJson(response: HttpResponse): string | undefined {
+  return response.data !== undefined ? JSON.stringify(response.data) : undefined
+}
 
 export class Resource {
   readonly spaceId: string
@@ -123,6 +141,22 @@ export class Resource {
   }
 
   /**
+   * Sends the shared resource GET -- the byte-identical request the three public
+   * readers (`get` / `getText` / `getBytes`) issue -- resolving a missing or
+   * unauthorized resource (404) to `null` via the `read` flag.
+   *
+   * @returns {Promise<HttpResponse | null>}
+   */
+  private async _read(): Promise<HttpResponse | null> {
+    return send(this._context, {
+      path: this._path,
+      method: 'GET',
+      capability: this._capability,
+      read: true
+    })
+  }
+
+  /**
    * Reads the resource, auto-parsing JSON to an object and returning binary as
    * a `Blob`. Returns `null` if the resource is missing or not visible to you
    * (WAS returns 404 for both not-found and unauthorized).
@@ -131,12 +165,7 @@ export class Resource {
    */
   async get(): Promise<Json | Blob | null> {
     const codec = await this._codec()
-    const response = await send(this._context, {
-      path: this._path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
-    })
+    const response = await this._read()
     return response === null ? null : codec.decode(response)
   }
 
@@ -155,19 +184,12 @@ export class Resource {
    * @returns {Promise<string | null>}
    */
   async getText(): Promise<string | null> {
-    const response = await send(this._context, {
-      path: this._path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
-    })
+    const response = await this._read()
     if (response === null) {
       return null
     }
-    if (response.data !== undefined) {
-      return JSON.stringify(response.data)
-    }
-    return response.text()
+    const json = preParsedJson(response)
+    return json !== undefined ? json : response.text()
   }
 
   /**
@@ -185,19 +207,14 @@ export class Resource {
    * @returns {Promise<Uint8Array | null>}
    */
   async getBytes(): Promise<Uint8Array | null> {
-    const response = await send(this._context, {
-      path: this._path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
-    })
+    const response = await this._read()
     if (response === null) {
       return null
     }
-    if (response.data !== undefined) {
-      return ENCODER.encode(JSON.stringify(response.data))
-    }
-    return new Uint8Array(await response.arrayBuffer())
+    const json = preParsedJson(response)
+    return json !== undefined
+      ? ENCODER.encode(json)
+      : new Uint8Array(await response.arrayBuffer())
   }
 
   /**
@@ -304,6 +321,20 @@ export class Resource {
     })
     if (response === null) {
       return null
+    }
+    if (response.data === undefined) {
+      // A 200 whose body `@interop/http-client` did not pre-parse into `.data`
+      // (a non-JSON content-type, or an empty/204 body): a metadata document
+      // always carries its server-managed fields as JSON, so an absent `.data`
+      // is a malformed response. Fail with a typed error rather than
+      // dereferencing `metadata.custom` off `undefined` as a raw `TypeError`.
+      // (Kept distinct from the `null` return, which means the resource is
+      // missing or not visible -- not that the server answered malformed.)
+      throw new WasServerError(
+        `Metadata response for "${this.id}" carried no JSON body ` +
+          `(content-type ` +
+          `"${response.headers.get('content-type') ?? 'unknown'}").`
+      )
     }
     const metadata = response.data as ResourceMetadata
     // Decode the user-writable `custom` (decrypting it on an encrypted

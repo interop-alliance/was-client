@@ -14,7 +14,7 @@ import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import type { HttpResponse } from '@interop/http-client'
 import {
   collectionItemsUrl,
-  parseSpacePath,
+  parseSpaceTarget,
   spacesRoot
 } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
@@ -126,13 +126,22 @@ export class WasClient {
     return signer.id.split('#')[0] as string
   }
 
+  private _cachedContext?: ClientContext
+
   private get _context(): ClientContext {
-    return {
-      serverUrl: this.serverUrl,
-      zcapClient: this.zcapClient,
-      controllerDid: this.controllerDid,
-      encryption: this.encryption
+    // `serverUrl`, `zcapClient` (and thus `controllerDid`), and `encryption`
+    // are all constructor-fixed, so the context is derived once and reused
+    // rather than re-deriving `controllerDid` and reallocating the object on
+    // every handle access.
+    if (this._cachedContext === undefined) {
+      this._cachedContext = {
+        serverUrl: this.serverUrl,
+        zcapClient: this.zcapClient,
+        controllerDid: this.controllerDid,
+        encryption: this.encryption
+      }
     }
+    return this._cachedContext
   }
 
   /**
@@ -331,31 +340,34 @@ export class WasClient {
    * @returns {Space | Collection | Resource}
    */
   fromCapability(zcap: IZcap): Space | Collection | Resource {
-    let pathname: string
+    const target = zcap.invocationTarget
     try {
-      ;({ pathname } = new URL(zcap.invocationTarget))
+      new URL(target)
     } catch (err) {
       throw new ValidationError(
-        `invocationTarget "${zcap.invocationTarget}" is not a valid ` +
-          'absolute URL.',
+        `invocationTarget "${target}" is not a valid absolute URL.`,
         { cause: err }
       )
     }
-    // `parseSpacePath` owns the path grammar (and percent-decodes each segment,
-    // since the path builders re-encode every id). Classifying the full segment
-    // list -- rather than destructuring the first three ids -- keeps a
-    // sub-resource target (`/space/s/policy`, `/space/s/c/r/meta`, ...) from
-    // being silently truncated to the nearest containment handle, whose derived
-    // URLs would mismatch the capability's invocation target.
-    const parsed = parseSpacePath(pathname)
+    // `parseSpaceTarget` owns the path grammar: it strips `serverUrl`'s base
+    // path first (so a WAS mounted under a sub-path -- `https://host/was/` --
+    // classifies just as a bare-origin deployment does, which `parseSpacePath`
+    // alone cannot) and percent-decodes each segment, since the path builders
+    // re-encode every id. Classifying the full segment list -- rather than
+    // destructuring the first three ids -- keeps a sub-resource target
+    // (`/space/s/policy`, `/space/s/c/r/meta`, ...) from being silently
+    // truncated to the nearest containment handle, whose derived URLs would
+    // mismatch the capability's invocation target.
+    const parsed = parseSpaceTarget({ serverUrl: this.serverUrl, target })
     if (parsed === null) {
       throw new ValidationError(
-        `Cannot derive a handle from invocationTarget "${zcap.invocationTarget}".`
+        `Cannot derive a handle from invocationTarget "${target}": it does ` +
+          `not address a resource on "${this.serverUrl}".`
       )
     }
     if (parsed.kind === 'sub-resource') {
       throw new ValidationError(
-        `invocationTarget "${zcap.invocationTarget}" addresses a reserved ` +
+        `invocationTarget "${target}" addresses a reserved ` +
           'sub-resource, which has no navigational handle. Invoke it via the ' +
           'owning handle instead (e.g. `space.getPolicy()` / ' +
           '`resource.meta()`), or use the `was.request()` escape hatch.'

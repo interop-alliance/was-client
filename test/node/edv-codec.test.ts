@@ -21,7 +21,12 @@ import type {
 } from '@interop/data-integrity-core'
 import type { HttpResponse } from '@interop/http-client'
 
-import { EncryptionError, ValidationError } from '../../src/index.js'
+import {
+  EncryptionError,
+  IntegrityError,
+  KeyUnwrapError,
+  ValidationError
+} from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
 import { createEdvEncryption, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
@@ -604,6 +609,80 @@ describe('EdvCodec: conditional writes (sequence enforcement)', () => {
   })
 })
 
+describe('EdvCodec: decrypt failure discrimination', () => {
+  /**
+   * Re-serializes an encoded envelope after mutating its parsed form, returning
+   * a read response the codec's `decode` accepts. Used to tamper with a real
+   * JWE's ciphertext/tag before reading it back.
+   *
+   * @param body {Uint8Array | Blob}   the encoded envelope bytes
+   * @param mutate {function}          mutates the parsed envelope in place
+   * @returns {HttpResponse}
+   */
+  function tamperedResponse(
+    body: Uint8Array | Blob | undefined,
+    mutate: (envelope: { jwe: { ciphertext: string; tag: string } }) => void
+  ): HttpResponse {
+    const envelope = JSON.parse(new TextDecoder().decode(body as Uint8Array))
+    mutate(envelope)
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope))
+    return responseFrom(bytes)
+  }
+
+  /**
+   * Flips the last character of a base64url string to a different one, so the
+   * value stays well-formed base64url but decodes to different bytes.
+   *
+   * @param value {string}
+   * @returns {string}
+   */
+  function flipLast(value: string): string {
+    const last = value.slice(-1)
+    return value.slice(0, -1) + (last === 'A' ? 'B' : 'A')
+  }
+
+  it('throws IntegrityError (not KeyUnwrapError) on a tampered ciphertext read by a legitimate recipient', async () => {
+    const codec = await makeCodec()
+    const encoded = await codec.encode({ data: { secret: 'authentic' } })
+    // The reader holds the recipient key, but the sealed content is corrupted:
+    // the AEAD tag must fail and surface as an integrity failure, NOT as a
+    // membership/KeyUnwrapError.
+    const response = tamperedResponse(encoded.body, envelope => {
+      envelope.jwe.ciphertext = flipLast(envelope.jwe.ciphertext)
+    })
+    const failure = await codec.decode(response).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(IntegrityError)
+    expect(failure).not.toBeInstanceOf(KeyUnwrapError)
+    // Still under the EncryptionError umbrella (fail-closed handling catches it).
+    expect(failure).toBeInstanceOf(EncryptionError)
+  })
+
+  it('throws IntegrityError on a tampered AEAD tag read by a legitimate recipient', async () => {
+    const codec = await makeCodec()
+    const encoded = await codec.encode({ data: { secret: 'authentic' } })
+    const response = tamperedResponse(encoded.body, envelope => {
+      envelope.jwe.tag = flipLast(envelope.jwe.tag)
+    })
+    await expect(codec.decode(response)).rejects.toThrow(IntegrityError)
+  })
+
+  it('throws KeyUnwrapError (not IntegrityError) when no candidate key is a recipient', async () => {
+    // Encode under one key, then read with a codec built over an unrelated key:
+    // the reader is not a recipient of the envelope, so decryption never reaches
+    // the AEAD stage and must fail as a key/membership miss.
+    const writer = await makeCodec()
+    const encoded = await writer.encode({
+      data: { secret: 'for someone else' }
+    })
+    const reader = await makeCodec()
+    const failure = await reader
+      .decode(responseFrom(encoded.body))
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(KeyUnwrapError)
+    expect(failure).not.toBeInstanceOf(IntegrityError)
+  })
+})
+
 describe('createEdvEncryption: provider (keystore)', () => {
   it('returns null when resolveKeys yields no keys (core then fails closed)', async () => {
     const provider = createEdvEncryption({ resolveKeys: async () => null })
@@ -667,11 +746,6 @@ describe('createEdvEncryption: provider (keystore)', () => {
 })
 
 describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
-  it('reports metadataMode "encrypted"', async () => {
-    const codec = await makeCodec()
-    expect(codec.metadataMode).toBe('encrypted')
-  })
-
   it('encrypts custom into an EDV Document envelope (no plaintext leak)', async () => {
     const codec = await makeCodec()
     const { custom } = await codec.encodeMeta({

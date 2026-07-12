@@ -348,7 +348,15 @@ export function parseSpaceTarget({
  * @returns {ParsedSpacePath | null}
  */
 export function parseSpacePath(pathname: string): ParsedSpacePath | null {
-  const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  let segments: string[]
+  try {
+    segments = pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  } catch {
+    // A malformed percent-escape (e.g. `%ff`) makes `decodeURIComponent` throw
+    // a `URIError`: the path is not a well-formed WAS target, so classify it as
+    // unparseable (the caller converts `null` to its own typed error).
+    return null
+  }
   if (segments[0] !== 'space' || segments[1] === undefined) {
     return null
   }

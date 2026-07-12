@@ -22,7 +22,6 @@ import { upsertResource } from '../../src/internal/write.js'
  * update otherwise).
  */
 const conditionalCodec: ResourceCodec = {
-  metadataMode: 'plaintext',
   conditionalWrites: true,
   async encode({ id, data, current }) {
     return {

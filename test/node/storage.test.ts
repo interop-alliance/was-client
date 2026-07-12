@@ -11,7 +11,12 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient, ValidationError, ConflictError } from '../../src/index.js'
+import {
+  WasClient,
+  ValidationError,
+  ConflictError,
+  WasServerError
+} from '../../src/index.js'
 
 interface RequestArgs {
   url?: string
@@ -274,6 +279,18 @@ describe('resource.meta()', () => {
     const result = await client.space('s').collection('c').resource('r').meta()
     expect(result).toBeNull()
   })
+
+  it('throws a WasServerError on a 200 with no JSON body (not a raw TypeError)', async () => {
+    // `@interop/http-client` leaves `.data` undefined for a non-JSON or empty
+    // 200 body; a metadata document always carries its server-managed fields as
+    // JSON, so an absent body is a malformed response -- surfaced as a typed
+    // error instead of a `TypeError` on `metadata.custom`, and kept distinct
+    // from the `null` (missing/unauthorized) return.
+    const { client } = clientWithRequestSpy({ data: undefined })
+    await expect(
+      client.space('s').collection('c').resource('r').meta()
+    ).rejects.toThrow(WasServerError)
+  })
 })
 
 describe('resource.setMeta()', () => {
@@ -531,6 +548,73 @@ describe('Collection.configure() unreadable-description guard', () => {
       .configure({ name: 'x', backend: { id: 'custom' } })
     const put = calls.find(call => call.method === 'PUT')
     expect(put?.json).toMatchObject({ backend: { id: 'custom' } })
+  })
+})
+
+describe('Space.configure() unreadable-description guard', () => {
+  it('fails closed when describe() is masked and a full description is not given', async () => {
+    // A write-capable but not read-capable caller: WAS masks the unreadable
+    // current description as 404, so `configure({ name })` would merge forward
+    // from a `null` current -- silently defaulting `controller` (a stealth
+    // ownership change) and dropping the existing name. The guard blocks that.
+    const { client, calls } = clientWithRequestSpy({ fail: 404 })
+    await expect(client.space('s').configure({ name: 'x' })).rejects.toThrow(
+      ValidationError
+    )
+    // Only the describe() GET went out; no blind PUT.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('GET')
+  })
+
+  /**
+   * Builds a client whose describe() GET 404s (masked/absent space) but whose
+   * PUT succeeds, so the guard's escape paths reach the write.
+   *
+   * @returns {object} { client, calls }
+   */
+  function guardedClient(): { client: WasClient; calls: RequestArgs[] } {
+    const calls: RequestArgs[] = []
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        if (args.method === 'GET') {
+          throw { status: 404, response: { status: 404 } }
+        }
+        return {
+          status: 200,
+          headers: new Headers(),
+          data: undefined,
+          async json() {
+            return undefined
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient
+    })
+    return { client, calls }
+  }
+
+  it('proceeds with force: true (deliberate create through a handle)', async () => {
+    const { client, calls } = guardedClient()
+    const result = await client.space('s').configure({ name: 'x', force: true })
+    expect(calls.some(call => call.method === 'PUT')).toBe(true)
+    expect(result.name).toBe('x')
+  })
+
+  it('proceeds when both name and controller are supplied explicitly', async () => {
+    const { client, calls } = guardedClient()
+    await client
+      .space('s')
+      .configure({ name: 'x', controller: 'did:example:bob' })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toMatchObject({
+      name: 'x',
+      controller: 'did:example:bob'
+    })
   })
 })
 

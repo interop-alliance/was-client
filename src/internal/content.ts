@@ -46,7 +46,7 @@ export function isJsonContentType(contentType: string): boolean {
  * suffix such as `image/svg+xml` / `application/atom+xml`). Kept deliberately
  * narrow: an unlisted type is treated as binary (base64), which is always
  * byte-safe, and the caller additionally gates on valid UTF-8 before choosing
- * text. Any `; charset=…` parameter is ignored.
+ * text. Any `; charset=...` parameter is ignored.
  *
  * @param contentType {string}
  * @returns {boolean}
@@ -179,19 +179,23 @@ export function resolvePayload({
   contentType?: string
   id?: string
 }): ResolvedPayload {
-  const guessed = id ? guessContentTypeFromId(id) : undefined
+  // Guess lazily: the extension guess is only ever consulted on a binary
+  // branch (and only when neither an explicit `contentType` nor a non-empty
+  // `Blob.type` won), so a JSON write never pays for it.
+  const guess = (): string | undefined =>
+    id ? guessContentTypeFromId(id) : undefined
   if (isBlob(data)) {
     return {
       kind: 'binary',
       data,
-      contentType: contentType || data.type || guessed || OCTET_STREAM
+      contentType: contentType || data.type || guess() || OCTET_STREAM
     }
   }
   if (data instanceof Uint8Array) {
     return {
       kind: 'binary',
       data,
-      contentType: contentType || guessed || OCTET_STREAM
+      contentType: contentType || guess() || OCTET_STREAM
     }
   }
   if (data !== null && typeof data === 'object') {
@@ -272,8 +276,15 @@ export function createdId(response: HttpResponse | null): string {
     return data.id
   }
   const location = response?.headers.get('location')
+  // Parse the `Location` as a URL (relative to the response URL) so a query
+  // string or fragment on the create response -- e.g.
+  // `/space/s/c/newid?token=abc` -- is dropped before the last path segment is
+  // taken as the id, rather than being folded into it.
   const segment = location
-    ? location.split('/').filter(Boolean).pop()
+    ? new URL(location, response?.url || 'http://invalid.invalid/').pathname
+        .split('/')
+        .filter(Boolean)
+        .pop()
     : undefined
   if (segment) {
     return decodeURIComponent(segment)

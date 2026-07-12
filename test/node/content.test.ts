@@ -278,6 +278,30 @@ describe('createdId', () => {
     ).toBe('s')
   })
 
+  it('drops a query string and fragment on the Location before taking the id', () => {
+    // A `Location` with a trailing `?token=...` or `#frag` must not fold that
+    // into the id -- it is parsed as a URL and only the path's last segment is
+    // taken.
+    expect(
+      createdId(
+        createResponse({
+          location: 'https://was.example/space/s/c/newid?token=abc'
+        })
+      )
+    ).toBe('newid')
+    expect(
+      createdId(
+        createResponse({ location: 'https://was.example/space/s/c/newid#frag' })
+      )
+    ).toBe('newid')
+  })
+
+  it('resolves a relative Location (query still dropped)', () => {
+    expect(
+      createdId(createResponse({ location: '/space/s/c/newid?token=abc' }))
+    ).toBe('newid')
+  })
+
   it('throws a WasServerError when neither body id nor Location is present', () => {
     expect(() => createdId(createResponse({}))).toThrow(WasServerError)
     expect(() => createdId(null)).toThrow(WasServerError)
