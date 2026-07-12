@@ -12,7 +12,8 @@ export { Resource } from './Resource.js'
 
 export { parseSpaceTarget } from './internal/paths.js'
 export type { ParsedSpacePath } from './internal/paths.js'
-export { readEtag } from './internal/conditional.js'
+export { readEtag, writeHeaders } from './internal/conditional.js'
+export type { WritePrecondition } from './internal/conditional.js'
 
 export {
   WasError,

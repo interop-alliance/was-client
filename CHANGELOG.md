@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.14.5 - TBD
+
+### Added
+
+- Export `writeHeaders` (with its `WritePrecondition` options type) from the
+  root entry point, completing the conditional-write helper pair with the
+  already-exported `readEtag`.
+
 ## 0.14.4 - 2026-07-11
 
 ### Added
