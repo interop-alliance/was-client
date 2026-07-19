@@ -1,3 +1,5 @@
 allowBuilds:
   core-js: false
 minimumReleaseAgeExclude:
+  - '@interop/edv-client@17.7.0'
+  - '@interop/minimal-cipher@7.7.0'

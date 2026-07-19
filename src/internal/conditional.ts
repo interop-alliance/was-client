@@ -8,6 +8,7 @@
  * response returns.
  */
 import type { HttpResponse } from '@interop/http-client'
+import type { EncodedWrite } from '../codec.js'
 
 /**
  * A conditional-write precondition: `ifMatch` is the quoted ETag an
@@ -17,6 +18,19 @@ import type { HttpResponse } from '@interop/http-client'
 export interface WritePrecondition {
   ifMatch?: string
   ifNoneMatch?: boolean
+}
+
+/**
+ * Extracts the conditional-write precondition a codec attached to its encoded
+ * write (`EncodedWrite.ifMatch` / `ifNoneMatch`). The one mapping shared by
+ * the two write entry points (`Collection.add` and `upsertResource`), so they
+ * cannot diverge.
+ *
+ * @param encoded {EncodedWrite}
+ * @returns {WritePrecondition}
+ */
+export function encodedPrecondition(encoded: EncodedWrite): WritePrecondition {
+  return { ifMatch: encoded.ifMatch, ifNoneMatch: encoded.ifNoneMatch }
 }
 
 /**

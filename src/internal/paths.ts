@@ -21,6 +21,7 @@ import {
   RESERVED_RESOURCE_IDS
 } from '@interop/storage-core'
 import { ValidationError } from '../errors.js'
+import { assertNotReserved } from './reserved.js'
 
 /**
  * Rejects an id that would escape its path slot even after percent-encoding:
@@ -45,6 +46,35 @@ function assertValidId(segment: string): void {
 function encode(segment: string): string {
   assertValidId(segment)
   return encodeURIComponent(segment)
+}
+
+/**
+ * Encodes a collection-id slot, additionally rejecting an id from the Reserved
+ * Path Segment Registry: `collectionPath(s, 'policy')` is byte-identical to
+ * the space policy path, so a reserved id would silently mis-target a
+ * space-level endpoint. Guarding in the builders covers every URL-forming
+ * entry point (handle constructors guard too, for the earlier failure).
+ *
+ * @param collectionId {string}
+ * @returns {string}
+ */
+function encodeCollectionId(collectionId: string): string {
+  assertNotReserved({ id: collectionId, kind: 'collection' })
+  return encode(collectionId)
+}
+
+/**
+ * Encodes a resource-id slot, additionally rejecting an id from the Reserved
+ * Path Segment Registry: `resourcePath(s, c, 'policy')` is byte-identical to
+ * the collection policy path, so a reserved id would silently mis-target a
+ * collection-level endpoint.
+ *
+ * @param resourceId {string}
+ * @returns {string}
+ */
+function encodeResourceId(resourceId: string): string {
+  assertNotReserved({ id: resourceId, kind: 'resource' })
+  return encode(resourceId)
 }
 
 /**
@@ -143,7 +173,7 @@ export function spaceRevocation(spaceId: string, capabilityId: string): string {
  * (no trailing slash).
  */
 export function collectionPath(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}`
 }
 
 /**
@@ -151,7 +181,7 @@ export function collectionPath(spaceId: string, collectionId: string): string {
  * (trailing slash).
  */
 export function collectionItems(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/`
 }
 
 /**
@@ -162,7 +192,7 @@ export function collectionPolicy(
   spaceId: string,
   collectionId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/policy`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/policy`
 }
 
 /**
@@ -173,7 +203,7 @@ export function collectionLinkset(
   spaceId: string,
   collectionId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/linkset`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/linkset`
 }
 
 /**
@@ -184,7 +214,7 @@ export function collectionBackend(
   spaceId: string,
   collectionId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/backend`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/backend`
 }
 
 /**
@@ -192,7 +222,7 @@ export function collectionBackend(
  * report (spec "Quotas").
  */
 export function collectionQuota(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/quota`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/quota`
 }
 
 /**
@@ -200,7 +230,7 @@ export function collectionQuota(spaceId: string, collectionId: string): string {
  * whose body's `profile` selects the query (e.g. `changes`, `blinded-index`).
  */
 export function collectionQuery(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/query`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/query`
 }
 
 /**
@@ -212,7 +242,7 @@ export function resourcePath(
   collectionId: string,
   resourceId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/${encodeResourceId(resourceId)}`
 }
 
 /**
@@ -224,7 +254,7 @@ export function resourceMeta(
   collectionId: string,
   resourceId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}/meta`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/${encodeResourceId(resourceId)}/meta`
 }
 
 /**
@@ -236,7 +266,7 @@ export function resourcePolicy(
   collectionId: string,
   resourceId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encode(collectionId)}/${encode(resourceId)}/policy`
+  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/${encodeResourceId(resourceId)}/policy`
 }
 
 /**

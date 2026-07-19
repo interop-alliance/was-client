@@ -28,6 +28,20 @@ import type { IDelegatedZcap, IRootZcap, IZcap } from '../types.js'
 const ZCAP_CONTEXT_URL = 'https://w3id.org/zcap/v1'
 
 /**
+ * The root capability id for an invocation target URL
+ * (`urn:zcap:root:<encoded target>`) -- the id grammar shared by revocation
+ * (which invokes the revocation URL's own root capability in object form) and
+ * grant rooting (which parents an unparented grant on its Space's root
+ * capability id).
+ *
+ * @param target {string}   the absolute invocation target URL
+ * @returns {string}
+ */
+export function rootCapabilityId(target: string): string {
+  return `urn:zcap:root:${encodeURIComponent(target)}`
+}
+
+/**
  * Builds the root capability for `target` in **object** form.
  *
  * The object form is load-bearing: `@interop/ezcap` accepts a *string* root
@@ -52,7 +66,7 @@ function rootCapability({
 }): IRootZcap {
   return {
     '@context': ZCAP_CONTEXT_URL,
-    id: `urn:zcap:root:${encodeURIComponent(target)}`,
+    id: rootCapabilityId(target),
     invocationTarget: target,
     controller
   }

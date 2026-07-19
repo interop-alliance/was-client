@@ -42,7 +42,9 @@
  *   insert (`sequence: 0`) is guarded by `If-None-Match: *`. A stale write
  *   surfaces as a `PreconditionFailedError` (412) -- the lost-update guard --
  *   rather than the old advisory last-writer-wins. Against a backend that does
- *   not advertise `conditional-writes` (no ETag) it degrades to advisory.
+ *   not advertise `conditional-writes` (no ETag) an update degrades to
+ *   advisory, and a create-by-put is refused by the write path (the masked-404
+ *   pre-read could otherwise silently clobber; see `upsertResource`).
  * - **Encrypted metadata.** A Resource's user-writable `custom`
  *   (`name`/`tags`, via `setName`/`setTags`/`setMeta`) is
  *   encrypted into an EDV Document envelope with the same `documentCipher` used
@@ -51,12 +53,13 @@
  *   transparently via `meta()`.
  */
 import { base64 } from '@scure/base'
-import { EdvClientCore } from '@interop/edv-client'
+import { EdvClientCore, assertDocId } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
 import type {
   IEncryptedDocument,
   IKeyAgreementKey,
-  IKeyResolver
+  IKeyResolver,
+  IRecipientTemplate
 } from '@interop/data-integrity-core'
 import type {
   EncodedWrite,
@@ -83,11 +86,15 @@ import { DEFAULT_CONTENT_TYPE, ENCODER, envelopeBytes } from './constants.js'
 
 /**
  * Default ceiling for a single-document (unchunked) encrypted binary or text
- * write, measured in raw (pre-base64) bytes. Past this a `Blob`/`Uint8Array` is
- * rejected until chunked encrypted blobs are supported. 5 MiB; binary inflates
- * ~33% under base64, text is stored verbatim.
+ * write, measured in raw (pre-base64) bytes. Past this a `Blob`/`Uint8Array`
+ * is rejected with guidance toward the chunked-stream path. 512 KiB: the
+ * envelope is stored as a JSON-family content type routed through the server's
+ * in-memory JSON body parser (a ~1 MiB cap), and a binary payload inflates
+ * ~33% inside the document (base64) and again ~33% in the JWE ciphertext
+ * (base64url) -- ~1.78x total, so 512 KiB raw stays safely under the cap.
+ * Raise `maxBlobBytes` against a server with a larger JSON body limit.
  */
-const DEFAULT_MAX_BLOB_BYTES = 5 * 1024 * 1024
+const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
 
 /**
  * A shared strict UTF-8 decoder used to test whether a non-JSON payload is
@@ -101,42 +108,34 @@ const DEFAULT_MAX_BLOB_BYTES = 5 * 1024 * 1024
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 /**
- * Heuristic for an EDV document id: multibase base58btc (leading `z`) of a
- * 128-bit value. Used to reject human-readable ids on `put()`. Deliberately a
- * loose, dependency-free check (base58 charset, leading `z`, minimum length) --
- * it rejects ids with human separators (`.`/`-`/`_`/spaces) and is not a full
- * decode-and-length verification.
- */
-const EDV_DOC_ID = /^z[1-9A-HJ-NP-Za-km-z]{21,}$/
-
-/**
- * The exact messages `@interop/minimal-cipher` / `@interop/edv-client` throw
- * when a candidate key simply does not open an envelope -- a wrong or rotated
- * key, not a corrupted one. `'Decryption failed.'` is the null-CEK unwrap path
- * (the key could not unwrap the content-encryption key); `'No matching
- * recipient found ...'` is the earlier kid-mismatch. These are the only two
- * decrypt failures the `_decrypt` loop treats as "try the next key". Any OTHER
- * decrypt failure means the key DID select a recipient and unwrap, but the
- * content's AEAD tag did not verify -- a data-integrity failure (WebCrypto's
- * `OperationError` in browsers, Node's "unable to authenticate data") -- which
- * must surface as an {@link IntegrityError}, not be masked as a key miss.
- */
-const KEY_MISS_MESSAGES = new Set([
-  'Decryption failed.',
-  'No matching recipient found for key agreement key.'
-])
-
-/**
  * Whether a decrypt error means "this candidate key does not open the envelope"
  * (so the loop should try the next key) rather than an integrity failure. True
- * only for the closed set of {@link KEY_MISS_MESSAGES}; every other error is
- * treated as an integrity failure and surfaces immediately.
+ * for the upstream typed key-miss error -- `@interop/minimal-cipher` /
+ * `@interop/edv-client` raise a `KeyMissError` (the null-CEK unwrap path and the
+ * kid-mismatch path) when a candidate key is simply the wrong or a rotated key,
+ * not a corrupted envelope. It is matched by `err.name === 'KeyMissError'`
+ * rather than `instanceof`: name-dispatch survives pnpm installing two copies of
+ * the cipher package (a second copy's `KeyMissError` is a distinct class but
+ * carries the same `name`), so was-client need not import the class at all.
+ *
+ * Also true for a {@link KeyUnwrapError} raised by a candidate itself -- a lazy
+ * epoch key whose recipient entry turned out corrupt when its first decrypt
+ * forced the unwrap (see `lazyEpochKey`): that says nothing about the stored
+ * envelope, so the loop must move on to the next candidate rather than report
+ * tampering. Every other error means the key DID select a recipient and unwrap,
+ * but the content's AEAD tag did not verify -- a data-integrity failure
+ * (WebCrypto's `OperationError` in browsers, Node's "unable to authenticate
+ * data") -- which must surface as an {@link IntegrityError}, not be masked as a
+ * key miss.
  *
  * @param err {unknown}
  * @returns {boolean}
  */
 function isKeyMiss(err: unknown): boolean {
-  return err instanceof Error && KEY_MISS_MESSAGES.has(err.message)
+  return (
+    err instanceof KeyUnwrapError ||
+    (err instanceof Error && err.name === 'KeyMissError')
+  )
 }
 
 /**
@@ -149,6 +148,13 @@ export class EdvCodec implements ResourceCodec {
 
   private readonly _edv: EdvClientCore
   private readonly _writeKey: IKeyAgreementKey
+  /**
+   * The static JWE recipient descriptor every write encrypts to (the write
+   * key's `{ kid, alg }` header; the ephemeral `epk` is minted later inside
+   * `encrypt`). Deterministic per codec, so computed once here instead of per
+   * write.
+   */
+  private readonly _recipients: IRecipientTemplate[]
   private readonly _readKeys: IKeyAgreementKey[]
   private readonly _writeEpoch?: string
   private readonly _contentType: string
@@ -195,6 +201,8 @@ export class EdvCodec implements ResourceCodec {
   }) {
     this._edv = edv
     this._writeKey = keyAgreementKey
+    this._recipients =
+      edv.documentCipher.createDefaultRecipients(keyAgreementKey)
     this._readKeys = readKeys ?? [keyAgreementKey]
     this._writeEpoch = writeEpoch
     this._contentType = contentType
@@ -216,12 +224,20 @@ export class EdvCodec implements ResourceCodec {
     contentType?: string
     current?: HttpResponse | null
   }): Promise<EncodedWrite> {
-    if (id !== undefined && !EDV_DOC_ID.test(id)) {
-      throw new ValidationError(
-        `Cannot write a human-readable id "${id}" to an encrypted collection ` +
-          '-- it would leak onto the URL. Use add() to mint an EDV document ' +
-          'id, or carry the human-readable label inside the encrypted content.'
-      )
+    if (id !== undefined) {
+      try {
+        // A full multibase decode + multihash length check (the same assertion
+        // the EDV core applies), tighter than a charset heuristic: it rejects a
+        // human-readable id, which would otherwise leak onto the URL.
+        assertDocId(id)
+      } catch {
+        throw new ValidationError(
+          `Cannot write a human-readable id "${id}" to an encrypted ` +
+            'collection -- it would leak onto the URL. Use add() to mint an ' +
+            'EDV document id, or carry the human-readable label inside the ' +
+            'encrypted content.'
+        )
+      }
     }
     // `add()` (no caller id): mint a random id up front, or -- in `'content'`
     // mode -- leave it unset and stamp the content-derived id after encryption
@@ -248,7 +264,6 @@ export class EdvCodec implements ResourceCodec {
     }
 
     const { documentCipher } = this._edv
-    const recipients = documentCipher.createDefaultRecipients(this._writeKey)
     const encrypted = await documentCipher.encrypt({
       doc: {
         ...(docId !== undefined && { id: docId }),
@@ -259,7 +274,7 @@ export class EdvCodec implements ResourceCodec {
         meta,
         ...(priorDoc && { sequence: priorDoc.sequence })
       },
-      recipients,
+      recipients: this._recipients,
       keyResolver: this._edv.keyResolver,
       hmac: undefined,
       update: priorDoc !== null
@@ -284,8 +299,10 @@ export class EdvCodec implements ResourceCodec {
       // conditional-writes feature (the ETag is absent). A fresh insert's
       // `If-None-Match: *` needs no server-provided validator and so is emitted
       // unconditionally by design -- it expresses the insert's intent
-      // (create-only-if-absent); a backend that does not honor it simply ignores
-      // it, leaving the write harmless rather than degraded.
+      // (create-only-if-absent). A backend that does not honor it would ignore
+      // it, so the write path refuses the insert-after-null-pre-read up front
+      // on such a backend (see `upsertResource`) -- a masked-404 pre-read must
+      // not silently overwrite an existing document there.
       ...(priorDoc
         ? { ifMatch: readEtag(current ?? null) }
         : { ifNoneMatch: true }),
@@ -401,7 +418,6 @@ export class EdvCodec implements ResourceCodec {
     custom: ResourceMetadataCustom
   }): Promise<{ custom: object }> {
     const { documentCipher } = this._edv
-    const recipients = documentCipher.createDefaultRecipients(this._writeKey)
     // The document needs an EDV id (the cipher asserts one on decrypt). It is
     // opaque to the server -- carried inside the un-decryptable envelope -- and
     // minted fresh each write, since the metadata envelope is never updated in
@@ -409,7 +425,7 @@ export class EdvCodec implements ResourceCodec {
     const id = (await this._edv.generateId()) as string
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
-      recipients,
+      recipients: this._recipients,
       keyResolver: this._edv.keyResolver,
       hmac: undefined
     })
@@ -671,8 +687,10 @@ export interface EdvKeys {
  *   defaults to `application/json`. Pass `JOSE_CONTENT_TYPE`
  *   (`application/jose+json`) against a server that registers an
  *   `application/*+json` parser.
- * @param [options.maxBlobBytes] {number}   single-document binary cap (default
- *   5 MiB)
+ * @param [options.maxBlobBytes] {number}   single-document binary cap in raw
+ *   bytes (default 512 KiB, sized so the encrypted envelope stays under a
+ *   server's ~1 MiB JSON body cap; raise it against a server with a larger
+ *   limit)
  * @param [options.idDerivation] {string}   how `add()` mints a document id.
  *   `'random'` (default) is the classic mutable-document model: a random
  *   `generateId()` id, updated in place via `sequence`. `'content'` derives the
@@ -710,6 +728,12 @@ export function createEdvEncryption({
       if (!resolved) {
         return null
       }
+      // Single-key collection (no epochs on the marker): the wallet's own
+      // key-agreement key encrypts and decrypts directly.
+      let keyAgreementKey = resolved.keyAgreementKey
+      let keyResolver: IKeyResolver = resolved.keyResolver
+      let readKeys: IKeyAgreementKey[] | undefined
+      let writeEpoch: string | undefined
       // Multi-recipient (key-epoch) collection: resolve the reader's per-epoch
       // keys from the marker -- the `currentEpoch` key pair for writes, every
       // epoch key it can unwrap for reads -- and drive the cipher with those.
@@ -724,30 +748,18 @@ export function createEdvEncryption({
           // Epoch keys are self-describing did:key key-agreement keys, so a
           // resource's recipient (the epoch public key) resolves through the
           // standard did:key resolver, independent of the reader's own keystore.
-          const edv = new EdvClientCore({
-            keyAgreementKey: epochKeys.writeKey,
-            keyResolver: didKeyResolver
-          })
-          return new EdvCodec({
-            edv,
-            keyAgreementKey: epochKeys.writeKey,
-            readKeys: epochKeys.readKeys,
-            writeEpoch: epochKeys.writeEpoch,
-            contentType,
-            maxBlobBytes,
-            idDerivation
-          })
+          keyAgreementKey = epochKeys.writeKey
+          keyResolver = didKeyResolver
+          readKeys = epochKeys.readKeys
+          writeEpoch = epochKeys.writeEpoch
         }
       }
-      // Single-key collection (no epochs on the marker): the wallet's own
-      // key-agreement key encrypts and decrypts directly, unchanged.
-      const edv = new EdvClientCore({
-        keyAgreementKey: resolved.keyAgreementKey,
-        keyResolver: resolved.keyResolver
-      })
+      const edv = new EdvClientCore({ keyAgreementKey, keyResolver })
       return new EdvCodec({
         edv,
-        keyAgreementKey: resolved.keyAgreementKey,
+        keyAgreementKey,
+        readKeys,
+        writeEpoch,
         contentType,
         maxBlobBytes,
         idDerivation

@@ -28,7 +28,11 @@ import {
   ValidationError
 } from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
-import { createEdvEncryption, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
+import {
+  createEdvEncryption,
+  EdvCodec,
+  JOSE_CONTENT_TYPE
+} from '../../src/edv/index.js'
 
 /**
  * Generates a fresh real X25519 key agreement key and a matching resolver, so
@@ -298,6 +302,20 @@ describe('EdvCodec: binary', () => {
     await expect(
       codec.encode({ data: new Uint8Array([1, 2, 3, 4, 5]) })
     ).rejects.toThrow(ValidationError)
+  })
+
+  it('rejects a write above the 512 KiB default cap with chunked-path guidance', async () => {
+    // The default single-document cap must stay under what the transport can
+    // actually deliver: the envelope rides through the server's ~1 MiB JSON
+    // body parser, and a binary payload inflates ~1.78x (base64 in the
+    // document, base64url again in the JWE). A payload that would pass a lax
+    // cap but die at the server as an opaque 413 must instead get the codec's
+    // clear guidance toward the chunked-stream path.
+    const codec = await makeCodec()
+    const big = new Uint8Array(512 * 1024 + 1)
+    await expect(
+      codec.encode({ data: big, contentType: 'application/octet-stream' })
+    ).rejects.toThrow(/single-document limit/)
   })
 
   it('rejects a bare primitive', async () => {
@@ -680,6 +698,37 @@ describe('EdvCodec: decrypt failure discrimination', () => {
       .catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(KeyUnwrapError)
     expect(failure).not.toBeInstanceOf(IntegrityError)
+  })
+
+  it('treats a candidate throwing KeyUnwrapError as a key miss and tries the next key', async () => {
+    // A lazy epoch key whose recipient entry is corrupt raises KeyUnwrapError
+    // from its own deriveSecret when a decrypt first forces the unwrap. That
+    // says nothing about the stored envelope, so the loop must move on to the
+    // next candidate (which decrypts fine) instead of misreporting tampering.
+    const { kak, keyResolver } = await makeKeys()
+    const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
+    const corrupt = {
+      // Same kid as the envelope recipient, so this candidate is tried first.
+      id: kak.id,
+      async deriveSecret(): Promise<Uint8Array> {
+        throw new KeyUnwrapError(
+          'This reader\'s recipient entry for epoch "did:key:zFake" did ' +
+            'not unwrap (a corrupt entry).'
+        )
+      }
+    } as IKeyAgreementKey
+    const codec = new EdvCodec({
+      edv,
+      keyAgreementKey: kak,
+      readKeys: [corrupt, kak],
+      contentType: 'application/json',
+      maxBlobBytes: 512 * 1024,
+      idDerivation: 'random'
+    })
+    const encoded = await codec.encode({ data: { secret: 'still readable' } })
+    await expect(codec.decode(responseFrom(encoded.body))).resolves.toEqual({
+      secret: 'still readable'
+    })
   })
 })
 

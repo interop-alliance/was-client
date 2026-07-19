@@ -18,21 +18,38 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { ValidationError } from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
-import { CodecHolder, resolveCodec } from './internal/codec.js'
+import { collectionCodecHolder } from './internal/codec.js'
+import type { CodecHolder } from './internal/codec.js'
+import { collectionBackendFeatures } from './internal/features.js'
+import type { BackendFeatures } from './internal/features.js'
 import {
   buildPageWalk,
-  collectPages,
-  walkPages
+  collectWalk,
+  walkItems,
+  walkPagesOrEmpty
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
-import { describeCollection } from './internal/describe.js'
-import { readEtag, writeHeaders } from './internal/conditional.js'
+import {
+  describeCollection,
+  describeCollectionResponse,
+  unreadableDescriptionError
+} from './internal/describe.js'
+import {
+  encodedPrecondition,
+  readEtag,
+  writeHeaders
+} from './internal/conditional.js'
 import { sendEncodedWrite } from './internal/write.js'
-import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
+import {
+  readPolicy,
+  writePolicy,
+  deletePolicy,
+  isPublicPolicy,
+  setPublicPolicy
+} from './internal/policy.js'
 import { createdId, dataOrNull } from './internal/content.js'
 import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
@@ -40,10 +57,9 @@ import type { ChangesCheckpoint, ChangesPage } from '@interop/storage-core'
 import type {
   AddResult,
   BackendDescriptor,
-  BackendReference,
   BackendUsage,
   CollectionDescription,
-  CollectionEncryption,
+  CollectionWritableFields,
   EncryptionOverride,
   GrantOptions,
   HandleOptions,
@@ -65,6 +81,12 @@ export class Collection {
   private readonly _capability?: IZcap
   private readonly _encryptionOverride?: EncryptionOverride
   private readonly _codecHolder: CodecHolder
+  /**
+   * The shared backend-feature probe for this collection (memoized on a
+   * definitive answer), consulted by the conditional-codec write path and
+   * shared with child resource handles the way the codec is.
+   */
+  private readonly _features: BackendFeatures
 
   /**
    * @param options {object}
@@ -105,14 +127,17 @@ export class Collection {
     this.id = collectionId
     this._capability = capability
     this._encryptionOverride = encryption
-    this._codecHolder = new CodecHolder(() =>
-      resolveCodec(this._context, {
-        spaceId: this.spaceId,
-        collectionId: this.id,
-        override: this._encryptionOverride,
-        capability: this._capability
-      })
-    )
+    this._codecHolder = collectionCodecHolder(context, {
+      spaceId,
+      collectionId,
+      override: encryption,
+      capability
+    })
+    this._features = collectionBackendFeatures(context, {
+      spaceId,
+      collectionId,
+      capability
+    })
   }
 
   private get _path(): string {
@@ -133,21 +158,12 @@ export class Collection {
    * `replaceDescription` request bodies and their echoed return descriptions, so
    * the two paths cannot drift and a new writable field is added in one place.
    *
-   * @param fields {object}
-   * @param [fields.name] {string}
-   * @param [fields.backend] {BackendReference}
-   * @param [fields.encryption] {CollectionEncryption}
-   * @returns {object}
+   * @param fields {CollectionWritableFields}
+   * @returns {CollectionWritableFields}
    */
-  private _writableFields(fields: {
-    name?: string
-    backend?: BackendReference
-    encryption?: CollectionEncryption
-  }): {
-    name?: string
-    backend?: BackendReference
-    encryption?: CollectionEncryption
-  } {
+  private _writableFields(
+    fields: CollectionWritableFields
+  ): CollectionWritableFields {
     return {
       ...(fields.name !== undefined ? { name: fields.name } : {}),
       ...(fields.backend !== undefined ? { backend: fields.backend } : {}),
@@ -204,23 +220,18 @@ export class Collection {
    * -- e.g. when creating a new collection through a handle (or use
    * `space.createCollection()`, which does not merge).
    *
-   * @param desc {object}
-   * @param [desc.name] {string}
-   * @param [desc.backend] {BackendReference}
-   * @param [desc.encryption] {CollectionEncryption}   declare the client-side
-   *   encryption marker. Set-once on the server: it may be added to a Collection
-   *   that lacks one, but changing/clearing an existing marker is rejected
-   *   (`ConflictError`, `encryption-immutable`).
+   * @param desc {CollectionWritableFields}   the fields to merge; `encryption`
+   *   declares the client-side encryption marker, which is set-once on the
+   *   server (it may be added to a Collection that lacks one, but
+   *   changing/clearing an existing marker is rejected -- `ConflictError`,
+   *   `encryption-immutable`)
    * @param [desc.force] {boolean}   proceed even when the current description
    *   is unreadable and `backend`/`encryption` are omitted (see above)
    * @returns {Promise<CollectionDescription>}
    */
-  async configure(desc: {
-    name?: string
-    backend?: BackendReference
-    encryption?: CollectionEncryption
-    force?: boolean
-  }): Promise<CollectionDescription> {
+  async configure(
+    desc: CollectionWritableFields & { force?: boolean }
+  ): Promise<CollectionDescription> {
     const current = await this.describe()
     if (
       current === null &&
@@ -228,15 +239,16 @@ export class Collection {
       desc.encryption === undefined &&
       !desc.force
     ) {
-      throw new ValidationError(
-        `Cannot configure collection "${this.id}": its current description ` +
-          'is not readable with this capability (WAS returns 404 for both ' +
-          'not-found and unauthorized), so merging forward could silently ' +
-          "drop an existing collection's backend or encryption marker. " +
+      throw unreadableDescriptionError({
+        operation: `configure collection "${this.id}"`,
+        consequence:
+          "merging forward could silently drop an existing collection's " +
+          'backend or encryption marker',
+        advice:
           'Supply `backend`/`encryption` explicitly, use a read-capable ' +
           'capability, or pass `force: true` if you are creating a new ' +
           'collection.'
-      )
+      })
     }
     // Merge every current field forward (mirror `Space.configure`): a
     // replace-semantics server drops anything omitted from the PUT body, so
@@ -282,14 +294,13 @@ export class Collection {
     description: CollectionDescription
     etag?: string
   } | null> {
-    const response = await send(this._context, {
-      path: this._path,
-      method: 'GET',
-      capability: this._capability,
-      read: true
+    // The same GET as `describe()` (via the shared request shape), keeping the
+    // raw response so the ETag header can be read alongside the body.
+    const response = await describeCollectionResponse(this._context, {
+      spaceId: this.spaceId,
+      collectionId: this.id,
+      capability: this._capability
     })
-    // `send({ read: true })` returns null on a masked 404; otherwise the body is
-    // the description and the response carries the ETag header.
     const description = dataOrNull<CollectionDescription>(response)
     if (response === null || description === null) {
       return null
@@ -312,21 +323,14 @@ export class Collection {
    * operations build on (add/remove a reader is a CAS of the `encryption`
    * marker); it is not epoch-specific.
    *
-   * @param description {object}
-   * @param [description.name] {string}
-   * @param [description.backend] {BackendReference}
-   * @param [description.encryption] {CollectionEncryption}
+   * @param description {CollectionWritableFields}
    * @param options {object}
    * @param [options.ifMatch] {string}   the prior `ETag`; the write applies only
    *   if the description is unchanged
    * @returns {Promise<{ description: CollectionDescription; etag?: string }>}
    */
   async replaceDescription(
-    description: {
-      name?: string
-      backend?: BackendReference
-      encryption?: CollectionEncryption
-    },
+    description: CollectionWritableFields,
     options: { ifMatch?: string } = {}
   ): Promise<{ description: CollectionDescription; etag?: string }> {
     const fields = this._writableFields(description)
@@ -391,6 +395,9 @@ export class Collection {
       collectionId: this.id,
       resourceId,
       capability: options.capability ?? this._capability,
+      // Share this collection's memoized feature probe so per-resource handles
+      // do not each repeat the backend-descriptor round-trip.
+      features: () => this._features.get(),
       // A per-resource encryption override resolves its own codec (honoring the
       // override); without one, share this collection's resolved codec so the
       // resource handle does not repeat the marker-discovery round-trip. The two
@@ -424,10 +431,7 @@ export class Collection {
     // A codec may attach a create-if-absent precondition for its minted id (the
     // EDV codec guards a fresh insert with `If-None-Match: *`); plaintext add
     // carries none.
-    const precondition = {
-      ifMatch: encoded.ifMatch,
-      ifNoneMatch: encoded.ifNoneMatch
-    }
+    const precondition = encodedPrecondition(encoded)
 
     // A codec that mints its own id (e.g. the encrypting codec's EDV id) writes
     // by `PUT`; the identity codec returns no id and lets the server mint one
@@ -564,8 +568,7 @@ export class Collection {
    * @returns {Promise<CollectionResourcesList | null>}
    */
   async list(): Promise<CollectionResourcesList | null> {
-    const walk = await this._listWalk()
-    return walk === null ? null : collectPages(walk)
+    return collectWalk(await this._listWalk())
   }
 
   /**
@@ -579,11 +582,7 @@ export class Collection {
    * @returns {AsyncGenerator<CollectionResourcesList>}
    */
   async *listPages(): AsyncGenerator<CollectionResourcesList> {
-    const walk = await this._listWalk()
-    if (walk === null) {
-      return
-    }
-    yield* walkPages(walk)
+    yield* walkPagesOrEmpty(await this._listWalk())
   }
 
   /**
@@ -595,9 +594,7 @@ export class Collection {
    * @returns {AsyncGenerator<ResourceSummary>}
    */
   async *listItems(): AsyncGenerator<ResourceSummary> {
-    for await (const page of this.listPages()) {
-      yield* page.items
-    }
+    yield* walkItems(this.listPages())
   }
 
   /**
@@ -693,8 +690,10 @@ export class Collection {
    * @returns {Promise<boolean>}
    */
   async isPublic(): Promise<boolean> {
-    const policy = await this.getPolicy()
-    return policy?.type === 'PublicCanRead'
+    return isPublicPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
+    })
   }
 
   /**
@@ -705,7 +704,10 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setPublic(): Promise<void> {
-    await this.setPolicy({ type: 'PublicCanRead' })
+    return setPublicPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
+    })
   }
 
   /**

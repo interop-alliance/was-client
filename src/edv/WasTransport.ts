@@ -36,7 +36,9 @@
  * `/{id}/chunks/{n}` sub-segment (the server's `chunked-streams` affordance),
  * storing the chunk object as an opaque JSON body -- so `EdvClientCore.insert({
  * stream })` / `getStream` drive chunked encrypted blobs over a WAS server
- * unchanged.
+ * unchanged. Both chunk methods are gated on the backend advertising
+ * `chunked-streams` (throwing `NotSupportedError` when it is absent), like
+ * `find` is on `blinded-index-query`.
  * `insert` uses an atomic `If-None-Match: *` create when the backend
  * advertises the optional `conditional-writes` feature; otherwise (and for
  * `update`) writes are advisory -- the EDV `sequence` is not enforced
@@ -51,6 +53,7 @@ import type {
 } from '@interop/data-integrity-core'
 import type { WasClient } from '../WasClient.js'
 import { httpStatus } from '../errors.js'
+import { BackendFeatures } from '../internal/features.js'
 import { readJsonData } from '../internal/content.js'
 import {
   collectionBackend,
@@ -78,16 +81,13 @@ export { JOSE_CONTENT_TYPE }
 const CHUNK_CONTENT_TYPE = 'application/octet-stream'
 
 /**
- * HTTP statuses that mean the backend-descriptor endpoint is legitimately
- * absent (or explicitly unimplemented), as opposed to transiently failing:
- * `404` (no such endpoint), `405` (endpoint does not answer `GET`), `501`
- * (not implemented). These are a definitive "this server advertises no
- * backend features" answer and are safe to cache -- every affordance gate
- * then falls closed against a server that has no backend descriptors. Any
- * other failure (network error, timeout, `401`, `429`, other `5xx`) is
- * transient/ambiguous and is re-probed instead of cached.
+ * The message for the EDV unique-attribute collision (HTTP 409): a
+ * `unique: true` blinded attribute value already held by another document.
+ * Shared by every write method that can trip it.
  */
-const DESCRIPTOR_ABSENT_STATUSES = new Set([404, 405, 501])
+const DUPLICATE_ATTRIBUTE_MESSAGE =
+  'A unique indexed attribute value is already held by another document in ' +
+  'this collection.'
 
 /**
  * The subset of `WasClient` this transport depends on: the signed-request
@@ -123,13 +123,36 @@ function namedError({
   return err
 }
 
+/**
+ * Rethrows a caught transport error as the named error `EdvClientCore`
+ * dispatches on, selected by the error's HTTP status from `mapping`; an
+ * unmapped status (or a non-HTTP error) is rethrown verbatim. The single
+ * status-to-named-error funnel every transport method's catch goes through.
+ *
+ * @param err {unknown}   the caught error
+ * @param mapping {object}   HTTP status to `{ name, message }` of the named
+ *   error to throw in its place (the original error becomes its `cause`)
+ * @returns {never}
+ */
+function mapTransportError(
+  err: unknown,
+  mapping: Record<number, { name: string; message: string }>
+): never {
+  const status = httpStatus(err)
+  const entry = status === undefined ? undefined : mapping[status]
+  if (entry) {
+    throw namedError({ ...entry, cause: err })
+  }
+  throw err
+}
+
 export class WasTransport extends Transport {
   readonly spaceId: string
   readonly collectionId: string
   readonly contentType: string
 
   private readonly _was: WasRequester
-  private _backendFeaturesPromise?: Promise<string[]>
+  private readonly _features: BackendFeatures
 
   /**
    * @param options {object}
@@ -157,6 +180,16 @@ export class WasTransport extends Transport {
     this.spaceId = spaceId
     this.collectionId = collectionId
     this.contentType = contentType
+    // The shared memoizing feature probe (see `BackendFeatures` for the
+    // definitive-vs-transient caching rules), reading this collection's
+    // "Collection Backend Selected" descriptor with a signed GET.
+    this._features = new BackendFeatures(async () => {
+      const response = await this._was.request({
+        path: collectionBackend(this.spaceId, this.collectionId),
+        method: 'GET'
+      })
+      return readJsonData(response)
+    })
   }
 
   /**
@@ -198,74 +231,6 @@ export class WasTransport extends Transport {
   }
 
   /**
-   * The feature tokens the collection's backend advertises in its "Collection
-   * Backend Selected" descriptor (e.g. `conditional-writes`,
-   * `blinded-index-query`). Memoized once it produces a definitive answer: a
-   * successful read (including one that lists no features) and a definitive
-   * "endpoint absent" (`404` / `405` / `501`) both resolve to a cached feature
-   * list, so every affordance gate falls closed against a server that has no
-   * backend descriptors.
-   *
-   * A transient/ambiguous failure (network error, timeout, `401`, `429`, other
-   * `5xx`) is NOT cached: the memo is cleared so the next call re-probes, and
-   * the error is rethrown so the caller fails loud rather than silently
-   * degrading atomicity against a server that may well be capable. (A single
-   * transient failure must not poison the transport for its lifetime.)
-   *
-   * @returns {Promise<string[]>}
-   */
-  private _backendFeatures(): Promise<string[]> {
-    this._backendFeaturesPromise ??= this._probeBackendFeatures()
-    return this._backendFeaturesPromise
-  }
-
-  /**
-   * Reads and parses the backend descriptor once. On a definitive answer
-   * (success, or a `404` / `405` / `501` that means the endpoint is legitimately
-   * absent) resolves the feature list, which `_backendFeatures` then caches. On
-   * a transient failure, clears the memo (so the next call re-probes) and
-   * rethrows.
-   *
-   * @returns {Promise<string[]>}
-   */
-  private async _probeBackendFeatures(): Promise<string[]> {
-    try {
-      const response = await this._was.request({
-        path: collectionBackend(this.spaceId, this.collectionId),
-        method: 'GET'
-      })
-      const descriptor = (await readJsonData(response)) as {
-        features?: unknown
-      } | null
-      return Array.isArray(descriptor?.features)
-        ? descriptor.features.filter(
-            (feature): feature is string => typeof feature === 'string'
-          )
-        : []
-    } catch (err) {
-      const status = httpStatus(err)
-      if (status !== undefined && DESCRIPTOR_ABSENT_STATUSES.has(status)) {
-        return []
-      }
-      // Transient/ambiguous: do not cache this failure -- drop the memo so the
-      // next call re-probes -- and rethrow.
-      this._backendFeaturesPromise = undefined
-      throw err
-    }
-  }
-
-  /**
-   * Whether the collection's backend advertises the optional
-   * `conditional-writes` feature, so `insert` can use an atomic
-   * `If-None-Match: *` create instead of the advisory existence-check path.
-   *
-   * @returns {Promise<boolean>}
-   */
-  private async _conditionalWrites(): Promise<boolean> {
-    return (await this._backendFeatures()).includes('conditional-writes')
-  }
-
-  /**
    * @inheritdoc
    *
    * Inserts a new encrypted document. WAS `PUT` is an upsert, so EDV insert
@@ -288,27 +253,20 @@ export class WasTransport extends Transport {
     if (!encrypted) {
       throw new TypeError('"encrypted" is required.')
     }
-    if (await this._conditionalWrites()) {
+    if (await this._features.has('conditional-writes')) {
       try {
         await this._put(encrypted.id, encrypted, { 'if-none-match': '*' })
       } catch (err) {
-        if (httpStatus(err) === 412) {
-          throw namedError({
+        mapTransportError(err, {
+          412: {
             name: 'DuplicateError',
-            message: `A document with id "${encrypted.id}" already exists.`,
-            cause: err
-          })
-        }
-        if (httpStatus(err) === 409) {
-          throw namedError({
+            message: `A document with id "${encrypted.id}" already exists.`
+          },
+          409: {
             name: 'DuplicateError',
-            message:
-              'A unique indexed attribute value is already held by another ' +
-              'document in this collection.',
-            cause: err
-          })
-        }
-        throw err
+            message: DUPLICATE_ATTRIBUTE_MESSAGE
+          }
+        })
       }
       return
     }
@@ -321,16 +279,9 @@ export class WasTransport extends Transport {
     try {
       await this._put(encrypted.id, encrypted)
     } catch (err) {
-      if (httpStatus(err) === 409) {
-        throw namedError({
-          name: 'DuplicateError',
-          message:
-            'A unique indexed attribute value is already held by another ' +
-            'document in this collection.',
-          cause: err
-        })
-      }
-      throw err
+      mapTransportError(err, {
+        409: { name: 'DuplicateError', message: DUPLICATE_ATTRIBUTE_MESSAGE }
+      })
     }
   }
 
@@ -362,25 +313,15 @@ export class WasTransport extends Transport {
     try {
       await this._put(encrypted.id, encrypted)
     } catch (err) {
-      if (httpStatus(err) === 412) {
-        throw namedError({
+      mapTransportError(err, {
+        412: {
           name: 'InvalidStateError',
           message:
             'Document update conflict: the stored document changed since it ' +
-            'was read. Re-fetch the current document and retry.',
-          cause: err
-        })
-      }
-      if (httpStatus(err) === 409) {
-        throw namedError({
-          name: 'DuplicateError',
-          message:
-            'A unique indexed attribute value is already held by another ' +
-            'document in this collection.',
-          cause: err
-        })
-      }
-      throw err
+            'was read. Re-fetch the current document and retry.'
+        },
+        409: { name: 'DuplicateError', message: DUPLICATE_ATTRIBUTE_MESSAGE }
+      })
     }
   }
 
@@ -407,16 +348,31 @@ export class WasTransport extends Transport {
         method: 'GET'
       })
     } catch (err) {
-      if (httpStatus(err) === 404) {
-        throw namedError({
-          name: 'NotFoundError',
-          message: 'Document not found.',
-          cause: err
-        })
-      }
-      throw err
+      mapTransportError(err, {
+        404: { name: 'NotFoundError', message: 'Document not found.' }
+      })
     }
     return (await readJsonData(response)) as IEncryptedDocument
+  }
+
+  /**
+   * Throws a `NotSupportedError` (the name `EdvClientCore` dispatches on)
+   * unless the collection's backend advertises the given affordance token --
+   * the shared gate in front of every optional-feature operation.
+   *
+   * @param feature {string}   the affordance token (e.g. `chunked-streams`)
+   * @param what {string}      the operation name, for the message
+   * @returns {Promise<void>}
+   */
+  private async _requireFeature(feature: string, what: string): Promise<void> {
+    if (!(await this._features.has(feature))) {
+      throw namedError({
+        name: 'NotSupportedError',
+        message:
+          `${what} is not supported: the collection's backend ` +
+          `does not advertise the "${feature}" affordance.`
+      })
+    }
   }
 
   /**
@@ -464,14 +420,7 @@ export class WasTransport extends Transport {
     if (!query) {
       throw new TypeError('"query" is required.')
     }
-    if (!(await this._backendFeatures()).includes('blinded-index-query')) {
-      throw namedError({
-        name: 'NotSupportedError',
-        message:
-          "Blinded-index query is not supported: the collection's backend " +
-          'does not advertise the "blinded-index-query" affordance.'
-      })
-    }
+    await this._requireFeature('blinded-index-query', 'Blinded-index query')
     // `returnDocuments` is a first-class `IEDVQuery` field, but the WAS profile
     // has no ids-only mode, so it is dropped (whatever its value) and full
     // documents come back -- the best-effort degradation `EdvClientCore.find`
@@ -485,14 +434,9 @@ export class WasTransport extends Transport {
         json: { profile: 'blinded-index', ...blindedQuery }
       })
     } catch (err) {
-      if (httpStatus(err) === 404) {
-        throw namedError({
-          name: 'NotFoundError',
-          message: 'Collection not found.',
-          cause: err
-        })
-      }
-      throw err
+      mapTransportError(err, {
+        404: { name: 'NotFoundError', message: 'Collection not found.' }
+      })
     }
     const result = await readJsonData(response)
     if (result === null || typeof result !== 'object') {
@@ -542,9 +486,11 @@ export class WasTransport extends Transport {
    * `PUT` as an opaque binary body ({@link CHUNK_CONTENT_TYPE}) to the chunk's
    * own URL (`.../chunks/{index}`), signed like every other write. The server
    * stores the bytes verbatim -- it never parses the chunk -- so any
-   * client-side crypto framing is transparent to it. The parent Resource must
-   * already exist (`EdvClientCore.insert`/`update` writes the document envelope
-   * before draining the stream), so a 404 here surfaces as a `NotFoundError`.
+   * client-side crypto framing is transparent to it. Requires the backend's
+   * `chunked-streams` affordance (throws `NotSupportedError` when it is
+   * absent). The parent Resource must already exist
+   * (`EdvClientCore.insert`/`update` writes the document envelope before
+   * draining the stream), so a 404 here surfaces as a `NotFoundError`.
    *
    * @param options {object}
    * @param options.docId {string}     the owning document id (= WAS resource id)
@@ -561,6 +507,10 @@ export class WasTransport extends Transport {
     if (!chunk) {
       throw new TypeError('"chunk" is required.')
     }
+    // Gate on the affordance before diagnosing a 404: against a server with no
+    // `/chunks/{n}` route at all, the 404 would otherwise be misreported as a
+    // missing parent document.
+    await this._requireFeature('chunked-streams', 'Chunked encrypted storage')
     try {
       await this._was.request({
         path: this._chunkPath(docId, chunk.index),
@@ -569,16 +519,14 @@ export class WasTransport extends Transport {
         headers: { 'content-type': CHUNK_CONTENT_TYPE }
       })
     } catch (err) {
-      if (httpStatus(err) === 404) {
-        throw namedError({
+      mapTransportError(err, {
+        404: {
           name: 'NotFoundError',
           message:
             `Cannot store chunk ${chunk.index}: the parent document ` +
-            `"${docId}" does not exist. Write the document before its chunks.`,
-          cause: err
-        })
-      }
-      throw err
+            `"${docId}" does not exist. Write the document before its chunks.`
+        }
+      })
     }
   }
 
@@ -587,9 +535,10 @@ export class WasTransport extends Transport {
    *
    * Reads one encrypted chunk back by index, `GET`ting the chunk's own URL and
    * parsing the opaque body (stored as raw bytes, so parsed client-side) back
-   * into the EDV chunk object the decrypt stream consumes. A missing chunk
-   * (404) surfaces as a `NotFoundError` (the name `EdvClientCore` expects), so
-   * a reassembling reader can distinguish it.
+   * into the EDV chunk object the decrypt stream consumes. Requires the
+   * backend's `chunked-streams` affordance (throws `NotSupportedError` when it
+   * is absent). A missing chunk (404) surfaces as a `NotFoundError` (the name
+   * `EdvClientCore` expects), so a reassembling reader can distinguish it.
    *
    * @param options {object}
    * @param options.docId {string}        the owning document id
@@ -606,6 +555,10 @@ export class WasTransport extends Transport {
     if (chunkIndex === undefined) {
       throw new TypeError('"chunkIndex" is required.')
     }
+    // Gate on the affordance before diagnosing a 404: against a server with no
+    // `/chunks/{n}` route at all, the 404 would otherwise surface as a spurious
+    // missing-chunk (data corruption) report.
+    await this._requireFeature('chunked-streams', 'Chunked encrypted storage')
     let response: HttpResponse
     try {
       response = await this._was.request({
@@ -613,14 +566,12 @@ export class WasTransport extends Transport {
         method: 'GET'
       })
     } catch (err) {
-      if (httpStatus(err) === 404) {
-        throw namedError({
+      mapTransportError(err, {
+        404: {
           name: 'NotFoundError',
-          message: `Chunk ${chunkIndex} of document "${docId}" not found.`,
-          cause: err
-        })
-      }
-      throw err
+          message: `Chunk ${chunkIndex} of document "${docId}" not found.`
+        }
+      })
     }
     // The chunk was stored as opaque bytes, so the http-client did not
     // pre-parse it: decode the body text and parse the EDV chunk object back.

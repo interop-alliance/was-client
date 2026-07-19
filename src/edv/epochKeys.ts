@@ -186,7 +186,7 @@ function lazyEpochKey({
   let pending: Promise<IKeyAgreementKey> | undefined
   const resolve = (): Promise<IKeyAgreementKey> => {
     if (pending === undefined) {
-      pending = unwrapEpochKey({ epoch, keyAgreementKey }).then(key => {
+      const promise = unwrapEpochKey({ epoch, keyAgreementKey }).then(key => {
         if (!key) {
           // The reader was named in this epoch (else no lazy key was built) but
           // its entry did not unwrap: a corrupt entry. The codec's `_decrypt`
@@ -199,6 +199,16 @@ function lazyEpochKey({
         }
         return key
       })
+      // Cache only a successful unwrap: drop a rejected promise so the next
+      // read re-attempts (the failure may have been transient), rather than
+      // replaying the same cached rejection for the life of the handle. The
+      // identity guard avoids clobbering a newer in-flight attempt.
+      promise.catch((): void => {
+        if (pending === promise) {
+          pending = undefined
+        }
+      })
+      pending = promise
     }
     return pending
   }

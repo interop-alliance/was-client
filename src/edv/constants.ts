@@ -3,10 +3,13 @@
  */
 /**
  * Shared EDV-over-WAS constants: the stored-envelope content types (the portable
- * default and the preferred JOSE marker) and the `TextEncoder` used to serialize
- * envelopes to bytes. Kept in one place so `WasTransport` and `EdvCodec` stay in
- * lockstep instead of each declaring their own copy.
+ * default and the preferred JOSE marker) and the envelope byte serialization.
+ * Kept in one place so `WasTransport` and `EdvCodec` stay in lockstep instead
+ * of each declaring their own copy.
  */
+import { ENCODER } from '../internal/content.js'
+
+export { ENCODER }
 
 /**
  * The content type used by default: plain JSON, which an unmodified WAS server
@@ -24,12 +27,6 @@ export const DEFAULT_CONTENT_TYPE = 'application/json'
  * `contentType` option).
  */
 export const JOSE_CONTENT_TYPE = 'application/jose+json'
-
-/**
- * A shared `TextEncoder` for serializing envelope bytes (stateless, so one
- * instance is reused across every write).
- */
-export const ENCODER = new TextEncoder()
 
 /**
  * Serializes an encrypted envelope to its wire bytes -- the single source of

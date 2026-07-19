@@ -134,7 +134,14 @@ export async function unwrapEpochSecret({
   if (!epk || typeof epk.x !== 'string') {
     return null
   }
-  const ephemeralPublicKey = base64urlnopad.decode(epk.x)
+  let ephemeralPublicKey: Uint8Array
+  try {
+    ephemeralPublicKey = base64urlnopad.decode(epk.x)
+  } catch {
+    // A malformed (non-base64url) `epk.x` is the same corrupt-entry class as a
+    // failed unwrap: honor the documented null contract.
+    return null
+  }
   let secret: Uint8Array
   try {
     secret = await keyAgreementKey.deriveSecret({
@@ -153,7 +160,14 @@ export async function unwrapEpochSecret({
   const consumerInfo = TEXT_ENCODER.encode(keyAgreementKey.id)
   const keyData = await deriveKey({ secret, producerInfo, consumerInfo })
   const kek = await createKek({ keyData })
-  return kek.unwrapKey({ wrappedKey: entry.encrypted_key })
+  try {
+    return await kek.unwrapKey({ wrappedKey: entry.encrypted_key })
+  } catch {
+    // `unwrapKey` returns null on an AES integrity failure but throws on a
+    // malformed (non-base64url) `encrypted_key`; both are the same "corrupt
+    // entry" class to a caller, so honor the documented null contract here.
+    return null
+  }
 }
 
 /**
@@ -234,10 +248,21 @@ function publicKeyMultibaseFromEpochId(epochId: string): string {
 }
 
 /**
+ * Memo of already-resolved key ids: the resolution is a pure deterministic
+ * function of the id, and the write path resolves the same epoch key on every
+ * encode, so each distinct id pays the fingerprint reconstruction once. Grows
+ * by one small entry per distinct epoch/recipient key seen in the process.
+ */
+const RESOLVED_KEYS = new Map<
+  string,
+  { id: string; type: string; publicKeyMultibase: string }
+>()
+
+/**
  * A `did:key` key resolver for X25519 key-agreement keys: resolves a
  * `did:key:z...#z...` id (an epoch key, or any self-describing X25519 key) to
  * its public verification method. The public key is the fragment, so no network
- * or registry lookup is needed.
+ * or registry lookup is needed. Memoized per id.
  *
  * @param options {object}
  * @param options.id {string}   the key id to resolve
@@ -251,6 +276,10 @@ export async function didKeyResolver({
   if (!id) {
     throw new Error('A key id is required to resolve.')
   }
+  const cached = RESOLVED_KEYS.get(id)
+  if (cached) {
+    return cached
+  }
   const hash = id.indexOf('#')
   const fragment = hash === -1 ? '' : id.slice(hash + 1)
   if (!fragment.startsWith('z')) {
@@ -262,9 +291,11 @@ export async function didKeyResolver({
     fingerprint: fragment
   })
   keyPair.verifyFingerprint({ fingerprint: fragment })
-  return {
+  const resolved = {
     id,
     type: X25519_TYPE,
     publicKeyMultibase: keyPair.publicKeyMultibase
   }
+  RESOLVED_KEYS.set(id, resolved)
+  return resolved
 }

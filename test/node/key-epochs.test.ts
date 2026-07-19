@@ -109,6 +109,39 @@ describe('epoch key wrap/unwrap round-trip', () => {
     expect(got).toBeNull()
   })
 
+  it('returns null (not a raw decode error) for a malformed encrypted_key', async () => {
+    // A non-base64url encrypted_key must honor the documented null contract
+    // rather than escape as a raw "Unknown letter" decode error, so downstream
+    // callers reach their typed ValidationError / KeyUnwrapError guards.
+    const alice = await makeReader()
+    const { secret } = await mintEpoch()
+    const entry = await wrapEpochSecret({
+      epochSecret: secret,
+      recipient: {
+        id: alice.kak.id,
+        publicKeyMultibase: alice.publicKeyMultibase
+      }
+    })
+    entry.encrypted_key = 'not!!!base64url'
+    const got = await unwrapEpochSecret({ entry, keyAgreementKey: alice.kak })
+    expect(got).toBeNull()
+  })
+
+  it('returns null for a malformed (non-base64url) epk.x', async () => {
+    const alice = await makeReader()
+    const { secret } = await mintEpoch()
+    const entry = await wrapEpochSecret({
+      epochSecret: secret,
+      recipient: {
+        id: alice.kak.id,
+        publicKeyMultibase: alice.publicKeyMultibase
+      }
+    })
+    ;(entry.header.epk as { x: string }).x = 'not!!!base64url'
+    const got = await unwrapEpochSecret({ entry, keyAgreementKey: alice.kak })
+    expect(got).toBeNull()
+  })
+
   it('treats a malformed entry (no epk) as a failure, not a key', async () => {
     const alice = await makeReader()
     const bad = {
@@ -229,6 +262,67 @@ describe('resolveEpochKeys', () => {
     // the current one.
     expect(resolvedBob!.readKeys.length).toBe(1)
     expect(resolvedBob!.writeEpoch).toBe(older.currentEpoch)
+  })
+})
+
+describe('lazy epoch key unwrap retry', () => {
+  it('re-attempts the unwrap on the next read after a transient failure', async () => {
+    // Alice holds epochs 1 and 2; epoch 2 is current (unwrapped eagerly), so
+    // epoch 1 resolves through a lazy key. Her key-agreement key fails
+    // transiently on the lazy unwrap's first attempt (e.g. a KMS-backed key
+    // hiccup). The rejection must not be cached for the life of the handle:
+    // the next read retries and succeeds.
+    const alice = await makeReader()
+    const peer = await makeReader()
+    const epochs = []
+    let currentEpoch = ''
+    for (let index = 0; index < 2; index++) {
+      const { epochId, secret } = await mintEpoch()
+      currentEpoch = epochId
+      epochs.push({
+        id: epochId,
+        recipients: [
+          await wrapEpochSecret({
+            epochSecret: secret,
+            recipient: {
+              id: alice.kak.id,
+              publicKeyMultibase: alice.publicKeyMultibase
+            }
+          })
+        ]
+      })
+    }
+    // Call 1 is the eager write-epoch unwrap; call 2 is the lazy epoch's first
+    // unwrap, made to fail transiently; call 3 (the retry) succeeds.
+    let deriveCalls = 0
+    const flakyKak = {
+      id: alice.kak.id,
+      async deriveSecret(options: { publicKey: unknown }): Promise<Uint8Array> {
+        deriveCalls += 1
+        if (deriveCalls === 2) {
+          throw new Error('transient key-store failure')
+        }
+        return alice.kak.deriveSecret(options)
+      }
+    } as IKeyAgreementKey
+    const resolved = await resolveEpochKeys({
+      encryption: { scheme: 'edv', epochs, currentEpoch },
+      keyAgreementKey: flakyKak
+    })
+    const lazy = resolved!.readKeys[1]!
+    const publicKey = {
+      type: 'X25519KeyAgreementKey2020',
+      publicKeyMultibase: peer.publicKeyMultibase
+    }
+    // First read: the transient failure surfaces (as the lazy key's typed
+    // corrupt-entry error, since the swallowed unwrap resolves null).
+    await expect(lazy.deriveSecret({ publicKey })).rejects.toBeInstanceOf(
+      KeyUnwrapError
+    )
+    // Second read: the rejection was not cached; the unwrap retries and works.
+    const derived = await lazy.deriveSecret({ publicKey })
+    expect(derived).toBeInstanceOf(Uint8Array)
+    expect(derived.length).toBe(32)
   })
 })
 
@@ -654,5 +748,47 @@ describe('removeRecipient security', () => {
       })
     ).rejects.toBeInstanceOf(PreconditionFailedError)
     expect(revoked).toBe(false)
+  })
+
+  it('a retry after a transient revoke failure does not append a redundant epoch', async () => {
+    // First attempt: rotation lands, then the revoke fails transiently and the
+    // whole operation throws. The caller retries. The retry must detect that
+    // the current epoch already excludes the departing reader and skip
+    // straight to the revoke step -- NOT mint and append another epoch per
+    // attempt.
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const fake = mutableCollection(await seedMarker([alice, bob]))
+    let revokeCalls = 0
+    const fakeSpace = {
+      revoke: async () => {
+        revokeCalls += 1
+        if (revokeCalls === 1) {
+          throw new Error('transient network failure')
+        }
+      }
+    }
+    const removal = {
+      collection: fake as unknown as Collection,
+      space: fakeSpace as unknown as Space,
+      recipientId: bob.kak.id,
+      revoke: { id: 'urn:zcap:x' } as never
+    }
+
+    await expect(removeRecipient(removal)).rejects.toThrow(/transient/)
+    // The rotation was durable before the failed revoke: seed epoch + one
+    // rotated epoch.
+    expect(fake._state.encryption.epochs).toHaveLength(2)
+
+    const converged = await removeRecipient(removal)
+    // No third epoch, and the reader stays excluded from the current one.
+    expect(fake._state.encryption.epochs).toHaveLength(2)
+    expect(revokeCalls).toBe(2)
+    const currentEpoch = converged.epochs!.find(
+      epoch => epoch.id === converged.currentEpoch
+    )!
+    expect(currentEpoch.recipients.map(entry => entry.header.kid)).toEqual([
+      alice.kak.id
+    ])
   })
 })

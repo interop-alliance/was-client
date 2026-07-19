@@ -73,14 +73,32 @@ function clientWithRouter({
       calls.push(args)
       const isGet = (args.method ?? 'GET').toUpperCase() === 'GET'
       if (isGet) {
+        const segments = new URL(args.url ?? '').pathname
+          .split('/')
+          .filter(Boolean)
+        // The backend-descriptor GET (`/space/{s}/{c}/backend`) answers the
+        // feature probe -- even when resource reads 404, so the conditional
+        // write path sees a `conditional-writes`-capable backend.
+        if (
+          segments.length === 4 &&
+          segments[0] === 'space' &&
+          segments[3] === 'backend'
+        ) {
+          const descriptor = { id: 'default', features: ['conditional-writes'] }
+          return {
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            data: descriptor,
+            async json() {
+              return descriptor
+            }
+          } as unknown as HttpResponse
+        }
         if (readStatus === 404) {
           throw { status: 404, response: { status: 404 } }
         }
         // A collection-description GET (`/space/{spaceId}/{collectionId}`, three
         // path segments) drives marker discovery; carry the marker when set.
-        const segments = new URL(args.url ?? '').pathname
-          .split('/')
-          .filter(Boolean)
         if (segments.length === 3 && segments[0] === 'space') {
           const description = {
             id: segments[2],

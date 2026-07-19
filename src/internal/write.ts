@@ -12,11 +12,11 @@
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite, ResourceCodec } from '../codec.js'
-import { PreconditionFailedError } from '../errors.js'
+import { PreconditionFailedError, ValidationError } from '../errors.js'
 import type { IZcap, ResourceData } from '../types.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
-import { writeHeaders } from './conditional.js'
+import { encodedPrecondition, writeHeaders } from './conditional.js'
 import type { WritePrecondition } from './conditional.js'
 
 /**
@@ -81,6 +81,11 @@ export async function sendEncodedWrite(
  *   that 412 is re-thrown here with a message naming the real cause, instead
  *   of surfacing as an inexplicable failed create. Conditional codecs
  *   therefore need read access to update an existing document.
+ * - A backend that does NOT advertise `conditional-writes` ignores the
+ *   `If-None-Match: *` guard, so the 412 safety net above never fires there: a
+ *   masked-404 insert would silently overwrite the existing document and reset
+ *   its sequence. The insert-after-null-pre-read is therefore refused (fail
+ *   closed) unless the backend advertises the feature.
  *
  * @param context {ClientContext}
  * @param options {object}
@@ -88,6 +93,9 @@ export async function sendEncodedWrite(
  * @param options.codec {ResourceCodec}          the collection's resolved codec
  * @param options.id {string}                    the resource id
  * @param options.data {ResourceData}            the plaintext value
+ * @param options.features {function}            resolves the backend's
+ *   advertised feature tokens (the handle's shared `BackendFeatures` probe);
+ *   consulted only for a conditional codec's insert-after-null-pre-read
  * @param [options.contentType] {string}         caller-supplied content type
  * @param [options.capability] {IZcap}
  * @param [options.precondition] {WritePrecondition}   the caller's explicit
@@ -101,6 +109,7 @@ export async function upsertResource(
     codec,
     id,
     data,
+    features,
     contentType,
     capability,
     precondition
@@ -109,6 +118,7 @@ export async function upsertResource(
     codec: ResourceCodec
     id: string
     data: ResourceData
+    features: () => Promise<string[]>
     contentType?: string
     capability?: IZcap
     precondition?: WritePrecondition
@@ -122,12 +132,33 @@ export async function upsertResource(
       capability,
       read: true
     })
+    if (
+      current === null &&
+      !(await features()).includes('conditional-writes')
+    ) {
+      // The write would be encoded as a fresh insert guarded only by
+      // `If-None-Match: *`, which this backend ignores -- so if the document in
+      // fact exists but is unreadable with this capability (the masked-404
+      // ambiguity), the PUT would silently destroy it. Refuse rather than risk
+      // the clobber.
+      throw new ValidationError(
+        `Cannot create the document at "${path}": no current document is ` +
+          'readable there, which cannot distinguish "absent" from "exists ' +
+          'but unreadable with this capability" (WAS masks unauthorized ' +
+          "reads as 404), and the collection's backend does not advertise " +
+          "the 'conditional-writes' feature -- so the server could not " +
+          'reject the write either, and an existing document would be ' +
+          'silently overwritten. Use a backend with conditional writes, a ' +
+          'capability that can read the current document and the backend ' +
+          'descriptor, or add() to mint a fresh document id.'
+      )
+    }
   }
   const encoded = await codec.encode({ id, data, contentType, current })
   // A conditional codec computes the precondition itself (from the sequence /
   // ETag); a plaintext codec defers to the caller's explicit options.
   const chosen = codec.conditionalWrites
-    ? { ifMatch: encoded.ifMatch, ifNoneMatch: encoded.ifNoneMatch }
+    ? encodedPrecondition(encoded)
     : precondition
   try {
     return await sendEncodedWrite(context, {

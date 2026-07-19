@@ -61,6 +61,45 @@ export async function writePolicy(
 }
 
 /**
+ * Whether the policy at `policyPath` is `PublicCanRead` -- the shared body of
+ * the `isPublic()` sugar on the three handle classes.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.policyPath {string}   the policy sub-resource path
+ * @param [options.capability] {IZcap}
+ * @returns {Promise<boolean>}
+ */
+export async function isPublicPolicy(
+  context: ClientContext,
+  options: { policyPath: string; capability?: IZcap }
+): Promise<boolean> {
+  const policy = await readPolicy(context, options)
+  return policy?.type === 'PublicCanRead'
+}
+
+/**
+ * Sets the policy at `policyPath` to `PublicCanRead` -- the shared body of the
+ * `setPublic()` sugar on the three handle classes.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.policyPath {string}   the policy sub-resource path
+ * @param [options.capability] {IZcap}
+ * @returns {Promise<void>}
+ */
+export async function setPublicPolicy(
+  context: ClientContext,
+  { policyPath, capability }: { policyPath: string; capability?: IZcap }
+): Promise<void> {
+  await writePolicy(context, {
+    policyPath,
+    policy: { type: 'PublicCanRead' },
+    capability
+  })
+}
+
+/**
  * Removes the access-control policy at `policyPath`, reverting to
  * capability-only access. Idempotent.
  *

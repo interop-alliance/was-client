@@ -19,7 +19,7 @@
  */
 import { describe, it, beforeAll, afterAll, expect } from 'vitest'
 import { EdvClientCore } from '@interop/edv-client'
-import type { IKeyAgreementKey } from '@interop/data-integrity-core'
+import type { IEDVChunk, IKeyAgreementKey } from '@interop/data-integrity-core'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
@@ -159,7 +159,7 @@ describeLive('chunked encrypted blobs over WAS (live server)', () => {
         ciphertext: 'def',
         tag: 'ghi'
       }
-    }
+    } as unknown as IEDVChunk
     await transport.storeChunk({ docId: inserted.id, chunk })
 
     const read = await transport.getChunk({
@@ -183,7 +183,12 @@ describeLive('chunked encrypted blobs over WAS (live server)', () => {
     await expect(
       transport.storeChunk({
         docId: 'zNonexistentDocumentId000000000000',
-        chunk: { sequence: 0, index: 0, offset: 0, jwe: { ciphertext: 'x' } }
+        chunk: {
+          sequence: 0,
+          index: 0,
+          offset: 0,
+          jwe: { ciphertext: 'x' }
+        } as unknown as IEDVChunk
       })
     ).rejects.toMatchObject({ name: 'NotFoundError' })
   })

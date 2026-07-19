@@ -12,10 +12,18 @@ import { assertNotReserved } from './internal/reserved.js'
 import { WasServerError } from './errors.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
-import { CodecHolder, resolveCodec } from './internal/codec.js'
+import { collectionCodecHolder } from './internal/codec.js'
+import { collectionBackendFeatures } from './internal/features.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
+import { ENCODER } from './internal/content.js'
 import { upsertResource } from './internal/write.js'
-import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
+import {
+  readPolicy,
+  writePolicy,
+  deletePolicy,
+  isPublicPolicy,
+  setPublicPolicy
+} from './internal/policy.js'
 import type { ResourceCodec } from './codec.js'
 import type {
   EncryptionOverride,
@@ -26,12 +34,6 @@ import type {
   ResourceMetadata,
   ResourceMetadataCustom
 } from './types.js'
-
-/**
- * A shared `TextEncoder` for re-serializing a pre-parsed JSON body to bytes in
- * `getBytes()` (stateless, so one instance is reused).
- */
-const ENCODER = new TextEncoder()
 
 /**
  * Re-serializes a read response's pre-parsed JSON body to a string, or returns
@@ -74,6 +76,13 @@ export class Resource {
    * reset (e.g. after `configure()` adds the encryption marker) propagate here.
    */
   private readonly _codec: () => Promise<ResourceCodec>
+  /**
+   * Resolves the backend's advertised feature tokens: the parent collection's
+   * shared probe when this handle came from `collection.resource(id)`,
+   * otherwise one built (and memoized) for this handle. Consulted by the
+   * conditional-codec write path (see `upsertResource`).
+   */
+  private readonly _features: () => Promise<string[]>
 
   /**
    * @param options {object}
@@ -86,6 +95,8 @@ export class Resource {
    *   codec, so a resource handle obtained via `collection.resource(id)` does
    *   not repeat the backend() round-trip. A standalone resource resolves its
    *   own.
+   * @param [options.features] {function}   resolver sharing the parent
+   *   collection's backend-feature probe. A standalone resource probes its own.
    * @param [options.encryption] {EncryptionOverride}   per-handle encryption
    *   override for a standalone resource (ignored when `codec` is supplied --
    *   the shared parent codec wins)
@@ -97,6 +108,7 @@ export class Resource {
     resourceId,
     capability,
     codec,
+    features,
     encryption
   }: {
     context: ClientContext
@@ -105,6 +117,7 @@ export class Resource {
     resourceId: string
     capability?: IZcap
     codec?: () => Promise<ResourceCodec>
+    features?: () => Promise<string[]>
     encryption?: EncryptionOverride
   }) {
     // Guard the id against the Reserved Path Segment Registry up front, so a
@@ -124,15 +137,23 @@ export class Resource {
     if (codec) {
       this._codec = codec
     } else {
-      const holder = new CodecHolder(() =>
-        resolveCodec(this._context, {
-          spaceId: this.spaceId,
-          collectionId: this.collectionId,
-          override: encryption,
-          capability: this._capability
-        })
-      )
+      const holder = collectionCodecHolder(context, {
+        spaceId,
+        collectionId,
+        override: encryption,
+        capability
+      })
       this._codec = () => holder.get()
+    }
+    if (features) {
+      this._features = features
+    } else {
+      const probe = collectionBackendFeatures(context, {
+        spaceId,
+        collectionId,
+        capability
+      })
+      this._features = () => probe.get()
     }
   }
 
@@ -235,8 +256,9 @@ export class Resource {
    * automatically by the codec (the EDV `sequence` becomes the enforced ETag), so
    * the explicit options are for plaintext collections -- and because the codec
    * pre-reads the current document to compute them, updating an existing
-   * encrypted document needs read access (a PUT-only capability can only create;
-   * see `upsertResource`). Returns the new `etag`.
+   * encrypted document needs read access (a PUT-only capability can only
+   * create, and only against a backend advertising `conditional-writes`; see
+   * `upsertResource`). Returns the new `etag`.
    *
    * @param data {ResourceData}
    * @param options {object}
@@ -259,6 +281,7 @@ export class Resource {
       codec,
       id: this.id,
       data,
+      features: this._features,
       contentType: options.contentType,
       capability: this._capability,
       precondition: {
@@ -393,6 +416,26 @@ export class Resource {
   }
 
   /**
+   * The shared read-then-CAS body of {@link setName} / {@link setTags}: reads
+   * the current metadata, merges `patch` over its `custom`, and writes it back
+   * pinned to the read's `etag` (when the backend supports
+   * `conditional-writes`), so a concurrent metadata write surfaces as
+   * `PreconditionFailedError` instead of being silently erased by the
+   * full-replacement write.
+   *
+   * @param patch {ResourceMetadataCustom}   the properties to merge over the
+   *   current `custom`
+   * @returns {Promise<void>}
+   */
+  private async _patchCustom(patch: ResourceMetadataCustom): Promise<void> {
+    const current = await this.meta()
+    await this.setMeta(
+      { custom: { ...current?.custom, ...patch } },
+      { ifMatch: current?.etag }
+    )
+  }
+
+  /**
    * Sets the resource's human-readable `name` (the value surfaced in collection
    * listings), preserving any existing `tags`. Convenience over `setMeta()`.
    * The write is pinned to the `etag` the `meta()` read returned (when the
@@ -404,11 +447,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    const current = await this.meta()
-    await this.setMeta(
-      { custom: { ...current?.custom, name } },
-      { ifMatch: current?.etag }
-    )
+    return this._patchCustom({ name })
   }
 
   /**
@@ -419,11 +458,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    const current = await this.meta()
-    await this.setMeta(
-      { custom: { ...current?.custom, tags } },
-      { ifMatch: current?.etag }
-    )
+    return this._patchCustom({ tags })
   }
 
   private get _policyPath(): string {
@@ -465,7 +500,10 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setPublic(): Promise<void> {
-    await this.setPolicy({ type: 'PublicCanRead' })
+    return setPublicPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
+    })
   }
 
   /**
@@ -474,8 +512,10 @@ export class Resource {
    * @returns {Promise<boolean>}
    */
   async isPublic(): Promise<boolean> {
-    const policy = await this.getPolicy()
-    return policy?.type === 'PublicCanRead'
+    return isPublicPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
+    })
   }
 
   /**
