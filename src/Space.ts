@@ -21,13 +21,20 @@ import {
   spaceLinkset
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
+import { unreadableDescriptionError } from './internal/describe.js'
 import { delegateGrantAt } from './internal/grant.js'
 import { submitRevocation } from './internal/revoke.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
-import { ValidationError, WasServerError } from './errors.js'
+import { WasServerError } from './errors.js'
 import { createdId, dataOrNull, toPlainBytes } from './internal/content.js'
-import { readPolicy, writePolicy, deletePolicy } from './internal/policy.js'
+import {
+  readPolicy,
+  writePolicy,
+  deletePolicy,
+  isPublicPolicy,
+  setPublicPolicy
+} from './internal/policy.js'
 import { Collection } from './Collection.js'
 import type {
   BackendDescriptor,
@@ -126,14 +133,16 @@ export class Space {
       !desc.force &&
       !(desc.name !== undefined && desc.controller !== undefined)
     ) {
-      throw new ValidationError(
-        `Cannot configure space "${this.id}": its current description is not ` +
-          'readable with this capability (WAS returns 404 for both not-found ' +
-          'and unauthorized), so merging forward could silently change the ' +
-          'controller or drop the existing name. Supply both `name` and ' +
-          '`controller` explicitly, use a read-capable capability, or pass ' +
-          '`force: true` if you are creating a new space.'
-      )
+      throw unreadableDescriptionError({
+        operation: `configure space "${this.id}"`,
+        consequence:
+          'merging forward could silently change the controller or drop the ' +
+          'existing name',
+        advice:
+          'Supply both `name` and `controller` explicitly, use a ' +
+          'read-capable capability, or pass `force: true` if you are ' +
+          'creating a new space.'
+      })
     }
     const name = desc.name ?? current?.name
     const controller =
@@ -562,8 +571,10 @@ export class Space {
    * @returns {Promise<boolean>}
    */
   async isPublic(): Promise<boolean> {
-    const policy = await this.getPolicy()
-    return policy?.type === 'PublicCanRead'
+    return isPublicPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
+    })
   }
 
   /**
@@ -574,7 +585,10 @@ export class Space {
    * @returns {Promise<void>}
    */
   async setPublic(): Promise<void> {
-    await this.setPolicy({ type: 'PublicCanRead' })
+    return setPublicPolicy(this._context, {
+      policyPath: this._policyPath,
+      capability: this._capability
+    })
   }
 
   /**

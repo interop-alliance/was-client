@@ -20,7 +20,7 @@ import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { prepareBody, parseResource } from './content.js'
-import { describeCollection } from './describe.js'
+import { describeCollection, unreadableDescriptionError } from './describe.js'
 import { EncryptionError } from '../errors.js'
 import type {
   CollectionEncryption,
@@ -80,6 +80,31 @@ export class CodecHolder {
   reset(): void {
     this._promise = undefined
   }
+}
+
+/**
+ * Builds the per-handle {@link CodecHolder} for a collection's codec -- the
+ * one resolver wiring shared by the `Collection` and standalone `Resource`
+ * constructors, so the two cannot drift.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.override] {EncryptionOverride}   per-handle override
+ * @param [options.capability] {IZcap}   the handle's bound capability
+ * @returns {CodecHolder}
+ */
+export function collectionCodecHolder(
+  context: ClientContext,
+  options: {
+    spaceId: string
+    collectionId: string
+    override?: EncryptionOverride
+    capability?: IZcap
+  }
+): CodecHolder {
+  return new CodecHolder(() => resolveCodec(context, options))
 }
 
 /**
@@ -196,15 +221,18 @@ export async function resolveCodec(
     capability
   })
   if (description === null) {
-    throw new EncryptionError(
-      `Cannot determine whether collection ${spaceId}/${collectionId} is ` +
-        'encrypted: its description is not readable (a resource-scoped ' +
-        'capability cannot read the collection description, and WAS returns ' +
-        '404 for both not-found and unauthorized). Refusing to fall back to ' +
-        'plaintext. Pass an explicit per-handle encryption override -- ' +
+    throw unreadableDescriptionError({
+      operation:
+        `determine whether collection ${spaceId}/${collectionId} is ` +
+        'encrypted',
+      consequence:
+        'an encryption-capable client refuses to fall back to plaintext',
+      advice:
+        'Pass an explicit per-handle encryption override -- ' +
         "`{ encryption: 'plaintext' }` to write plaintext, or a scheme/keys " +
-        'override to encrypt.'
-    )
+        'override to encrypt.',
+      ErrorClass: EncryptionError
+    })
   }
   if (!description.encryption) {
     return identityCodec

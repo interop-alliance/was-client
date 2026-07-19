@@ -15,7 +15,10 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { HttpResponse } from '@interop/http-client'
-import type { IEncryptedDocument } from '@interop/data-integrity-core'
+import type {
+  IEDVChunk,
+  IEncryptedDocument
+} from '@interop/data-integrity-core'
 
 import { WasTransport, JOSE_CONTENT_TYPE } from '../../src/edv/index.js'
 
@@ -591,47 +594,63 @@ describe('WasTransport -- chunked streams (storeChunk / getChunk)', () => {
     index: 2,
     offset: 4096,
     jwe: { ciphertext: 'opaque' }
+  } as unknown as IEDVChunk
+
+  /**
+   * A request stub for a backend WITH the `chunked-streams` affordance: the
+   * backend-descriptor GET answers the feature list, and every other request is
+   * handled by `handle`.
+   *
+   * @param handle {Function}   handles the non-descriptor requests
+   * @returns {ReturnType<typeof vi.fn>}
+   */
+  function chunkedRequest(
+    handle: (input: { path?: string; method?: string }) => unknown
+  ) {
+    return vi.fn(async (input: { path?: string; method?: string }) => {
+      if (input.path?.endsWith('/backend') && input.method === 'GET') {
+        return dataResponse({ features: ['chunked-streams'] })
+      }
+      return handle(input)
+    })
   }
 
   it('PUTs a serialized chunk to its own chunks/{index} URL as opaque bytes', async () => {
-    const request = vi.fn(async () => ({}) as HttpResponse)
+    const request = chunkedRequest(() => ({}) as HttpResponse)
     await transport(request).storeChunk({ docId: 'doc1', chunk })
-    expect(request).toHaveBeenCalledTimes(1)
-    const [input] = request.mock.calls[0] as [
-      {
-        path: string
-        method: string
-        body: unknown
-        headers: Record<string, string>
-      }
-    ]
-    expect(input.method).toBe('PUT')
-    expect(input.path).toBe('/space/space%201/docs/doc1/chunks/2')
-    expect(input.headers['content-type']).toBe('application/octet-stream')
-    expect(decodeBody(input.body)).toEqual(chunk)
+    const put = request.mock.calls.at(-1)![0] as {
+      path: string
+      method: string
+      body: unknown
+      headers: Record<string, string>
+    }
+    expect(put.method).toBe('PUT')
+    expect(put.path).toBe('/space/space%201/docs/doc1/chunks/2')
+    expect(put.headers['content-type']).toBe('application/octet-stream')
+    expect(decodeBody(put.body)).toEqual(chunk)
   })
 
   it('GETs and parses a chunk back into the EDV chunk object', async () => {
-    const request = vi.fn(
-      async () =>
-        ({
-          async text() {
-            return JSON.stringify(chunk)
-          }
-        }) as unknown as HttpResponse
-    )
+    const request = chunkedRequest(() => ({
+      async text() {
+        return JSON.stringify(chunk)
+      }
+    }))
     const read = await transport(request).getChunk({
       docId: 'doc1',
       chunkIndex: 2
     })
     expect(read).toEqual(chunk)
-    const [input] = request.mock.calls[0] as [{ path: string; method: string }]
-    expect(input.method).toBe('GET')
-    expect(input.path).toBe('/space/space%201/docs/doc1/chunks/2')
+    const get = request.mock.calls.at(-1)![0] as {
+      path: string
+      method: string
+    }
+    expect(get.method).toBe('GET')
+    expect(get.path).toBe('/space/space%201/docs/doc1/chunks/2')
   })
 
   it('maps a 404 on storeChunk (absent parent) to NotFoundError', async () => {
-    const request = vi.fn(async () => {
+    const request = chunkedRequest(() => {
       throw httpError(404)
     })
     await expect(
@@ -640,12 +659,37 @@ describe('WasTransport -- chunked streams (storeChunk / getChunk)', () => {
   })
 
   it('maps a 404 on getChunk to NotFoundError', async () => {
-    const request = vi.fn(async () => {
+    const request = chunkedRequest(() => {
       throw httpError(404)
     })
     await expect(
       transport(request).getChunk({ docId: 'doc1', chunkIndex: 9 })
     ).rejects.toMatchObject({ name: 'NotFoundError' })
+  })
+
+  it('gates both chunk methods on the chunked-streams affordance', async () => {
+    // Backend advertises no features: against a server with no /chunks/{n}
+    // route, the 404 must NOT be misdiagnosed as a missing parent document
+    // (storeChunk) or a missing chunk (getChunk) -- both methods refuse up
+    // front with NotSupportedError instead.
+    const request = vi.fn(async (input: { method?: string }) => {
+      if (input.method === 'GET') {
+        throw httpError(404) // no backend descriptor -> no features
+      }
+      throw httpError(404) // no /chunks route either
+    })
+    const wasTransport = transport(request)
+    await expect(
+      wasTransport.storeChunk({ docId: 'doc1', chunk })
+    ).rejects.toMatchObject({ name: 'NotSupportedError' })
+    await expect(
+      wasTransport.getChunk({ docId: 'doc1', chunkIndex: 2 })
+    ).rejects.toMatchObject({ name: 'NotSupportedError' })
+    // No chunk request was ever sent -- only the (cached) descriptor probe.
+    const nonGets = request.mock.calls.filter(
+      ([input]) => (input as { method?: string }).method !== 'GET'
+    )
+    expect(nonGets).toHaveLength(0)
   })
 
   it('requires docId and chunk', async () => {

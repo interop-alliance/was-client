@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { PreconditionFailedError } from '../../src/index.js'
+import { PreconditionFailedError, ValidationError } from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
 import type { ClientContext, SendInput } from '../../src/internal/request.js'
 import { upsertResource } from '../../src/internal/write.js'
@@ -21,6 +21,14 @@ import { upsertResource } from '../../src/internal/write.js'
  * codec's precondition behavior (fresh insert when `current` is null, pinned
  * update otherwise).
  */
+/**
+ * A features probe for a backend advertising `conditional-writes` -- the
+ * capable-backend default for these tests.
+ */
+async function conditionalFeatures(): Promise<string[]> {
+  return ['conditional-writes']
+}
+
 const conditionalCodec: ResourceCodec = {
   conditionalWrites: true,
   async encode({ id, data, current }) {
@@ -94,7 +102,8 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
         path: '/space/s/c/r',
         codec: conditionalCodec,
         id: 'r',
-        data: { v: 1 }
+        data: { v: 1 },
+        features: conditionalFeatures
       })
     ).rejects.toThrow(/not readable with this capability/)
   })
@@ -105,7 +114,8 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
       path: '/space/s/c/r',
       codec: conditionalCodec,
       id: 'r',
-      data: { v: 1 }
+      data: { v: 1 },
+      features: conditionalFeatures
     }).catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(PreconditionFailedError)
     expect((failure as PreconditionFailedError).cause).toBeInstanceOf(
@@ -121,7 +131,8 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
       path: '/space/s/c/r',
       codec: conditionalCodec,
       id: 'r',
-      data: { v: 2 }
+      data: { v: 2 },
+      features: conditionalFeatures
     }).catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(PreconditionFailedError)
     expect((failure as Error).message).not.toMatch(
@@ -135,7 +146,8 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
       path: '/space/s/c/r',
       codec: conditionalCodec,
       id: 'r',
-      data: { v: 1 }
+      data: { v: 1 },
+      features: conditionalFeatures
     })
     expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
     // The pre-read succeeded, so the codec pinned the update to its ETag.
@@ -153,9 +165,46 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
       codec: plaintextCodec,
       id: 'r',
       data: { v: 1 },
+      features: conditionalFeatures,
       precondition: { ifMatch: '"caller"' }
     })
     expect(calls.map(call => call.method)).toEqual(['PUT'])
     expect(calls[0]?.headers?.['if-match']).toBe('"caller"')
+  })
+})
+
+describe('upsertResource: insert gate on a non-conditional backend', () => {
+  it('refuses an insert-after-null-pre-read when the backend lacks conditional-writes', async () => {
+    // The pre-read is null (absent OR unreadable -- indistinguishable), and the
+    // backend would ignore `If-None-Match: *`, so a masked-404 insert could
+    // silently clobber an existing document. The write must fail closed before
+    // any PUT is sent.
+    const { context, calls } = contextWithStatuses({ getStatus: 404 })
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: async () => []
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(ValidationError)
+    expect((failure as Error).message).toMatch(/conditional-writes/)
+    expect(calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it('does not consult the features probe when the pre-read found the document', async () => {
+    // An update (current document readable) degrades to advisory on a
+    // non-conditional backend by design; the probe must not even be consulted.
+    const { context, calls } = contextWithStatuses()
+    await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: async () => {
+        throw new Error('features must not be consulted for an update')
+      }
+    })
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
   })
 })

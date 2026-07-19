@@ -27,8 +27,9 @@ import {
 } from './internal/content.js'
 import {
   buildPageWalk,
-  collectPages,
-  walkPages
+  collectWalk,
+  walkItems,
+  walkPagesOrEmpty
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
@@ -282,8 +283,7 @@ export class WasClient {
   }: {
     collectionUrl: string
   }): Promise<CollectionResourcesList | null> {
-    const walk = await this._publicListWalk(collectionUrl)
-    return walk === null ? null : collectPages(walk)
+    return collectWalk(await this._publicListWalk(collectionUrl))
   }
 
   /**
@@ -302,11 +302,7 @@ export class WasClient {
   }: {
     collectionUrl: string
   }): AsyncGenerator<CollectionResourcesList> {
-    const walk = await this._publicListWalk(collectionUrl)
-    if (walk === null) {
-      return
-    }
-    yield* walkPages(walk)
+    yield* walkPagesOrEmpty(await this._publicListWalk(collectionUrl))
   }
 
   /**
@@ -324,11 +320,7 @@ export class WasClient {
   }: {
     collectionUrl: string
   }): AsyncGenerator<ResourceSummary> {
-    for await (const page of this.publicListCollectionPages({
-      collectionUrl
-    })) {
-      yield* page.items
-    }
+    yield* walkItems(this.publicListCollectionPages({ collectionUrl }))
   }
 
   /**

@@ -27,6 +27,7 @@
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { Collection } from '../Collection.js'
 import type { Space } from '../Space.js'
+import { unreadableDescriptionError } from '../internal/describe.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
 import type {
   CollectionEncryption,
@@ -141,42 +142,47 @@ export async function addRecipient({
             'initRecipients first.'
         )
       }
-      const nextEpochs: CollectionEncryptionEpoch[] = []
-      for (const epoch of epochs) {
-        // Already a recipient of this epoch? Leave it untouched (idempotent).
-        if (epoch.recipients.some(entry => entry.header.kid === recipient.id)) {
-          nextEpochs.push(epoch)
-          continue
-        }
-        const ownEntry = epoch.recipients.find(
-          entry => entry.header.kid === owner.keyAgreementKey.id
-        )
-        if (!ownEntry) {
-          throw new ValidationError(
-            `Cannot addRecipient: the caller is not a recipient of epoch ` +
-              `"${epoch.id}", so it cannot unwrap that epoch key to escrow it ` +
-              'to the new reader.'
+      // Each epoch's unwrap + re-wrap is independent of the others', so run
+      // them concurrently (order-preserving), like `initRecipients` and
+      // `removeRecipient` wrap their recipients.
+      const nextEpochs = await Promise.all(
+        epochs.map(async (epoch): Promise<CollectionEncryptionEpoch> => {
+          // Already a recipient of this epoch? Leave it untouched (idempotent).
+          if (
+            epoch.recipients.some(entry => entry.header.kid === recipient.id)
+          ) {
+            return epoch
+          }
+          const ownEntry = epoch.recipients.find(
+            entry => entry.header.kid === owner.keyAgreementKey.id
           )
-        }
-        const secret = await unwrapEpochSecret({
-          entry: ownEntry,
-          keyAgreementKey: owner.keyAgreementKey
+          if (!ownEntry) {
+            throw new ValidationError(
+              `Cannot addRecipient: the caller is not a recipient of epoch ` +
+                `"${epoch.id}", so it cannot unwrap that epoch key to escrow ` +
+                'it to the new reader.'
+            )
+          }
+          const secret = await unwrapEpochSecret({
+            entry: ownEntry,
+            keyAgreementKey: owner.keyAgreementKey
+          })
+          if (!secret) {
+            throw new ValidationError(
+              `Cannot addRecipient: unwrapping epoch "${epoch.id}" with the ` +
+                "caller's key-agreement key failed."
+            )
+          }
+          const wrapped = await wrapEpochSecret({
+            epochSecret: secret,
+            recipient
+          })
+          return {
+            ...epoch,
+            recipients: [...epoch.recipients, wrapped]
+          }
         })
-        if (!secret) {
-          throw new ValidationError(
-            `Cannot addRecipient: unwrapping epoch "${epoch.id}" with the ` +
-              "caller's key-agreement key failed."
-          )
-        }
-        const wrapped = await wrapEpochSecret({
-          epochSecret: secret,
-          recipient
-        })
-        nextEpochs.push({
-          ...epoch,
-          recipients: [...epoch.recipients, wrapped]
-        })
-      }
+      )
       return { ...marker, epochs: nextEpochs }
     }
   })
@@ -198,7 +204,11 @@ export async function addRecipient({
  * a rotation that keeps losing the compare-and-swap throws with nothing revoked,
  * leaving the operation safely retryable rather than half-applied. The revoke
  * step tolerates an already-revoked capability (a retry re-revokes) so the
- * operation converges.
+ * operation converges. The rotation itself is likewise idempotent with respect
+ * to retries: when the current epoch already excludes the departing reader
+ * (a prior attempt's rotation landed but its revoke failed transiently), no
+ * fresh epoch is minted or appended -- the retry skips straight to the revoke
+ * step instead of accumulating a redundant epoch per attempt.
  *
  * Important: this does not re-encrypt existing resources, so the removed
  * reader keeps every earlier epoch's key and can still decrypt any pre-rotation
@@ -255,6 +265,16 @@ export async function removeRecipient({
       const currentEpoch =
         epochs.find(epoch => epoch.id === marker.currentEpoch) ??
         epochs[epochs.length - 1]!
+      // Already excluded from the current epoch? A prior attempt's rotation
+      // landed (its revoke step then failed transiently and the caller
+      // retried), or the reader never held the current epoch. Nothing to
+      // rotate -- signal no-op so the retry proceeds to the revoke step
+      // instead of appending a redundant epoch per attempt.
+      if (
+        !currentEpoch.recipients.some(entry => entry.header.kid === recipientId)
+      ) {
+        return null
+      }
       const remaining = new Set<string>()
       for (const entry of currentEpoch.recipients) {
         if (entry.header.kid !== recipientId) {
@@ -329,12 +349,15 @@ async function defaultResolveRecipientKey(
  * and writes it back with a compare-and-swap (`If-Match`). Retries on a stale
  * (`412`) validator, re-reading the fresh marker each time, up to
  * {@link MAX_CAS_ATTEMPTS}; surfaces {@link PreconditionFailedError} if it keeps
- * losing the race.
+ * losing the race. A `mutate` that resolves `null` signals "no change needed"
+ * (the marker already reflects the desired state, e.g. an idempotent retry):
+ * nothing is written and the current marker is returned as-is.
  *
  * @param options {object}
  * @param options.collection {Collection}
- * @param options.mutate {function}   marker to the next marker (may be async)
- * @returns {Promise<CollectionEncryption>}   the written marker
+ * @param options.mutate {function}   marker to the next marker (may be async),
+ *   or `null` to skip the write
+ * @returns {Promise<CollectionEncryption>}   the written (or current) marker
  */
 async function casUpdateMarker({
   collection,
@@ -343,17 +366,16 @@ async function casUpdateMarker({
   collection: Collection
   mutate: (
     marker: CollectionEncryption
-  ) => CollectionEncryption | Promise<CollectionEncryption>
+  ) => CollectionEncryption | null | Promise<CollectionEncryption | null>
 }): Promise<CollectionEncryption> {
   let lastError: unknown
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
     const current = await collection.describeWithEtag()
     if (current === null) {
-      throw new ValidationError(
-        'Cannot manage recipients: the Collection Description is not readable ' +
-          'with this capability (WAS returns 404 for both not-found and ' +
-          'unauthorized).'
-      )
+      throw unreadableDescriptionError({
+        operation: 'manage recipients',
+        advice: 'Use a capability that can read the Collection Description.'
+      })
     }
     const marker = current.description.encryption
     if (!marker || marker.scheme !== 'edv') {
@@ -363,6 +385,10 @@ async function casUpdateMarker({
       )
     }
     const next = await mutate(marker)
+    if (next === null) {
+      // The marker already reflects the desired state: nothing to write.
+      return marker
+    }
     try {
       await collection.replaceDescription(
         {

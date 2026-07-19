@@ -17,6 +17,7 @@
  */
 import type { ClientContext } from './request.js'
 import { parseSpaceTarget, spacePath, toUrl } from './paths.js'
+import { rootCapabilityId } from './revoke.js'
 import type { GrantOptions, IDelegatedZcap, IZcap } from '../types.js'
 
 /**
@@ -46,7 +47,7 @@ function spaceRootCapabilityId({
     return undefined
   }
   const spaceUrl = toUrl({ serverUrl, path: spacePath(parsed.spaceId) })
-  return `urn:zcap:root:${encodeURIComponent(spaceUrl)}`
+  return rootCapabilityId(spaceUrl)
 }
 
 /**

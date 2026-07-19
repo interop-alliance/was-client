@@ -1,5 +1,76 @@
 # @interop/was-client Changelog
 
+## 0.16.0 - TBD
+
+### Fixed
+
+- **Conditional-codec creates fail closed on backends without
+  `conditional-writes`.** An encrypted `put(id, ...)` whose pre-read returned
+  nothing (which cannot distinguish "absent" from "exists but unreadable" -- WAS
+  masks unauthorized reads as 404) used to send a fresh insert guarded only by
+  `If-None-Match: *`; a backend that ignores that header would silently
+  overwrite the existing envelope and reset its EDV sequence. The write path now
+  probes the backend's advertised features and refuses the ambiguous insert with
+  a clear `ValidationError` instead. Creates via `add()` (freshly minted ids)
+  and readable-document updates are unaffected.
+- `storeChunk` / `getChunk` are now gated on the backend advertising the
+  `chunked-streams` affordance, throwing `NotSupportedError` when it is absent
+  (mirroring `find`'s `blinded-index-query` gate) -- previously a server with no
+  `/chunks/{n}` route produced misleading "parent document does not exist" /
+  "chunk not found" errors.
+- A read candidate key that fails to unwrap its own epoch entry
+  (`KeyUnwrapError` from a lazy epoch key with a corrupt recipient entry) is now
+  treated as a key miss -- the decrypt loop tries the next candidate -- instead
+  of being misreported as ciphertext tampering (`IntegrityError`).
+- The default single-document encrypted blob cap is now 512 KiB (was 5 MiB),
+  sized so the encrypted envelope (~1.78x inflation for binary) stays under the
+  ~1 MiB JSON body limit typical servers apply to the single-document path -- an
+  oversized write now gets the codec's clear guidance toward the chunked path
+  instead of an opaque server-side 413. Pass `maxBlobBytes` to raise it against
+  a server with a larger limit.
+- A lazy epoch key no longer caches a failed unwrap for the life of the handle:
+  a transient failure is retried on the next read.
+- `unwrapEpochSecret` now honors its "returns null for a corrupt entry" contract
+  for malformed (non-base64url) `encrypted_key` / `epk.x` values, which
+  previously escaped as raw decode errors past the callers' typed-error guards.
+- Retrying `removeRecipient` after a transient revoke failure no longer appends
+  a redundant rotated epoch per attempt: a retry that finds the departing reader
+  already excluded from the current epoch skips straight to the revoke step.
+- `collectPages` appends items without spreading them as call arguments, so a
+  very large single page cannot hit the engine's max-arguments ceiling.
+
+### Changed
+
+- Backend-feature detection is now a single shared probe
+  (`internal/features.ts`) consulted by both EDV write paths (`WasTransport` and
+  the codec-seam write orchestration), with the same definitive-vs-transient
+  caching rules in both.
+- The reserved-path-segment guard now also runs inside the URL builders'
+  collection/resource id slots, so every URL-forming entry point is covered
+  uniformly (handle constructors still guard for the earlier failure).
+- The masked-404 "fail closed on an unreadable description" policy is now stated
+  once (`unreadableDescriptionError`) and shared by `Space.configure` /
+  `Collection.configure` / codec resolution / recipient management; the error
+  classes are unchanged, message wording is unified.
+- `describeCollection` and `Collection.describeWithEtag` now share one request
+  shape; the HTTP-status-to-named-error mapping in `WasTransport` is funneled
+  through one helper; the `urn:zcap:root:` id grammar, the module `TextEncoder`,
+  and the CodecHolder wiring are each declared once.
+- New exported `CollectionWritableFields` type names the writable Collection
+  Description fields used by `configure` / `replaceDescription`.
+- `addRecipient` wraps its per-epoch keys concurrently (matching
+  `initRecipients` / `removeRecipient`); `didKeyResolver` memoizes per key id;
+  the JWE recipient descriptor is computed once per codec instead of per write.
+- The encrypted codec now consumes upstream primitives instead of its own local
+  approximations: a key-miss on read (wrong or rotated key, so the decrypt loop
+  should try the next candidate) is discriminated from a ciphertext-integrity
+  failure via the cipher's typed `KeyMissError` (matched by error name, so a
+  duplicated cipher install does not defeat it) rather than by matching literal
+  error message strings; and an explicit `put(id, ...)` id is validated with the
+  EDV client's `assertDocId` (a full multibase decode plus multihash length
+  check) rather than a local base58 charset regex, so a non-EDV id is rejected
+  before it can leak onto the URL.
+
 ## 0.15.0 - 2026-07-19
 
 ### Added

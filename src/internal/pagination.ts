@@ -10,7 +10,7 @@
  * request, and yields one page at a time (constant memory, early-exit-friendly).
  * `collectPages` builds on it to eagerly aggregate every page into one envelope.
  */
-import type { CollectionResourcesList } from '../types.js'
+import type { CollectionResourcesList, ResourceSummary } from '../types.js'
 
 /**
  * The first page (already read) plus the means to fetch each following page.
@@ -100,10 +100,62 @@ export async function collectPages(
   const items: CollectionResourcesList['items'] = []
   for await (const page of walkPages(walk)) {
     aggregate ??= page
-    items.push(...page.items)
+    // Append one by one: spreading a page's items as call arguments would hit
+    // the engine's max-arguments ceiling on a very large page.
+    for (const item of page.items) {
+      items.push(item)
+    }
   }
   // `walkPages` always yields `first`, so `aggregate` is set here.
   const result: CollectionResourcesList = { ...aggregate!, items }
   delete result.next
   return result
+}
+
+/**
+ * The buffering list surface over a possibly-absent walk: collects every page
+ * into one envelope, mapping a `null` walk (missing/unauthorized listing) to
+ * `null`. The shared dispatch behind `Collection.list()` and
+ * `WasClient.publicListCollection()`.
+ *
+ * @param walk {PageWalk | null}
+ * @returns {Promise<CollectionResourcesList | null>}
+ */
+export async function collectWalk(
+  walk: PageWalk | null
+): Promise<CollectionResourcesList | null> {
+  return walk === null ? null : collectPages(walk)
+}
+
+/**
+ * The lazy page surface over a possibly-absent walk: yields each page, or
+ * nothing for a `null` walk (which an iterator cannot distinguish from an
+ * empty listing). The shared dispatch behind `Collection.listPages()` and
+ * `WasClient.publicListCollectionPages()`.
+ *
+ * @param walk {PageWalk | null}
+ * @returns {AsyncGenerator<CollectionResourcesList>}
+ */
+export async function* walkPagesOrEmpty(
+  walk: PageWalk | null
+): AsyncGenerator<CollectionResourcesList> {
+  if (walk !== null) {
+    yield* walkPages(walk)
+  }
+}
+
+/**
+ * The lazy item surface: flattens a page iterator into its `ResourceSummary`
+ * entries. The shared dispatch behind `Collection.listItems()` and
+ * `WasClient.publicListCollectionItems()`.
+ *
+ * @param pages {AsyncIterable<CollectionResourcesList>}
+ * @returns {AsyncGenerator<ResourceSummary>}
+ */
+export async function* walkItems(
+  pages: AsyncIterable<CollectionResourcesList>
+): AsyncGenerator<ResourceSummary> {
+  for await (const page of pages) {
+    yield* page.items
+  }
 }

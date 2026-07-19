@@ -48,6 +48,7 @@ export type {
   ActionInput,
   SpaceDescription,
   CollectionDescription,
+  CollectionWritableFields,
   CollectionEncryption,
   CollectionEncryptionEpoch,
   CollectionEncryptionRecipient,

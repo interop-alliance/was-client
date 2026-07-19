@@ -16,10 +16,12 @@ import type { Json, ResourceData } from '../types.js'
 const OCTET_STREAM = 'application/octet-stream'
 
 /**
- * A shared `TextEncoder` for serializing an explicitly-typed JSON write to
- * bytes (stateless, so one instance is reused).
+ * The shared `TextEncoder` (stateless, so one instance serves the whole
+ * library): serializing an explicitly-typed JSON write to bytes here,
+ * re-serializing a pre-parsed JSON body in `Resource.getBytes()`, and encoding
+ * EDV envelope bytes (re-exported by `edv/constants.ts`).
  */
-const ENCODER = new TextEncoder()
+export const ENCODER = new TextEncoder()
 
 /**
  * Whether a content-type denotes JSON -- `application/json` or any
