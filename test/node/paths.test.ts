@@ -31,6 +31,8 @@ import {
   resourcePath,
   resourcePolicy,
   resourceMeta,
+  resourceChunkPath,
+  chunksContainerPath,
   toUrl,
   parseSpacePath
 } from '../../src/internal/paths.js'
@@ -106,6 +108,21 @@ describe('path builders', () => {
   it('builds the resource metadata path', () => {
     expect(resourceMeta('home', 'docs', 'note')).toBe(
       '/space/home/docs/note/meta'
+    )
+  })
+
+  it('builds a chunk member path (no trailing slash) with the index verbatim', () => {
+    expect(resourceChunkPath('home', 'docs', 'note', 0)).toBe(
+      '/space/home/docs/note/chunks/0'
+    )
+    expect(resourceChunkPath('a b', 'c/d', 'e#f', 12)).toBe(
+      '/space/a%20b/c%2Fd/e%23f/chunks/12'
+    )
+  })
+
+  it('builds the chunks container path (trailing slash is canonical)', () => {
+    expect(chunksContainerPath('home', 'docs', 'note')).toBe(
+      '/space/home/docs/note/chunks/'
     )
   })
 

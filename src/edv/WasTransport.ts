@@ -32,9 +32,11 @@
  * feature). `updateIndex` throws: in this profile the `indexed` array rides
  * inside the stored document envelope, so `update()` IS the re-index
  * operation and no separate index endpoint exists. Chunked streams
- * (`storeChunk` / `getChunk`) still require the server's `chunked-streams`
- * affordance (the reserved `/{id}/chunks/{n}` sub-segment), which neither
- * reference backend provides, so they throw.
+ * (`storeChunk` / `getChunk`) map each EDV chunk onto the reserved
+ * `/{id}/chunks/{n}` sub-segment (the server's `chunked-streams` affordance),
+ * storing the chunk object as an opaque JSON body -- so `EdvClientCore.insert({
+ * stream })` / `getStream` drive chunked encrypted blobs over a WAS server
+ * unchanged.
  * `insert` uses an atomic `If-None-Match: *` create when the backend
  * advertises the optional `conditional-writes` feature; otherwise (and for
  * `update`) writes are advisory -- the EDV `sequence` is not enforced
@@ -43,6 +45,7 @@
 import { Transport } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
 import type {
+  IEDVChunk,
   IEDVQuery,
   IEncryptedDocument
 } from '@interop/data-integrity-core'
@@ -52,6 +55,7 @@ import { readJsonData } from '../internal/content.js'
 import {
   collectionBackend,
   collectionQuery,
+  resourceChunkPath,
   resourcePath
 } from '../internal/paths.js'
 import {
@@ -61,6 +65,17 @@ import {
 } from './constants.js'
 
 export { JOSE_CONTENT_TYPE }
+
+/**
+ * The content type a serialized EDV chunk is stored under. Deliberately an
+ * opaque binary type (not `application/json`): the chunk is `PUT` as raw bytes
+ * so the server routes it through its streaming binary write path (bounded by
+ * the backend's `maxUploadBytes`, tens of MiB) rather than the in-memory JSON
+ * body parser (a ~1 MiB cap that a full encrypted chunk would exceed). The
+ * body is still JSON text -- the server stores it verbatim and never parses it,
+ * so `getChunk` decodes and parses it back client-side.
+ */
+const CHUNK_CONTENT_TYPE = 'application/octet-stream'
 
 /**
  * HTTP statuses that mean the backend-descriptor endpoint is legitimately
@@ -507,38 +522,108 @@ export class WasTransport extends Transport {
   }
 
   /**
-   * @inheritdoc
+   * The WAS path of one chunk of a document, delegating to the internal
+   * `resourceChunkPath` builder (member form, no trailing slash --
+   * put/get/delete one chunk by index).
    *
-   * Chunked streams need the reserved `/{id}/chunks/{n}` sub-segment.
+   * @param docId {string}       the EDV document id (= WAS resource id)
+   * @param chunkIndex {number}   the chunk's non-negative ordinal index
+   * @returns {string}
    */
-  override async storeChunk(): Promise<never> {
-    return this._unsupported('storeChunk (chunked streams)')
+  private _chunkPath(docId: string, chunkIndex: number): string {
+    return resourceChunkPath(this.spaceId, this.collectionId, docId, chunkIndex)
   }
 
   /**
    * @inheritdoc
    *
-   * Chunked streams need the reserved `/{id}/chunks/{n}` sub-segment.
+   * Stores one encrypted chunk of a document's data stream. The EDV chunk
+   * object (`{ sequence, index, jwe, offset }`) is serialized to JSON and
+   * `PUT` as an opaque binary body ({@link CHUNK_CONTENT_TYPE}) to the chunk's
+   * own URL (`.../chunks/{index}`), signed like every other write. The server
+   * stores the bytes verbatim -- it never parses the chunk -- so any
+   * client-side crypto framing is transparent to it. The parent Resource must
+   * already exist (`EdvClientCore.insert`/`update` writes the document envelope
+   * before draining the stream), so a 404 here surfaces as a `NotFoundError`.
+   *
+   * @param options {object}
+   * @param options.docId {string}     the owning document id (= WAS resource id)
+   * @param options.chunk {IEDVChunk}   the encrypted chunk to store
+   * @returns {Promise<void>}
    */
-  override async getChunk(): Promise<never> {
-    return this._unsupported('getChunk (chunked streams)')
+  override async storeChunk({
+    docId,
+    chunk
+  }: { docId?: string; chunk?: IEDVChunk } = {}): Promise<void> {
+    if (!docId) {
+      throw new TypeError('"docId" is required.')
+    }
+    if (!chunk) {
+      throw new TypeError('"chunk" is required.')
+    }
+    try {
+      await this._was.request({
+        path: this._chunkPath(docId, chunk.index),
+        method: 'PUT',
+        body: envelopeBytes(chunk),
+        headers: { 'content-type': CHUNK_CONTENT_TYPE }
+      })
+    } catch (err) {
+      if (httpStatus(err) === 404) {
+        throw namedError({
+          name: 'NotFoundError',
+          message:
+            `Cannot store chunk ${chunk.index}: the parent document ` +
+            `"${docId}" does not exist. Write the document before its chunks.`,
+          cause: err
+        })
+      }
+      throw err
+    }
   }
 
   /**
-   * Throws a uniform "not supported in this profile" error for the chunked-
-   * stream operations, which depend on a server-side affordance (the reserved
-   * `/{id}/chunks/{n}` sub-segment, the `chunked-streams` backend feature)
-   * that neither reference backend provides yet.
+   * @inheritdoc
    *
-   * @param operation {string}
-   * @returns {never}
+   * Reads one encrypted chunk back by index, `GET`ting the chunk's own URL and
+   * parsing the opaque body (stored as raw bytes, so parsed client-side) back
+   * into the EDV chunk object the decrypt stream consumes. A missing chunk
+   * (404) surfaces as a `NotFoundError` (the name `EdvClientCore` expects), so
+   * a reassembling reader can distinguish it.
+   *
+   * @param options {object}
+   * @param options.docId {string}        the owning document id
+   * @param options.chunkIndex {number}   the chunk's ordinal index
+   * @returns {Promise<IEDVChunk>}
    */
-  private _unsupported(operation: string): never {
-    throw namedError({
-      name: 'NotSupportedError',
-      message:
-        `"${operation}" is not supported by the EDV-over-WAS profile ` +
-        '(requires the server\'s "chunked-streams" affordance).'
-    })
+  override async getChunk({
+    docId,
+    chunkIndex
+  }: { docId?: string; chunkIndex?: number } = {}): Promise<IEDVChunk> {
+    if (!docId) {
+      throw new TypeError('"docId" is required.')
+    }
+    if (chunkIndex === undefined) {
+      throw new TypeError('"chunkIndex" is required.')
+    }
+    let response: HttpResponse
+    try {
+      response = await this._was.request({
+        path: this._chunkPath(docId, chunkIndex),
+        method: 'GET'
+      })
+    } catch (err) {
+      if (httpStatus(err) === 404) {
+        throw namedError({
+          name: 'NotFoundError',
+          message: `Chunk ${chunkIndex} of document "${docId}" not found.`,
+          cause: err
+        })
+      }
+      throw err
+    }
+    // The chunk was stored as opaque bytes, so the http-client did not
+    // pre-parse it: decode the body text and parse the EDV chunk object back.
+    return JSON.parse(await response.text()) as IEDVChunk
   }
 }
