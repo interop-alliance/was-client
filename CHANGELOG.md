@@ -1,5 +1,31 @@
 # @interop/was-client Changelog
 
+## 0.14.6 - TBD
+
+### Added
+
+- **Chunked encrypted blobs over WAS (transport half).**
+  `WasTransport.storeChunk` / `getChunk` -- which previously threw
+  `NotSupportedError` -- now bind the server's `/{resourceId}/chunks/{index}`
+  chunk addressing (the `chunked-streams` backend feature): `storeChunk`
+  serializes the EDV chunk object and `PUT`s it to the chunk's own URL as
+  `application/octet-stream` (so the server's streaming binary path, not its
+  bounded JSON parser, carries it), and `getChunk` fetches and parses it back,
+  mapping an absent chunk or parent to the `NotFoundError` that `EdvClientCore`
+  dispatches on. With these in place, `EdvClientCore.insert({stream})` /
+  `getStream` drive chunked encrypted blobs over a WAS server end-to-end -- a
+  blob larger than the single-document cap round-trips byte-for-byte (live
+  integration coverage).
+- New `resourceChunkPath` / `chunksContainerPath` builders in the internal path
+  module.
+
+### Changed
+
+- The oversized-blob rejection in the EDV codec now points callers at the
+  working chunked stream path (`EdvClientCore.insert({stream})` / `getStream`)
+  instead of describing chunking as unavailable, and its `maxBlobBytes` JSDoc
+  now states the actual 5 MiB default (the code is unchanged).
+
 ## 0.14.5 - 2026-07-12
 
 ### Added

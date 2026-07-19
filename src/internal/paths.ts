@@ -240,6 +240,46 @@ export function resourcePolicy(
 }
 
 /**
+ * `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex` -- a single
+ * stored chunk of a chunked Resource (the `chunked-streams` feature). Member
+ * form, no trailing slash: get / put / delete one chunk by its ordinal index.
+ * The `chunkIndex` is a non-negative integer, emitted verbatim (it is never a
+ * reserved or dot segment, so it needs no percent-encoding).
+ *
+ * @param spaceId {string}
+ * @param collectionId {string}
+ * @param resourceId {string}
+ * @param chunkIndex {number}
+ * @returns {string}
+ */
+export function resourceChunkPath(
+  spaceId: string,
+  collectionId: string,
+  resourceId: string,
+  chunkIndex: number
+): string {
+  return `${resourcePath(spaceId, collectionId, resourceId)}/chunks/${chunkIndex}`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/:resourceId/chunks/` -- the chunk-listing
+ * (container) form of a chunked Resource (trailing slash is canonical). A
+ * reader discovers the chunk count here, then fetches `0..count-1`.
+ *
+ * @param spaceId {string}
+ * @param collectionId {string}
+ * @param resourceId {string}
+ * @returns {string}
+ */
+export function chunksContainerPath(
+  spaceId: string,
+  collectionId: string,
+  resourceId: string
+): string {
+  return `${resourcePath(spaceId, collectionId, resourceId)}/chunks/`
+}
+
+/**
  * Resolves a path against the server base URL, producing an absolute URL
  * string suitable for zcap `invocationTarget`s.
  *

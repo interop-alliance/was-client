@@ -585,15 +585,78 @@ describe('WasTransport -- updateIndex (unsupported, sharpened message)', () => {
   })
 })
 
-describe('WasTransport -- unsupported operations', () => {
-  const t = transport(vi.fn())
+describe('WasTransport -- chunked streams (storeChunk / getChunk)', () => {
+  const chunk = {
+    sequence: 0,
+    index: 2,
+    offset: 4096,
+    jwe: { ciphertext: 'opaque' }
+  }
 
-  it('rejects storeChunk, getChunk', async () => {
-    await expect(t.storeChunk()).rejects.toMatchObject({
-      name: 'NotSupportedError'
+  it('PUTs a serialized chunk to its own chunks/{index} URL as opaque bytes', async () => {
+    const request = vi.fn(async () => ({}) as HttpResponse)
+    await transport(request).storeChunk({ docId: 'doc1', chunk })
+    expect(request).toHaveBeenCalledTimes(1)
+    const [input] = request.mock.calls[0] as [
+      {
+        path: string
+        method: string
+        body: unknown
+        headers: Record<string, string>
+      }
+    ]
+    expect(input.method).toBe('PUT')
+    expect(input.path).toBe('/space/space%201/docs/doc1/chunks/2')
+    expect(input.headers['content-type']).toBe('application/octet-stream')
+    expect(decodeBody(input.body)).toEqual(chunk)
+  })
+
+  it('GETs and parses a chunk back into the EDV chunk object', async () => {
+    const request = vi.fn(
+      async () =>
+        ({
+          async text() {
+            return JSON.stringify(chunk)
+          }
+        }) as unknown as HttpResponse
+    )
+    const read = await transport(request).getChunk({
+      docId: 'doc1',
+      chunkIndex: 2
     })
-    await expect(t.getChunk()).rejects.toMatchObject({
-      name: 'NotSupportedError'
+    expect(read).toEqual(chunk)
+    const [input] = request.mock.calls[0] as [{ path: string; method: string }]
+    expect(input.method).toBe('GET')
+    expect(input.path).toBe('/space/space%201/docs/doc1/chunks/2')
+  })
+
+  it('maps a 404 on storeChunk (absent parent) to NotFoundError', async () => {
+    const request = vi.fn(async () => {
+      throw httpError(404)
     })
+    await expect(
+      transport(request).storeChunk({ docId: 'gone', chunk })
+    ).rejects.toMatchObject({ name: 'NotFoundError' })
+  })
+
+  it('maps a 404 on getChunk to NotFoundError', async () => {
+    const request = vi.fn(async () => {
+      throw httpError(404)
+    })
+    await expect(
+      transport(request).getChunk({ docId: 'doc1', chunkIndex: 9 })
+    ).rejects.toMatchObject({ name: 'NotFoundError' })
+  })
+
+  it('requires docId and chunk', async () => {
+    const t = transport(vi.fn())
+    await expect(t.storeChunk()).rejects.toBeInstanceOf(TypeError)
+    await expect(t.storeChunk({ docId: 'doc1' })).rejects.toBeInstanceOf(
+      TypeError
+    )
+    await expect(t.getChunk()).rejects.toBeInstanceOf(TypeError)
+    await expect(t.getChunk({ docId: 'doc1' })).rejects.toBeInstanceOf(
+      TypeError
+    )
   })
 })

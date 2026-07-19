@@ -530,9 +530,12 @@ export class EdvCodec implements ResourceCodec {
       if (bytes.length > this._maxBlobBytes) {
         throw new ValidationError(
           `Encrypted binary write of ${bytes.length} bytes exceeds the ` +
-            `single-document limit of ${this._maxBlobBytes} bytes. Chunked ` +
-            "encrypted blobs need the server's chunked-streams affordance " +
-            '(not yet available).'
+            `single-document limit of ${this._maxBlobBytes} bytes. The codec ` +
+            'seam is a single-request transform and cannot chunk. To store a ' +
+            'blob this large, write it through the chunked-stream path -- ' +
+            '`EdvClientCore.insert({ doc, stream, transport })` with a ' +
+            '`WasTransport`, read back with `getStream` -- against a server ' +
+            "whose backend advertises the 'chunked-streams' feature."
         )
       }
       // Text-family AND valid UTF-8 to store as a legible string. The UTF-8 gate
@@ -669,7 +672,7 @@ export interface EdvKeys {
  *   (`application/jose+json`) against a server that registers an
  *   `application/*+json` parser.
  * @param [options.maxBlobBytes] {number}   single-document binary cap (default
- *   1 MiB)
+ *   5 MiB)
  * @param [options.idDerivation] {string}   how `add()` mints a document id.
  *   `'random'` (default) is the classic mutable-document model: a random
  *   `generateId()` id, updated in place via `sequence`. `'content'` derives the
