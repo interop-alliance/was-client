@@ -9,8 +9,6 @@
  */
 import { ENCODER } from '../internal/content.js'
 
-export { ENCODER }
-
 /**
  * The content type used by default: plain JSON, which an unmodified WAS server
  * accepts. The stored envelope is still self-identifying by its `jwe` field.

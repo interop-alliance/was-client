@@ -76,13 +76,14 @@ import { readEtag } from '../internal/conditional.js'
 import { resolveEpochKeys } from './epochKeys.js'
 import { didKeyResolver } from './epochCrypto.js'
 import {
+  ENCODER,
   isBlob,
   isTextContentType,
   readJsonData,
   resolvePayload
 } from '../internal/content.js'
 import type { Json, ResourceData, ResourceMetadataCustom } from '../types.js'
-import { DEFAULT_CONTENT_TYPE, ENCODER, envelopeBytes } from './constants.js'
+import { DEFAULT_CONTENT_TYPE, envelopeBytes } from './constants.js'
 
 /**
  * Default ceiling for a single-document (unchunked) encrypted binary or text
