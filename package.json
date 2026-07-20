@@ -1,7 +1,7 @@
 {
   "name": "@interop/was-client",
   "description": "A developer-friendly client for Wallet Attached Storage (WAS) servers.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "type": "module",
   "scripts": {
     "build": "pnpm run clear && tsc",
