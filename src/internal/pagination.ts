@@ -9,18 +9,30 @@
  * from page to page, dereferencing each with the same authorization as the first
  * request, and yields one page at a time (constant memory, early-exit-friendly).
  * `collectPages` builds on it to eagerly aggregate every page into one envelope.
+ *
+ * The helpers are generic over the listing envelope, so they serve all three
+ * paginated WAS listings: List Collection items (`CollectionResourcesList`),
+ * List Collections (`CollectionsList`), and List Spaces (`SpaceListing`). Each
+ * envelope shares the `{ items, next? }` shape the traversal relies on.
  */
 import type { CollectionResourcesList, ResourceSummary } from '../types.js'
+
+/**
+ * The shared shape of every paginated listing envelope: an `items` array and an
+ * optional `next` continuation URL. The traversal core only ever touches these
+ * two fields, so it works uniformly across the concrete listing types.
+ */
+type PageEnvelope = { items: unknown[]; next?: string }
 
 /**
  * The first page (already read) plus the means to fetch each following page.
  * The `fetchPage` callback fetches a single page by absolute URL, returning
  * `null` if it is missing/unauthorized (which ends the traversal).
  */
-export interface PageWalk {
-  first: CollectionResourcesList
+export interface PageWalk<T extends PageEnvelope = CollectionResourcesList> {
+  first: T
   firstUrl: string
-  fetchPage: (url: string) => Promise<CollectionResourcesList | null>
+  fetchPage: (url: string) => Promise<T | null>
 }
 
 /**
@@ -33,15 +45,17 @@ export interface PageWalk {
  * @param options {object}
  * @param options.firstUrl {string}      the absolute listing URL
  * @param options.fetchPage {function}   fetches one page by absolute URL
- * @returns {Promise<PageWalk | null>}
+ * @returns {Promise<PageWalk<T> | null>}
  */
-export async function buildPageWalk({
+export async function buildPageWalk<
+  T extends PageEnvelope = CollectionResourcesList
+>({
   firstUrl,
   fetchPage
 }: {
   firstUrl: string
-  fetchPage: PageWalk['fetchPage']
-}): Promise<PageWalk | null> {
+  fetchPage: PageWalk<T>['fetchPage']
+}): Promise<PageWalk<T> | null> {
   const first = await fetchPage(firstUrl)
   return first === null ? null : { first, firstUrl, fetchPage }
 }
@@ -53,12 +67,12 @@ export async function buildPageWalk({
  * `next` ends the traversal defensively rather than looping forever. Yields one
  * page at a time, so a consumer can stop early without fetching the rest.
  *
- * @param walk {PageWalk}
- * @returns {AsyncGenerator<CollectionResourcesList>}
+ * @param walk {PageWalk<T>}
+ * @returns {AsyncGenerator<T>}
  */
-export async function* walkPages(
-  walk: PageWalk
-): AsyncGenerator<CollectionResourcesList> {
+export async function* walkPages<
+  T extends PageEnvelope = CollectionResourcesList
+>(walk: PageWalk<T>): AsyncGenerator<T> {
   const { first, firstUrl, fetchPage } = walk
   yield first
   // Seed the cycle guard with the canonicalized first URL -- every followed
@@ -90,14 +104,14 @@ export async function* walkPages(
  * has been collected). Buffers the entire collection in memory; for a large
  * collection prefer `walkPages` (one page at a time) or an item iterator.
  *
- * @param walk {PageWalk}
- * @returns {Promise<CollectionResourcesList>}
+ * @param walk {PageWalk<T>}
+ * @returns {Promise<T>}
  */
-export async function collectPages(
-  walk: PageWalk
-): Promise<CollectionResourcesList> {
-  let aggregate: CollectionResourcesList | undefined
-  const items: CollectionResourcesList['items'] = []
+export async function collectPages<
+  T extends PageEnvelope = CollectionResourcesList
+>(walk: PageWalk<T>): Promise<T> {
+  let aggregate: T | undefined
+  const items: T['items'] = []
   for await (const page of walkPages(walk)) {
     aggregate ??= page
     // Append one by one: spreading a page's items as call arguments would hit
@@ -107,7 +121,7 @@ export async function collectPages(
     }
   }
   // `walkPages` always yields `first`, so `aggregate` is set here.
-  const result: CollectionResourcesList = { ...aggregate!, items }
+  const result: T = { ...aggregate!, items }
   delete result.next
   return result
 }
@@ -118,12 +132,12 @@ export async function collectPages(
  * `null`. The shared dispatch behind `Collection.list()` and
  * `WasClient.publicListCollection()`.
  *
- * @param walk {PageWalk | null}
- * @returns {Promise<CollectionResourcesList | null>}
+ * @param walk {PageWalk<T> | null}
+ * @returns {Promise<T | null>}
  */
-export async function collectWalk(
-  walk: PageWalk | null
-): Promise<CollectionResourcesList | null> {
+export async function collectWalk<
+  T extends PageEnvelope = CollectionResourcesList
+>(walk: PageWalk<T> | null): Promise<T | null> {
   return walk === null ? null : collectPages(walk)
 }
 
@@ -133,12 +147,12 @@ export async function collectWalk(
  * empty listing). The shared dispatch behind `Collection.listPages()` and
  * `WasClient.publicListCollectionPages()`.
  *
- * @param walk {PageWalk | null}
- * @returns {AsyncGenerator<CollectionResourcesList>}
+ * @param walk {PageWalk<T> | null}
+ * @returns {AsyncGenerator<T>}
  */
-export async function* walkPagesOrEmpty(
-  walk: PageWalk | null
-): AsyncGenerator<CollectionResourcesList> {
+export async function* walkPagesOrEmpty<
+  T extends PageEnvelope = CollectionResourcesList
+>(walk: PageWalk<T> | null): AsyncGenerator<T> {
   if (walk !== null) {
     yield* walkPages(walk)
   }

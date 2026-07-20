@@ -18,7 +18,8 @@ import {
   registeredBackend,
   spaceQuotas,
   spacePolicy,
-  spaceLinkset
+  spaceLinkset,
+  toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
 import { unreadableDescriptionError } from './internal/describe.js'
@@ -26,6 +27,12 @@ import { delegateGrantAt } from './internal/grant.js'
 import { submitRevocation } from './internal/revoke.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
+import {
+  buildPageWalk,
+  collectWalk,
+  walkPagesOrEmpty
+} from './internal/pagination.js'
+import type { PageWalk } from './internal/pagination.js'
 import { WasServerError } from './errors.js'
 import { createdId, dataOrNull, toPlainBytes } from './internal/content.js'
 import {
@@ -249,16 +256,57 @@ export class Space {
   }
 
   /**
-   * Lists the collections in the space. Returns `null` if the space is missing
-   * or not visible to you (404 conflation caveat).
+   * Reads the first page of the collections listing and packages the means to
+   * follow its `next` links (each page fetched with the same authorization).
+   * Returns `null` if the space is missing or not visible to you (404 conflation
+   * caveat).
+   *
+   * @returns {Promise<PageWalk<CollectionsList> | null>}
+   */
+  private async _collectionsWalk(): Promise<PageWalk<CollectionsList> | null> {
+    return buildPageWalk<CollectionsList>({
+      firstUrl: toUrl({
+        serverUrl: this._context.serverUrl,
+        path: spaceCollections(this.id)
+      }),
+      fetchPage: async url => {
+        const pageResponse = await send(this._context, {
+          url,
+          method: 'GET',
+          capability: this._capability,
+          read: true
+        })
+        return dataOrNull<CollectionsList>(pageResponse)
+      }
+    })
+  }
+
+  /**
+   * Lists the collections in the space. Transparently follows the server's
+   * `next` pagination links, buffering every page into a single list (the
+   * returned envelope omits `next`). Convenient, but holds the whole listing in
+   * memory -- for a large space prefer `collectionsPages()`, which streams one
+   * page at a time and allows stopping early. Returns `null` if the space is
+   * missing or not visible to you (404 conflation caveat).
    *
    * @returns {Promise<CollectionsList | null>}
    */
   async collections(): Promise<CollectionsList | null> {
-    return readData<CollectionsList>(this._context, {
-      path: spaceCollections(this.id),
-      capability: this._capability
-    })
+    return collectWalk(await this._collectionsWalk())
+  }
+
+  /**
+   * Lazily yields the collections listing one page at a time, following the
+   * server's `next` links on demand (each page fetched with the same
+   * authorization). Use this to stream a large space in constant memory or to
+   * stop early. Yields nothing if the space is missing or not visible to you
+   * (404 conflation caveat) -- unlike `collections()`, the iterator does not
+   * distinguish that from an empty space.
+   *
+   * @returns {AsyncGenerator<CollectionsList>}
+   */
+  async *collectionsPages(): AsyncGenerator<CollectionsList> {
+    yield* walkPagesOrEmpty(await this._collectionsWalk())
   }
 
   /**

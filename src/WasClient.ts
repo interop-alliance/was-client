@@ -15,7 +15,8 @@ import type { HttpResponse } from '@interop/http-client'
 import {
   collectionItemsUrl,
   parseSpaceTarget,
-  spacesRoot
+  spacesRoot,
+  toUrl
 } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
@@ -27,6 +28,7 @@ import {
 } from './internal/content.js'
 import {
   buildPageWalk,
+  collectPages,
   collectWalk,
   walkItems,
   walkPagesOrEmpty
@@ -199,16 +201,34 @@ export class WasClient {
    * returns an empty `items` list (the spec's explicit exception to 404
    * masking), so nothing is revealed about which spaces exist.
    *
+   * Transparently follows the server's `next` pagination links, buffering every
+   * page into a single listing (the returned envelope omits `next`). Because a
+   * paginating server omits `totalItems` on a truncated page, `totalItems` on
+   * the aggregate is recomputed from the collected items -- sound here, since the
+   * walk has gathered the complete listing.
+   *
    * @returns {Promise<SpaceListing>}
    */
   async listSpaces(): Promise<SpaceListing> {
-    const response = await send(this._context, {
-      path: spacesRoot(),
-      method: 'GET'
+    const walk = await buildPageWalk<SpaceListing>({
+      firstUrl: toUrl({ serverUrl: this.serverUrl, path: spacesRoot() }),
+      fetchPage: async url => {
+        const pageResponse = await send(this._context, {
+          url,
+          method: 'GET',
+          read: true
+        })
+        return dataOrNull<SpaceListing>(pageResponse)
+      }
     })
-    // A successful list always carries the listing body (an unauthorized
-    // caller still gets an empty `items` list, not an error).
-    return dataOrNull<SpaceListing>(response)!
+    // The first page always carries the listing body (an unauthorized caller
+    // still gets an empty `items` list, not an error), so the walk -- and thus
+    // `collectPages` -- returns a `SpaceListing`, never `null`.
+    const listing = await collectPages(walk!)
+    // A paginating server omits `totalItems` on truncated pages; the walk has
+    // now collected the complete listing, so recompute it from the items.
+    listing.totalItems = listing.items.length
+    return listing
   }
 
   /**

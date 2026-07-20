@@ -1,6 +1,22 @@
 # @interop/was-client Changelog
 
-## 0.16.0 - 2026-07-19
+## 0.17.0 - TBD
+
+### Changed
+
+- `Space.collections()` and `WasClient.listSpaces()` now transparently follow
+  the server's `next` pagination links, buffering every page into a single
+  listing (as `Collection.list()` already does). `listSpaces()` recomputes
+  `totalItems` from the collected items, since a paginating server omits it on
+  truncated pages.
+- Bumped `@interop/storage-core` to `^0.3.7`, whose `CollectionsList` and
+  `SpaceListing` now carry the `next` continuation link (and `SpaceListing`'s
+  `totalItems` is now optional, present only on a complete unpaginated listing).
+
+### Added
+
+- `Space.collectionsPages()` streams the collections listing one page at a time,
+  following `next` on demand -- for large spaces, or to stop early.
 
 ### Fixed
 

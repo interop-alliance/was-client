@@ -27,8 +27,8 @@ importers:
         specifier: ^7.7.0
         version: 7.7.0
       '@interop/storage-core':
-        specifier: ^0.3.5
-        version: 0.3.5
+        specifier: ^0.3.7
+        version: 0.3.7
       '@interop/x25519-key-agreement-key':
         specifier: ^5.2.1
         version: 5.2.1
@@ -266,8 +266,8 @@ packages:
     resolution: {integrity: sha512-grTbvdh3j0DoHnGluBlKXrVGBnoUTUPh2LPc8AvfeoEVkHQrQXbtmcyJRZ2VGIDyJEkq30xV5rcr+EvmBrrepg==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.3.5':
-    resolution: {integrity: sha512-XOKBvrKwvsZFpi6bCBu/KhwuPeG7s+zreKQO8ecsa0FakFYl2LxhwrrmO7JAWJKL2go07LzfYZvXss/btuxdxA==}
+  '@interop/storage-core@0.3.7':
+    resolution: {integrity: sha512-CJROh1jAyrZR/YZRO5iqs0Uq+luhmPpiYd6XCOpCv6NQHHfCgR8FZttbzIhY4TunwcatSS0ZqN5ftU0KiNVPRg==}
     engines: {node: '>=22.0'}
 
   '@interop/x25519-key-agreement-key@5.2.1':
@@ -1420,7 +1420,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/storage-core@0.3.5':
+  '@interop/storage-core@0.3.7':
     dependencies:
       '@interop/data-integrity-core': 8.3.0
 
