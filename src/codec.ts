@@ -122,9 +122,14 @@ export interface ResourceCodec {
    * codec encrypts.
    *
    * @param response {HttpResponse}
+   * @param [expectedId] {string}   the resource id the read targeted. An
+   *   encrypting codec verifies the decrypted envelope's AEAD-authenticated
+   *   binding against it (a server-side swap of two envelopes is then detected);
+   *   the identity codec ignores it. Optional and backward compatible -- a
+   *   caller that does not know the id (or the plaintext codec) omits it.
    * @returns {Promise<Json | Blob>}
    */
-  decode(response: HttpResponse): Promise<Json | Blob>
+  decode(response: HttpResponse, expectedId?: string): Promise<Json | Blob>
 
   /**
    * Transforms a caller's user-writable metadata (`custom`) into the value to
@@ -135,10 +140,15 @@ export interface ResourceCodec {
    *
    * @param input {object}
    * @param input.custom {ResourceMetadataCustom}   the plaintext user metadata
+   * @param [input.id] {string}   the resource id the metadata belongs to. An
+   *   encrypting codec binds it into the metadata envelope's AEAD-authenticated
+   *   protected header (so a server-side swap of two resources' metadata is
+   *   detected on decode); the identity codec ignores it.
    * @returns {Promise<{ custom: object }>}   the value to store under `custom`
    */
   encodeMeta(input: {
     custom: ResourceMetadataCustom
+    id?: string
   }): Promise<{ custom: object }>
 
   /**
@@ -149,9 +159,15 @@ export interface ResourceCodec {
    *
    * @param stored {object}
    * @param [stored.custom] {unknown}   the stored `custom` value from `/meta`
+   * @param [expectedId] {string}   the resource id the metadata belongs to. An
+   *   encrypting codec verifies the envelope's AEAD-authenticated binding
+   *   against it; the identity codec ignores it.
    * @returns {Promise<ResourceMetadataCustom>}
    */
-  decodeMeta(stored: { custom?: unknown }): Promise<ResourceMetadataCustom>
+  decodeMeta(
+    stored: { custom?: unknown },
+    expectedId?: string
+  ): Promise<ResourceMetadataCustom>
 }
 
 /**

@@ -36,6 +36,7 @@ export type {
   CollectionDescription,
   CollectionEncryption,
   CollectionEncryptionEpoch,
+  CollectionEncryptionEpochsMac,
   CollectionEncryptionRecipient,
   PolicyDocument,
   LinkSet,

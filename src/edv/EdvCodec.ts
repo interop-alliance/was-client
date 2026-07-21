@@ -52,7 +52,7 @@
  *   plaintext `name`/`tags`. A reader with the keys decrypts it back
  *   transparently via `meta()`.
  */
-import { base64 } from '@scure/base'
+import { base64, base64urlnopad } from '@scure/base'
 import { EdvClientCore, assertDocId } from '@interop/edv-client'
 import type { HttpResponse } from '@interop/http-client'
 import type {
@@ -161,6 +161,18 @@ export class EdvCodec implements ResourceCodec {
   private readonly _contentType: string
   private readonly _maxBlobBytes: number
   private readonly _idDerivation: 'random' | 'content'
+  /**
+   * The EDV-over-WAS scheme version this codec binds into every envelope's
+   * `was.v` protected-header parameter (the marker's `version`, `1` when
+   * absent). Read side rejects an envelope stamped with a greater version.
+   */
+  private readonly _version: number
+  /**
+   * Whether this codec's collection has key epochs. When it does, an envelope's
+   * `was.epoch` binding is checked on decode against the epoch of the key that
+   * actually decrypted it.
+   */
+  private readonly _hasEpochs: boolean
 
   /**
    * @param options {object}
@@ -182,6 +194,11 @@ export class EdvCodec implements ResourceCodec {
    * @param options.idDerivation {string}           how `add()` mints a document
    *   id: `'random'` (classic `generateId()`) or `'content'` (derived from the
    *   JWE ciphertext, content-addressed)
+   * @param [options.version] {number}   the EDV-over-WAS scheme version to bind
+   *   into each envelope's `was.v` (defaults to `1`)
+   * @param [options.hasEpochs] {boolean}   whether the collection has key
+   *   epochs, so a decoded envelope's `was.epoch` binding is checked against the
+   *   decrypting key's epoch (defaults to `false`)
    */
   constructor({
     edv,
@@ -190,7 +207,9 @@ export class EdvCodec implements ResourceCodec {
     writeEpoch,
     contentType,
     maxBlobBytes,
-    idDerivation
+    idDerivation,
+    version,
+    hasEpochs
   }: {
     edv: EdvClientCore
     keyAgreementKey: IKeyAgreementKey
@@ -199,6 +218,8 @@ export class EdvCodec implements ResourceCodec {
     contentType: string
     maxBlobBytes: number
     idDerivation: 'random' | 'content'
+    version?: number
+    hasEpochs?: boolean
   }) {
     this._edv = edv
     this._writeKey = keyAgreementKey
@@ -209,6 +230,8 @@ export class EdvCodec implements ResourceCodec {
     this._contentType = contentType
     this._maxBlobBytes = maxBlobBytes
     this._idDerivation = idDerivation
+    this._version = version ?? 1
+    this._hasEpochs = hasEpochs ?? false
   }
 
   /**
@@ -265,6 +288,21 @@ export class EdvCodec implements ResourceCodec {
     }
 
     const { documentCipher } = this._edv
+    // Bind an AEAD-authenticated `was` parameter into the JWE protected header:
+    // the scheme version, the resource id when known at encrypt time (omitted
+    // for a content-derived id, which does not exist until after encryption),
+    // and the write epoch on a multi-recipient collection. A server that swaps
+    // two envelopes between ids (or replays one under a rolled-back epoch) is
+    // then detected on decrypt.
+    const was: { v: number; resource?: string; epoch?: string } = {
+      v: this._version
+    }
+    if (docId !== undefined) {
+      was.resource = docId
+    }
+    if (this._writeEpoch !== undefined) {
+      was.epoch = this._writeEpoch
+    }
     const encrypted = await documentCipher.encrypt({
       doc: {
         ...(docId !== undefined && { id: docId }),
@@ -278,7 +316,8 @@ export class EdvCodec implements ResourceCodec {
       recipients: this._recipients,
       keyResolver: this._edv.keyResolver,
       hmac: undefined,
-      update: priorDoc !== null
+      update: priorDoc !== null,
+      additionalProtectedParams: { was }
     })
     if (docId === undefined) {
       // Encrypt-then-stamp: the id lives in the cleartext envelope, outside the
@@ -317,15 +356,23 @@ export class EdvCodec implements ResourceCodec {
   /**
    * @inheritdoc
    */
-  async decode(response: {
-    data?: unknown
-    json(): Promise<unknown>
-  }): Promise<Json | Blob> {
+  async decode(
+    response: {
+      data?: unknown
+      json(): Promise<unknown>
+    },
+    expectedId?: string
+  ): Promise<Json | Blob> {
     const encryptedDoc = await readJsonData(
       response as Parameters<typeof readJsonData>[0]
     )
     this._assertEnvelope(encryptedDoc, 'read')
     const decrypted = await this._decrypt(encryptedDoc)
+    await this._verifyBinding({
+      jwe: encryptedDoc.jwe,
+      expectedId,
+      keyId: decrypted.keyId
+    })
     return this._fromDocument(decrypted.content, decrypted.meta)
   }
 
@@ -341,12 +388,19 @@ export class EdvCodec implements ResourceCodec {
    * {@link KeyUnwrapError} -- the **read** axis only; it says nothing about
    * whether the server will still serve (pull) the ciphertext.
    *
+   * Also returns the `id` of the key that actually decrypted the envelope (its
+   * JWE recipient `kid`), so {@link _verifyBinding} can check a `was.epoch`
+   * binding against the epoch of the decrypting key.
+   *
    * @param encryptedDoc {IEncryptedDocument}
-   * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown> }>}
+   * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
+   *   keyId?: string }>}
    */
-  private async _decrypt(
-    encryptedDoc: IEncryptedDocument
-  ): Promise<{ content?: unknown; meta?: Record<string, unknown> }> {
+  private async _decrypt(encryptedDoc: IEncryptedDocument): Promise<{
+    content?: unknown
+    meta?: Record<string, unknown>
+    keyId?: string
+  }> {
     const recipients =
       (
         encryptedDoc.jwe as {
@@ -369,10 +423,11 @@ export class EdvCodec implements ResourceCodec {
     const rest = this._readKeys.filter(key => !kids.has(key.id))
     for (const keyAgreementKey of [...preferred, ...rest]) {
       try {
-        return await this._edv.documentCipher.decrypt({
+        const decrypted = await this._edv.documentCipher.decrypt({
           encryptedDoc,
           keyAgreementKey
         })
+        return { ...decrypted, keyId: keyAgreementKey.id }
       } catch (err) {
         if (isKeyMiss(err)) {
           // This candidate is not a recipient of this envelope, or could not
@@ -405,6 +460,94 @@ export class EdvCodec implements ResourceCodec {
   }
 
   /**
+   * Verifies the AEAD-authenticated `was` binding on a successfully-decrypted
+   * envelope (spec "Request Body Integrity"'s envelope half). Decrypt success
+   * proves the protected header authentic, so this runs only after a decrypt
+   * succeeds. Enforces, in order:
+   *
+   * - No `was` parameter at all: a legacy envelope, accepted unchanged (this
+   *   client wrote it before the binding existed, or a foreign EDV writer did).
+   * - `was.v` greater than this codec's scheme version: a future-scheme envelope
+   *   this client does not implement -- {@link EncryptionError}.
+   * - `was.resource` present and the expected id known: a mismatch is a server-side
+   *   swap of two resources' envelopes -- {@link IntegrityError}.
+   * - `was` present but `resource` absent (a content-derived write) and the expected
+   *   id known: the envelope's ciphertext must re-derive to the expected id
+   *   ({@link EdvDocumentCipher.deriveId}); a mismatch means the envelope was
+   *   copied under a different id -- {@link IntegrityError}. This check is NEVER
+   *   applied to an envelope with no `was` at all (a legacy random-id envelope
+   *   would fail it wrongly).
+   * - On a collection with epochs, `was.epoch` present: it must equal the epoch
+   *   (the `did:key` before the `#`) of the key that actually decrypted -- a
+   *   mismatch is a replay under a different epoch's key -- {@link IntegrityError}.
+   *
+   * @param options {object}
+   * @param options.jwe {unknown}   the envelope's JWE (its `protected` header is
+   *   parsed for `was`)
+   * @param [options.expectedId] {string}   the resource id the read targeted
+   * @param [options.keyId] {string}   the id of the key that decrypted, for the
+   *   epoch check
+   * @returns {Promise<void>}
+   */
+  private async _verifyBinding({
+    jwe,
+    expectedId,
+    keyId
+  }: {
+    jwe: unknown
+    expectedId?: string
+    keyId?: string
+  }): Promise<void> {
+    const was = parseWasHeader(jwe)
+    if (was === undefined) {
+      // Legacy envelope (no `was`): accept unchanged for back-compat.
+      return
+    }
+    if (typeof was.v === 'number' && was.v > this._version) {
+      throw new EncryptionError(
+        `Cannot decrypt this resource: its envelope is stamped with ` +
+          `EDV-over-WAS scheme version ${was.v}, which this client (version ` +
+          `${this._version}) does not implement. Upgrade the client.`
+      )
+    }
+    if (typeof was.resource === 'string') {
+      if (expectedId !== undefined && was.resource !== expectedId) {
+        throw new IntegrityError(
+          `Cannot decrypt this resource: the stored envelope is bound to a ` +
+            `different resource id ("${was.resource}") than the one requested ` +
+            `("${expectedId}"). The server swapped two resources' envelopes.`
+        )
+      }
+    } else if (expectedId !== undefined) {
+      // Content-derived write (no `resource`): the id is a function of the
+      // ciphertext, so re-derive and compare.
+      const derived = await this._edv.documentCipher.deriveId({
+        jwe: jwe as Parameters<
+          typeof this._edv.documentCipher.deriveId
+        >[0]['jwe']
+      })
+      if (derived !== expectedId) {
+        throw new IntegrityError(
+          `Cannot decrypt this resource: its content-derived id ("${derived}") ` +
+            `does not match the requested id ("${expectedId}"). The server ` +
+            'served this envelope under an id it was not written for.'
+        )
+      }
+    }
+    if (this._hasEpochs && typeof was.epoch === 'string' && keyId) {
+      const decryptedEpoch = keyId.split('#')[0]
+      if (decryptedEpoch !== was.epoch) {
+        throw new IntegrityError(
+          `Cannot decrypt this resource: its envelope is bound to key epoch ` +
+            `"${was.epoch}" but was decrypted with a key from epoch ` +
+            `"${decryptedEpoch}". The server replayed it under a different ` +
+            'epoch.'
+        )
+      }
+    }
+  }
+
+  /**
    * @inheritdoc
    *
    * Encrypts the user-writable `custom` into an EDV Document envelope
@@ -414,9 +557,11 @@ export class EdvCodec implements ResourceCodec {
    * envelope), so each write re-encrypts fresh with no `update`.
    */
   async encodeMeta({
-    custom
+    custom,
+    id: resourceId
   }: {
     custom: ResourceMetadataCustom
+    id?: string
   }): Promise<{ custom: object }> {
     const { documentCipher } = this._edv
     // The document needs an EDV id (the cipher asserts one on decrypt). It is
@@ -424,11 +569,21 @@ export class EdvCodec implements ResourceCodec {
     // minted fresh each write, since the metadata envelope is never updated in
     // place (concurrency is the server's plaintext `metaVersion`, Decision 3).
     const id = (await this._edv.generateId()) as string
+    // Bind the `was` parameter to the RESOURCE id (not the metadata envelope's
+    // own random EDV id), so a server-side swap of two resources' metadata is
+    // AEAD-detected on decode. The metadata envelope always knows the resource
+    // id at encrypt time, so `resource` is always present here (never content-
+    // derived) and it carries no `epoch`.
+    const was: { v: number; resource?: string } = { v: this._version }
+    if (resourceId !== undefined) {
+      was.resource = resourceId
+    }
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
       recipients: this._recipients,
       keyResolver: this._edv.keyResolver,
-      hmac: undefined
+      hmac: undefined,
+      additionalProtectedParams: { was }
     })
     return { custom: encrypted }
   }
@@ -441,16 +596,25 @@ export class EdvCodec implements ResourceCodec {
    * present value must be an EDV envelope (else {@link EncryptionError}, the
    * `_assertEnvelope` guard), so a foreign plaintext `custom` fails closed.
    */
-  async decodeMeta({
-    custom
-  }: {
-    custom?: unknown
-  }): Promise<ResourceMetadataCustom> {
+  async decodeMeta(
+    {
+      custom
+    }: {
+      custom?: unknown
+    },
+    expectedId?: string
+  ): Promise<ResourceMetadataCustom> {
     if (custom === undefined || custom === null) {
       return {}
     }
     this._assertEnvelope(custom, 'read')
-    const decrypted = await this._decrypt(custom as IEncryptedDocument)
+    const encryptedDoc = custom as IEncryptedDocument
+    const decrypted = await this._decrypt(encryptedDoc)
+    await this._verifyBinding({
+      jwe: encryptedDoc.jwe,
+      expectedId,
+      keyId: decrypted.keyId
+    })
     return (decrypted.content ?? {}) as ResourceMetadataCustom
   }
 
@@ -654,6 +818,36 @@ function decodeUtf8(bytes: Uint8Array): string | null {
 }
 
 /**
+ * Parses the `was` binding out of a JWE's protected header. The header is
+ * base64url (no padding) JSON; a successful decrypt has already proven it
+ * authentic, so this parse is trusted. Returns the `was` object, or `undefined`
+ * when the header is absent/unparseable or carries no `was` member (a legacy
+ * envelope that predates the binding).
+ *
+ * @param jwe {unknown}
+ * @returns {Record<string, unknown> | undefined}
+ */
+function parseWasHeader(jwe: unknown): Record<string, unknown> | undefined {
+  const protectedHeader = (jwe as { protected?: unknown } | null)?.protected
+  if (typeof protectedHeader !== 'string') {
+    return undefined
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(
+      new TextDecoder().decode(base64urlnopad.decode(protectedHeader))
+    )
+  } catch {
+    return undefined
+  }
+  const was = (parsed as { was?: unknown } | null)?.was
+  if (was === null || typeof was !== 'object') {
+    return undefined
+  }
+  return was as Record<string, unknown>
+}
+
+/**
  * The EDV scheme tag this provider handles (matches the Collection marker).
  */
 const EDV_SCHEME = 'edv'
@@ -722,6 +916,16 @@ export function createEdvEncryption({
       if (scheme !== EDV_SCHEME) {
         return null
       }
+      // Refuse a marker from a future scheme version: this client does not
+      // implement it, and silently operating on it could mis-handle the data.
+      const markerVersion = encryption?.version
+      if (typeof markerVersion === 'number' && markerVersion > 1) {
+        throw new EncryptionError(
+          `Collection ${spaceId}/${collectionId} declares EDV-over-WAS scheme ` +
+            `version ${markerVersion}, which this client (version 1) does not ` +
+            'implement. Upgrade the client.'
+        )
+      }
       // Prefer override-supplied keys; otherwise consult the keystore.
       const resolved =
         (keys as EdvKeys | undefined) ??
@@ -763,7 +967,9 @@ export function createEdvEncryption({
         writeEpoch,
         contentType,
         maxBlobBytes,
-        idDerivation
+        idDerivation,
+        version: markerVersion ?? 1,
+        hasEpochs: !!(encryption?.epochs && encryption.epochs.length > 0)
       })
     }
   }
