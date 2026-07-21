@@ -1,5 +1,34 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- **AEAD-authenticated `was` envelope binding on encrypted collections.** Every
+  EDV envelope now carries a `was` parameter (scheme version, resource id, and
+  key epoch where applicable) inside its JWE protected header, which is covered
+  by the AEAD tag. On read, the codec verifies the decrypted binding against the
+  requested resource id and the decrypting key's epoch, so a malicious server
+  that swaps two resources' envelopes, serves a content-derived envelope under
+  the wrong id, or replays one under a rolled-back epoch is detected as an
+  `IntegrityError`. The resource metadata (`.../meta`) envelope is bound the
+  same way. Envelopes written before this change (no `was` parameter) still read
+  unchanged.
+- **Authenticated epoch configuration (`epochsMac`).** The Collection
+  `encryption` marker now carries a MAC over its epoch configuration (scheme,
+  version, `currentEpoch`, and the ordered epoch id list), keyed via HKDF from
+  the current epoch's secret -- which the server never holds. `initRecipients`
+  and the rotation inside `removeRecipient` write it; `addRecipient` preserves
+  it. A reader that holds the current epoch verifies it before writing, so a
+  server-side rollback of `currentEpoch` or a fabricated epoch list fails to
+  authenticate (`IntegrityError`). Markers without the MAC are accepted for
+  back-compat.
+- **Scheme versioning.** The `encryption` marker's optional `version` is stamped
+  as `1` when the client first declares key epochs, and bound into each
+  envelope's `was.v`. A marker or envelope declaring a version this client does
+  not implement is refused with a typed `EncryptionError` rather than
+  mis-handled.
+
 ## 0.17.0 - 2026-07-20
 
 ### Changed

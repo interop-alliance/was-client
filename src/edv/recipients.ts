@@ -40,6 +40,7 @@ import {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
+import { computeEpochsMac } from './epochMac.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
 
 export type { RecipientPublicKey } from './epochCrypto.js'
@@ -94,14 +95,28 @@ export async function initRecipients({
   }
   return casUpdateMarker({
     collection,
-    mutate: marker => {
+    mutate: async marker => {
       if (marker.epochs && marker.epochs.length > 0) {
         throw new ValidationError(
           'This collection already has key epochs; use addRecipient to add a ' +
             'reader instead of initRecipients.'
         )
       }
-      return { ...marker, epochs: [epoch], currentEpoch: epochId }
+      // Declaring the first epochs, so stamp scheme version 1 when the marker
+      // does not already carry one, and authenticate the epoch configuration
+      // with a MAC keyed from this first epoch's secret (computed over the exact
+      // marker being written, since a CAS retry re-reads the marker).
+      const next: CollectionEncryption = {
+        ...marker,
+        version: marker.version ?? 1,
+        epochs: [epoch],
+        currentEpoch: epochId
+      }
+      const epochsMac = await computeEpochsMac({
+        marker: next,
+        epochSecret: secret
+      })
+      return { ...next, epochsMac }
     }
   })
 }
@@ -299,11 +314,19 @@ export async function removeRecipient({
         id: epochId,
         recipients: newRecipients
       }
-      return {
+      // Re-authenticate the epoch configuration under the NEW epoch's secret
+      // (the rotating caller just minted it), computed over the exact marker
+      // being written so a CAS retry re-MACs the re-read marker state.
+      const next: CollectionEncryption = {
         ...marker,
         epochs: [...epochs, newEpoch],
         currentEpoch: epochId
       }
+      const epochsMac = await computeEpochsMac({
+        marker: next,
+        epochSecret: secret
+      })
+      return { ...next, epochsMac }
     }
   })
 

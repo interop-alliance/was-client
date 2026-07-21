@@ -187,7 +187,7 @@ export class Resource {
   async get(): Promise<Json | Blob | null> {
     const codec = await this._codec()
     const response = await this._read()
-    return response === null ? null : codec.decode(response)
+    return response === null ? null : codec.decode(response, this.id)
   }
 
   /**
@@ -362,7 +362,7 @@ export class Resource {
     const metadata = response.data as ResourceMetadata
     // Decode the user-writable `custom` (decrypting it on an encrypted
     // collection) so callers uniformly see plaintext `{ name, tags }`.
-    const custom = await codec.decodeMeta({ custom: metadata.custom })
+    const custom = await codec.decodeMeta({ custom: metadata.custom }, this.id)
     const decoded = { ...metadata, custom }
     const etag = readEtag(response)
     return etag !== undefined ? { ...decoded, etag } : decoded
@@ -399,7 +399,10 @@ export class Resource {
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ etag?: string }> {
     const codec = await this._codec()
-    const { custom } = await codec.encodeMeta({ custom: meta.custom ?? {} })
+    const { custom } = await codec.encodeMeta({
+      custom: meta.custom ?? {},
+      id: this.id
+    })
     const response = await send(this._context, {
       path: this._metaPath,
       method: 'PUT',
