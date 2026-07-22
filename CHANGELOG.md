@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- `ensureSpaceAndCollection` accepts an optional `collectionName` (the
+  collection display name, defaulting to the collection id as before), so a
+  wallet can provision collections with friendly names like "Verifiable
+  Credentials" instead of `private-credentials`.
+
 ## 0.19.0 - 2026-07-22
 
 ### Added

@@ -28,6 +28,8 @@ import type { WasClient } from '../WasClient.js'
  * @param [options.isPublic] {boolean}   grant collection-level world read
  * @param [options.spaceName] {string}   the Space display name; defaults to
  *   `'WAS Space'`
+ * @param [options.collectionName] {string}   the collection display name;
+ *   defaults to the collection id
  * @returns {Promise<void>}
  */
 export async function ensureSpaceAndCollection({
@@ -37,7 +39,8 @@ export async function ensureSpaceAndCollection({
   collectionId,
   encryption = 'edv',
   isPublic = false,
-  spaceName = 'WAS Space'
+  spaceName = 'WAS Space',
+  collectionName = collectionId
 }: {
   was: WasClient
   spaceId: string
@@ -46,6 +49,7 @@ export async function ensureSpaceAndCollection({
   encryption?: 'edv' | 'plaintext'
   isPublic?: boolean
   spaceName?: string
+  collectionName?: string
 }): Promise<void> {
   const space = was.space(spaceId)
 
@@ -62,8 +66,8 @@ export async function ensureSpaceAndCollection({
     const collection = space.collection(collectionId)
     await collection.configure(
       encryption === 'edv'
-        ? { name: collectionId, encryption: { scheme: 'edv' } }
-        : { name: collectionId, force: true }
+        ? { name: collectionName, encryption: { scheme: 'edv' } }
+        : { name: collectionName, force: true }
     )
     if (isPublic) {
       await collection.setPublic()

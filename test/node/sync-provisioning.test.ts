@@ -150,6 +150,21 @@ describe('ensureSpaceAndCollection', () => {
     expect(space.configureCalls[0]!.name).toBe('My Space')
   })
 
+  it('honours a custom collection display name', async () => {
+    const space = new FakeSpace()
+    const was = new FakeWas(space)
+    await ensureSpaceAndCollection({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      collectionName: 'Verifiable Credentials'
+    })
+    expect(space.collectionObj.configureCalls[0]!.name).toBe(
+      'Verifiable Credentials'
+    )
+  })
+
   it('wraps a space.configure failure with a labelled error + cause', async () => {
     const cause = new Error('space boom')
     const was = new FakeWas(new FakeSpace({ failSpace: cause }))
