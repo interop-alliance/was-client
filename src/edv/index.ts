@@ -27,3 +27,10 @@ export { WasTransport, JOSE_CONTENT_TYPE } from './WasTransport.js'
 export { initRecipients, addRecipient, removeRecipient } from './recipients.js'
 export type { OwnerKey, RecipientPublicKey } from './recipients.js'
 export { mintEpoch, epochKeyIdFor } from './epochCrypto.js'
+export {
+  createEdvDocCipher,
+  ownerRecipient,
+  UnknownEpochError,
+  isEncryptedEnvelope
+} from './docCipher.js'
+export type { DocCipher } from './docCipher.js'

@@ -24,15 +24,25 @@ external deps       @interop/ezcap, @interop/storage-core,
                     @interop/http-client, ...
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
-  EdvCodec, WasTransport, epochCrypto/epochKeys/epochMac, recipients
+  EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochMac,
+  recipients
   Implements the interfaces in src/codec.ts; imports internal/* and the
   crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
+
+src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
+  port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState),
+  cid, plaintextCipher, envelope, provisioning
+  Imports core (WasClient, errors, internal/conditional) but never
+  src/edv/; src/edv/docCipher.ts imports its DocCipher/envelope types.
 ```
 
-The load-bearing rule: **core never imports `src/edv/`**. The package ships two
-entry points (`.` and `./edv` in the package.json exports map), and
-`src/codec.ts` defines the seam as pure interfaces, so plaintext consumers never
-load the crypto dependency graph.
+The load-bearing rule: **core never imports `src/edv/`, and neither does
+`src/sync/`**. The package ships three entry points (`.`, `./edv`, and `./sync`
+in the package.json exports map); `src/codec.ts` and `src/sync/types.ts` define
+their seams as pure interfaces, so plaintext consumers never load the crypto
+dependency graph. The dependency between the two opt-in subpaths points one way:
+`src/edv/docCipher.ts` implements the `DocCipher` interface that
+`src/sync/types.ts` declares.
 
 ## The handle model
 
@@ -136,6 +146,79 @@ decode (`IntegrityError` on envelope swap or epoch rollback); the epoch
 configuration itself is MACed with a key derived from the current epoch secret
 (`epochMac.ts`), which the server never holds.
 
+## The sync layer
+
+`src/sync/` (the `./sync` subpath) is cross-replica synchronization support:
+everything a wallet needs to replicate one Space + Collection over WAS. It is
+deliberately **not** a sync engine -- it supplies the seams a change engine
+plugs into:
+
+- **`WasSyncPort`** (`types.ts`) is the injected WAS-access seam: `query` (one
+  page of the change feed), `putContent`/`deleteContent`/`putMeta` (conditional
+  writes), and `get` (single-resource master-state re-read for the 412-conflict
+  path). `createWasSyncPort` (`port.ts`) implements it, bound to one Space +
+  Collection.
+- **`DocCipher`** (`types.ts`) is the per-collection encrypt/decrypt seam: it
+  turns a JSON document into its stored body (minting the resource id) and back.
+  `createPlaintextDocCipher` is the crypto-free identity implementation for a
+  plaintext content-addressed collection; `createEdvDocCipher`
+  (`src/edv/docCipher.ts`, on the `./edv` subpath) is the encrypting one,
+  wrapping the same EDV codec the handles use but pointed at a local replica.
+
+The port's defining property: **it moves stored bodies verbatim and never
+touches keys**. Writes and single-resource reads ride the raw signed
+`was.request()` escape hatch, bypassing the codec seam entirely -- the change
+feed already ships opaque stored bodies (plaintext or EDV envelope), and push
+must write those same bytes back unchanged; running them through
+`resource.put()` would re-encrypt an already-encrypted envelope. Encrypt and
+decrypt therefore happen above the port, at the engine's `DocCipher`, which is
+what reconciles plaintext, single-recipient, and multi-recipient (key-epoch)
+collections behind one interface. The pull path rides `Collection.changes()`
+(the signed `POST .../query`, profile `changes`), which likewise never resolves
+the codec.
+
+The wire model is shared, not local: `SyncCheckpoint`, `WireDoc`, and the feed
+page re-export `@interop/storage-core`'s `ChangesCheckpoint` / `ChangeDocument`
+/ `ChangesPage`. A checkpoint is the keyset position `{ id, updatedAt }` of the
+last document returned -- server time only, an opaque resume token, never
+compared against a device clock.
+
+Conditional writes ride the server's monotonic content `version` (ETag)
+uniformly for plaintext and encrypted resources, so there is no
+plaintext-vs-encrypted fork; each write returns the server-acked `version`. Two
+typed signals in `src/errors.ts` let a push loop catch exactly what it can
+handle: `WasSyncConflictError` (412, a subtype of `PreconditionFailedError`)
+triggers re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete, a
+subtype of `NotFoundError`) marks an already-gone target as a settled outcome.
+The port's `putContent` also stamps the `WAS-Key-Epoch` header so the server
+records which key epoch a body was encrypted under.
+
+Convergent identifiers make replicas agree without coordination (`cid.ts`): a
+content id is `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`, unpadded, so
+the same logical document mints the same resource id on every replica;
+`deriveSpaceId` derives the Space id the same way from the controller DID.
+Hashing is synchronous pure-JS (`@noble/hashes`), byte-identical across Node,
+the browser, and React Native. The exact hashed bytes are the canonical JSON
+string itself -- that is the contract replicas must share for ids to converge.
+
+The `DocCipher` id model follows the collection's mutability: a
+content-addressed collection (`idDerivation: 'content'`, or plaintext) is
+insert-only -- a changed document is a different id, so `encryptUpdate` is
+omitted or throws; a mutable head-document collection uses `'random'` ids and
+`encryptUpdate`, which re-encrypts in place under the existing id while
+advancing the envelope `sequence`. On decrypt, the EDV cipher routes by the
+envelope's JWE recipient `kid`s: the key-agreement key id means a pre-epoch
+envelope (decrypted by the always-built single-key codec -- a permanent
+tolerance, not a migration shim), a known epoch key id means the epoch codec,
+and anything else throws `UnknownEpochError` -- the signal that the cached
+Collection description is stale (epoch rotation emits no change-feed entry) and
+the cipher must be rebuilt from a re-read marker.
+
+`ensureSpaceAndCollection` (`provisioning.ts`) is the idempotent setup step:
+upsert the Space, configure the collection (declaring the `{ scheme: 'edv' }`
+encryption marker, or plaintext with `force`), optionally grant world read.
+Re-running it against an existing account is a no-op upgrade.
+
 ## Concurrency
 
 No locks; safety is optimistic (ETag/CAS) throughout
@@ -198,3 +281,4 @@ operations.
 | New error kind                    | `src/errors.ts` (`ERROR_CLASS_BY_KIND`), problem type upstream             |
 | Encryption format or key handling | `src/edv/` (never in core; keep the seam interface-only)                   |
 | Codec resolution policy           | `src/internal/codec.ts`                                                    |
+| Cross-replica sync behavior       | `src/sync/` (port stays verbatim/keyless; ciphers implement `DocCipher`)   |

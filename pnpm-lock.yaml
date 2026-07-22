@@ -32,9 +32,15 @@ importers:
       '@interop/x25519-key-agreement-key':
         specifier: ^5.2.1
         version: 5.2.1
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       '@scure/base':
         specifier: ^2.2.0
         version: 2.2.0
+      json-canonicalize:
+        specifier: ^2.0.0
+        version: 2.0.0
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -797,6 +803,9 @@ packages:
 
   json-buffer@3.0.1:
     resolution: {integrity: sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ==}
+
+  json-canonicalize@2.0.0:
+    resolution: {integrity: sha512-yyrnK/mEm6Na3ChbJUWueXdapueW0p380RUyTW87XGb1ww8l8hU0pRrGC3vSWHe9CxrbPHX2fGUOZpNiHR0IIg==}
 
   json-schema-traverse@0.4.1:
     resolution: {integrity: sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==}
@@ -1931,6 +1940,8 @@ snapshots:
   js-tokens@10.0.0: {}
 
   json-buffer@3.0.1: {}
+
+  json-canonicalize@2.0.0: {}
 
   json-schema-traverse@0.4.1: {}
 
