@@ -38,7 +38,7 @@ export interface PageWalk<T extends PageEnvelope = CollectionResourcesList> {
 /**
  * Builds a {@link PageWalk} by fetching the first page with the same
  * `fetchPage` used for every following page -- the shared shape of the signed
- * (`Collection._listWalk`) and unsigned (`WasClient._publicListWalk`) walks,
+ * (`Collection.#listWalk`) and unsigned (`WasClient.#publicListWalk`) walks,
  * which differ only in how a single page URL is fetched. Returns `null` when
  * the first page is missing/unauthorized (404 conflation caveat).
  *

@@ -39,15 +39,15 @@ import type {
  * encryption state changes (e.g. `Collection.configure()` adds the marker).
  */
 export class CodecHolder {
-  private _promise?: Promise<ResourceCodec>
-  private readonly _resolve: () => Promise<ResourceCodec>
+  #promise?: Promise<ResourceCodec>
+  readonly #resolve: () => Promise<ResourceCodec>
 
   /**
    * @param resolve {function}   resolves a fresh codec; re-invoked after a
    *   rejection or a `reset()`, else called at most once
    */
   constructor(resolve: () => Promise<ResourceCodec>) {
-    this._resolve = resolve
+    this.#resolve = resolve
   }
 
   /**
@@ -56,17 +56,17 @@ export class CodecHolder {
    * @returns {Promise<ResourceCodec>}
    */
   get(): Promise<ResourceCodec> {
-    if (this._promise) {
-      return this._promise
+    if (this.#promise) {
+      return this.#promise
     }
-    const promise = this._resolve()
+    const promise = this.#resolve()
     // Memoize the in-flight promise so concurrent callers share one round-trip,
     // but drop it on rejection so a transient failure does not permanently
     // poison the handle. The identity guard avoids clobbering a newer promise.
-    this._promise = promise
+    this.#promise = promise
     promise.catch((): void => {
-      if (this._promise === promise) {
-        this._promise = undefined
+      if (this.#promise === promise) {
+        this.#promise = undefined
       }
     })
     return promise
@@ -78,7 +78,7 @@ export class CodecHolder {
    * @returns {void}
    */
   reset(): void {
-    this._promise = undefined
+    this.#promise = undefined
   }
 }
 

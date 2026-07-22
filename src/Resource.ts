@@ -56,8 +56,8 @@ export class Resource {
   readonly collectionId: string
   readonly id: string
 
-  private readonly _context: ClientContext
-  private readonly _capability?: IZcap
+  readonly #context: ClientContext
+  readonly #capability?: IZcap
   /**
    * Resolves the codec for this resource: the parent collection's shared codec
    * when this handle came from `collection.resource(id)`, otherwise one
@@ -75,14 +75,14 @@ export class Resource {
    * already memoizes (so this adds no round-trip), and delegating lets a parent
    * reset (e.g. after `configure()` adds the encryption marker) propagate here.
    */
-  private readonly _codec: () => Promise<ResourceCodec>
+  readonly #codec: () => Promise<ResourceCodec>
   /**
    * Resolves the backend's advertised feature tokens: the parent collection's
    * shared probe when this handle came from `collection.resource(id)`,
    * otherwise one built (and memoized) for this handle. Consulted by the
    * conditional-codec write path (see `upsertResource`).
    */
-  private readonly _features: () => Promise<string[]>
+  readonly #features: () => Promise<string[]>
 
   /**
    * @param options {object}
@@ -129,13 +129,13 @@ export class Resource {
     // the constructor covers every operation (read, delete, meta, policy, put),
     // not just writes.
     assertNotReserved({ id: resourceId, kind: 'resource' })
-    this._context = context
+    this.#context = context
     this.spaceId = spaceId
     this.collectionId = collectionId
     this.id = resourceId
-    this._capability = capability
+    this.#capability = capability
     if (codec) {
-      this._codec = codec
+      this.#codec = codec
     } else {
       const holder = collectionCodecHolder(context, {
         spaceId,
@@ -143,21 +143,21 @@ export class Resource {
         override: encryption,
         capability
       })
-      this._codec = () => holder.get()
+      this.#codec = () => holder.get()
     }
     if (features) {
-      this._features = features
+      this.#features = features
     } else {
       const probe = collectionBackendFeatures(context, {
         spaceId,
         collectionId,
         capability
       })
-      this._features = () => probe.get()
+      this.#features = () => probe.get()
     }
   }
 
-  private get _path(): string {
+  get #path(): string {
     return resourcePath(this.spaceId, this.collectionId, this.id)
   }
 
@@ -168,11 +168,11 @@ export class Resource {
    *
    * @returns {Promise<HttpResponse | null>}
    */
-  private async _read(): Promise<HttpResponse | null> {
-    return send(this._context, {
-      path: this._path,
+  async #read(): Promise<HttpResponse | null> {
+    return send(this.#context, {
+      path: this.#path,
       method: 'GET',
-      capability: this._capability,
+      capability: this.#capability,
       read: true
     })
   }
@@ -185,8 +185,8 @@ export class Resource {
    * @returns {Promise<Json | Blob | null>}
    */
   async get(): Promise<Json | Blob | null> {
-    const codec = await this._codec()
-    const response = await this._read()
+    const codec = await this.#codec()
+    const response = await this.#read()
     return response === null ? null : codec.decode(response, this.id)
   }
 
@@ -205,7 +205,7 @@ export class Resource {
    * @returns {Promise<string | null>}
    */
   async getText(): Promise<string | null> {
-    const response = await this._read()
+    const response = await this.#read()
     if (response === null) {
       return null
     }
@@ -228,7 +228,7 @@ export class Resource {
    * @returns {Promise<Uint8Array | null>}
    */
   async getBytes(): Promise<Uint8Array | null> {
-    const response = await this._read()
+    const response = await this.#read()
     if (response === null) {
       return null
     }
@@ -275,15 +275,15 @@ export class Resource {
       ifNoneMatch?: boolean
     } = {}
   ): Promise<{ etag?: string }> {
-    const codec = await this._codec()
-    const response = await upsertResource(this._context, {
-      path: this._path,
+    const codec = await this.#codec()
+    const response = await upsertResource(this.#context, {
+      path: this.#path,
       codec,
       id: this.id,
       data,
-      features: this._features,
+      features: this.#features,
       contentType: options.contentType,
-      capability: this._capability,
+      capability: this.#capability,
       precondition: {
         ifMatch: options.ifMatch,
         ifNoneMatch: options.ifNoneMatch
@@ -302,10 +302,10 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async delete(options: { ifMatch?: string } = {}): Promise<void> {
-    await send(this._context, {
-      path: this._path,
+    await send(this.#context, {
+      path: this.#path,
       method: 'DELETE',
-      capability: this._capability,
+      capability: this.#capability,
       // A conditional delete is not idempotent: a stale `If-Match` must surface
       // as a 412 rather than being swallowed as an absent-target success.
       idempotent: options.ifMatch === undefined,
@@ -313,7 +313,7 @@ export class Resource {
     })
   }
 
-  private get _metaPath(): string {
+  get #metaPath(): string {
     return resourceMeta(this.spaceId, this.collectionId, this.id)
   }
 
@@ -335,11 +335,11 @@ export class Resource {
    * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(ResourceMetadata & { etag?: string }) | null> {
-    const codec = await this._codec()
-    const response = await send(this._context, {
-      path: this._metaPath,
+    const codec = await this.#codec()
+    const response = await send(this.#context, {
+      path: this.#metaPath,
       method: 'GET',
-      capability: this._capability,
+      capability: this.#capability,
       read: true
     })
     if (response === null) {
@@ -398,15 +398,15 @@ export class Resource {
     meta: { custom?: ResourceMetadataCustom } = {},
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ etag?: string }> {
-    const codec = await this._codec()
+    const codec = await this.#codec()
     const { custom } = await codec.encodeMeta({
       custom: meta.custom ?? {},
       id: this.id
     })
-    const response = await send(this._context, {
-      path: this._metaPath,
+    const response = await send(this.#context, {
+      path: this.#metaPath,
       method: 'PUT',
-      capability: this._capability,
+      capability: this.#capability,
       json: { custom },
       headers: writeHeaders({
         precondition: {
@@ -430,7 +430,7 @@ export class Resource {
    *   current `custom`
    * @returns {Promise<void>}
    */
-  private async _patchCustom(patch: ResourceMetadataCustom): Promise<void> {
+  async #patchCustom(patch: ResourceMetadataCustom): Promise<void> {
     const current = await this.meta()
     await this.setMeta(
       { custom: { ...current?.custom, ...patch } },
@@ -450,7 +450,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return this._patchCustom({ name })
+    return this.#patchCustom({ name })
   }
 
   /**
@@ -461,10 +461,10 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return this._patchCustom({ tags })
+    return this.#patchCustom({ tags })
   }
 
-  private get _policyPath(): string {
+  get #policyPath(): string {
     return resourcePolicy(this.spaceId, this.collectionId, this.id)
   }
 
@@ -476,9 +476,9 @@ export class Resource {
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
-    return readPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return readPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -489,10 +489,10 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setPolicy(policy: PolicyDocument): Promise<void> {
-    return writePolicy(this._context, {
-      policyPath: this._policyPath,
+    return writePolicy(this.#context, {
+      policyPath: this.#policyPath,
       policy,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -503,9 +503,9 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setPublic(): Promise<void> {
-    return setPublicPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return setPublicPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -515,9 +515,9 @@ export class Resource {
    * @returns {Promise<boolean>}
    */
   async isPublic(): Promise<boolean> {
-    return isPublicPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return isPublicPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -528,9 +528,9 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async clearPolicy(): Promise<void> {
-    return deletePolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return deletePolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 }

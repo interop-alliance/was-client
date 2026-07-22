@@ -44,8 +44,8 @@ const DESCRIPTOR_ABSENT_STATUSES = new Set([404, 405, 501])
  * failure must not poison the probe for its lifetime.)
  */
 export class BackendFeatures {
-  private _promise?: Promise<string[]>
-  private readonly _readDescriptor: () => Promise<unknown>
+  #promise?: Promise<string[]>
+  readonly #readDescriptor: () => Promise<unknown>
 
   /**
    * @param readDescriptor {function}   reads and parses the backend descriptor
@@ -53,7 +53,7 @@ export class BackendFeatures {
    *   status (readable via `httpStatus`) on failure
    */
   constructor(readDescriptor: () => Promise<unknown>) {
-    this._readDescriptor = readDescriptor
+    this.#readDescriptor = readDescriptor
   }
 
   /**
@@ -63,8 +63,8 @@ export class BackendFeatures {
    * @returns {Promise<string[]>}
    */
   get(): Promise<string[]> {
-    this._promise ??= this._probe()
-    return this._promise
+    this.#promise ??= this.#probe()
+    return this.#promise
   }
 
   /**
@@ -86,9 +86,9 @@ export class BackendFeatures {
    *
    * @returns {Promise<string[]>}
    */
-  private async _probe(): Promise<string[]> {
+  async #probe(): Promise<string[]> {
     try {
-      const descriptor = (await this._readDescriptor()) as {
+      const descriptor = (await this.#readDescriptor()) as {
         features?: unknown
       } | null
       return Array.isArray(descriptor?.features)
@@ -103,7 +103,7 @@ export class BackendFeatures {
       }
       // Transient/ambiguous: do not cache this failure -- drop the memo so the
       // next call re-probes -- and rethrow.
-      this._promise = undefined
+      this.#promise = undefined
       throw err
     }
   }

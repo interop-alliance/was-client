@@ -70,7 +70,7 @@ import type {
  * The client-writable fields of a Collection Description -- the shape shared
  * by `Collection.configure` and `Collection.replaceDescription` and the single
  * place a new writable field is declared (the body/echo inclusion rule lives
- * in `Collection._writableFields`).
+ * in `Collection.#writableFields`).
  */
 export interface CollectionWritableFields {
   name?: string

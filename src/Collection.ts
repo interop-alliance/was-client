@@ -77,16 +77,15 @@ export class Collection {
   readonly spaceId: string
   readonly id: string
 
-  private readonly _context: ClientContext
-  private readonly _capability?: IZcap
-  private readonly _encryptionOverride?: EncryptionOverride
-  private readonly _codecHolder: CodecHolder
+  readonly #context: ClientContext
+  readonly #capability?: IZcap
+  readonly #codecHolder: CodecHolder
   /**
    * The shared backend-feature probe for this collection (memoized on a
    * definitive answer), consulted by the conditional-codec write path and
    * shared with child resource handles the way the codec is.
    */
-  private readonly _features: BackendFeatures
+  readonly #features: BackendFeatures
 
   /**
    * @param options {object}
@@ -122,33 +121,32 @@ export class Collection {
     // constructor covers every operation (describe, delete, list, grant, ...),
     // not just writes.
     assertNotReserved({ id: collectionId, kind: 'collection' })
-    this._context = context
+    this.#context = context
     this.spaceId = spaceId
     this.id = collectionId
-    this._capability = capability
-    this._encryptionOverride = encryption
-    this._codecHolder = collectionCodecHolder(context, {
+    this.#capability = capability
+    this.#codecHolder = collectionCodecHolder(context, {
       spaceId,
       collectionId,
       override: encryption,
       capability
     })
-    this._features = collectionBackendFeatures(context, {
+    this.#features = collectionBackendFeatures(context, {
       spaceId,
       collectionId,
       capability
     })
   }
 
-  private get _path(): string {
+  get #path(): string {
     return collectionPath(this.spaceId, this.id)
   }
 
-  private get _itemsPath(): string {
+  get #itemsPath(): string {
     return collectionItems(this.spaceId, this.id)
   }
 
-  private get _policyPath(): string {
+  get #policyPath(): string {
     return collectionPolicy(this.spaceId, this.id)
   }
 
@@ -161,9 +159,7 @@ export class Collection {
    * @param fields {CollectionWritableFields}
    * @returns {CollectionWritableFields}
    */
-  private _writableFields(
-    fields: CollectionWritableFields
-  ): CollectionWritableFields {
+  #writableFields(fields: CollectionWritableFields): CollectionWritableFields {
     return {
       ...(fields.name !== undefined ? { name: fields.name } : {}),
       ...(fields.backend !== undefined ? { backend: fields.backend } : {}),
@@ -187,8 +183,8 @@ export class Collection {
    *
    * @returns {Promise<ResourceCodec>}
    */
-  private _codec(): Promise<ResourceCodec> {
-    return this._codecHolder.get()
+  #codec(): Promise<ResourceCodec> {
+    return this.#codecHolder.get()
   }
 
   /**
@@ -199,10 +195,10 @@ export class Collection {
    * @returns {Promise<CollectionDescription | null>}
    */
   async describe(): Promise<CollectionDescription | null> {
-    return describeCollection(this._context, {
+    return describeCollection(this.#context, {
       spaceId: this.spaceId,
       collectionId: this.id,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -257,11 +253,11 @@ export class Collection {
     const name = desc.name ?? current?.name
     const backend = desc.backend ?? current?.backend
     const encryption = desc.encryption ?? current?.encryption
-    const fields = this._writableFields({ name, backend, encryption })
-    await send(this._context, {
-      path: this._path,
+    const fields = this.#writableFields({ name, backend, encryption })
+    await send(this.#context, {
+      path: this.#path,
       method: 'PUT',
-      capability: this._capability,
+      capability: this.#capability,
       json: { id: this.id, ...fields }
     })
     // Adding the encryption marker flips this collection from plaintext to
@@ -271,7 +267,7 @@ export class Collection {
     // the now-encrypted collection. Child resource handles share this codec via
     // their thunk, so resetting here propagates to them too.
     if (desc.encryption) {
-      this._codecHolder.reset()
+      this.#codecHolder.reset()
     }
     return {
       id: this.id,
@@ -296,10 +292,10 @@ export class Collection {
   } | null> {
     // The same GET as `describe()` (via the shared request shape), keeping the
     // raw response so the ETag header can be read alongside the body.
-    const response = await describeCollectionResponse(this._context, {
+    const response = await describeCollectionResponse(this.#context, {
       spaceId: this.spaceId,
       collectionId: this.id,
-      capability: this._capability
+      capability: this.#capability
     })
     const description = dataOrNull<CollectionDescription>(response)
     if (response === null || description === null) {
@@ -333,11 +329,11 @@ export class Collection {
     description: CollectionWritableFields,
     options: { ifMatch?: string } = {}
   ): Promise<{ description: CollectionDescription; etag?: string }> {
-    const fields = this._writableFields(description)
-    const response = await send(this._context, {
-      path: this._path,
+    const fields = this.#writableFields(description)
+    const response = await send(this.#context, {
+      path: this.#path,
       method: 'PUT',
-      capability: this._capability,
+      capability: this.#capability,
       json: { id: this.id, ...fields },
       headers: writeHeaders({ precondition: { ifMatch: options.ifMatch } })
     })
@@ -350,7 +346,7 @@ export class Collection {
     // resource handles share this codec via their thunk, so resetting here
     // propagates to them too.
     if (description.encryption !== undefined) {
-      this._codecHolder.reset()
+      this.#codecHolder.reset()
     }
     return {
       description: {
@@ -369,10 +365,10 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async delete(): Promise<void> {
-    await send(this._context, {
-      path: this._path,
+    await send(this.#context, {
+      path: this.#path,
       method: 'DELETE',
-      capability: this._capability,
+      capability: this.#capability,
       idempotent: true
     })
   }
@@ -390,14 +386,14 @@ export class Collection {
    */
   resource(resourceId: string, options: HandleOptions = {}): Resource {
     return new Resource({
-      context: this._context,
+      context: this.#context,
       spaceId: this.spaceId,
       collectionId: this.id,
       resourceId,
-      capability: options.capability ?? this._capability,
+      capability: options.capability ?? this.#capability,
       // Share this collection's memoized feature probe so per-resource handles
       // do not each repeat the backend-descriptor round-trip.
-      features: () => this._features.get(),
+      features: () => this.#features.get(),
       // A per-resource encryption override resolves its own codec (honoring the
       // override); without one, share this collection's resolved codec so the
       // resource handle does not repeat the marker-discovery round-trip. The two
@@ -405,7 +401,7 @@ export class Collection {
       // is supplied.
       ...(options.encryption !== undefined
         ? { encryption: options.encryption }
-        : { codec: () => this._codec() })
+        : { codec: () => this.#codec() })
     })
   }
 
@@ -423,7 +419,7 @@ export class Collection {
     data: ResourceData,
     options: { contentType?: string } = {}
   ): Promise<AddResult> {
-    const codec = await this._codec()
+    const codec = await this.#codec()
     const encoded = await codec.encode({
       data,
       contentType: options.contentType
@@ -438,16 +434,16 @@ export class Collection {
     // via `POST`.
     if (encoded.id !== undefined) {
       const path = resourcePath(this.spaceId, this.id, encoded.id)
-      const response = await sendEncodedWrite(this._context, {
+      const response = await sendEncodedWrite(this.#context, {
         path,
         method: 'PUT',
-        capability: this._capability,
+        capability: this.#capability,
         encoded,
         precondition
       })
       return {
         id: encoded.id,
-        url: toUrl({ serverUrl: this._context.serverUrl, path }),
+        url: toUrl({ serverUrl: this.#context.serverUrl, path }),
         // Report the plaintext resource type when the codec resolved one (the
         // EDV codec's `resourceContentType`); otherwise the wire `contentType`,
         // which for the identity codec already is the resource type.
@@ -456,10 +452,10 @@ export class Collection {
       }
     }
 
-    const response = await sendEncodedWrite(this._context, {
-      path: this._itemsPath,
+    const response = await sendEncodedWrite(this.#context, {
+      path: this.#itemsPath,
       method: 'POST',
-      capability: this._capability,
+      capability: this.#capability,
       encoded,
       precondition
     })
@@ -479,10 +475,10 @@ export class Collection {
       url: location
         ? new URL(
             location,
-            toUrl({ serverUrl: this._context.serverUrl, path: this._itemsPath })
+            toUrl({ serverUrl: this.#context.serverUrl, path: this.#itemsPath })
           ).toString()
         : toUrl({
-            serverUrl: this._context.serverUrl,
+            serverUrl: this.#context.serverUrl,
             path: resourcePath(this.spaceId, this.id, id)
           }),
       contentType:
@@ -539,17 +535,17 @@ export class Collection {
    *
    * @returns {Promise<PageWalk | null>}
    */
-  private async _listWalk(): Promise<PageWalk | null> {
+  async #listWalk(): Promise<PageWalk | null> {
     return buildPageWalk({
       firstUrl: toUrl({
-        serverUrl: this._context.serverUrl,
-        path: this._itemsPath
+        serverUrl: this.#context.serverUrl,
+        path: this.#itemsPath
       }),
       fetchPage: async url => {
-        const pageResponse = await send(this._context, {
+        const pageResponse = await send(this.#context, {
           url,
           method: 'GET',
-          capability: this._capability,
+          capability: this.#capability,
           read: true
         })
         return dataOrNull<CollectionResourcesList>(pageResponse)
@@ -568,7 +564,7 @@ export class Collection {
    * @returns {Promise<CollectionResourcesList | null>}
    */
   async list(): Promise<CollectionResourcesList | null> {
-    return collectWalk(await this._listWalk())
+    return collectWalk(await this.#listWalk())
   }
 
   /**
@@ -582,7 +578,7 @@ export class Collection {
    * @returns {AsyncGenerator<CollectionResourcesList>}
    */
   async *listPages(): AsyncGenerator<CollectionResourcesList> {
-    yield* walkPagesOrEmpty(await this._listWalk())
+    yield* walkPagesOrEmpty(await this.#listWalk())
   }
 
   /**
@@ -623,10 +619,10 @@ export class Collection {
     options: { checkpoint?: ChangesCheckpoint; limit?: number } = {}
   ): Promise<ChangesPage> {
     const { checkpoint, limit } = options
-    const response = await send(this._context, {
+    const response = await send(this.#context, {
       path: collectionQuery(this.spaceId, this.id),
       method: 'POST',
-      capability: this._capability,
+      capability: this.#capability,
       json: {
         profile: 'changes',
         ...(checkpoint !== undefined && { checkpoint }),
@@ -648,10 +644,10 @@ export class Collection {
    * @returns {Promise<IDelegatedZcap>}
    */
   async grant(options: GrantOptions): Promise<IDelegatedZcap> {
-    return delegateGrantAt(this._context, {
-      path: this._path,
+    return delegateGrantAt(this.#context, {
+      path: this.#path,
       options,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -664,9 +660,9 @@ export class Collection {
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
-    return readPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return readPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -677,10 +673,10 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setPolicy(policy: PolicyDocument): Promise<void> {
-    return writePolicy(this._context, {
-      policyPath: this._policyPath,
+    return writePolicy(this.#context, {
+      policyPath: this.#policyPath,
       policy,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -690,9 +686,9 @@ export class Collection {
    * @returns {Promise<boolean>}
    */
   async isPublic(): Promise<boolean> {
-    return isPublicPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return isPublicPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -704,9 +700,9 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setPublic(): Promise<void> {
-    return setPublicPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return setPublicPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -717,9 +713,9 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async clearPolicy(): Promise<void> {
-    return deletePolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return deletePolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -730,9 +726,9 @@ export class Collection {
    * @returns {Promise<LinkSet | null>}
    */
   async linkset(): Promise<LinkSet | null> {
-    return readData<LinkSet>(this._context, {
+    return readData<LinkSet>(this.#context, {
       path: collectionLinkset(this.spaceId, this.id),
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -752,9 +748,9 @@ export class Collection {
    * @returns {Promise<BackendDescriptor | null>}
    */
   async backend(): Promise<BackendDescriptor | null> {
-    return readData<BackendDescriptor>(this._context, {
+    return readData<BackendDescriptor>(this.#context, {
       path: collectionBackend(this.spaceId, this.id),
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -767,9 +763,9 @@ export class Collection {
    * @returns {Promise<BackendUsage | null>}
    */
   async quota(): Promise<BackendUsage | null> {
-    return readData<BackendUsage>(this._context, {
+    return readData<BackendUsage>(this.#context, {
       path: collectionQuota(this.spaceId, this.id),
-      capability: this._capability
+      capability: this.#capability
     })
   }
 }

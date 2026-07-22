@@ -63,8 +63,8 @@ import type {
 export class Space {
   readonly id: string
 
-  private readonly _context: ClientContext
-  private readonly _capability?: IZcap
+  readonly #context: ClientContext
+  readonly #capability?: IZcap
 
   /**
    * @param options {object}
@@ -81,16 +81,16 @@ export class Space {
     spaceId: string
     capability?: IZcap
   }) {
-    this._context = context
+    this.#context = context
     this.id = spaceId
-    this._capability = capability
+    this.#capability = capability
   }
 
-  private get _path(): string {
+  get #path(): string {
     return spacePath(this.id)
   }
 
-  private get _policyPath(): string {
+  get #policyPath(): string {
     return spacePolicy(this.id)
   }
 
@@ -101,9 +101,9 @@ export class Space {
    * @returns {Promise<SpaceDescription | null>}
    */
   async describe(): Promise<SpaceDescription | null> {
-    return readData<SpaceDescription>(this._context, {
-      path: this._path,
-      capability: this._capability
+    return readData<SpaceDescription>(this.#context, {
+      path: this.#path,
+      capability: this.#capability
     })
   }
 
@@ -153,11 +153,11 @@ export class Space {
     }
     const name = desc.name ?? current?.name
     const controller =
-      desc.controller ?? current?.controller ?? this._context.controllerDid
-    await send(this._context, {
-      path: this._path,
+      desc.controller ?? current?.controller ?? this.#context.controllerDid
+    await send(this.#context, {
+      path: this.#path,
       method: 'PUT',
-      capability: this._capability,
+      capability: this.#capability,
       json: { id: this.id, name, controller }
     })
     return {
@@ -176,10 +176,10 @@ export class Space {
    * @returns {Promise<void>}
    */
   async delete(): Promise<void> {
-    await send(this._context, {
-      path: this._path,
+    await send(this.#context, {
+      path: this.#path,
       method: 'DELETE',
-      capability: this._capability,
+      capability: this.#capability,
       idempotent: true
     })
   }
@@ -194,10 +194,10 @@ export class Space {
    */
   collection(collectionId: string, options: HandleOptions = {}): Collection {
     return new Collection({
-      context: this._context,
+      context: this.#context,
       spaceId: this.id,
       collectionId,
-      capability: options.capability ?? this._capability,
+      capability: options.capability ?? this.#capability,
       encryption: options.encryption
     })
   }
@@ -240,10 +240,10 @@ export class Space {
     if (desc.encryption) {
       body.encryption = desc.encryption
     }
-    const response = await send(this._context, {
+    const response = await send(this.#context, {
       path: spaceItems(this.id),
       method: 'POST',
-      capability: this._capability,
+      capability: this.#capability,
       json: body
     })
     // Pre-seed the handle with an override matching the just-declared scheme so
@@ -263,17 +263,17 @@ export class Space {
    *
    * @returns {Promise<PageWalk<CollectionsList> | null>}
    */
-  private async _collectionsWalk(): Promise<PageWalk<CollectionsList> | null> {
+  async #collectionsWalk(): Promise<PageWalk<CollectionsList> | null> {
     return buildPageWalk<CollectionsList>({
       firstUrl: toUrl({
-        serverUrl: this._context.serverUrl,
+        serverUrl: this.#context.serverUrl,
         path: spaceCollections(this.id)
       }),
       fetchPage: async url => {
-        const pageResponse = await send(this._context, {
+        const pageResponse = await send(this.#context, {
           url,
           method: 'GET',
-          capability: this._capability,
+          capability: this.#capability,
           read: true
         })
         return dataOrNull<CollectionsList>(pageResponse)
@@ -292,7 +292,7 @@ export class Space {
    * @returns {Promise<CollectionsList | null>}
    */
   async collections(): Promise<CollectionsList | null> {
-    return collectWalk(await this._collectionsWalk())
+    return collectWalk(await this.#collectionsWalk())
   }
 
   /**
@@ -306,7 +306,7 @@ export class Space {
    * @returns {AsyncGenerator<CollectionsList>}
    */
   async *collectionsPages(): AsyncGenerator<CollectionsList> {
-    yield* walkPagesOrEmpty(await this._collectionsWalk())
+    yield* walkPagesOrEmpty(await this.#collectionsWalk())
   }
 
   /**
@@ -321,9 +321,9 @@ export class Space {
    * @returns {Promise<BackendDescriptor[] | null>}
    */
   async backends(): Promise<BackendDescriptor[] | null> {
-    return readData<BackendDescriptor[]>(this._context, {
+    return readData<BackendDescriptor[]>(this.#context, {
       path: spaceBackends(this.id),
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -348,10 +348,10 @@ export class Space {
   async registerBackend(
     registration: BackendRegistration
   ): Promise<BackendDescriptor> {
-    const response = await send(this._context, {
+    const response = await send(this.#context, {
       path: spaceBackends(this.id),
       method: 'POST',
-      capability: this._capability,
+      capability: this.#capability,
       json: registration
     })
     // A successful registration always carries the sanitized descriptor body.
@@ -378,10 +378,10 @@ export class Space {
   async updateBackend(
     registration: BackendRegistration
   ): Promise<BackendDescriptor | null> {
-    const response = await send(this._context, {
+    const response = await send(this.#context, {
       path: registeredBackend(this.id, registration.id),
       method: 'PUT',
-      capability: this._capability,
+      capability: this.#capability,
       json: registration
     })
     // 201 (create) carries the sanitized descriptor; 204 (in-place replace)
@@ -402,10 +402,10 @@ export class Space {
    * @returns {Promise<void>}
    */
   async deregisterBackend(backendId: string): Promise<void> {
-    await send(this._context, {
+    await send(this.#context, {
       path: registeredBackend(this.id, backendId),
       method: 'DELETE',
-      capability: this._capability,
+      capability: this.#capability,
       idempotent: true
     })
   }
@@ -427,9 +427,9 @@ export class Space {
     const path = includeCollections
       ? `${spaceQuotas(this.id)}?include=collections`
       : spaceQuotas(this.id)
-    return readData<SpaceQuotaReport>(this._context, {
+    return readData<SpaceQuotaReport>(this.#context, {
       path,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -441,10 +441,10 @@ export class Space {
    * @returns {Promise<IDelegatedZcap>}
    */
   async grant(options: GrantOptions): Promise<IDelegatedZcap> {
-    return delegateGrantAt(this._context, {
-      path: this._path,
+    return delegateGrantAt(this.#context, {
+      path: this.#path,
       options,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -475,7 +475,7 @@ export class Space {
    * @returns {Promise<void>}
    */
   async revoke(zcap: IDelegatedZcap): Promise<void> {
-    return submitRevocation(this._context, { spaceId: this.id, zcap })
+    return submitRevocation(this.#context, { spaceId: this.id, zcap })
   }
 
   /**
@@ -491,11 +491,11 @@ export class Space {
    *
    * @returns {Promise<HttpResponse>}
    */
-  private async _exportResponse(): Promise<HttpResponse> {
-    const response = (await send(this._context, {
+  async #exportResponse(): Promise<HttpResponse> {
+    const response = (await send(this.#context, {
       path: spaceExport(this.id),
       method: 'POST',
-      capability: this._capability
+      capability: this.#capability
       // A successful export always returns a response (errors throw via send()).
     })) as HttpResponse
     if (response.bodyUsed || response.data !== undefined) {
@@ -520,7 +520,7 @@ export class Space {
    * @returns {Promise<Uint8Array>}
    */
   async export(): Promise<Uint8Array> {
-    const response = await this._exportResponse()
+    const response = await this.#exportResponse()
     return new Uint8Array(await response.arrayBuffer())
   }
 
@@ -537,7 +537,7 @@ export class Space {
    * @returns {Promise<Blob>}
    */
   async exportBlob(): Promise<Blob> {
-    const blob = await (await this._exportResponse()).blob()
+    const blob = await (await this.#exportResponse()).blob()
     // Normalize the type: some servers omit or mislabel the content-type, and
     // `Blob.type` is load-bearing for `import()` / anchor-download flows.
     return blob.type === 'application/x-tar'
@@ -556,7 +556,7 @@ export class Space {
    * @returns {Promise<ReadableStream<Uint8Array>>}
    */
   async exportStream(): Promise<ReadableStream<Uint8Array>> {
-    const response = await this._exportResponse()
+    const response = await this.#exportResponse()
     if (response.body === null) {
       // A body-less 2xx (204, or an exotic fetch impl) -- fail with a typed
       // error rather than returning a null stream.
@@ -573,10 +573,10 @@ export class Space {
    */
   async import(tar: Uint8Array | Blob): Promise<ImportStats> {
     const body = tar instanceof Uint8Array ? toPlainBytes(tar) : tar
-    const response = await send(this._context, {
+    const response = await send(this.#context, {
       path: spaceImport(this.id),
       method: 'POST',
-      capability: this._capability,
+      capability: this.#capability,
       body,
       headers: { 'content-type': 'application/x-tar' }
     })
@@ -593,9 +593,9 @@ export class Space {
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
-    return readPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return readPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -606,10 +606,10 @@ export class Space {
    * @returns {Promise<void>}
    */
   async setPolicy(policy: PolicyDocument): Promise<void> {
-    return writePolicy(this._context, {
-      policyPath: this._policyPath,
+    return writePolicy(this.#context, {
+      policyPath: this.#policyPath,
       policy,
-      capability: this._capability
+      capability: this.#capability
     })
   }
 
@@ -619,9 +619,9 @@ export class Space {
    * @returns {Promise<boolean>}
    */
   async isPublic(): Promise<boolean> {
-    return isPublicPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return isPublicPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -633,9 +633,9 @@ export class Space {
    * @returns {Promise<void>}
    */
   async setPublic(): Promise<void> {
-    return setPublicPolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return setPublicPolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -646,9 +646,9 @@ export class Space {
    * @returns {Promise<void>}
    */
   async clearPolicy(): Promise<void> {
-    return deletePolicy(this._context, {
-      policyPath: this._policyPath,
-      capability: this._capability
+    return deletePolicy(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
     })
   }
 
@@ -659,9 +659,9 @@ export class Space {
    * @returns {Promise<LinkSet | null>}
    */
   async linkset(): Promise<LinkSet | null> {
-    return readData<LinkSet>(this._context, {
+    return readData<LinkSet>(this.#context, {
       path: spaceLinkset(this.id),
-      capability: this._capability
+      capability: this.#capability
     })
   }
 }

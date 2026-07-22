@@ -147,32 +147,31 @@ function isKeyMiss(err: unknown): boolean {
 export class EdvCodec implements ResourceCodec {
   readonly conditionalWrites = true
 
-  private readonly _edv: EdvClientCore
-  private readonly _writeKey: IKeyAgreementKey
+  readonly #edv: EdvClientCore
   /**
    * The static JWE recipient descriptor every write encrypts to (the write
    * key's `{ kid, alg }` header; the ephemeral `epk` is minted later inside
    * `encrypt`). Deterministic per codec, so computed once here instead of per
    * write.
    */
-  private readonly _recipients: IRecipientTemplate[]
-  private readonly _readKeys: IKeyAgreementKey[]
-  private readonly _writeEpoch?: string
-  private readonly _contentType: string
-  private readonly _maxBlobBytes: number
-  private readonly _idDerivation: 'random' | 'content'
+  readonly #recipients: IRecipientTemplate[]
+  readonly #readKeys: IKeyAgreementKey[]
+  readonly #writeEpoch?: string
+  readonly #contentType: string
+  readonly #maxBlobBytes: number
+  readonly #idDerivation: 'random' | 'content'
   /**
    * The EDV-over-WAS scheme version this codec binds into every envelope's
    * `was.v` protected-header parameter (the marker's `version`, `1` when
    * absent). Read side rejects an envelope stamped with a greater version.
    */
-  private readonly _version: number
+  readonly #version: number
   /**
    * Whether this codec's collection has key epochs. When it does, an envelope's
    * `was.epoch` binding is checked on decode against the epoch of the key that
    * actually decrypted it.
    */
-  private readonly _hasEpochs: boolean
+  readonly #hasEpochs: boolean
 
   /**
    * @param options {object}
@@ -221,17 +220,16 @@ export class EdvCodec implements ResourceCodec {
     version?: number
     hasEpochs?: boolean
   }) {
-    this._edv = edv
-    this._writeKey = keyAgreementKey
-    this._recipients =
+    this.#edv = edv
+    this.#recipients =
       edv.documentCipher.createDefaultRecipients(keyAgreementKey)
-    this._readKeys = readKeys ?? [keyAgreementKey]
-    this._writeEpoch = writeEpoch
-    this._contentType = contentType
-    this._maxBlobBytes = maxBlobBytes
-    this._idDerivation = idDerivation
-    this._version = version ?? 1
-    this._hasEpochs = hasEpochs ?? false
+    this.#readKeys = readKeys ?? [keyAgreementKey]
+    this.#writeEpoch = writeEpoch
+    this.#contentType = contentType
+    this.#maxBlobBytes = maxBlobBytes
+    this.#idDerivation = idDerivation
+    this.#version = version ?? 1
+    this.#hasEpochs = hasEpochs ?? false
   }
 
   /**
@@ -268,10 +266,10 @@ export class EdvCodec implements ResourceCodec {
     // (the id is a function of the ciphertext, which does not exist yet).
     let docId =
       id ??
-      (this._idDerivation === 'content'
+      (this.#idDerivation === 'content'
         ? undefined
-        : ((await this._edv.generateId()) as string))
-    const { content, meta } = await this._toDocument(data, contentType, docId)
+        : ((await this.#edv.generateId()) as string))
+    const { content, meta } = await this.#toDocument(data, contentType, docId)
 
     // When the write path pre-read a current envelope, advance `sequence` from
     // its prior value (`encrypt({ update: true })` increments it) and pin the
@@ -283,11 +281,11 @@ export class EdvCodec implements ResourceCodec {
       const read = await readJsonData(
         current as Parameters<typeof readJsonData>[0]
       )
-      this._assertEnvelope(read, 'update')
+      this.#assertEnvelope(read, 'update')
       priorDoc = read
     }
 
-    const { documentCipher } = this._edv
+    const { documentCipher } = this.#edv
     // Bind an AEAD-authenticated `was` parameter into the JWE protected header:
     // the scheme version, the resource id when known at encrypt time (omitted
     // for a content-derived id, which does not exist until after encryption),
@@ -295,13 +293,13 @@ export class EdvCodec implements ResourceCodec {
     // two envelopes between ids (or replays one under a rolled-back epoch) is
     // then detected on decrypt.
     const was: { v: number; resource?: string; epoch?: string } = {
-      v: this._version
+      v: this.#version
     }
     if (docId !== undefined) {
       was.resource = docId
     }
-    if (this._writeEpoch !== undefined) {
-      was.epoch = this._writeEpoch
+    if (this.#writeEpoch !== undefined) {
+      was.epoch = this.#writeEpoch
     }
     const encrypted = await documentCipher.encrypt({
       doc: {
@@ -313,8 +311,8 @@ export class EdvCodec implements ResourceCodec {
         meta,
         ...(priorDoc && { sequence: priorDoc.sequence })
       },
-      recipients: this._recipients,
-      keyResolver: this._edv.keyResolver,
+      recipients: this.#recipients,
+      keyResolver: this.#edv.keyResolver,
       hmac: undefined,
       update: priorDoc !== null,
       additionalProtectedParams: { was }
@@ -329,7 +327,7 @@ export class EdvCodec implements ResourceCodec {
     return {
       id: docId,
       body: envelopeBytes(encrypted),
-      contentType: this._contentType,
+      contentType: this.#contentType,
       // Surface the plaintext content type (the server-opaque envelope type stays
       // `contentType`) so `add()` reports the real resource type.
       resourceContentType: meta.contentType as string,
@@ -349,7 +347,7 @@ export class EdvCodec implements ResourceCodec {
       // Stamp the key epoch this write encrypted under (the `currentEpoch`), so
       // the server records it and a reader can pick the epoch key. Absent on a
       // single-key collection.
-      ...(this._writeEpoch !== undefined && { epoch: this._writeEpoch })
+      ...(this.#writeEpoch !== undefined && { epoch: this.#writeEpoch })
     }
   }
 
@@ -366,14 +364,14 @@ export class EdvCodec implements ResourceCodec {
     const encryptedDoc = await readJsonData(
       response as Parameters<typeof readJsonData>[0]
     )
-    this._assertEnvelope(encryptedDoc, 'read')
-    const decrypted = await this._decrypt(encryptedDoc)
-    await this._verifyBinding({
+    this.#assertEnvelope(encryptedDoc, 'read')
+    const decrypted = await this.#decrypt(encryptedDoc)
+    await this.#verifyBinding({
       jwe: encryptedDoc.jwe,
       expectedId,
       keyId: decrypted.keyId
     })
-    return this._fromDocument(decrypted.content, decrypted.meta)
+    return this.#fromDocument(decrypted.content, decrypted.meta)
   }
 
   /**
@@ -396,7 +394,7 @@ export class EdvCodec implements ResourceCodec {
    * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
    *   keyId?: string }>}
    */
-  private async _decrypt(encryptedDoc: IEncryptedDocument): Promise<{
+  async #decrypt(encryptedDoc: IEncryptedDocument): Promise<{
     content?: unknown
     meta?: Record<string, unknown>
     keyId?: string
@@ -419,11 +417,11 @@ export class EdvCodec implements ResourceCodec {
     // exact-match partition is empty even though a candidate can still unwrap it.
     // For a well-formed epoch envelope the exact match always hits, so `rest` is
     // normally unreached.
-    const preferred = this._readKeys.filter(key => kids.has(key.id))
-    const rest = this._readKeys.filter(key => !kids.has(key.id))
+    const preferred = this.#readKeys.filter(key => kids.has(key.id))
+    const rest = this.#readKeys.filter(key => !kids.has(key.id))
     for (const keyAgreementKey of [...preferred, ...rest]) {
       try {
-        const decrypted = await this._edv.documentCipher.decrypt({
+        const decrypted = await this.#edv.documentCipher.decrypt({
           encryptedDoc,
           keyAgreementKey
         })
@@ -489,7 +487,7 @@ export class EdvCodec implements ResourceCodec {
    *   epoch check
    * @returns {Promise<void>}
    */
-  private async _verifyBinding({
+  async #verifyBinding({
     jwe,
     expectedId,
     keyId
@@ -503,11 +501,11 @@ export class EdvCodec implements ResourceCodec {
       // Legacy envelope (no `was`): accept unchanged for back-compat.
       return
     }
-    if (typeof was.v === 'number' && was.v > this._version) {
+    if (typeof was.v === 'number' && was.v > this.#version) {
       throw new EncryptionError(
         `Cannot decrypt this resource: its envelope is stamped with ` +
           `EDV-over-WAS scheme version ${was.v}, which this client (version ` +
-          `${this._version}) does not implement. Upgrade the client.`
+          `${this.#version}) does not implement. Upgrade the client.`
       )
     }
     if (typeof was.resource === 'string') {
@@ -521,10 +519,9 @@ export class EdvCodec implements ResourceCodec {
     } else if (expectedId !== undefined) {
       // Content-derived write (no `resource`): the id is a function of the
       // ciphertext, so re-derive and compare.
-      const derived = await this._edv.documentCipher.deriveId({
-        jwe: jwe as Parameters<
-          typeof this._edv.documentCipher.deriveId
-        >[0]['jwe']
+      const { documentCipher } = this.#edv
+      const derived = await documentCipher.deriveId({
+        jwe: jwe as Parameters<typeof documentCipher.deriveId>[0]['jwe']
       })
       if (derived !== expectedId) {
         throw new IntegrityError(
@@ -534,7 +531,7 @@ export class EdvCodec implements ResourceCodec {
         )
       }
     }
-    if (this._hasEpochs && typeof was.epoch === 'string' && keyId) {
+    if (this.#hasEpochs && typeof was.epoch === 'string' && keyId) {
       const decryptedEpoch = keyId.split('#')[0]
       if (decryptedEpoch !== was.epoch) {
         throw new IntegrityError(
@@ -563,25 +560,25 @@ export class EdvCodec implements ResourceCodec {
     custom: ResourceMetadataCustom
     id?: string
   }): Promise<{ custom: object }> {
-    const { documentCipher } = this._edv
+    const { documentCipher } = this.#edv
     // The document needs an EDV id (the cipher asserts one on decrypt). It is
     // opaque to the server -- carried inside the un-decryptable envelope -- and
     // minted fresh each write, since the metadata envelope is never updated in
     // place (concurrency is the server's plaintext `metaVersion`, Decision 3).
-    const id = (await this._edv.generateId()) as string
+    const id = (await this.#edv.generateId()) as string
     // Bind the `was` parameter to the RESOURCE id (not the metadata envelope's
     // own random EDV id), so a server-side swap of two resources' metadata is
     // AEAD-detected on decode. The metadata envelope always knows the resource
     // id at encrypt time, so `resource` is always present here (never content-
     // derived) and it carries no `epoch`.
-    const was: { v: number; resource?: string } = { v: this._version }
+    const was: { v: number; resource?: string } = { v: this.#version }
     if (resourceId !== undefined) {
       was.resource = resourceId
     }
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
-      recipients: this._recipients,
-      keyResolver: this._edv.keyResolver,
+      recipients: this.#recipients,
+      keyResolver: this.#edv.keyResolver,
       hmac: undefined,
       additionalProtectedParams: { was }
     })
@@ -607,10 +604,10 @@ export class EdvCodec implements ResourceCodec {
     if (custom === undefined || custom === null) {
       return {}
     }
-    this._assertEnvelope(custom, 'read')
+    this.#assertEnvelope(custom, 'read')
     const encryptedDoc = custom as IEncryptedDocument
-    const decrypted = await this._decrypt(encryptedDoc)
-    await this._verifyBinding({
+    const decrypted = await this.#decrypt(encryptedDoc)
+    await this.#verifyBinding({
       jwe: encryptedDoc.jwe,
       expectedId,
       keyId: decrypted.keyId
@@ -635,7 +632,7 @@ export class EdvCodec implements ResourceCodec {
    *   for the message
    * @returns {asserts doc is IEncryptedDocument}
    */
-  private _assertEnvelope(
+  #assertEnvelope(
     doc: unknown,
     context: string
   ): asserts doc is IEncryptedDocument {
@@ -693,7 +690,7 @@ export class EdvCodec implements ResourceCodec {
    * @returns {Promise<{ content: Record<string, unknown>; meta:
    *   Record<string, unknown> }>}
    */
-  private async _toDocument(
+  async #toDocument(
     data: ResourceData,
     contentType?: string,
     id?: string
@@ -708,10 +705,10 @@ export class EdvCodec implements ResourceCodec {
         ? new Uint8Array(await payload.data.arrayBuffer())
         : payload.data
       const resolvedType = payload.contentType
-      if (bytes.length > this._maxBlobBytes) {
+      if (bytes.length > this.#maxBlobBytes) {
         throw new ValidationError(
           `Encrypted binary write of ${bytes.length} bytes exceeds the ` +
-            `single-document limit of ${this._maxBlobBytes} bytes. The codec ` +
+            `single-document limit of ${this.#maxBlobBytes} bytes. The codec ` +
             'seam is a single-request transform and cannot chunk. To store a ' +
             'blob this large, write it through the chunked-stream path -- ' +
             '`EdvClientCore.insert({ doc, stream, transport })` with a ' +
@@ -769,10 +766,7 @@ export class EdvCodec implements ResourceCodec {
    * @param [meta] {Record<string, unknown>}
    * @returns {Json | Blob}
    */
-  private _fromDocument(
-    content: unknown,
-    meta?: Record<string, unknown>
-  ): Json | Blob {
+  #fromDocument(content: unknown, meta?: Record<string, unknown>): Json | Blob {
     const encoding = meta?.encoding
     const contentType =
       typeof meta?.contentType === 'string' ? meta.contentType : undefined

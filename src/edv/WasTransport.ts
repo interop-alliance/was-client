@@ -151,8 +151,8 @@ export class WasTransport extends Transport {
   readonly collectionId: string
   readonly contentType: string
 
-  private readonly _was: WasRequester
-  private readonly _features: BackendFeatures
+  readonly #was: WasRequester
+  readonly #features: BackendFeatures
 
   /**
    * @param options {object}
@@ -176,15 +176,15 @@ export class WasTransport extends Transport {
     contentType?: string
   }) {
     super()
-    this._was = was
+    this.#was = was
     this.spaceId = spaceId
     this.collectionId = collectionId
     this.contentType = contentType
     // The shared memoizing feature probe (see `BackendFeatures` for the
     // definitive-vs-transient caching rules), reading this collection's
     // "Collection Backend Selected" descriptor with a signed GET.
-    this._features = new BackendFeatures(async () => {
-      const response = await this._was.request({
+    this.#features = new BackendFeatures(async () => {
+      const response = await this.#was.request({
         path: collectionBackend(this.spaceId, this.collectionId),
         method: 'GET'
       })
@@ -201,7 +201,7 @@ export class WasTransport extends Transport {
    * @param id {string}   the EDV document id (= WAS resource id)
    * @returns {string}
    */
-  private _resourcePath(id: string): string {
+  #resourcePath(id: string): string {
     return resourcePath(this.spaceId, this.collectionId, id)
   }
 
@@ -216,14 +216,14 @@ export class WasTransport extends Transport {
    *   conditional-write precondition)
    * @returns {Promise<HttpResponse>}
    */
-  private async _put(
+  async #put(
     id: string,
     encrypted: IEncryptedDocument,
     headers: Record<string, string> = {}
   ): Promise<HttpResponse> {
     const body = envelopeBytes(encrypted)
-    return this._was.request({
-      path: this._resourcePath(id),
+    return this.#was.request({
+      path: this.#resourcePath(id),
       method: 'PUT',
       body,
       headers: { 'content-type': this.contentType, ...headers }
@@ -253,9 +253,9 @@ export class WasTransport extends Transport {
     if (!encrypted) {
       throw new TypeError('"encrypted" is required.')
     }
-    if (await this._features.has('conditional-writes')) {
+    if (await this.#features.has('conditional-writes')) {
       try {
-        await this._put(encrypted.id, encrypted, { 'if-none-match': '*' })
+        await this.#put(encrypted.id, encrypted, { 'if-none-match': '*' })
       } catch (err) {
         mapTransportError(err, {
           412: {
@@ -270,14 +270,14 @@ export class WasTransport extends Transport {
       }
       return
     }
-    if (await this._exists(encrypted.id)) {
+    if (await this.#exists(encrypted.id)) {
       throw namedError({
         name: 'DuplicateError',
         message: `A document with id "${encrypted.id}" already exists.`
       })
     }
     try {
-      await this._put(encrypted.id, encrypted)
+      await this.#put(encrypted.id, encrypted)
     } catch (err) {
       mapTransportError(err, {
         409: { name: 'DuplicateError', message: DUPLICATE_ATTRIBUTE_MESSAGE }
@@ -311,7 +311,7 @@ export class WasTransport extends Transport {
       throw new TypeError('"encrypted" is required.')
     }
     try {
-      await this._put(encrypted.id, encrypted)
+      await this.#put(encrypted.id, encrypted)
     } catch (err) {
       mapTransportError(err, {
         412: {
@@ -343,8 +343,8 @@ export class WasTransport extends Transport {
     }
     let response: HttpResponse
     try {
-      response = await this._was.request({
-        path: this._resourcePath(id),
+      response = await this.#was.request({
+        path: this.#resourcePath(id),
         method: 'GET'
       })
     } catch (err) {
@@ -364,8 +364,8 @@ export class WasTransport extends Transport {
    * @param what {string}      the operation name, for the message
    * @returns {Promise<void>}
    */
-  private async _requireFeature(feature: string, what: string): Promise<void> {
-    if (!(await this._features.has(feature))) {
+  async #requireFeature(feature: string, what: string): Promise<void> {
+    if (!(await this.#features.has(feature))) {
       throw namedError({
         name: 'NotSupportedError',
         message:
@@ -383,9 +383,9 @@ export class WasTransport extends Transport {
    * @param id {string}
    * @returns {Promise<boolean>}
    */
-  private async _exists(id: string): Promise<boolean> {
+  async #exists(id: string): Promise<boolean> {
     try {
-      await this._was.request({ path: this._resourcePath(id), method: 'HEAD' })
+      await this.#was.request({ path: this.#resourcePath(id), method: 'HEAD' })
       return true
     } catch (err) {
       if (httpStatus(err) === 404) {
@@ -420,7 +420,7 @@ export class WasTransport extends Transport {
     if (!query) {
       throw new TypeError('"query" is required.')
     }
-    await this._requireFeature('blinded-index-query', 'Blinded-index query')
+    await this.#requireFeature('blinded-index-query', 'Blinded-index query')
     // `returnDocuments` is a first-class `IEDVQuery` field, but the WAS profile
     // has no ids-only mode, so it is dropped (whatever its value) and full
     // documents come back -- the best-effort degradation `EdvClientCore.find`
@@ -428,7 +428,7 @@ export class WasTransport extends Transport {
     const { returnDocuments: _returnDocuments, ...blindedQuery } = query
     let response: HttpResponse
     try {
-      response = await this._was.request({
+      response = await this.#was.request({
         path: collectionQuery(this.spaceId, this.collectionId),
         method: 'POST',
         json: { profile: 'blinded-index', ...blindedQuery }
@@ -474,7 +474,7 @@ export class WasTransport extends Transport {
    * @param chunkIndex {number}   the chunk's non-negative ordinal index
    * @returns {string}
    */
-  private _chunkPath(docId: string, chunkIndex: number): string {
+  #chunkPath(docId: string, chunkIndex: number): string {
     return resourceChunkPath(this.spaceId, this.collectionId, docId, chunkIndex)
   }
 
@@ -510,10 +510,10 @@ export class WasTransport extends Transport {
     // Gate on the affordance before diagnosing a 404: against a server with no
     // `/chunks/{n}` route at all, the 404 would otherwise be misreported as a
     // missing parent document.
-    await this._requireFeature('chunked-streams', 'Chunked encrypted storage')
+    await this.#requireFeature('chunked-streams', 'Chunked encrypted storage')
     try {
-      await this._was.request({
-        path: this._chunkPath(docId, chunk.index),
+      await this.#was.request({
+        path: this.#chunkPath(docId, chunk.index),
         method: 'PUT',
         body: envelopeBytes(chunk),
         headers: { 'content-type': CHUNK_CONTENT_TYPE }
@@ -558,11 +558,11 @@ export class WasTransport extends Transport {
     // Gate on the affordance before diagnosing a 404: against a server with no
     // `/chunks/{n}` route at all, the 404 would otherwise surface as a spurious
     // missing-chunk (data corruption) report.
-    await this._requireFeature('chunked-streams', 'Chunked encrypted storage')
+    await this.#requireFeature('chunked-streams', 'Chunked encrypted storage')
     let response: HttpResponse
     try {
-      response = await this._was.request({
-        path: this._chunkPath(docId, chunkIndex),
+      response = await this.#was.request({
+        path: this.#chunkPath(docId, chunkIndex),
         method: 'GET'
       })
     } catch (err) {

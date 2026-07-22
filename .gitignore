@@ -69,6 +69,8 @@ jspm_packages/
 !/.vscode/extensions.json
 !/.vscode/settings.json
 
+!CLAUDE.md
+
 # Output
 dist
 

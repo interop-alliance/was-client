@@ -17,7 +17,7 @@ import { WasClient, WasServerError } from '../../src/index.js'
 const TAR_BYTES = new Uint8Array([0x74, 0x61, 0x72, 0x00, 0xff, 0x01])
 
 /**
- * A canned export response: the fields `Space._exportResponse()` reads
+ * A canned export response: the fields `Space.#exportResponse()` reads
  * (`bodyUsed`, `data`, `headers`) plus the body accessors the three methods
  * use (`arrayBuffer`, `blob`, `body`).
  */

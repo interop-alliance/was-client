@@ -53,6 +53,11 @@ no query-by-filter yet).
 | `collection.find().toArray()`       | `collection.list()`                        |
 | `collection.deleteOne({ _id })`     | `collection.resource(resourceId).delete()` |
 
+See also:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- editor setup and code style conventions
+- [AGENTS.md](AGENTS.md) -- toolchain, tests, and conventions for coding agents
+
 ## Install
 
 - Node.js 24+ is recommended.

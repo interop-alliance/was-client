@@ -129,22 +129,22 @@ export class WasClient {
     return signer.id.split('#')[0] as string
   }
 
-  private _cachedContext?: ClientContext
+  #cachedContext?: ClientContext
 
-  private get _context(): ClientContext {
+  get #context(): ClientContext {
     // `serverUrl`, `zcapClient` (and thus `controllerDid`), and `encryption`
     // are all constructor-fixed, so the context is derived once and reused
     // rather than re-deriving `controllerDid` and reallocating the object on
     // every handle access.
-    if (this._cachedContext === undefined) {
-      this._cachedContext = {
+    if (this.#cachedContext === undefined) {
+      this.#cachedContext = {
         serverUrl: this.serverUrl,
         zcapClient: this.zcapClient,
         controllerDid: this.controllerDid,
         encryption: this.encryption
       }
     }
-    return this._cachedContext
+    return this.#cachedContext
   }
 
   /**
@@ -157,7 +157,7 @@ export class WasClient {
    */
   space(spaceId: string, options: HandleOptions = {}): Space {
     return new Space({
-      context: this._context,
+      context: this.#context,
       spaceId,
       capability: options.capability
     })
@@ -185,7 +185,7 @@ export class WasClient {
     if (desc.name !== undefined) {
       body.name = desc.name
     }
-    const response = await send(this._context, {
+    const response = await send(this.#context, {
       path: spacesRoot(),
       method: 'POST',
       json: body
@@ -213,7 +213,7 @@ export class WasClient {
     const walk = await buildPageWalk<SpaceListing>({
       firstUrl: toUrl({ serverUrl: this.serverUrl, path: spacesRoot() }),
       fetchPage: async url => {
-        const pageResponse = await send(this._context, {
+        const pageResponse = await send(this.#context, {
           url,
           method: 'GET',
           read: true
@@ -263,9 +263,7 @@ export class WasClient {
    * @param collectionUrl {string}   the absolute collection URL
    * @returns {Promise<PageWalk | null>}
    */
-  private async _publicListWalk(
-    collectionUrl: string
-  ): Promise<PageWalk | null> {
+  async #publicListWalk(collectionUrl: string): Promise<PageWalk | null> {
     return buildPageWalk({
       // The collection listing endpoint is the trailing-slash items URL.
       firstUrl: collectionItemsUrl(collectionUrl),
@@ -303,7 +301,7 @@ export class WasClient {
   }: {
     collectionUrl: string
   }): Promise<CollectionResourcesList | null> {
-    return collectWalk(await this._publicListWalk(collectionUrl))
+    return collectWalk(await this.#publicListWalk(collectionUrl))
   }
 
   /**
@@ -322,7 +320,7 @@ export class WasClient {
   }: {
     collectionUrl: string
   }): AsyncGenerator<CollectionResourcesList> {
-    yield* walkPagesOrEmpty(await this._publicListWalk(collectionUrl))
+    yield* walkPagesOrEmpty(await this.#publicListWalk(collectionUrl))
   }
 
   /**
@@ -385,7 +383,7 @@ export class WasClient {
           '`resource.meta()`), or use the `was.request()` escape hatch.'
       )
     }
-    const context = this._context
+    const context = this.#context
     if (parsed.kind === 'resource') {
       return new Resource({
         context,
@@ -416,7 +414,7 @@ export class WasClient {
    * @returns {Promise<IDelegatedZcap>}
    */
   async grant(options: GrantOptions): Promise<IDelegatedZcap> {
-    return delegateGrant(this._context, options)
+    return delegateGrant(this.#context, options)
   }
 
   /**
@@ -433,7 +431,7 @@ export class WasClient {
    * @returns {Promise<void>}
    */
   async revoke(zcap: IDelegatedZcap): Promise<void> {
-    const context = this._context
+    const context = this.#context
     return submitRevocation(context, {
       spaceId: spaceIdOf(context, zcap),
       zcap
@@ -450,6 +448,6 @@ export class WasClient {
    * @returns {Promise<HttpResponse>}
    */
   async request(options: RequestInput): Promise<HttpResponse> {
-    return rawRequest(this._context, options)
+    return rawRequest(this.#context, options)
   }
 }

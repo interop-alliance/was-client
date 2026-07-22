@@ -94,7 +94,7 @@ export async function resolveEpochKeys({
   // the newest epoch it holds -- defined deterministically as the LAST epoch in
   // the marker's canonical `epochs` order that names this reader, never the
   // incidental order in which secrets happened to unwrap. A reader that is not a
-  // recipient of `currentEpoch` is a removed/historical reader whose writes the
+  // recipient of `currentEpoch` is a removed/archive reader whose writes the
   // server rejects via its revoked zcap anyway; selecting a deterministic
   // fallback here only keeps the local `writeEpoch`/`writeKey` well-defined
   // instead of assuming the `epochs` array is append-ordered newest-last.
@@ -154,7 +154,7 @@ export async function resolveEpochKeys({
   // the codec's kid-match filter needs no secret) and unwraps + reconstructs its
   // epoch secret only on first decrypt naming it, caching the result. So a
   // write-only handle -- or a reader that only ever touches current-epoch
-  // resources -- never pays the ECDH + KDF + key-unwrap for historical epochs it
+  // resources -- never pays the ECDH + KDF + key-unwrap for archive epochs it
   // does not read.
   const readKeys: IKeyAgreementKey[] = [writeKey]
   for (const epoch of namedEpochs) {
