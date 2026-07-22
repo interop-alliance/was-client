@@ -24,6 +24,7 @@
   - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
   - [Registering a Bring-Your-Own-Storage backend](#registering-a-bring-your-own-storage-backend)
   - [Encrypted collections (EDV-over-WAS): pass-through encryption via the WAS client (recommended)](#encrypted-collections-edv-over-was-pass-through-encryption-via-the-was-client-recommended)
+  - [Cross-replica sync](#cross-replica-sync)
   - [Export and import](#export-and-import)
   - [The manual-request escape hatch](#the-manual-request-escape-hatch)
 - [Errors and the 404/null caveat](#errors-and-the-404null-caveat)
@@ -658,6 +659,88 @@ scope for now):
   larger binaries are rejected until chunked encrypted blobs land.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
   do not (they return the stored representation).
+
+### Cross-replica sync
+
+The opt-in `@interop/was-client/sync` subpath supplies everything a wallet needs
+to replicate one Space + Collection across devices, with WAS as the primary
+copy. It is not a sync engine itself -- it provides the seams a change engine
+plugs into:
+
+- **`createWasSyncPort({ was, spaceId, collectionId })`** builds a
+  `WasSyncPort`: paged pulls over the collection's `changes` feed (resumable via
+  an opaque server-side checkpoint) and conditional pushes
+  (`putContent`/`deleteContent`/`putMeta`) guarded by the server's content
+  `ETag`. The port moves stored bodies **verbatim** -- for an encrypted
+  collection that means the opaque EDV envelope, never plaintext, and the port
+  itself never touches keys. A rejected precondition throws
+  `WasSyncConflictError` (412); a delete of an already-gone resource throws
+  `WasSyncNotFoundError` (404) -- both catchable subtypes of the core
+  `PreconditionFailedError` / `NotFoundError`.
+- **`DocCipher`** is the per-collection encrypt/decrypt seam sitting above the
+  port: it turns a JSON document into its stored body (minting the resource id)
+  and back. `createPlaintextDocCipher(...)` is the crypto-free identity
+  implementation for a plaintext content-addressed collection;
+  `createEdvDocCipher(...)` (from `@interop/was-client/edv`) is the encrypting
+  one, covering single-recipient and multi-recipient (key-epoch) collections.
+- **`contentCid(doc)`** and **`deriveSpaceId(controllerDid)`** derive
+  content-addressed ids -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
+  unpadded -- so the same logical document (and the same controller) lands on
+  the same id on every replica, with no coordination or mapping table.
+- **`ensureSpaceAndCollection(...)`** is idempotent provisioning: upsert the
+  Space, configure the collection (`edv` or `plaintext`, optionally
+  world-readable). Safe to re-run on every connect.
+
+```ts
+import {
+  createWasSyncPort,
+  createPlaintextDocCipher,
+  deriveSpaceId,
+  ensureSpaceAndCollection,
+  WasSyncConflictError
+} from '@interop/was-client/sync'
+
+const spaceId = deriveSpaceId(controllerDid) // same Space on every device
+await ensureSpaceAndCollection({
+  was,
+  spaceId,
+  controllerDid,
+  collectionId: 'notes',
+  encryption: 'plaintext'
+})
+
+const port = createWasSyncPort({ was, spaceId, collectionId: 'notes' })
+const cipher = createPlaintextDocCipher({ collectionId: 'notes' })
+
+// Push: encrypt (mints the id), then write the stored body verbatim.
+const { id, envelope } = await cipher.encrypt({ data: { note: 'hello' } })
+try {
+  await port.putContent({ id, data: envelope, ifNoneMatch: true })
+} catch (err) {
+  if (!(err instanceof WasSyncConflictError)) {
+    throw err
+  }
+  // 412 on a content-addressed insert: another replica already wrote this
+  // exact document (same content id) -- a settled outcome, nothing to merge.
+}
+
+// Pull: page through the change feed, resuming from the last checkpoint.
+let checkpoint
+do {
+  const page = await port.query({ checkpoint, limit: 100 })
+  for (const doc of page.documents) {
+    if (doc._deleted) continue // tombstone
+    const data = await cipher.decrypt({ envelope: doc.data })
+    // apply to the local replica, recording doc.version for later pushes
+  }
+  checkpoint = page.checkpoint // null when the page was empty (caught up)
+} while (checkpoint)
+```
+
+The subpath is crypto-free: importing it never pulls the `./edv` dependency
+graph. To sync an encrypted collection, keep the same port and swap in
+`createEdvDocCipher` -- the change feed and the port ship the envelope bytes
+unchanged either way, so the server never sees plaintext.
 
 ### Export and import
 

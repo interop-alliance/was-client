@@ -201,6 +201,42 @@ export class IntegrityError extends EncryptionError {
 }
 
 /**
+ * The replication-port signal for a rejected conditional write (HTTP 412): an
+ * `ifMatch` ETag did not match (a lost-update conflict) or an `ifNoneMatch`
+ * create-if-absent target already exists. Thrown by a `WasSyncPort`
+ * (`@interop/was-client/sync`) so a push loop can catch exactly the conflict
+ * signal and re-read-and-reconcile, letting every other error propagate to its
+ * backoff. A subtype of {@link PreconditionFailedError}, so a caller that
+ * already handles 412 via `instanceof PreconditionFailedError` still catches it.
+ */
+export class WasSyncConflictError extends PreconditionFailedError {
+  constructor(
+    message = 'WAS conditional write precondition failed.',
+    options: WasErrorOptions = {}
+  ) {
+    super(message, { status: 412, ...options })
+    this.name = 'WasSyncConflictError'
+  }
+}
+
+/**
+ * The replication-port signal for a delete whose target resource is absent
+ * (HTTP 404). For a delete this is a settled outcome (already gone, or the write
+ * never reached the server), not a conflict, so a `WasSyncPort`
+ * (`@interop/was-client/sync`) raises this distinct type rather than
+ * {@link WasSyncConflictError}. A subtype of {@link NotFoundError}.
+ */
+export class WasSyncNotFoundError extends NotFoundError {
+  constructor(
+    message = 'WAS resource not found.',
+    options: WasErrorOptions = {}
+  ) {
+    super(message, { status: 404, ...options })
+    this.name = 'WasSyncNotFoundError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {

@@ -1,5 +1,48 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Added
+
+- **New `@interop/was-client/sync` subpath: cross-replica synchronization
+  support.** Everything a wallet needs to replicate one Space + Collection over
+  WAS, gathered in one place:
+  - `createWasSyncPort({ was, spaceId, collectionId })` builds a `WasSyncPort`
+    over `was.request()` and the `Collection.changes()` feed. It moves stored
+    bodies verbatim (no codec, no keys), rides the server's monotonic content
+    `ETag` for conditional writes, stamps the `WAS-Key-Epoch` header, and
+    returns the server-acked `version` from each write. `putMeta` is optional
+    (present for a port that also syncs the user-writable `/meta` `custom`).
+  - `contentCid(doc)` / `cidFrom({ doc })` derive a content-addressed id as
+    `base64url(SHA-256(utf8(canonicalize(doc))))` (unpadded, JCS-canonicalized),
+    and `deriveSpaceId(controllerDid)` derives a Space id the same way over the
+    DID. Both are byte-identical across replicas -- a locked-fixture test pins
+    the exact output. Hashing is synchronous and pure-JS (`@noble/hashes`), so
+    the same bytes result in Node, the browser, and React Native.
+  - `createPlaintextDocCipher({ collectionId })` is the identity `DocCipher` for
+    a plaintext content-addressed collection, and `isEncryptedEnvelope(data)`
+    tests whether a stored body is an EDV envelope. Both stay free of the
+    `./edv` crypto graph.
+  - `ensureSpaceAndCollection(...)` is idempotent Space + Collection
+    provisioning (an `edv` or `plaintext` collection, optionally
+    world-readable).
+  - `SyncCheckpoint`, `WireDoc`, and one page of the feed reuse the shared
+    `ChangesCheckpoint` / `ChangeDocument` / `ChangesPage` wire model from
+    `@interop/storage-core`; `MasterState`, `WasSyncPort`, and `DocCipher` are
+    the injectable seams a change engine depends on.
+- **`WasSyncConflictError` / `WasSyncNotFoundError`** added to the typed error
+  hierarchy (subtypes of `PreconditionFailedError` / `NotFoundError`): the 412
+  conflict and 404 not-found signals a `WasSyncPort` raises so a push loop can
+  catch exactly the conflict and re-read-and-reconcile.
+- **`./edv` additions for encrypted-collection document ciphers.**
+  `createEdvDocCipher(...)` builds a per-collection `DocCipher` that encrypts a
+  document into its stored EDV envelope (content-derived or random resource id)
+  and decrypts it back, supporting single-recipient, multi-recipient (key-epoch)
+  collections, and unknown-epoch handling (`UnknownEpochError`).
+  `ownerRecipient` builds the owner's `RecipientPublicKey` ("recipient zero")
+  for `initRecipients`. The `DocCipher` interface and `isEncryptedEnvelope` are
+  re-exported here for convenience.
+
 ## 0.18.0 - 2026-07-21
 
 ### Added

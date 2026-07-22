@@ -28,6 +28,8 @@ export {
   EncryptionError,
   KeyUnwrapError,
   IntegrityError,
+  WasSyncConflictError,
+  WasSyncNotFoundError,
   WasServerError,
   mapError
 } from './errors.js'
