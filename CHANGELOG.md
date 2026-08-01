@@ -1,6 +1,6 @@
 # @interop/was-client Changelog
 
-## 0.21.0 - TBD
+## 0.21.0 - 2026-07-31
 
 ### Added
 
