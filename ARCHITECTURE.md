@@ -25,7 +25,7 @@ external deps       @interop/ezcap, @interop/storage-core,
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
   EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochMac,
-  recipients
+  recipients, markerStore
   Implements the interfaces in src/codec.ts; imports internal/* and the
   crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
 
@@ -136,9 +136,15 @@ reader's key-agreement key (`ECDH-ES+A256KW`) on the marker. Access has two
 orthogonal axes: _pull_ (zcap, server-enforced, immediate) and _read_ (epoch-key
 possession, client-side, prospective -- rotation never claws back already-held
 keys or fetched ciphertext). `removeRecipient` does both halves because doing
-only one is a footgun. Marker mutations go through a CAS loop
-(`describeWithEtag`, mutate, `replaceDescription({ ifMatch })`, bounded
-retries).
+only one is a footgun (the pull half is the default zcap revocation, or a
+caller-supplied `pull` action for markers whose access lives elsewhere). Marker
+mutations go through a CAS loop (read marker + validator, mutate, conditional
+write, bounded retries) over the **marker-store seam** (`markerStore.ts`): the
+Collection Description adapter (`describeWithEtag` /
+`replaceDescription({ ifMatch })`, server-enforced marker invariants) or the
+plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first marker
+created with `If-None-Match: *`; integrity rests on `epochsMac` + epoch pinning,
+so host it in a plaintext collection).
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
