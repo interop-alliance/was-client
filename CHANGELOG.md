@@ -1,5 +1,18 @@
 # @interop/was-client Changelog
 
+## 0.22.0 - TBD
+
+### Added
+
+- `initRecipients` accepts an optional pre-minted first `epoch`
+  (`{ epochId, secret }`) to install instead of minting one, for a caller whose
+  epoch key already exists -- e.g. a per-user key being enrolled into its
+  wrap-set roster.
+- The `./edv` subpath exports `unwrapEpochSecret` and `verifyEpochsMac`, so a
+  consumer of a resource-hosted marker can unwrap its own recipient entry
+  (rotation delivery) and authenticate the epoch configuration on a host that
+  enforces no server-side marker invariants.
+
 ## 0.21.0 - 2026-07-31
 
 ### Added

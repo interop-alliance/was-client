@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@interop/data-integrity-core':
-        specifier: ^8.3.0
-        version: 8.3.0
+        specifier: ^8.4.0
+        version: 8.4.0
       '@interop/ed25519-signature':
         specifier: ^7.1.4
         version: 7.1.4(@interop/jsonld-signatures@11.8.3)
@@ -27,8 +27,8 @@ importers:
         specifier: ^7.8.0
         version: 7.8.0
       '@interop/storage-core':
-        specifier: ^0.3.8
-        version: 0.3.8
+        specifier: ^0.3.9
+        version: 0.3.9
       '@interop/x25519-key-agreement-key':
         specifier: ^5.2.1
         version: 5.2.1
@@ -187,6 +187,10 @@ packages:
     resolution: {integrity: sha512-8rYHqCHbYub8hh16HvQrJ8ozXHhv+t/gC0f6/JN9CLOdyL3EUTZOyKHjOKDRaelxjIplQG61LIUxGL3ihF1aXQ==}
     engines: {node: '>=24.0'}
 
+  '@interop/data-integrity-core@8.4.0':
+    resolution: {integrity: sha512-j7Y9BthxKWdPx6d3q96jHnDJXj08BWE++JeWJ0jhqJJbdvCMPgenU2g/MUrlZqe3TtF52ULlYJFYRoWwTDVGdg==}
+    engines: {node: '>=24.0'}
+
   '@interop/data-integrity-proof@3.4.2':
     resolution: {integrity: sha512-mB8W+/2LnZouEa4jTfCiN5NCnBsCjXBZfJeKhRfjF58om57VjWcq34Sspd+s67cZHXb1MG85O0yN+Yb2rGocYA==}
     engines: {node: '>=24.0'}
@@ -272,8 +276,8 @@ packages:
     resolution: {integrity: sha512-O3bKm2V4SjDAOqgMKSUYF9b+HRK47e8Cy52I45Fs7MXcGSkT6nOrbhEHwwKGX+BH0WoaNSqsKVdyt03MvoPZgA==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.3.8':
-    resolution: {integrity: sha512-rsn6x2TmyflnmDds2myYjPNhlZ9UGExkhsZPodBKvbveHAws/rdm5rueCa4WFuP9N00SzSSDWTQiVhjlwzk98A==}
+  '@interop/storage-core@0.3.9':
+    resolution: {integrity: sha512-1Bgdnt8bA0fjgCQ3K5eBmcBFECol+wOwwjE4NQ4oz+s5tdXxvaWb65rORX0NRnSyRYhkQ0EWKWA0Brx+qHu2dg==}
     engines: {node: '>=22.0'}
 
   '@interop/x25519-key-agreement-key@5.2.1':
@@ -1313,6 +1317,8 @@ snapshots:
 
   '@interop/data-integrity-core@8.3.0': {}
 
+  '@interop/data-integrity-core@8.4.0': {}
+
   '@interop/data-integrity-proof@3.4.2':
     dependencies:
       '@interop/data-integrity-core': 8.3.0
@@ -1429,7 +1435,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/storage-core@0.3.8':
+  '@interop/storage-core@0.3.9':
     dependencies:
       '@interop/data-integrity-core': 8.3.0
 

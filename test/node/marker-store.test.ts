@@ -19,7 +19,12 @@ import { PreconditionFailedError, ValidationError } from '../../src/index.js'
 import type { CollectionEncryption, JsonObject } from '../../src/index.js'
 import type { Collection } from '../../src/Collection.js'
 import type { Resource } from '../../src/Resource.js'
-import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
+import {
+  mintEpoch,
+  unwrapEpochSecret,
+  wrapEpochSecret
+} from '../../src/edv/epochCrypto.js'
+import { verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
@@ -164,6 +169,35 @@ describe('resourceMarkerStore', () => {
       keyAgreementKey: alice.kak
     })
     expect(keys!.readKeys).toHaveLength(1)
+  })
+
+  it('initRecipients installs a pre-minted epoch instead of minting', async () => {
+    const alice = await makeReader()
+    const roster = fakeRosterResource()
+    const store = resourceMarkerStore({
+      resource: roster as unknown as Resource
+    })
+
+    // The caller's epoch key already exists (e.g. a per-user key being
+    // enrolled into its wrap-set roster): the marker must carry ITS id, and
+    // the wrapped secret must unwrap to ITS raw private key.
+    const preminted = await mintEpoch()
+    const marker = await initRecipients({
+      store,
+      recipients: [recipientOf(alice)],
+      epoch: preminted
+    })
+    expect(marker.currentEpoch).toBe(preminted.epochId)
+    expect(marker.epochs![0]!.id).toBe(preminted.epochId)
+    const unwrapped = await unwrapEpochSecret({
+      entry: marker.epochs![0]!.recipients[0]!,
+      keyAgreementKey: alice.kak
+    })
+    expect(Array.from(unwrapped!)).toEqual(Array.from(preminted.secret))
+    // The MAC is keyed from the pre-minted secret, so it verifies.
+    expect(
+      await verifyEpochsMac({ marker, epochSecret: preminted.secret })
+    ).toBe(true)
   })
 
   it('a lost create race converges on the already-initialized error', async () => {

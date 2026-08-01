@@ -31,7 +31,8 @@ export { initRecipients, addRecipient, removeRecipient } from './recipients.js'
 export type { OwnerKey, RecipientPublicKey } from './recipients.js'
 export { collectionMarkerStore, resourceMarkerStore } from './markerStore.js'
 export type { MarkerStore } from './markerStore.js'
-export { mintEpoch, epochKeyIdFor } from './epochCrypto.js'
+export { mintEpoch, epochKeyIdFor, unwrapEpochSecret } from './epochCrypto.js'
+export { verifyEpochsMac } from './epochMac.js'
 export {
   createEdvDocCipher,
   ownerRecipient,

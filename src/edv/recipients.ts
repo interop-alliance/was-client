@@ -86,23 +86,30 @@ const MAX_CAS_ATTEMPTS = 3
  * @param [options.store] {MarkerStore}   an explicit marker store
  * @param options.recipients {RecipientPublicKey[]}   the initial readers' public
  *   key-agreement keys (each `id` is the reader's `kid`)
+ * @param [options.epoch] {{ epochId: string, secret: Uint8Array }}   a
+ *   pre-minted first epoch to install instead of minting one -- for a caller
+ *   whose epoch key already exists (e.g. a per-user key being enrolled into
+ *   its wrap-set roster). The `epochId` must be the key's did:key and `secret`
+ *   its raw 32-byte private key, exactly what {@link mintEpoch} returns.
  * @returns {Promise<CollectionEncryption>}   the new marker
  */
 export async function initRecipients({
   collection,
   store,
-  recipients
+  recipients,
+  epoch: premintedEpoch
 }: {
   collection?: Collection
   store?: MarkerStore
   recipients: RecipientPublicKey[]
+  epoch?: { epochId: string; secret: Uint8Array }
 }): Promise<CollectionEncryption> {
   if (recipients.length === 0) {
     throw new ValidationError(
       'initRecipients needs at least one recipient to wrap the epoch key to.'
     )
   }
-  const { epochId, secret } = await mintEpoch()
+  const { epochId, secret } = premintedEpoch ?? (await mintEpoch())
   const epoch: CollectionEncryptionEpoch = {
     id: epochId,
     recipients: await Promise.all(
