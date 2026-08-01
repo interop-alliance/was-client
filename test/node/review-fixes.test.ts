@@ -6,7 +6,8 @@
  * off-limits to this change: `fromCapability` on a sub-path-mounted server (it
  * must strip `serverUrl`'s base path via `parseSpaceTarget`, not classify the
  * raw pathname), and the deterministic write-epoch selection in
- * `resolveEpochKeys` (currentEpoch by id lookup, with a marker-order fallback).
+ * `resolveEpochKeys` (currentEpoch by id lookup, with a descriptor-order
+ * fallback).
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -104,8 +105,8 @@ async function makeReader(): Promise<{
 }
 
 /**
- * Mints an epoch and wraps its secret to each reader, producing a marker epoch
- * entry alongside the epoch id (so a test can order epochs and pick a
+ * Mints an epoch and wraps its secret to each reader, producing a descriptor
+ * epoch entry alongside the epoch id (so a test can order epochs and pick a
  * `currentEpoch` independently of array position).
  *
  * @param readers {Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>}
@@ -155,9 +156,9 @@ describe('resolveEpochKeys write-epoch selection', () => {
     const inX = await epochEntryFor([bob])
     const inY = await epochEntryFor([bob])
     const notInZ = await epochEntryFor([await makeReader()])
-    // Bob is a recipient of X and Y (in that marker order) but not of the
-    // current epoch Z: the fallback picks the LAST epoch in the marker's order
-    // that names Bob -- Y -- deterministically.
+    // Bob is a recipient of X and Y (in that descriptor order) but not of the
+    // current epoch Z: the fallback picks the LAST epoch in the descriptor's
+    // order that names Bob -- Y -- deterministically.
     const encryption = {
       scheme: 'edv',
       epochs: [inX, inY, notInZ],

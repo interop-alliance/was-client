@@ -3,9 +3,9 @@
  */
 /**
  * Reads a Collection Description with a single GET. Shared by
- * `Collection.describe()` and the standalone-resource codec's marker discovery
- * so the request shape (path, capability, null-unwrap) lives in one place.
- * Also owns the masked-404 fail-closed policy: WAS returns 404 for both
+ * `Collection.describe()` and the standalone-resource codec's descriptor
+ * discovery so the request shape (path, capability, null-unwrap) lives in one
+ * place. Also owns the masked-404 fail-closed policy: WAS returns 404 for both
  * not-found and unauthorized, so a `null` description is ambiguous and an
  * operation that must know the current state fails closed via
  * `unreadableDescriptionError` rather than guessing.

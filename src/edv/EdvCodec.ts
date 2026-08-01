@@ -162,7 +162,7 @@ export class EdvCodec implements ResourceCodec {
   readonly #idDerivation: 'random' | 'content'
   /**
    * The EDV-over-WAS scheme version this codec binds into every envelope's
-   * `was.v` protected-header parameter (the marker's `version`, `1` when
+   * `was.v` protected-header parameter (the descriptor's `version`, `1` when
    * absent). Read side rejects an envelope stamped with a greater version.
    */
   readonly #version: number
@@ -305,9 +305,9 @@ export class EdvCodec implements ResourceCodec {
       doc: {
         ...(docId !== undefined && { id: docId }),
         content,
-        // `content` and `meta` are both sealed inside the JWE; `meta` carries the
-        // plaintext content type and the inline-encoding discriminator, taken
-        // fresh from this write (the new type/encoding wins on update).
+        // `content` and `meta` are both sealed inside the JWE; `meta` carries
+        // the plaintext content type and the inline-encoding discriminator,
+        // taken fresh from this write (the new type/encoding wins on update).
         meta,
         ...(priorDoc && { sequence: priorDoc.sequence })
       },
@@ -328,8 +328,8 @@ export class EdvCodec implements ResourceCodec {
       id: docId,
       body: envelopeBytes(encrypted),
       contentType: this.#contentType,
-      // Surface the plaintext content type (the server-opaque envelope type stays
-      // `contentType`) so `add()` reports the real resource type.
+      // Surface the plaintext content type (the server-opaque envelope type
+      // stays `contentType`) so `add()` reports the real resource type.
       resourceContentType: meta.contentType as string,
       // Pin an update to the server's current ETag; guard a fresh insert with
       // create-if-absent. An update's `If-Match` carries a server-provided ETag,
@@ -411,12 +411,12 @@ export class EdvCodec implements ResourceCodec {
         .filter((kid): kid is string => typeof kid === 'string')
     )
     // Prefer the read key whose id names a recipient of this envelope. The
-    // `rest` fallback then tries the remaining candidates: it serves an envelope
-    // whose recipient `kid` matches no local key id -- format drift, or a
-    // single-key envelope read with a differently-labeled key -- where the
-    // exact-match partition is empty even though a candidate can still unwrap it.
-    // For a well-formed epoch envelope the exact match always hits, so `rest` is
-    // normally unreached.
+    // `rest` fallback then tries the remaining candidates: it serves an
+    // envelope whose recipient `kid` matches no local key id -- format drift,
+    // or a single-key envelope read with a differently-labeled key -- where the
+    // exact-match partition is empty even though a candidate can still unwrap
+    // it. For a well-formed epoch envelope the exact match always hits, so
+    // `rest` is normally unreached.
     const preferred = this.#readKeys.filter(key => kids.has(key.id))
     const rest = this.#readKeys.filter(key => !kids.has(key.id))
     for (const keyAgreementKey of [...preferred, ...rest]) {
@@ -477,7 +477,8 @@ export class EdvCodec implements ResourceCodec {
    *   would fail it wrongly).
    * - On a collection with epochs, `was.epoch` present: it must equal the epoch
    *   (the `did:key` before the `#`) of the key that actually decrypted -- a
-   *   mismatch is a replay under a different epoch's key -- {@link IntegrityError}.
+   *   mismatch is a replay under a different epoch's key -- {@link
+   *   IntegrityError}.
    *
    * @param options {object}
    * @param options.jwe {unknown}   the envelope's JWE (its `protected` header is
@@ -735,8 +736,8 @@ export class EdvCodec implements ResourceCodec {
     }
 
     if (payload.kind === 'json') {
-      // JSON object/array: content verbatim, no encoding (the read side treats an
-      // absent `meta.encoding` as JSON). EDV models `content` as an object
+      // JSON object/array: content verbatim, no encoding (the read side treats
+      // an absent `meta.encoding` as JSON). EDV models `content` as an object
       // record; a JSON array is also a valid encrypted value here, so widen it.
       return {
         content: data as Record<string, unknown>,
@@ -842,7 +843,7 @@ function parseWasHeader(jwe: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * The EDV scheme tag this provider handles (matches the Collection marker).
+ * The EDV scheme tag this provider handles (matches the Collection descriptor).
  */
 const EDV_SCHEME = 'edv'
 
@@ -860,12 +861,12 @@ export interface EdvKeys {
  * `WasClient`'s `encryption` option.
  *
  * It does **not** decide which collections are encrypted -- that policy is the
- * Collection's `encryption` marker (or a per-handle override). Core calls
+ * Collection's `encryption` descriptor (or a per-handle override). Core calls
  * `codecFor` only for a collection already known to be encrypted; this provider
  * then supplies the keys: the override-supplied `keys` when present, else
  * `resolveKeys({ spaceId, collectionId })`. `resolveKeys` returning `null` means
  * "I hold no keys for this collection", so core fails closed (it does **not**
- * mean plaintext -- the marker/override already decided that). A non-`edv`
+ * mean plaintext -- the descriptor/override already decided that). A non-`edv`
  * scheme yields `null` (this provider does not handle it).
  *
  * @param options {object}
@@ -910,13 +911,13 @@ export function createEdvEncryption({
       if (scheme !== EDV_SCHEME) {
         return null
       }
-      // Refuse a marker from a future scheme version: this client does not
+      // Refuse a descriptor from a future scheme version: this client does not
       // implement it, and silently operating on it could mis-handle the data.
-      const markerVersion = encryption?.version
-      if (typeof markerVersion === 'number' && markerVersion > 1) {
+      const descriptorVersion = encryption?.version
+      if (typeof descriptorVersion === 'number' && descriptorVersion > 1) {
         throw new EncryptionError(
           `Collection ${spaceId}/${collectionId} declares EDV-over-WAS scheme ` +
-            `version ${markerVersion}, which this client (version 1) does not ` +
+            `version ${descriptorVersion}, which this client (version 1) does not ` +
             'implement. Upgrade the client.'
         )
       }
@@ -927,17 +928,17 @@ export function createEdvEncryption({
       if (!resolved) {
         return null
       }
-      // Single-key collection (no epochs on the marker): the wallet's own
+      // Single-key collection (no epochs on the descriptor): the wallet's own
       // key-agreement key encrypts and decrypts directly.
       let keyAgreementKey = resolved.keyAgreementKey
       let keyResolver: IKeyResolver = resolved.keyResolver
       let readKeys: IKeyAgreementKey[] | undefined
       let writeEpoch: string | undefined
       // Multi-recipient (key-epoch) collection: resolve the reader's per-epoch
-      // keys from the marker -- the `currentEpoch` key pair for writes, every
-      // epoch key it can unwrap for reads -- and drive the cipher with those.
-      // The reader's own key-agreement key is used only to unwrap the epoch
-      // keys, never to encrypt resources.
+      // keys from the descriptor -- the `currentEpoch` key pair for writes,
+      // every epoch key it can unwrap for reads -- and drive the cipher with
+      // those. The reader's own key-agreement key is used only to unwrap the
+      // epoch keys, never to encrypt resources.
       if (encryption?.epochs && encryption.epochs.length > 0) {
         const epochKeys = await resolveEpochKeys({
           encryption,
@@ -962,7 +963,7 @@ export function createEdvEncryption({
         contentType,
         maxBlobBytes,
         idDerivation,
-        version: markerVersion ?? 1,
+        version: descriptorVersion ?? 1,
         hasEpochs: !!(encryption?.epochs && encryption.epochs.length > 0)
       })
     }

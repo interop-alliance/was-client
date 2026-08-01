@@ -170,8 +170,9 @@ describe('was binding: resource-id swap detection', () => {
   })
 
   it('still reads a legacy envelope that carries no `was` binding', async () => {
-    // An envelope written before the binding existed (no additionalProtectedParams)
-    // must still decode -- accepted unchanged for back-compat.
+    // An envelope written before the binding existed (no
+    // additionalProtectedParams) must still decode -- accepted unchanged for
+    // back-compat.
     const { kak, keyResolver } = await makeKeys()
     const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
     const recipients = edv.documentCipher.createDefaultRecipients(kak)
@@ -207,7 +208,8 @@ describe('was binding: content-derived id verification', () => {
   it('omits `resource` and verifies the honest round trip by re-deriving the id', async () => {
     const codec = await makeCodec({ idDerivation: 'content' })
     const encoded = await codec.encode({ data: { addressed: true } })
-    // No `resource` on a content-derived write (the id is a function of the ciphertext).
+    // No `resource` on a content-derived write (the id is a function of the
+    // ciphertext).
     expect(wasHeaderOf(encoded.body)).toEqual({ v: 1 })
     await expect(
       codec.decode(responseFrom(encoded.body), encoded.id)
@@ -218,8 +220,8 @@ describe('was binding: content-derived id verification', () => {
     const codec = await makeCodec({ idDerivation: 'content' })
     const one = await codec.encode({ data: { n: 1 } })
     const two = await codec.encode({ data: { n: 2 } })
-    // Serve envelope `one` under envelope `two`'s id: the re-derived id no longer
-    // matches the requested id.
+    // Serve envelope `one` under envelope `two`'s id: the re-derived id no
+    // longer matches the requested id.
     await expect(
       codec.decode(responseFrom(one.body), two.id)
     ).rejects.toBeInstanceOf(IntegrityError)
@@ -297,7 +299,8 @@ describe('was binding: per-envelope epoch label', () => {
 
   it('fails with IntegrityError when `was.epoch` mismatches the decrypting key', async () => {
     // The codec labels writes with a fake epoch while actually encrypting under
-    // the real key's epoch, so the decrypting key's epoch differs from `was.epoch`.
+    // the real key's epoch, so the decrypting key's epoch differs from
+    // `was.epoch`.
     const fakeEpoch = 'did:key:z' + 'F'.repeat(21)
     const { codec, realEpoch } = await epochCodec({ relabelEpoch: fakeEpoch })
     const encoded = await codec.encode({ data: { ok: true } })
@@ -310,7 +313,7 @@ describe('was binding: per-envelope epoch label', () => {
 })
 
 describe('scheme version gate', () => {
-  it('refuses to build a codec for a marker whose version is greater than 1', async () => {
+  it('refuses to build a codec for a descriptor whose version is greater than 1', async () => {
     const { kak, keyResolver } = await makeKeys()
     const provider = createEdvEncryption({
       resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
@@ -325,7 +328,7 @@ describe('scheme version gate', () => {
     ).rejects.toBeInstanceOf(EncryptionError)
   })
 
-  it('builds a codec for a version-1 (or absent-version) marker', async () => {
+  it('builds a codec for a version-1 (or absent-version) descriptor', async () => {
     const { kak, keyResolver } = await makeKeys()
     const provider = createEdvEncryption({
       resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
@@ -342,7 +345,7 @@ describe('scheme version gate', () => {
 
 /**
  * A minimal in-memory Collection whose description read returns the evolving
- * marker and whose write applies it.
+ * descriptor and whose write applies it.
  *
  * @param initial {CollectionEncryption}
  * @returns {object}
@@ -370,18 +373,18 @@ describe('epochsMac lifecycle', () => {
   it('initRecipients stamps version 1 and writes a valid epochsMac', async () => {
     const alice = await makeReader()
     const fake = mutableCollection({ scheme: 'edv' })
-    const marker = await initRecipients({
+    const descriptor = await initRecipients({
       collection: fake as unknown as Collection,
       recipients: [
         { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
       ]
     })
-    expect(marker.version).toBe(1)
-    expect(marker.epochsMac).toMatchObject({ v: 1, alg: 'HS256' })
-    expect(typeof marker.epochsMac!.mac).toBe('string')
+    expect(descriptor.version).toBe(1)
+    expect(descriptor.epochsMac).toMatchObject({ v: 1, alg: 'HS256' })
+    expect(typeof descriptor.epochsMac!.mac).toBe('string')
     // Alice can resolve her keys, which verifies the MAC.
     await expect(
-      resolveEpochKeys({ encryption: marker, keyAgreementKey: alice.kak })
+      resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
     ).resolves.not.toBeNull()
   })
 
@@ -427,7 +430,8 @@ describe('epochsMac lifecycle', () => {
       revoke: []
     })
     // The MAC changed (new epoch secret, new currentEpoch + epoch list) but is
-    // still valid: Alice, the surviving reader of the new currentEpoch, verifies it.
+    // still valid: Alice, the surviving reader of the new currentEpoch,
+    // verifies it.
     expect(afterRemove.epochsMac).toBeDefined()
     expect(afterRemove.epochsMac!.mac).not.toBe(initial.epochsMac!.mac)
     await expect(
@@ -438,16 +442,17 @@ describe('epochsMac lifecycle', () => {
 
 describe('epochsMac verification in resolveEpochKeys', () => {
   /**
-   * Builds a two-epoch marker (alice a recipient of both), with `currentEpoch`
-   * set to the second and a valid `epochsMac` keyed by the second epoch's secret.
+   * Builds a two-epoch descriptor (alice a recipient of both), with
+   * `currentEpoch` set to the second and a valid `epochsMac` keyed by the
+   * second epoch's secret.
    *
    * @param alice {{ kak: IKeyAgreementKey; publicKeyMultibase: string }}
-   * @returns {Promise<{ marker: CollectionEncryption; firstEpoch: string }>}
+   * @returns {Promise<{ descriptor: CollectionEncryption; firstEpoch: string }>}
    */
-  async function twoEpochMarker(alice: {
+  async function twoEpochDescriptor(alice: {
     kak: IKeyAgreementKey
     publicKeyMultibase: string
-  }): Promise<{ marker: CollectionEncryption; firstEpoch: string }> {
+  }): Promise<{ descriptor: CollectionEncryption; firstEpoch: string }> {
     const first = await mintEpoch()
     const second = await mintEpoch()
     const wrapTo = (epochSecret: Uint8Array) =>
@@ -458,7 +463,7 @@ describe('epochsMac verification in resolveEpochKeys', () => {
           publicKeyMultibase: alice.publicKeyMultibase
         }
       })
-    const marker: CollectionEncryption = {
+    const descriptor: CollectionEncryption = {
       scheme: 'edv',
       version: 1,
       epochs: [
@@ -467,29 +472,29 @@ describe('epochsMac verification in resolveEpochKeys', () => {
       ],
       currentEpoch: second.epochId
     }
-    marker.epochsMac = await computeEpochsMac({
-      marker,
+    descriptor.epochsMac = await computeEpochsMac({
+      descriptor,
       epochSecret: second.secret
     })
-    return { marker, firstEpoch: first.epochId }
+    return { descriptor, firstEpoch: first.epochId }
   }
 
-  it('accepts a marker with a valid epochsMac', async () => {
+  it('accepts a descriptor with a valid epochsMac', async () => {
     const alice = await makeReader()
-    const { marker } = await twoEpochMarker(alice)
+    const { descriptor } = await twoEpochDescriptor(alice)
     await expect(
-      resolveEpochKeys({ encryption: marker, keyAgreementKey: alice.kak })
+      resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
     ).resolves.not.toBeNull()
   })
 
   it('rejects a currentEpoch rolled back to an older epoch (stale MAC)', async () => {
     const alice = await makeReader()
-    const { marker, firstEpoch } = await twoEpochMarker(alice)
+    const { descriptor, firstEpoch } = await twoEpochDescriptor(alice)
     // Simulate a malicious server: roll `currentEpoch` back to the older epoch
     // while KEEPING the MAC that was computed for the newer currentEpoch. The
     // MAC now fails to authenticate under the older epoch's secret.
     const rolledBack: CollectionEncryption = {
-      ...marker,
+      ...descriptor,
       currentEpoch: firstEpoch
     }
     await expect(
@@ -499,20 +504,20 @@ describe('epochsMac verification in resolveEpochKeys', () => {
 
   it('rejects an epochsMac with an unsupported construction (v/alg)', async () => {
     const alice = await makeReader()
-    const { marker } = await twoEpochMarker(alice)
+    const { descriptor } = await twoEpochDescriptor(alice)
     const tampered: CollectionEncryption = {
-      ...marker,
-      epochsMac: { ...marker.epochsMac!, alg: 'HS512' }
+      ...descriptor,
+      epochsMac: { ...descriptor.epochsMac!, alg: 'HS512' }
     }
     await expect(
       resolveEpochKeys({ encryption: tampered, keyAgreementKey: alice.kak })
     ).rejects.toBeInstanceOf(IntegrityError)
   })
 
-  it('accepts a legacy marker with no epochsMac', async () => {
+  it('accepts a legacy descriptor with no epochsMac', async () => {
     const alice = await makeReader()
     const { epochId, secret } = await mintEpoch()
-    const marker: CollectionEncryption = {
+    const descriptor: CollectionEncryption = {
       scheme: 'edv',
       epochs: [
         {
@@ -531,7 +536,7 @@ describe('epochsMac verification in resolveEpochKeys', () => {
       currentEpoch: epochId
     }
     await expect(
-      resolveEpochKeys({ encryption: marker, keyAgreementKey: alice.kak })
+      resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
     ).resolves.not.toBeNull()
   })
 })

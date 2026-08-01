@@ -2,11 +2,11 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Integration test: multi-recipient encrypted Collections and key epochs, end to
- * end against a live WAS server. Several readers each hold their own X25519
+ * Integration test: multi-recipient encrypted Collections and key epochs, end
+ * to end against a live WAS server. Several readers each hold their own X25519
  * key-agreement key; a per-epoch collection key is wrapped to each of them on
- * the Collection's `encryption` marker, and resources are encrypted under the
- * `currentEpoch`. Proves the whole feature, and in particular the removal
+ * the Collection's `encryption` descriptor, and resources are encrypted under
+ * the `currentEpoch`. Proves the whole feature, and in particular the removal
  * quadruple that carries it:
  *
  * 1. two distinct readers both decrypt the same resource, each with its own key;
@@ -20,7 +20,8 @@
  *
  * Also pins epoch stamping (a write's `WAS-Key-Epoch` surfaces on `meta()`, the
  * listing, and the `changes` feed) and that a rotation preserves any
- * blinded-index `hmac` on the marker (the hmac does not rotate with the epoch).
+ * blinded-index `hmac` on the descriptor (the hmac does not rotate with the
+ * epoch).
  *
  * Requires a running server: set `TEST_SERVER_URL` (byte-identical to the
  * server's own `SERVER_URL` -- zcap invocation targets embed host and port). The
@@ -119,7 +120,7 @@ describeLive('multi-recipient key epochs (live server)', () => {
 
   /**
    * A fresh owner handle to the vault (no override) so it re-discovers the
-   * current marker and encrypts under the current epoch.
+   * current descriptor and encrypts under the current epoch.
    *
    * @returns {Collection}
    */
@@ -159,35 +160,35 @@ describeLive('multi-recipient key epochs (live server)', () => {
   }
 
   /**
-   * Decrypts a raw envelope with a party's own keys against a given marker,
+   * Decrypts a raw envelope with a party's own keys against a given descriptor,
    * building that party's codec directly (so the read axis can be exercised even
    * when the party's pull is revoked).
    *
    * @param party {Party}
-   * @param marker {CollectionEncryption}
+   * @param descriptor {CollectionEncryption}
    * @param envelope {Record<string, unknown>}
    * @returns {Promise<unknown>}
    */
   async function decodeWith(
     party: Party,
-    marker: CollectionEncryption,
+    descriptor: CollectionEncryption,
     envelope: Record<string, unknown>
   ): Promise<unknown> {
     const codec = await party.provider.codecFor({
       spaceId,
       collectionId,
       scheme: 'edv',
-      encryption: marker
+      encryption: descriptor
     })
     return codec!.decode({ data: envelope } as unknown as HttpResponse)
   }
 
   /**
-   * Reads the current marker from the server (owner's authorized view).
+   * Reads the current descriptor from the server (owner's authorized view).
    *
    * @returns {Promise<CollectionEncryption>}
    */
-  async function currentMarker(): Promise<CollectionEncryption> {
+  async function currentDescriptor(): Promise<CollectionEncryption> {
     const described = await owner.was
       .space(spaceId)
       .collection(collectionId)
@@ -215,11 +216,11 @@ describeLive('multi-recipient key epochs (live server)', () => {
 
     // Initialize the first epoch, wrapping it to the owner and the two initial
     // readers (the owner is a recipient so it can write).
-    const marker = await initRecipients({
+    const descriptor = await initRecipients({
       collection: ownerVault(),
       recipients: [owner.recipient, readerA.recipient, readerB.recipient]
     })
-    epoch1 = marker.currentEpoch!
+    epoch1 = descriptor.currentEpoch!
 
     // The readers pull with delegated capabilities on the collection.
     await grantTo(readerA.did) // readerA cap not needed by id here
@@ -303,8 +304,8 @@ describeLive('multi-recipient key epochs (live server)', () => {
     expect(doc3Meta?.epoch).toBe(epoch2)
 
     // (a) Pull axis: readerB's capability is dead. Read with a plaintext client
-    // over readerB's identity (no marker discovery) to isolate the pull axis --
-    // the server simply will not serve the bytes anymore (WAS masks
+    // over readerB's identity (no descriptor discovery) to isolate the pull
+    // axis -- the server simply will not serve the bytes anymore (WAS masks
     // unauthorized as 404, surfaced as null by get()).
     const plaintextB = WasClient.fromSigner({
       serverUrl: serverUrl!,
@@ -358,9 +359,9 @@ describeLive('multi-recipient key epochs (live server)', () => {
         owner: { keyAgreementKey: owner.kak }
       })
     ])
-    const marker = await currentMarker()
-    const currentEpoch = marker.epochs!.find(
-      epoch => epoch.id === marker.currentEpoch
+    const descriptor = await currentDescriptor()
+    const currentEpoch = descriptor.epochs!.find(
+      epoch => epoch.id === descriptor.currentEpoch
     )!
     const kids = currentEpoch.recipients.map(entry => entry.header.kid)
     // Neither add clobbered the other: both new readers are present.

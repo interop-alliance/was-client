@@ -62,18 +62,19 @@ export class Resource {
    * Resolves the codec for this resource: the parent collection's shared codec
    * when this handle came from `collection.resource(id)`, otherwise one
    * resolved (and memoized per handle) for its own collection. A standalone
-   * resource discovers its collection's `encryption` marker (one GET on the
+   * resource discovers its collection's `encryption` descriptor (one GET on the
    * collection, cached per handle) unless a per-handle override is set, and
    * fails closed if it cannot key an encrypted collection. A fresh standalone
-   * handle re-reads the marker, so retain the handle to reuse it. A failed
-   * resolution (e.g. a transient 500/network error during marker discovery) is
-   * not memoized: the cache is cleared so the next call retries rather than
+   * handle re-reads the descriptor, so retain the handle to reuse it. A failed
+   * resolution (e.g. a transient 500/network error during descriptor discovery)
+   * is not memoized: the cache is cleared so the next call retries rather than
    * re-throwing the stale error forever.
    *
    * A handle obtained via `collection.resource(id)` delegates to the parent's
    * shared resolver on every call rather than memoizing locally: the parent
    * already memoizes (so this adds no round-trip), and delegating lets a parent
-   * reset (e.g. after `configure()` adds the encryption marker) propagate here.
+   * reset (e.g. after `configure()` adds the encryption descriptor) propagate
+   * here.
    */
   readonly #codec: () => Promise<ResourceCodec>
   /**
@@ -122,12 +123,12 @@ export class Resource {
   }) {
     // Guard the id against the Reserved Path Segment Registry up front, so a
     // reserved id from caller input can never be mis-targeted at a
-    // collection-level endpoint. `resourcePath(s, c, 'policy')` is byte-identical
-    // to the collection policy path, so an unguarded `resource('policy').delete()`
-    // would silently wipe the collection's access-control policy; the same
-    // collision exists for `backend` / `quota` / `linkset` / `meta`. Guarding in
-    // the constructor covers every operation (read, delete, meta, policy, put),
-    // not just writes.
+    // collection-level endpoint. `resourcePath(s, c, 'policy')` is
+    // byte-identical to the collection policy path, so an unguarded
+    // `resource('policy').delete()` would silently wipe the collection's
+    // access-control policy; the same collision exists for `backend` / `quota`
+    // / `linkset` / `meta`. Guarding in the constructor covers every operation
+    // (read, delete, meta, policy, put), not just writes.
     assertNotReserved({ id: resourceId, kind: 'resource' })
     this.#context = context
     this.spaceId = spaceId
@@ -275,13 +276,13 @@ export class Resource {
    * Conditional writes (the backend's `conditional-writes` feature): pass
    * `ifMatch` (the ETag from a prior read/write) for an update-if-unchanged, or
    * `ifNoneMatch: true` for a create-if-absent. A failed precondition throws
-   * `PreconditionFailedError` (412). On an encrypted collection these are managed
-   * automatically by the codec (the EDV `sequence` becomes the enforced ETag), so
-   * the explicit options are for plaintext collections -- and because the codec
-   * pre-reads the current document to compute them, updating an existing
-   * encrypted document needs read access (a PUT-only capability can only
-   * create, and only against a backend advertising `conditional-writes`; see
-   * `upsertResource`). Returns the new `etag`.
+   * `PreconditionFailedError` (412). On an encrypted collection these are
+   * managed automatically by the codec (the EDV `sequence` becomes the enforced
+   * ETag), so the explicit options are for plaintext collections -- and because
+   * the codec pre-reads the current document to compute them, updating an
+   * existing encrypted document needs read access (a PUT-only capability can
+   * only create, and only against a backend advertising `conditional-writes`;
+   * see `upsertResource`). Returns the new `etag`.
    *
    * @param data {ResourceData}
    * @param options {object}

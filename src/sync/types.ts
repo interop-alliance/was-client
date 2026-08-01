@@ -41,9 +41,9 @@ export type SyncCheckpoint = ChangesCheckpoint
 export type WireDoc = ChangeDocument
 
 /**
- * One page of the `changes` feed -- the return shape of {@link WasSyncPort.query}
- * (the shared `ChangesPage`): the page's `documents` and its resume
- * `checkpoint`, or `checkpoint: null` for an empty (no-change) page.
+ * One page of the `changes` feed -- the return shape of {@link
+ * WasSyncPort.query} (the shared `ChangesPage`): the page's `documents` and its
+ * resume `checkpoint`, or `checkpoint: null` for an empty (no-change) page.
  */
 export type SyncPage = ChangesPage
 
@@ -142,7 +142,7 @@ export interface WasSyncPort {
  * cipher, and a multi-recipient (key-epoch) EDV cipher:
  *
  * - `encrypt` may surface the `epoch` id a multi-recipient write encrypted
- *   under (the marker's `currentEpoch`); absent on a single-key or plaintext
+ *   under (the descriptor's `currentEpoch`); absent on a single-key or plaintext
  *   cipher.
  * - `encryptUpdate` is optional -- present only for a mutable, random-id
  *   collection that re-encrypts a head document in place under its existing id

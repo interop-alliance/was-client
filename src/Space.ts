@@ -213,7 +213,7 @@ export class Space {
    * @param [desc.encryption] {CollectionEncryption}   declare the collection
    *   client-side encrypted (e.g. `{ scheme: 'edv' }`). The returned handle is
    *   pre-seeded with a matching encryption override, so the immediate next
-   *   write encrypts without a marker-discovery round-trip.
+   *   write encrypts without a descriptor-discovery round-trip.
    * @returns {Promise<Collection>}
    */
   async createCollection(
@@ -248,8 +248,8 @@ export class Space {
     })
     // Pre-seed the handle with an override matching the just-declared scheme so
     // the first write encrypts immediately (keys come from the keystore); no
-    // describe() round-trip needed before the marker is locally known. A
-    // `CollectionEncryption` marker is itself a valid `EncryptionOverride`.
+    // describe() round-trip needed before the descriptor is locally known. A
+    // `CollectionEncryption` descriptor is itself a valid `EncryptionOverride`.
     return this.collection(createdId(response), {
       encryption: desc.encryption
     })
@@ -341,7 +341,8 @@ export class Space {
    * connection (the re-consent path), use {@link updateBackend}.
    *
    * @param registration {BackendRegistration}   the backend to register
-   *   (`{ id, provider, connection: { kind, ... }, name?, storageMode?, features? }`)
+   *   (`{ id, provider, connection: { kind, ... }, name?, storageMode?,
+   *   features? }`)
    * @returns {Promise<BackendDescriptor>}   the sanitized descriptor of the
    *   newly registered backend
    */

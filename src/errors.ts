@@ -147,7 +147,7 @@ export class QuotaExceededError extends WasError {
 
 /**
  * A client-side, fail-closed encryption error: a collection is declared
- * encrypted (by a per-handle override or its `encryption` marker) but this
+ * encrypted (by a per-handle override or its `encryption` descriptor) but this
  * client cannot build the codec -- no `encryption` provider is configured, or
  * the keystore holds no keys for the collection (or does not handle its
  * scheme). Raised before any request, so it carries no HTTP status; recover by
@@ -164,7 +164,7 @@ export class EncryptionError extends WasError {
 /**
  * A fail-closed key-epoch error: a reader could not unwrap any epoch key it
  * needs to decrypt a resource on a multi-recipient encrypted Collection -- none
- * of the marker's `recipients` entries yielded a key for this reader's
+ * of the descriptor's `recipients` entries yielded a key for this reader's
  * key-agreement key (it was never a recipient, or has been removed and the
  * epoch rotated). A subtype of {@link EncryptionError}, so existing
  * `catch (EncryptionError)` fail-closed handling still catches it.

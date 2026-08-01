@@ -66,11 +66,11 @@ export class WasClient {
    * @param options.zcapClient {ZcapClient}   an ezcap client holding the signer
    * @param [options.encryption] {EncryptionProvider}   the keystore that
    *   supplies keys for collections declared encrypted (by their `encryption`
-   *   marker or a per-handle override); built by the `@interop/was-client/edv`
-   *   subpath. Omit for plaintext-only clients. It does not decide *which*
-   *   collections are encrypted -- that is the marker/override -- so a missing
-   *   key for an encrypted collection fails closed rather than silently
-   *   downgrading to plaintext.
+   *   descriptor or a per-handle override); built by the
+   *   `@interop/was-client/edv` subpath. Omit for plaintext-only clients. It
+   *   does not decide *which* collections are encrypted -- that is the
+   *   descriptor/override -- so a missing key for an encrypted collection fails
+   *   closed rather than silently downgrading to plaintext.
    */
   constructor({
     serverUrl,
@@ -204,8 +204,8 @@ export class WasClient {
    * Transparently follows the server's `next` pagination links, buffering every
    * page into a single listing (the returned envelope omits `next`). Because a
    * paginating server omits `totalItems` on a truncated page, `totalItems` on
-   * the aggregate is recomputed from the collected items -- sound here, since the
-   * walk has gathered the complete listing.
+   * the aggregate is recomputed from the collected items -- sound here, since
+   * the walk has gathered the complete listing.
    *
    * @returns {Promise<SpaceListing>}
    */
@@ -255,10 +255,10 @@ export class WasClient {
   }
 
   /**
-   * Reads the first page of a public (`PublicCanRead`) collection listing with an
-   * unsigned `GET` and packages the means to follow its `next` links. Returns
-   * `null` if the collection is missing or not publicly readable (404 conflation
-   * caveat).
+   * Reads the first page of a public (`PublicCanRead`) collection listing with
+   * an unsigned `GET` and packages the means to follow its `next` links.
+   * Returns `null` if the collection is missing or not publicly readable (404
+   * conflation caveat).
    *
    * @param collectionUrl {string}   the absolute collection URL
    * @returns {Promise<PageWalk | null>}
@@ -286,8 +286,8 @@ export class WasClient {
    * Lists a public (`PublicCanRead`) collection by its URL with no authorization
    * -- an unsigned `GET` -- e.g. to browse a blog published as a public-read
    * collection. Transparently follows the server's `next` pagination links,
-   * buffering every page into a single list (the returned envelope omits `next`).
-   * For a large collection prefer `publicListCollectionPages()` or
+   * buffering every page into a single list (the returned envelope omits
+   * `next`). For a large collection prefer `publicListCollectionPages()` or
    * `publicListCollectionItems()`, which stream one page at a time and allow
    * stopping early. Returns `null` if the collection is missing or not publicly
    * readable (404 conflation caveat).
@@ -324,10 +324,11 @@ export class WasClient {
   }
 
   /**
-   * Lazily yields each item of a public collection across every page, flattening
-   * `publicListCollectionPages()`. Yields the listing's `ResourceSummary` entries
-   * (id / url / contentType / name), not the resource bodies. Yields nothing if
-   * the collection is missing or not publicly readable (404 conflation caveat).
+   * Lazily yields each item of a public collection across every page,
+   * flattening `publicListCollectionPages()`. Yields the listing's
+   * `ResourceSummary` entries (id / url / contentType / name), not the resource
+   * bodies. Yields nothing if the collection is missing or not publicly
+   * readable (404 conflation caveat).
    *
    * @param options {object}
    * @param options.collectionUrl {string}   the absolute collection URL
@@ -418,10 +419,11 @@ export class WasClient {
   }
 
   /**
-   * The general revocation primitive -- the inverse of {@link grant}. Derives the
-   * owning space from the capability's `invocationTarget` (which a Space-rooted
-   * capability always addresses at or beneath) and submits it to that space's
-   * revocation endpoint. Equivalent to `was.space(id).revoke(zcap)`.
+   * The general revocation primitive -- the inverse of {@link grant}. Derives
+   * the owning space from the capability's `invocationTarget` (which a
+   * Space-rooted capability always addresses at or beneath) and submits it to
+   * that space's revocation endpoint. Equivalent to
+   * `was.space(id).revoke(zcap)`.
    *
    * Revocation is scoped to one space: there is no cross-space or global
    * revocation. See {@link Space.revoke} for who may call it, what it does and

@@ -2,14 +2,14 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Integration test: the marker-store seam against a live WAS server. A
+ * Integration test: the descriptor-store seam against a live WAS server. A
  * `CollectionEncryption`-shaped roster lives as a plain JSON Resource in a
- * plaintext collection (the `resourceMarkerStore` adapter), and the recipient
- * primitives manage it end to end: the first `initRecipients` creates the
- * absent resource with a guarded `If-None-Match: *` write, `addRecipient`
+ * plaintext collection (the `resourceDescriptorStore` adapter), and the
+ * recipient primitives manage it end to end: the first `initRecipients` creates
+ * the absent resource with a guarded `If-None-Match: *` write, `addRecipient`
  * compare-and-swaps it against the resource's real `ETag`, and
- * `removeRecipient` rotates the epoch and runs a caller-supplied `pull`
- * action (no zcap revocation) only after the rotation is durable. Also proves
+ * `removeRecipient` rotates the epoch and runs a caller-supplied `pull` action
+ * (no zcap revocation) only after the rotation is durable. Also proves
  * `Resource.getWithEtag` returns the live validator, and that two racing
  * `addRecipient` calls both land (the resource-level CAS prevents a clobber).
  *
@@ -28,9 +28,9 @@ import {
   initRecipients,
   addRecipient,
   removeRecipient,
-  resourceMarkerStore
+  resourceDescriptorStore
 } from '../../src/edv/index.js'
-import type { MarkerStore } from '../../src/edv/index.js'
+import type { EncryptionDescriptorStore } from '../../src/edv/index.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
@@ -57,11 +57,11 @@ async function makeReader(): Promise<{
   }
 }
 
-describeLive('resource-hosted marker store (live server)', () => {
+describeLive('resource-hosted descriptor store (live server)', () => {
   let owner: WasClient
   let space: Space
   let roster: Resource
-  let store: MarkerStore
+  let store: EncryptionDescriptorStore
   let alice: Awaited<ReturnType<typeof makeReader>>
   let bob: Awaited<ReturnType<typeof makeReader>>
   let carol: Awaited<ReturnType<typeof makeReader>>
@@ -83,12 +83,13 @@ describeLive('resource-hosted marker store (live server)', () => {
     bob = await makeReader()
     carol = await makeReader()
 
-    space = await owner.createSpace({ name: 'Marker Store Integration' })
-    // A PLAINTEXT collection hosts the roster: the marker is integrity-protected
-    // by its epochsMac, not encrypted (it is the key material's root).
+    space = await owner.createSpace({ name: 'Descriptor Store Integration' })
+    // A PLAINTEXT collection hosts the roster: the descriptor is
+    // integrity-protected by its epochsMac, not encrypted (it is the key
+    // material's root).
     await space.createCollection({ id: collectionId, name: 'Key Roster' })
     roster = owner.space(space.id).collection(collectionId).resource(rosterId)
-    store = resourceMarkerStore({ resource: roster })
+    store = resourceDescriptorStore({ resource: roster })
   })
 
   afterAll(async () => {
@@ -96,27 +97,27 @@ describeLive('resource-hosted marker store (live server)', () => {
   })
 
   it('initRecipients creates the absent roster resource', async () => {
-    const marker = await initRecipients({
+    const descriptor = await initRecipients({
       store,
       recipients: [alice.recipient, bob.recipient]
     })
-    expect(marker.epochs).toHaveLength(1)
-    expect(marker.currentEpoch).toBe(marker.epochs![0]!.id)
-    expect(marker.epochsMac).toBeDefined()
+    expect(descriptor.epochs).toHaveLength(1)
+    expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
+    expect(descriptor.epochsMac).toBeDefined()
 
     // The roster is stored verbatim as the resource's content, with a live
     // ETag validator alongside (the conditional-writes feature).
     const stored = await roster.getWithEtag()
     expect(stored).not.toBeNull()
-    expect(stored!.data).toEqual(marker)
+    expect(stored!.data).toEqual(descriptor)
     expect(stored!.etag).toBeDefined()
 
-    // Both readers resolve their epoch keys from the roster-hosted marker.
+    // Both readers resolve their epoch keys from the roster-hosted descriptor.
     const aliceKeys = await resolveEpochKeys({
-      encryption: marker,
+      encryption: descriptor,
       keyAgreementKey: alice.kak
     })
-    expect(aliceKeys!.writeEpoch).toBe(marker.currentEpoch)
+    expect(aliceKeys!.writeEpoch).toBe(descriptor.currentEpoch)
   })
 
   it('a second initRecipients refuses the existing roster', async () => {
@@ -126,15 +127,17 @@ describeLive('resource-hosted marker store (live server)', () => {
   })
 
   it('addRecipient escrows every epoch to the new reader via CAS', async () => {
-    const marker = await addRecipient({
+    const descriptor = await addRecipient({
       store,
       recipient: carol.recipient,
       owner: { keyAgreementKey: alice.kak }
     })
-    const kids = marker.epochs![0]!.recipients.map(entry => entry.header.kid)
+    const kids = descriptor.epochs![0]!.recipients.map(
+      entry => entry.header.kid
+    )
     expect(kids).toContain(carol.kak.id)
     const carolKeys = await resolveEpochKeys({
-      encryption: marker,
+      encryption: descriptor,
       keyAgreementKey: carol.kak
     })
     expect(carolKeys!.readKeys).toHaveLength(1)

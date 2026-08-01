@@ -2,14 +2,14 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for the marker-store seam (no network): the recipient primitives
- * generalized over a `MarkerStore`. Exercises the plain-JSON-Resource adapter
- * (create-if-absent on the first `initRecipients`, the CAS write path, the
- * absent-marker and malformed-content refusals), the parameterized pull axis
- * of `removeRecipient` (a caller-supplied action in place of the zcap
- * revocation, still fused rotate-first/pull-second), the drop-this-kid skip
- * contract on `resolveRecipientKey`, and the `collection` / `store` argument
- * validation.
+ * Unit tests for the descriptor-store seam (no network): the recipient
+ * primitives generalized over a `EncryptionDescriptorStore`. Exercises the
+ * plain-JSON-Resource adapter (create-if-absent on the first `initRecipients`,
+ * the CAS write path, the absent-descriptor and malformed-content refusals),
+ * the parameterized pull axis of `removeRecipient` (a caller-supplied action in
+ * place of the zcap revocation, still fused rotate-first/pull-second), the
+ * drop-this-kid skip contract on `resolveRecipientKey`, and the `collection` /
+ * `store` argument validation.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -32,7 +32,7 @@ import {
   removeRecipient
 } from '../../src/edv/recipients.js'
 import type { RecipientPublicKey } from '../../src/edv/recipients.js'
-import { resourceMarkerStore } from '../../src/edv/markerStore.js'
+import { resourceDescriptorStore } from '../../src/edv/descriptorStore.js'
 
 /**
  * Generates a self-describing did:key X25519 reader (see key-epochs.test.ts):
@@ -67,7 +67,7 @@ function recipientOf(reader: {
 }
 
 /**
- * A fake roster Resource for `resourceMarkerStore`: an in-memory versioned
+ * A fake roster Resource for `resourceDescriptorStore`: an in-memory versioned
  * JSON document honoring the `ifMatch` / `ifNoneMatch` preconditions (a 412
  * for a stale validator or a guarded create of an existing document), and
  * recording each put's precondition so tests can pin what was sent.
@@ -111,12 +111,12 @@ function fakeRosterResource(initial?: CollectionEncryption | JsonObject) {
 }
 
 /**
- * Seeds a one-epoch marker wrapping the epoch key to each of `readers`.
+ * Seeds a one-epoch descriptor wrapping the epoch key to each of `readers`.
  *
  * @param readers {Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>}
  * @returns {Promise<CollectionEncryption>}
  */
-async function seedMarker(
+async function seedDescriptor(
   readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
 ): Promise<CollectionEncryption> {
   const { epochId, secret } = await mintEpoch()
@@ -139,16 +139,16 @@ async function seedMarker(
   }
 }
 
-describe('resourceMarkerStore', () => {
+describe('resourceDescriptorStore', () => {
   it('initRecipients creates an absent roster with If-None-Match', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const roster = fakeRosterResource()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: roster as unknown as Resource
     })
 
-    const marker = await initRecipients({
+    const descriptor = await initRecipients({
       store,
       recipients: [recipientOf(alice), recipientOf(bob)]
     })
@@ -156,16 +156,16 @@ describe('resourceMarkerStore', () => {
     expect(roster._state.puts).toEqual([
       { ifMatch: undefined, ifNoneMatch: true }
     ])
-    expect(marker.scheme).toBe('edv')
-    expect(marker.version).toBe(1)
-    expect(marker.epochs).toHaveLength(1)
-    expect(marker.currentEpoch).toBe(marker.epochs![0]!.id)
-    expect(marker.epochsMac).toBeDefined()
-    // The stored roster is the marker verbatim, and a reader resolves keys
-    // from it exactly as from a Description-hosted marker.
-    expect(roster._state.content).toEqual(marker)
+    expect(descriptor.scheme).toBe('edv')
+    expect(descriptor.version).toBe(1)
+    expect(descriptor.epochs).toHaveLength(1)
+    expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
+    expect(descriptor.epochsMac).toBeDefined()
+    // The stored roster is the descriptor verbatim, and a reader resolves keys
+    // from it exactly as from a Description-hosted descriptor.
+    expect(roster._state.content).toEqual(descriptor)
     const keys = await resolveEpochKeys({
-      encryption: marker,
+      encryption: descriptor,
       keyAgreementKey: alice.kak
     })
     expect(keys!.readKeys).toHaveLength(1)
@@ -174,36 +174,36 @@ describe('resourceMarkerStore', () => {
   it('initRecipients installs a pre-minted epoch instead of minting', async () => {
     const alice = await makeReader()
     const roster = fakeRosterResource()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: roster as unknown as Resource
     })
 
     // The caller's epoch key already exists (e.g. a per-user key being
-    // enrolled into its wrap-set roster): the marker must carry ITS id, and
+    // enrolled into its wrap-set roster): the descriptor must carry ITS id, and
     // the wrapped secret must unwrap to ITS raw private key.
     const preminted = await mintEpoch()
-    const marker = await initRecipients({
+    const descriptor = await initRecipients({
       store,
       recipients: [recipientOf(alice)],
       epoch: preminted
     })
-    expect(marker.currentEpoch).toBe(preminted.epochId)
-    expect(marker.epochs![0]!.id).toBe(preminted.epochId)
+    expect(descriptor.currentEpoch).toBe(preminted.epochId)
+    expect(descriptor.epochs![0]!.id).toBe(preminted.epochId)
     const unwrapped = await unwrapEpochSecret({
-      entry: marker.epochs![0]!.recipients[0]!,
+      entry: descriptor.epochs![0]!.recipients[0]!,
       keyAgreementKey: alice.kak
     })
     expect(Array.from(unwrapped!)).toEqual(Array.from(preminted.secret))
     // The MAC is keyed from the pre-minted secret, so it verifies.
     expect(
-      await verifyEpochsMac({ marker, epochSecret: preminted.secret })
+      await verifyEpochsMac({ descriptor, epochSecret: preminted.secret })
     ).toBe(true)
   })
 
   it('a lost create race converges on the already-initialized error', async () => {
     // The roster reads absent, but a concurrent writer creates it before this
     // caller's guarded create lands (412). The retry re-reads the now-present
-    // marker and surfaces initRecipients' already-has-epochs refusal instead
+    // descriptor and surfaces initRecipients' already-has-epochs refusal instead
     // of clobbering the other writer's roster.
     const alice = await makeReader()
     const bob = await makeReader()
@@ -215,7 +215,7 @@ describe('resourceMarkerStore', () => {
         readsSeen++
         if (readsSeen === 1) {
           // Simulate the concurrent writer landing right after this read.
-          roster._state.content = (await seedMarker([
+          roster._state.content = (await seedDescriptor([
             bob
           ])) as unknown as JsonObject
           return null
@@ -225,7 +225,9 @@ describe('resourceMarkerStore', () => {
     }
     await expect(
       initRecipients({
-        store: resourceMarkerStore({ resource: racing as unknown as Resource }),
+        store: resourceDescriptorStore({
+          resource: racing as unknown as Resource
+        }),
         recipients: [recipientOf(alice)]
       })
     ).rejects.toThrow(/already has key epochs/)
@@ -240,21 +242,25 @@ describe('resourceMarkerStore', () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const roster = fakeRosterResource(
-      (await seedMarker([alice])) as unknown as JsonObject
+      (await seedDescriptor([alice])) as unknown as JsonObject
     )
-    const marker = await addRecipient({
-      store: resourceMarkerStore({ resource: roster as unknown as Resource }),
+    const descriptor = await addRecipient({
+      store: resourceDescriptorStore({
+        resource: roster as unknown as Resource
+      }),
       recipient: recipientOf(bob),
       owner: { keyAgreementKey: alice.kak }
     })
     expect(roster._state.puts).toEqual([
       { ifMatch: '"v1"', ifNoneMatch: undefined }
     ])
-    const kids = marker.epochs![0]!.recipients.map(entry => entry.header.kid)
+    const kids = descriptor.epochs![0]!.recipients.map(
+      entry => entry.header.kid
+    )
     expect(kids).toContain(bob.kak.id)
-    // Bob resolves his keys from the roster-hosted marker.
+    // Bob resolves his keys from the roster-hosted descriptor.
     const keys = await resolveEpochKeys({
-      encryption: marker,
+      encryption: descriptor,
       keyAgreementKey: bob.kak
     })
     expect(keys!.readKeys).toHaveLength(1)
@@ -263,7 +269,7 @@ describe('resourceMarkerStore', () => {
   it('addRecipient / removeRecipient refuse an absent roster', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: fakeRosterResource() as unknown as Resource
     })
     await expect(
@@ -282,10 +288,10 @@ describe('resourceMarkerStore', () => {
     ).rejects.toThrow(/Call initRecipients first/)
   })
 
-  it('refuses a resource that does not hold an edv marker', async () => {
+  it('refuses a resource that does not hold an edv descriptor', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: fakeRosterResource({ hello: 'world' }) as unknown as Resource
     })
     await expect(
@@ -303,11 +309,13 @@ describe('removeRecipient pull axis', () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const roster = fakeRosterResource(
-      (await seedMarker([alice, bob])) as unknown as JsonObject
+      (await seedDescriptor([alice, bob])) as unknown as JsonObject
     )
     const epochsAtPull: Array<string | undefined> = []
     const rotated = await removeRecipient({
-      store: resourceMarkerStore({ resource: roster as unknown as Resource }),
+      store: resourceDescriptorStore({
+        resource: roster as unknown as Resource
+      }),
       recipientId: bob.kak.id,
       pull: async () => {
         epochsAtPull.push(
@@ -316,7 +324,8 @@ describe('removeRecipient pull axis', () => {
         )
       }
     })
-    // The pull observed the already-rotated marker (rotate-first is preserved).
+    // The pull observed the already-rotated descriptor (rotate-first is
+    // preserved).
     expect(epochsAtPull).toEqual([rotated.currentEpoch])
     const currentEpoch = rotated.epochs!.find(
       epoch => epoch.id === rotated.currentEpoch
@@ -330,7 +339,7 @@ describe('removeRecipient pull axis', () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const roster = fakeRosterResource(
-      (await seedMarker([alice, bob])) as unknown as JsonObject
+      (await seedDescriptor([alice, bob])) as unknown as JsonObject
     )
     const staleRoster = {
       ...roster,
@@ -341,7 +350,7 @@ describe('removeRecipient pull axis', () => {
     let pulled = false
     await expect(
       removeRecipient({
-        store: resourceMarkerStore({
+        store: resourceDescriptorStore({
           resource: staleRoster as unknown as Resource
         }),
         recipientId: bob.kak.id,
@@ -355,7 +364,7 @@ describe('removeRecipient pull axis', () => {
 
   it('refuses both a custom pull and the default space/revoke axis', async () => {
     const bob = await makeReader()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: fakeRosterResource() as unknown as Resource
     })
     await expect(
@@ -370,7 +379,7 @@ describe('removeRecipient pull axis', () => {
 
   it('refuses a call with no pull axis at all', async () => {
     const bob = await makeReader()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: fakeRosterResource() as unknown as Resource
     })
     await expect(
@@ -388,10 +397,12 @@ describe('resolveRecipientKey drop-this-kid contract', () => {
     const bob = await makeReader()
     const carol = await makeReader()
     const roster = fakeRosterResource(
-      (await seedMarker([alice, bob, carol])) as unknown as JsonObject
+      (await seedDescriptor([alice, bob, carol])) as unknown as JsonObject
     )
     const rotated = await removeRecipient({
-      store: resourceMarkerStore({ resource: roster as unknown as Resource }),
+      store: resourceDescriptorStore({
+        resource: roster as unknown as Resource
+      }),
       recipientId: carol.kak.id,
       pull: async () => undefined,
       resolveRecipientKey: async kid =>
@@ -411,27 +422,29 @@ describe('resolveRecipientKey drop-this-kid contract', () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const roster = fakeRosterResource(
-      (await seedMarker([alice, bob])) as unknown as JsonObject
+      (await seedDescriptor([alice, bob])) as unknown as JsonObject
     )
     await expect(
       removeRecipient({
-        store: resourceMarkerStore({ resource: roster as unknown as Resource }),
+        store: resourceDescriptorStore({
+          resource: roster as unknown as Resource
+        }),
         recipientId: bob.kak.id,
         pull: async () => undefined,
         resolveRecipientKey: async () => null
       })
     ).rejects.toThrow(/no recipients would remain/)
-    // Nothing was written: the roster still holds the seed marker only.
+    // Nothing was written: the roster still holds the seed descriptor only.
     expect(
       (roster._state.content as unknown as CollectionEncryption).epochs
     ).toHaveLength(1)
   })
 })
 
-describe('marker host argument validation', () => {
+describe('descriptor host argument validation', () => {
   it('refuses both collection and store, and neither', async () => {
     const alice = await makeReader()
-    const store = resourceMarkerStore({
+    const store = resourceDescriptorStore({
       resource: fakeRosterResource() as unknown as Resource
     })
     await expect(
@@ -447,14 +460,14 @@ describe('marker host argument validation', () => {
   })
 })
 
-describe('collectionMarkerStore description-field forwarding', () => {
+describe('collectionDescriptorStore description-field forwarding', () => {
   it('forwards name/backend observed by the read into the CAS write', async () => {
-    // The description hosts more than the marker; the replace-semantics PUT
+    // The description hosts more than the descriptor; the replace-semantics PUT
     // must carry the sibling fields forward or the server would drop them.
     const alice = await makeReader()
     const bob = await makeReader()
     const written: Array<{ name?: string; backend?: unknown }> = []
-    const state = { encryption: await seedMarker([alice]) }
+    const state = { encryption: await seedDescriptor([alice]) }
     const fake = {
       describeWithEtag: async () => ({
         description: {

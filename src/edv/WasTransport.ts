@@ -19,12 +19,13 @@
  *   URL-safe and never a reserved segment.
  * - **Encrypted content type.** Documents are stored as `application/json` by
  *   default, so the profile works against an unmodified WAS server. The
- *   preferred marker is `application/jose+json` (exported as `JOSE_CONTENT_TYPE`),
- *   which distinguishes EDV envelopes from plaintext application JSON in
- *   listings and metadata -- but the server must register an `application/*+json`
- *   content-type parser to accept it (the reference was-teaching-server does; a
- *   server that does not will reject it with 415). Pass `contentType:
- *   JOSE_CONTENT_TYPE` to opt into it where the server supports it.
+ *   preferred type is `application/jose+json` (exported as
+ *   `JOSE_CONTENT_TYPE`), which distinguishes EDV envelopes from plaintext
+ *   application JSON in listings and metadata -- but the server must register
+ *   an `application/*+json` content-type parser to accept it (the reference
+ *   was-teaching-server does; a server that does not will reject it with 415).
+ *   Pass `contentType: JOSE_CONTENT_TYPE` to opt into it where the server
+ *   supports it.
  *
  * Scope: documents (`insert` / `update` / `get`) plus blinded-index content
  * query (`find`, the `blinded-index` profile of the reserved Collection
@@ -161,8 +162,8 @@ export class WasTransport extends Transport {
    * @param options.collectionId {string}    the vault Collection id
    * @param [options.contentType] {string}   content type for stored envelopes;
    *   defaults to `application/json` (accepted by an unmodified server). Pass
-   *   `JOSE_CONTENT_TYPE` against a server that registers an `application/*+json`
-   *   parser.
+   *   `JOSE_CONTENT_TYPE` against a server that registers an
+   *   `application/*+json` parser.
    */
   constructor({
     was,

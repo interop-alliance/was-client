@@ -25,7 +25,7 @@ external deps       @interop/ezcap, @interop/storage-core,
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
   EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochMac,
-  recipients, markerStore
+  recipients, descriptorStore
   Implements the interfaces in src/codec.ts; imports internal/* and the
   crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
 
@@ -70,7 +70,7 @@ Taking `resource.put(data)` as the canonical path:
 1. **Codec resolution** (`internal/codec.ts`): the memoized resolver decides
    plaintext vs encrypting. Order: per-handle override wins; no keystore means
    identity codec; otherwise read the Collection description's `encryption`
-   marker (fail closed if unreadable) and build the encrypting codec via
+   descriptor (fail closed if unreadable) and build the encrypting codec via
    `context.encryption.codecFor(...)`.
 2. **Encode** (`codec.encode`): identity codec is byte-exact pass-through; the
    EDV codec seals content into a JWE envelope and attaches its own write
@@ -106,15 +106,15 @@ the fail-closed rules below.
   content, `encodeMeta`/`decodeMeta` for the custom name/tags metadata, plus a
   `conditionalWrites` flag) and `EncryptionProvider` (one method, `codecFor`,
   which is **keys-only**: it supplies key material but never decides whether a
-  collection is encrypted -- the Collection description's `encryption` marker
-  does).
+  collection is encrypted -- the Collection description's `encryption`
+  descriptor does).
 - `src/internal/codec.ts` -- the identity codec and the resolver policy.
 - `src/edv/EdvCodec.ts` -- the encrypting implementation and the
   `createEdvEncryption` factory.
 
 What the server sees for an encrypted collection: opaque JWE envelopes for
 content and for the name/tags metadata, opaque EDV resource ids, and the
-plaintext marker scaffolding (`scheme`, `version`, epoch ids, `sequence`,
+plaintext descriptor scaffolding (`scheme`, `version`, epoch ids, `sequence`,
 blinded index entries, ETags).
 
 ## The EDV layer
@@ -132,19 +132,19 @@ Two integration levels share `src/edv/`:
 
 Multi-recipient sharing uses **key epochs** (`epochCrypto`/`epochKeys`/
 `recipients`): an epoch is a fresh X25519 key whose secret is wrapped to each
-reader's key-agreement key (`ECDH-ES+A256KW`) on the marker. Access has two
+reader's key-agreement key (`ECDH-ES+A256KW`) on the descriptor. Access has two
 orthogonal axes: _pull_ (zcap, server-enforced, immediate) and _read_ (epoch-key
 possession, client-side, prospective -- rotation never claws back already-held
 keys or fetched ciphertext). `removeRecipient` does both halves because doing
 only one is a footgun (the pull half is the default zcap revocation, or a
-caller-supplied `pull` action for markers whose access lives elsewhere). Marker
-mutations go through a CAS loop (read marker + validator, mutate, conditional
-write, bounded retries) over the **marker-store seam** (`markerStore.ts`): the
-Collection Description adapter (`describeWithEtag` /
-`replaceDescription({ ifMatch })`, server-enforced marker invariants) or the
-plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first marker
-created with `If-None-Match: *`; integrity rests on `epochsMac` + epoch pinning,
-so host it in a plaintext collection).
+caller-supplied `pull` action for descriptors whose access lives elsewhere).
+Descriptor mutations go through a CAS loop (read descriptor + validator, mutate,
+conditional write, bounded retries) over the **descriptor-store seam**
+(`descriptorStore.ts`): the Collection Description adapter (`describeWithEtag` /
+`replaceDescription({ ifMatch })`, server-enforced descriptor invariants) or the
+plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first
+descriptor created with `If-None-Match: *`; integrity rests on `epochsMac` +
+epoch pinning, so host it in a plaintext collection).
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
@@ -218,11 +218,11 @@ envelope (decrypted by the always-built single-key codec -- a permanent
 tolerance, not a migration shim), a known epoch key id means the epoch codec,
 and anything else throws `UnknownEpochError` -- the signal that the cached
 Collection description is stale (epoch rotation emits no change-feed entry) and
-the cipher must be rebuilt from a re-read marker.
+the cipher must be rebuilt from a re-read descriptor.
 
 `ensureSpaceAndCollection` (`provisioning.ts`) is the idempotent setup step:
 upsert the Space, configure the collection (declaring the `{ scheme: 'edv' }`
-encryption marker, or plaintext with `force`), optionally grant world read.
+encryption descriptor, or plaintext with `force`), optionally grant world read.
 Re-running it against an existing account is a no-op upgrade.
 
 ## Concurrency
@@ -237,7 +237,7 @@ No locks; safety is optimistic (ETag/CAS) throughout
   inserts guard with `If-None-Match: *`.
 - `CodecHolder` memoizes the in-flight codec promise (concurrent callers share
   one round trip) and is `reset()` when `configure` or `replaceDescription`
-  changes the encryption marker.
+  changes the encryption descriptor.
 
 ## Feature detection
 
@@ -253,7 +253,7 @@ operations.
 ## Invariants worth knowing before you change things
 
 1. **Fail closed on masked 404.** Any operation that must know current state
-   (marker discovery, configure merges, conditional inserts, recipient CAS)
+   (descriptor discovery, configure merges, conditional inserts, recipient CAS)
    refuses to proceed when the description is unreadable. An encryption-capable
    client never silently downgrades to plaintext.
 2. **Trailing-slash discipline is a security invariant.** The zcap

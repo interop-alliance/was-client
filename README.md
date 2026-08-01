@@ -575,9 +575,10 @@ stores faithfully). Two things drive it, kept separate:
 
 - **Policy** (is this collection encrypted?) is declared on the collection
   itself: `createCollection({ encryption: { scheme: 'edv' } })` writes a
-  non-secret `encryption` marker to the Collection Description. Any authorized
-  reader -- including a delegated consumer that did **not** create the
-  collection -- discovers it by reading the Description, so it knows to decrypt.
+  non-secret `encryption` descriptor to the Collection Description. Any
+  authorized reader -- including a delegated consumer that did **not** create
+  the collection -- discovers it by reading the Description, so it knows to
+  decrypt.
 - **Keys** come from an `encryption` provider you pass to `WasClient` (built
   from the opt-in `@interop/was-client/edv` subpath, so plaintext consumers
   never pull the crypto graph). It is a pure **keystore**: `resolveKeys` returns
@@ -585,7 +586,7 @@ stores faithfully). Two things drive it, kept separate:
   opaque JWE envelopes.
 
 The ordinary `Collection`/`Resource` handles then transparently encrypt on write
-and decrypt on read for any collection the marker (or an override) declares
+and decrypt on read for any collection the descriptor (or an override) declares
 encrypted.
 
 ```ts
@@ -600,7 +601,7 @@ const encryption = createEdvEncryption({
 })
 const was = WasClient.fromSigner({ serverUrl, signer, encryption })
 
-// Declare the collection encrypted (writes the marker). The returned handle is
+// Declare the collection encrypted (writes the descriptor). The returned handle is
 // pre-seeded, so the first write encrypts with no extra round-trip.
 const vault = await was
   .space(spaceId)
@@ -608,13 +609,13 @@ const vault = await was
 const { id } = await vault.add({ secret: 'hello' }) // encrypted; id is an EDV id
 const back = await vault.get(id) // { secret: 'hello' } -- decrypted
 
-// A consumer that did not create it discovers the marker and decrypts with its
+// A consumer that did not create it discovers the descriptor and decrypts with its
 // own keys -- no override needed; one cached read of the Description:
 const same = was.space(spaceId).collection('vault')
-await same.get(id) // reads the marker, then decrypts
+await same.get(id) // reads the descriptor, then decrypts
 ```
 
-The switch is the **marker**: a handle encrypts a collection when its
+The switch is the **descriptor**: a handle encrypts a collection when its
 Description declares `encryption` (resolution reads the Description once, then
 caches -- no round-trip for plaintext-only clients or when an override is set).
 Keys are then **required**: if the collection is declared encrypted but your
@@ -631,9 +632,9 @@ const vault = was.space(spaceId).collection('vault', {
 })
 ```
 
-**Migrating a pre-marker vault** (created before the marker existed, keys-only):
-re-declare it once with
-`collection.configure({ encryption: { scheme: 'edv' } })` (the marker is
+**Migrating a pre-descriptor vault** (created before the descriptor existed,
+keys-only): re-declare it once with
+`collection.configure({ encryption: { scheme: 'edv' } })` (the descriptor is
 set-once: declaring it on a collection that lacks one is allowed, changing or
 clearing an existing one is rejected). Until then, a per-handle override reads
 it correctly.
