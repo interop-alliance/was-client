@@ -1,5 +1,40 @@
 # @interop/was-client Changelog
 
+## 0.21.0 - TBD
+
+### Added
+
+- **Marker-store seam for the recipient primitives.** `initRecipients` /
+  `addRecipient` / `removeRecipient` now mutate their `CollectionEncryption`
+  marker through a `MarkerStore` port instead of being hard-wired to the
+  Collection Description, so the same key-epoch machinery can manage a marker
+  hosted anywhere a versioned JSON value can live (e.g. a per-user-key roster
+  resource in a private collection). Two adapters ship on the `./edv` subpath:
+  - `collectionMarkerStore({ collection })` -- the Collection Description's
+    `encryption` member; the existing behavior, verbatim. Passing `collection`
+    to the recipient operations works unchanged (it wraps in this adapter).
+  - `resourceMarkerStore({ resource })` -- the marker stored verbatim as a plain
+    JSON Resource. The resource starts absent, so the first `initRecipients`
+    creates it with a guarded `If-None-Match: *` write (create-if-absent)
+    instead of refusing a missing marker; subsequent recipient edits
+    compare-and-swap against the resource's `ETag`. The server enforces its
+    marker invariants (append-only epochs, monotone `currentEpoch`,
+    non-decreasing `version`) only on Descriptions, so a resource-hosted marker
+    relies on the client-side `epochsMac` plus epoch pinning, and should live in
+    a plaintext collection.
+- `removeRecipient` accepts a caller-supplied `pull` action in place of the
+  default `space` + `revoke` zcap revocation, for markers whose pull axis lives
+  elsewhere (e.g. a DID document naming the readers). The
+  rotate-first/pull-second fusion is preserved: `pull` runs only after the
+  rotation is durable, and should tolerate being re-run (`removeRecipient` is
+  retried to convergence).
+- `removeRecipient`'s `resolveRecipientKey` may now resolve `null` to signal
+  drop-this-kid: the rotation then excludes that entry from the fresh epoch
+  instead of throwing (the no-recipients-remaining guard stays intact).
+- `Resource.getWithEtag()` reads a resource together with its `ETag` validator
+  (the Resource counterpart of `Collection.describeWithEtag`), for
+  lost-update-safe read-modify-write via `put(..., { ifMatch })`.
+
 ## 0.20.0 - 2026-07-22
 
 ### Added

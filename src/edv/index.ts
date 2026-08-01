@@ -20,12 +20,17 @@
  * `addRecipient` / `removeRecipient` manage the readers and rotate the epoch
  * key, so the same `createEdvEncryption` provider transparently encrypts each
  * write under the current epoch and decrypts any epoch a reader still holds.
+ * They mutate the marker through the marker-store seam: the Collection
+ * Description by default, or any `MarkerStore` -- e.g. `resourceMarkerStore`
+ * for a marker hosted as a plain JSON Resource.
  */
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
 export { WasTransport, JOSE_CONTENT_TYPE } from './WasTransport.js'
 export { initRecipients, addRecipient, removeRecipient } from './recipients.js'
 export type { OwnerKey, RecipientPublicKey } from './recipients.js'
+export { collectionMarkerStore, resourceMarkerStore } from './markerStore.js'
+export type { MarkerStore } from './markerStore.js'
 export { mintEpoch, epochKeyIdFor } from './epochCrypto.js'
 export {
   createEdvDocCipher,

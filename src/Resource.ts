@@ -191,6 +191,29 @@ export class Resource {
   }
 
   /**
+   * Reads the resource together with its `ETag` validator (the backend's
+   * `conditional-writes` feature) -- the Resource counterpart of
+   * `Collection.describeWithEtag`. The `ETag` is the opaque validator to pass
+   * to {@link put}'s `ifMatch` for a lost-update-safe (compare-and-swap)
+   * write. The value is decoded like {@link get} (JSON parsed, binary as a
+   * `Blob`, decrypted on an encrypted collection). Returns `null` if the
+   * resource is missing or not visible to you (404 conflation caveat); `etag`
+   * is absent against a backend that does not version resources.
+   *
+   * @returns {Promise<{ data: Json | Blob; etag?: string } | null>}
+   */
+  async getWithEtag(): Promise<{ data: Json | Blob; etag?: string } | null> {
+    const codec = await this.#codec()
+    const response = await this.#read()
+    if (response === null) {
+      return null
+    }
+    const data = await codec.decode(response, this.id)
+    const etag = readEtag(response)
+    return etag !== undefined ? { data, etag } : { data }
+  }
+
+  /**
    * Reads the resource body as text. Returns `null` on a missing/unauthorized
    * resource (404 conflation caveat). A raw escape hatch: it does NOT run the
    * codec, so on an encrypted collection it never decrypts -- use `get()` to
