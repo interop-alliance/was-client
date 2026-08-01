@@ -18,11 +18,11 @@
  * The epoch key itself is shared with a reader by wrapping the 32-byte epoch
  * secret to the reader's own X25519 key-agreement key, `ECDH-ES+A256KW`, and
  * storing the result as a JWE `recipients` entry verbatim on the Collection's
- * `encryption` marker. The wrap is derive-then-wrap per recipient: an ephemeral
- * ECDH against the reader's public key, the RFC 7518 Concat KDF, then A256KW --
- * `@interop/minimal-cipher`'s own `ECDH-ES+A256KW` building blocks (via its
- * `algorithms` subpath), so the wrapped bytes are interchangeable with what its
- * `Cipher` would produce.
+ * `encryption` descriptor. The wrap is derive-then-wrap per recipient: an
+ * ephemeral ECDH against the reader's public key, the RFC 7518 Concat KDF, then
+ * A256KW -- `@interop/minimal-cipher`'s own `ECDH-ES+A256KW` building blocks
+ * (via its `algorithms` subpath), so the wrapped bytes are interchangeable with
+ * what its `Cipher` would produce.
  *
  * The two axes stay separate here: this module governs **read** (who can
  * decrypt), which is prospective -- rotating the epoch only protects resources
@@ -66,8 +66,8 @@ export interface RecipientPublicKey {
 
 /**
  * Wraps a 32-byte epoch secret to one recipient's X25519 key-agreement key,
- * producing the JWE `recipients` entry stored on the marker. Generates a fresh
- * ephemeral key per call (ECDH-ES), so each wrap carries its own `epk`.
+ * producing the JWE `recipients` entry stored on the descriptor. Generates a
+ * fresh ephemeral key per call (ECDH-ES), so each wrap carries its own `epk`.
  *
  * @param options {object}
  * @param options.epochSecret {Uint8Array}       the 32-byte epoch key to wrap
@@ -111,14 +111,14 @@ export async function wrapEpochSecret({
 }
 
 /**
- * Unwraps an epoch secret from a marker `recipients` entry using the reader's
- * own key-agreement key. Returns `null` when this key does not match the entry
- * (the wrong recipient, or a corrupt entry) -- never treat `null` as a key; try
- * the next candidate entry or epoch, and fail with a typed error when nothing
- * unwraps.
+ * Unwraps an epoch secret from a descriptor `recipients` entry using the
+ * reader's own key-agreement key. Returns `null` when this key does not match
+ * the entry (the wrong recipient, or a corrupt entry) -- never treat `null` as
+ * a key; try the next candidate entry or epoch, and fail with a typed error
+ * when nothing unwraps.
  *
  * @param options {object}
- * @param options.entry {CollectionEncryptionRecipient}   the marker entry
+ * @param options.entry {CollectionEncryptionRecipient}   the descriptor entry
  * @param options.keyAgreementKey {IKeyAgreementKey}      the reader's own KAK
  *   (its `id` must equal `entry.header.kid` for the derivation to match)
  * @returns {Promise<Uint8Array | null>}
@@ -232,7 +232,8 @@ export function epochKeyIdFor(epochId: string): string {
 }
 
 /**
- * Extracts the `publicKeyMultibase` fingerprint from an epoch id (`did:key:z...`).
+ * Extracts the `publicKeyMultibase` fingerprint from an epoch id
+ * (`did:key:z...`).
  *
  * @param epochId {string}
  * @returns {string}

@@ -95,8 +95,8 @@ export class Collection {
    * @param options.collectionId {string}
    * @param [options.capability] {IZcap} - capability attached to every request
    * @param [options.encryption] {EncryptionOverride} - per-handle encryption
-   *   override; wins over the Collection's declared marker and skips the
-   *   marker-discovery round-trip
+   *   override; wins over the Collection's declared descriptor and skips the
+   *   descriptor-discovery round-trip
    */
   constructor({
     context,
@@ -172,14 +172,15 @@ export class Collection {
   /**
    * Resolves (once, then caches) the codec for this collection's reads and
    * writes: the identity codec for a plaintext collection, or the encrypting
-   * codec when this collection is declared encrypted -- by a per-handle override
-   * or its `encryption` marker -- and the client's keystore supplies its keys.
-   * An encrypted collection the client cannot key for fails closed (throws), and
-   * a successful marker read happens at most once per handle (memoized here) -- a
-   * fresh handle to the same collection re-reads it, so retain the handle to
-   * reuse it. A failed resolution (e.g. a transient 500/network error during
-   * marker discovery) is not memoized: the cache is cleared so the next call
-   * retries rather than re-throwing the stale error forever.
+   * codec when this collection is declared encrypted -- by a per-handle
+   * override or its `encryption` descriptor -- and the client's keystore
+   * supplies its keys. An encrypted collection the client cannot key for fails
+   * closed (throws), and a successful descriptor read happens at most once per
+   * handle (memoized here) -- a fresh handle to the same collection re-reads
+   * it, so retain the handle to reuse it. A failed resolution (e.g. a transient
+   * 500/network error during descriptor discovery) is not memoized: the cache
+   * is cleared so the next call retries rather than re-throwing the stale error
+   * forever.
    *
    * @returns {Promise<ResourceCodec>}
    */
@@ -212,14 +213,15 @@ export class Collection {
    * nor `encryption` is supplied, this fails closed rather than sending a PUT
    * body that would silently drop an existing collection's `backend` (a
    * data-placement change) or trip `encryption-immutable` by clearing its
-   * marker on a replace-semantics server. Pass `force: true` to proceed anyway
+   * descriptor on a replace-semantics server. Pass `force: true` to proceed
+   * anyway
    * -- e.g. when creating a new collection through a handle (or use
    * `space.createCollection()`, which does not merge).
    *
    * @param desc {CollectionWritableFields}   the fields to merge; `encryption`
-   *   declares the client-side encryption marker, which is set-once on the
+   *   declares the client-side encryption descriptor, which is set-once on the
    *   server (it may be added to a Collection that lacks one, but
-   *   changing/clearing an existing marker is rejected -- `ConflictError`,
+   *   changing/clearing an existing descriptor is rejected -- `ConflictError`,
    *   `encryption-immutable`)
    * @param [desc.force] {boolean}   proceed even when the current description
    *   is unreadable and `backend`/`encryption` are omitted (see above)
@@ -239,7 +241,7 @@ export class Collection {
         operation: `configure collection "${this.id}"`,
         consequence:
           "merging forward could silently drop an existing collection's " +
-          'backend or encryption marker',
+          'backend or encryption descriptor',
         advice:
           'Supply `backend`/`encryption` explicitly, use a read-capable ' +
           'capability, or pass `force: true` if you are creating a new ' +
@@ -249,7 +251,7 @@ export class Collection {
     // Merge every current field forward (mirror `Space.configure`): a
     // replace-semantics server drops anything omitted from the PUT body, so
     // `configure({ name })` on an EDV collection would otherwise wipe its
-    // `backend` or trip `encryption-immutable` by clearing the marker.
+    // `backend` or trip `encryption-immutable` by clearing the descriptor.
     const name = desc.name ?? current?.name
     const backend = desc.backend ?? current?.backend
     const encryption = desc.encryption ?? current?.encryption
@@ -260,12 +262,12 @@ export class Collection {
       capability: this.#capability,
       json: { id: this.id, ...fields }
     })
-    // Adding the encryption marker flips this collection from plaintext to
+    // Adding the encryption descriptor flips this collection from plaintext to
     // encrypted server-side. Drop any codec memoized from the prior (plaintext)
-    // marker so the next read/write re-resolves it -- otherwise a `put` would
-    // reuse the cached identity codec and write server-visible plaintext into
-    // the now-encrypted collection. Child resource handles share this codec via
-    // their thunk, so resetting here propagates to them too.
+    // descriptor so the next read/write re-resolves it -- otherwise a `put`
+    // would reuse the cached identity codec and write server-visible plaintext
+    // into the now-encrypted collection. Child resource handles share this
+    // codec via their thunk, so resetting here propagates to them too.
     if (desc.encryption) {
       this.#codecHolder.reset()
     }
@@ -308,16 +310,17 @@ export class Collection {
   }
 
   /**
-   * Writes (replaces) the Collection Description, optionally as a compare-and-swap
-   * against a prior `ETag` (`ifMatch`, from {@link describeWithEtag}) so a
-   * concurrent writer cannot be silently clobbered -- a stale validator surfaces
-   * as `PreconditionFailedError` (412). Sends the writable fields as the full
-   * body; omit a field to drop it (replace semantics), so callers doing CAS pass
-   * every field forward. Returns the new `ETag` and the fields written.
+   * Writes (replaces) the Collection Description, optionally as a
+   * compare-and-swap against a prior `ETag` (`ifMatch`, from {@link
+   * describeWithEtag}) so a concurrent writer cannot be silently clobbered -- a
+   * stale validator surfaces as `PreconditionFailedError` (412). Sends the
+   * writable fields as the full body; omit a field to drop it (replace
+   * semantics), so callers doing CAS pass every field forward. Returns the new
+   * `ETag` and the fields written.
    *
    * This is the generic description-CAS primitive the key-epoch recipient
    * operations build on (add/remove a reader is a CAS of the `encryption`
-   * marker); it is not epoch-specific.
+   * descriptor); it is not epoch-specific.
    *
    * @param description {CollectionWritableFields}
    * @param options {object}
@@ -337,14 +340,14 @@ export class Collection {
       json: { id: this.id, ...fields },
       headers: writeHeaders({ precondition: { ifMatch: options.ifMatch } })
     })
-    // Writing the `encryption` marker can rotate the key epoch (the recipient
-    // operations CAS this field) or flip the collection from plaintext to
-    // encrypted. Drop any memoized codec -- bound at construction to the prior
-    // marker's write key/epoch -- so the next read/write re-resolves it under
-    // the new marker; otherwise a `put` on the same handle would keep encrypting
-    // under the stale epoch, whose key a just-removed reader still holds. Child
-    // resource handles share this codec via their thunk, so resetting here
-    // propagates to them too.
+    // Writing the `encryption` descriptor can rotate the key epoch (the
+    // recipient operations CAS this field) or flip the collection from
+    // plaintext to encrypted. Drop any memoized codec -- bound at construction
+    // to the prior descriptor's write key/epoch -- so the next read/write
+    // re-resolves it under the new descriptor; otherwise a `put` on the same
+    // handle would keep encrypting under the stale epoch, whose key a
+    // just-removed reader still holds. Child resource handles share this codec
+    // via their thunk, so resetting here propagates to them too.
     if (description.encryption !== undefined) {
       this.#codecHolder.reset()
     }
@@ -396,9 +399,9 @@ export class Collection {
       features: () => this.#features.get(),
       // A per-resource encryption override resolves its own codec (honoring the
       // override); without one, share this collection's resolved codec so the
-      // resource handle does not repeat the marker-discovery round-trip. The two
-      // are mutually exclusive: the Resource ignores `encryption` when `codec`
-      // is supplied.
+      // resource handle does not repeat the descriptor-discovery round-trip.
+      // The two are mutually exclusive: the Resource ignores `encryption` when
+      // `codec` is supplied.
       ...(options.encryption !== undefined
         ? { encryption: options.encryption }
         : { codec: () => this.#codec() })
@@ -504,9 +507,10 @@ export class Collection {
   }
 
   /**
-   * Creates or replaces a resource by id (upsert). Forwards the conditional-write
-   * options (`ifMatch` / `ifNoneMatch`) to `Resource.put`; see it for the
-   * `conditional-writes` semantics. Returns the stored resource's new `etag`.
+   * Creates or replaces a resource by id (upsert). Forwards the
+   * conditional-write options (`ifMatch` / `ifNoneMatch`) to `Resource.put`;
+   * see it for the `conditional-writes` semantics. Returns the stored
+   * resource's new `etag`.
    *
    * @param resourceId {string}
    * @param data {ResourceData}
@@ -558,8 +562,8 @@ export class Collection {
    * pagination links, buffering every page into a single list (the returned
    * envelope omits `next`). Convenient, but holds the whole collection in memory
    * -- for a large collection prefer `listPages()` or `listItems()`, which stream
-   * one page at a time and allow stopping early. Returns `null` if the collection
-   * is missing or not visible to you (404 conflation caveat).
+   * one page at a time and allow stopping early. Returns `null` if the
+   * collection is missing or not visible to you (404 conflation caveat).
    *
    * @returns {Promise<CollectionResourcesList | null>}
    */
@@ -569,11 +573,11 @@ export class Collection {
 
   /**
    * Lazily yields the listing one page at a time, following the server's `next`
-   * links on demand (each page fetched with the same authorization). Use this to
-   * stream a large collection in constant memory or to stop early. Yields nothing
-   * if the collection is missing or not visible to you (404 conflation caveat) --
-   * unlike `list()`, the iterator does not distinguish that from an empty
-   * collection.
+   * links on demand (each page fetched with the same authorization). Use this
+   * to stream a large collection in constant memory or to stop early. Yields
+   * nothing if the collection is missing or not visible to you (404 conflation
+   * caveat) -- unlike `list()`, the iterator does not distinguish that from an
+   * empty collection.
    *
    * @returns {AsyncGenerator<CollectionResourcesList>}
    */
@@ -653,9 +657,9 @@ export class Collection {
 
   /**
    * Reads the collection's access-control policy. Returns `null` when no policy
-   * is set (or it is not visible to you). Managing a policy is a controller-level
-   * operation; a capability scoped to the collection does not cover its policy
-   * sub-resource.
+   * is set (or it is not visible to you). Managing a policy is a
+   * controller-level operation; a capability scoped to the collection does not
+   * cover its policy sub-resource.
    *
    * @returns {Promise<PolicyDocument | null>}
    */

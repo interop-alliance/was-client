@@ -2,14 +2,15 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Resolves a reader's per-epoch keys from a Collection's `encryption` marker.
- * Given the marker (its `epochs` and `currentEpoch`) and the reader's own
- * key-agreement key, it reconstructs each epoch the reader is a recipient of as
- * an X25519 key pair the EDV `documentCipher` can use -- the write epoch's key
- * for writes, and one read key per epoch the reader holds (so a resource written
- * under an older epoch stays readable). The write epoch is unwrapped eagerly;
- * the other epochs' keys unwrap lazily on first decrypt naming them, so a
- * write-only handle does not pay to unwrap history it never reads.
+ * Resolves a reader's per-epoch keys from a Collection's `encryption`
+ * descriptor. Given the descriptor (its `epochs` and `currentEpoch`) and the
+ * reader's own key-agreement key, it reconstructs each epoch the reader is a
+ * recipient of as an X25519 key pair the EDV `documentCipher` can use -- the
+ * write epoch's key for writes, and one read key per epoch the reader holds (so
+ * a resource written under an older epoch stays readable). The write epoch is
+ * unwrapped eagerly; the other epochs' keys unwrap lazily on first decrypt
+ * naming them, so a write-only handle does not pay to unwrap history it never
+ * reads.
  *
  * This is the read axis: holding an epoch key lets a reader decrypt resources
  * written under it. A reader removed from a later epoch keeps the earlier epoch
@@ -34,7 +35,8 @@ import { verifyEpochsMac } from './epochMac.js'
  */
 export interface ResolvedEpochKeys {
   /**
-   * the epoch id writes encrypt under and stamp (the marker's `currentEpoch`)
+   * the epoch id writes encrypt under and stamp (the descriptor's
+   * `currentEpoch`)
    */
   writeEpoch: string
   /**
@@ -50,14 +52,15 @@ export interface ResolvedEpochKeys {
 }
 
 /**
- * Resolves the reader's epoch keys from a marker. Returns `null` when the marker
- * declares no epochs (a single-key collection -- the caller keeps its existing
- * single-key path). Throws {@link KeyUnwrapError} when the marker HAS epochs but
- * this reader can unwrap none of them (it is not a recipient), so an encrypted
- * collection is never silently read/written with the wrong key.
+ * Resolves the reader's epoch keys from a descriptor. Returns `null` when the
+ * descriptor declares no epochs (a single-key collection -- the caller keeps
+ * its existing single-key path). Throws {@link KeyUnwrapError} when the
+ * descriptor HAS epochs but this reader can unwrap none of them (it is not a
+ * recipient), so an encrypted collection is never silently read/written with
+ * the wrong key.
  *
  * @param options {object}
- * @param options.encryption {CollectionEncryption}   the Collection's marker
+ * @param options.encryption {CollectionEncryption}   the Collection's descriptor
  * @param options.keyAgreementKey {IKeyAgreementKey}   the reader's own KAK; its
  *   `id` must match a recipient `kid` in an epoch for that epoch to unwrap
  * @returns {Promise<ResolvedEpochKeys | null>}
@@ -74,9 +77,9 @@ export async function resolveEpochKeys({
     return null
   }
   // The epochs this reader is named in (has a recipient entry keyed to its
-  // `kid`), in the marker's canonical order. Being named IS being a recipient;
-  // whether a named entry actually unwraps is confirmed eagerly for the write
-  // epoch and lazily (on first decrypt) for the rest.
+  // `kid`), in the descriptor's canonical order. Being named IS being a
+  // recipient; whether a named entry actually unwraps is confirmed eagerly for
+  // the write epoch and lazily (on first decrypt) for the rest.
   const namedEpochs = epochs.filter(epoch =>
     epoch.recipients.some(
       recipient => recipient.header.kid === keyAgreementKey.id
@@ -85,14 +88,14 @@ export async function resolveEpochKeys({
   if (namedEpochs.length === 0) {
     throw new KeyUnwrapError(
       'This reader is not a recipient of any key epoch on this encrypted ' +
-        "collection (none of the marker's recipient entries name this " +
+        "collection (none of the descriptor's recipient entries name this " +
         "reader's key-agreement key). Add this reader with addRecipient, or " +
         'supply the correct key-agreement key.'
     )
   }
   // Choose the write epoch: `currentEpoch` when this reader holds it, otherwise
   // the newest epoch it holds -- defined deterministically as the LAST epoch in
-  // the marker's canonical `epochs` order that names this reader, never the
+  // the descriptor's canonical `epochs` order that names this reader, never the
   // incidental order in which secrets happened to unwrap. A reader that is not a
   // recipient of `currentEpoch` is a removed/archive reader whose writes the
   // server rejects via its revoked zcap anyway; selecting a deterministic
@@ -119,12 +122,12 @@ export async function resolveEpochKeys({
     )
   }
   const writeKey = writeUnwrapped.key
-  // Authenticate the epoch configuration when this reader holds the marker's
-  // `currentEpoch` (its write epoch IS `currentEpoch`) and the marker carries a
-  // MAC. A reader whose write epoch is an older held epoch cannot key the MAC
-  // (its secret is not the current epoch's), so it skips verification -- its
-  // writes are rejected server-side via its revoked zcap anyway. An absent MAC
-  // is a legacy marker, accepted.
+  // Authenticate the epoch configuration when this reader holds the
+  // descriptor's `currentEpoch` (its write epoch IS `currentEpoch`) and the
+  // descriptor carries a MAC. A reader whose write epoch is an older held epoch
+  // cannot key the MAC (its secret is not the current epoch's), so it skips
+  // verification -- its writes are rejected server-side via its revoked zcap
+  // anyway. An absent MAC is a legacy descriptor, accepted.
   if (
     writeEpochEntry.id === encryption.currentEpoch &&
     encryption.epochsMac !== undefined
@@ -138,13 +141,13 @@ export async function resolveEpochKeys({
       )
     }
     const authentic = await verifyEpochsMac({
-      marker: encryption,
+      descriptor: encryption,
       epochSecret: writeUnwrapped.secret
     })
     if (!authentic) {
       throw new IntegrityError(
         'The epoch configuration failed to authenticate; a server-side ' +
-          'rollback or tamper of the encryption marker was detected (the ' +
+          'rollback or tamper of the encryption descriptor was detected (the ' +
           'MAC over its epoch configuration does not verify).'
       )
     }

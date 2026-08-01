@@ -2,20 +2,20 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Integration test: encrypted collections through the unified handle seam,
- * end to end against a live WAS server (e.g. was-teaching-server's
- * filesystem backend). A `WasClient` constructed with an `encryption` provider
- * transparently encrypts `collection.add()` / `put()` and decrypts `get()` -- the
- * same plain Collection/Resource API as a plaintext collection, with no EdvClient
- * in sight. Encryption is gated purely on the client holding keys for the
- * collection (the `encryption` provider returning a codec), not on any backend
- * feature.
+ * Integration test: encrypted collections through the unified handle seam, end
+ * to end against a live WAS server (e.g. was-teaching-server's filesystem
+ * backend). A `WasClient` constructed with an `encryption` provider
+ * transparently encrypts `collection.add()` / `put()` and decrypts `get()` --
+ * the same plain Collection/Resource API as a plaintext collection, with no
+ * EdvClient in sight. Encryption is gated purely on the client holding keys for
+ * the collection (the `encryption` provider returning a codec), not on any
+ * backend feature.
  *
  * Proves: the value round-trips decrypted; what the server stores is an opaque
  * JWE envelope (the raw `getBytes()` escape hatch shows ciphertext, no
  * cleartext); a small blob round-trips; user metadata (`setName`/`setTags`) is
- * likewise encrypted -- round-tripping decrypted for a keyed reader but opaque at
- * rest -- with its own `/meta` ETag; and the stricter contract holds
+ * likewise encrypted -- round-tripping decrypted for a keyed reader but opaque
+ * at rest -- with its own `/meta` ETag; and the stricter contract holds
  * (human-readable `put()` ids are rejected on an encrypted collection).
  *
  * Requires a running server: set `TEST_SERVER_URL`. The suite skips when it is
@@ -105,9 +105,9 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
   beforeAll(async () => {
     ;({ encrypted: was, plaintext, keyless } = await freshClients())
     space = await was.createSpace({ name: 'EDV Codec Integration' })
-    // Declare the collection encrypted: the marker lets any authorized reader
-    // discover it (the returned handle is pre-seeded so the first write needs no
-    // round-trip), and the keystore supplies the keys.
+    // Declare the collection encrypted: the descriptor lets any authorized
+    // reader discover it (the returned handle is pre-seeded so the first write
+    // needs no round-trip), and the keystore supplies the keys.
     collection = await space.createCollection({
       id: 'vault',
       name: 'Vault',
@@ -133,19 +133,21 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     expect(got).toEqual(content)
   })
 
-  it('a fresh handle (no pre-seed) discovers the marker and decrypts', async () => {
-    const { id } = await collection.add({ via: 'marker discovery' })
+  it('a fresh handle (no pre-seed) discovers the descriptor and decrypts', async () => {
+    const { id } = await collection.add({ via: 'descriptor discovery' })
     // A brand-new handle for the same collection, with no encryption override:
-    // it must read the Collection Description, see the `encryption` marker, and
-    // decrypt with the keystore's keys -- the delegated-consumer discovery path.
+    // it must read the Collection Description, see the `encryption` descriptor,
+    // and decrypt with the keystore's keys -- the delegated-consumer discovery
+    // path.
     const rediscovered = was.space(space.id).collection('vault')
-    expect(await rediscovered.get(id)).toEqual({ via: 'marker discovery' })
+    expect(await rediscovered.get(id)).toEqual({ via: 'descriptor discovery' })
   })
 
   it('fails closed: an encryption-capable client with no keys throws, not ciphertext', async () => {
     const { id } = await collection.add({ secret: 'still safe' })
-    // The keyless client discovers the marker (encrypted) but its keystore holds
-    // no keys, so reading throws EncryptionError rather than leaking the JWE.
+    // The keyless client discovers the descriptor (encrypted) but its keystore
+    // holds no keys, so reading throws EncryptionError rather than leaking the
+    // JWE.
     await expect(
       keyless.space(space.id).collection('vault').get(id)
     ).rejects.toThrow(EncryptionError)
@@ -254,8 +256,8 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     expect(meta?.etag).toBeTruthy()
 
     // At rest the server stores an opaque envelope: a plaintext client (same
-    // authorization, no keys) reading `/meta` sees a `custom` envelope carrying a
-    // `jwe`, never the cleartext name.
+    // authorization, no keys) reading `/meta` sees a `custom` envelope carrying
+    // a `jwe`, never the cleartext name.
     const rawMeta = await plaintext
       .space(space.id)
       .collection('vault')

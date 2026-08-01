@@ -3,9 +3,9 @@
  */
 /**
  * Unit tests for the multi-recipient key-epoch machinery (no network): the
- * marker recipient wrap/unwrap round-trip with real local X25519 keys, the
+ * descriptor recipient wrap/unwrap round-trip with real local X25519 keys, the
  * unwrap-failure paths (wrong key / null-treated-as-failure), epoch selection
- * and resolution from a marker, and the compare-and-swap retry logic of
+ * and resolution from a descriptor, and the compare-and-swap retry logic of
  * `addRecipient` against a fake collection whose description writes race.
  */
 import { describe, it, expect } from 'vitest'
@@ -182,9 +182,9 @@ describe('epoch key wrap/unwrap round-trip', () => {
 
 describe('resolveEpochKeys', () => {
   /**
-   * Builds a marker with the given epochs, wrapping each epoch to `readers`.
+   * Builds a descriptor with the given epochs, wrapping each epoch to `readers`.
    */
-  async function markerFor(
+  async function descriptorFor(
     readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>,
     epochCount: number
   ): Promise<CollectionEncryption> {
@@ -211,7 +211,7 @@ describe('resolveEpochKeys', () => {
     return { scheme: 'edv', epochs, currentEpoch }
   }
 
-  it('returns null for a single-key marker (no epochs)', async () => {
+  it('returns null for a single-key descriptor (no epochs)', async () => {
     const alice = await makeReader()
     const resolved = await resolveEpochKeys({
       encryption: { scheme: 'edv' },
@@ -222,7 +222,7 @@ describe('resolveEpochKeys', () => {
 
   it('resolves a read key per epoch and writes under currentEpoch', async () => {
     const alice = await makeReader()
-    const encryption = await markerFor([alice], 2)
+    const encryption = await descriptorFor([alice], 2)
     const resolved = await resolveEpochKeys({
       encryption,
       keyAgreementKey: alice.kak
@@ -237,7 +237,7 @@ describe('resolveEpochKeys', () => {
   it('throws KeyUnwrapError when the reader is a recipient of no epoch', async () => {
     const alice = await makeReader()
     const stranger = await makeReader()
-    const encryption = await markerFor([alice], 1)
+    const encryption = await descriptorFor([alice], 1)
     await expect(
       resolveEpochKeys({ encryption, keyAgreementKey: stranger.kak })
     ).rejects.toBeInstanceOf(KeyUnwrapError)
@@ -247,8 +247,8 @@ describe('resolveEpochKeys', () => {
     // Alice in epoch 1 and 2, Bob only in epoch 1 (removed before epoch 2).
     const alice = await makeReader()
     const bob = await makeReader()
-    const older = await markerFor([alice, bob], 1)
-    const newer = await markerFor([alice], 1)
+    const older = await descriptorFor([alice, bob], 1)
+    const newer = await descriptorFor([alice], 1)
     const encryption: CollectionEncryption = {
       scheme: 'edv',
       epochs: [...older.epochs!, ...newer.epochs!],
@@ -328,9 +328,10 @@ describe('lazy epoch key unwrap retry', () => {
 
 describe('addRecipient compare-and-swap retry', () => {
   /**
-   * A fake Collection whose description read returns a shared marker and whose
-   * write applies it, optionally failing with a 412 for the first `stale` writes
-   * (simulating a concurrent writer) so the CAS loop must re-read and retry.
+   * A fake Collection whose description read returns a shared descriptor and
+   * whose write applies it, optionally failing with a 412 for the first `stale`
+   * writes (simulating a concurrent writer) so the CAS loop must re-read and
+   * retry.
    */
   function fakeCollection(initial: CollectionEncryption, stale: number) {
     const state = { encryption: initial, etag: '"v1"', version: 1 }
@@ -374,9 +375,9 @@ describe('addRecipient compare-and-swap retry', () => {
   it('retries on a 412 and lands the recipient', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
-    // Seed a marker with one epoch that Alice can unwrap.
+    // Seed a descriptor with one epoch that Alice can unwrap.
     const seed = await mintEpoch()
-    const marker: CollectionEncryption = {
+    const descriptor: CollectionEncryption = {
       scheme: 'edv',
       epochs: [
         {
@@ -394,7 +395,7 @@ describe('addRecipient compare-and-swap retry', () => {
       ],
       currentEpoch: seed.epochId
     }
-    const fake = fakeCollection(marker, 1) // one 412 then success
+    const fake = fakeCollection(descriptor, 1) // one 412 then success
 
     const result = await addRecipient({
       collection: fake as unknown as Collection,
@@ -422,7 +423,7 @@ describe('addRecipient compare-and-swap retry', () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const seed = await mintEpoch()
-    const marker: CollectionEncryption = {
+    const descriptor: CollectionEncryption = {
       scheme: 'edv',
       epochs: [
         {
@@ -440,7 +441,7 @@ describe('addRecipient compare-and-swap retry', () => {
       ],
       currentEpoch: seed.epochId
     }
-    const fake = fakeCollection(marker, 99) // always 412
+    const fake = fakeCollection(descriptor, 99) // always 412
     await expect(
       addRecipient({
         collection: fake as unknown as Collection,
@@ -455,14 +456,14 @@ describe('addRecipient compare-and-swap retry', () => {
 })
 
 describe('rotation preserves the blinded-index hmac reference', () => {
-  it('addRecipient and removeRecipient keep an unrelated marker field (e.g. hmac)', async () => {
+  it('addRecipient and removeRecipient keep an unrelated descriptor field (e.g. hmac)', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const seed = await mintEpoch()
-    // A marker carrying a blinded-index `hmac` reference (an opaque extra field
-    // the recipient ops must not disturb -- the hmac deliberately does NOT
-    // rotate with the epoch).
-    const marker = {
+    // A descriptor carrying a blinded-index `hmac` reference (an opaque extra
+    // field the recipient ops must not disturb -- the hmac deliberately does
+    // NOT rotate with the epoch).
+    const descriptor = {
       scheme: 'edv',
       hmac: { id: 'urn:hmac:demo', type: 'Sha256HmacKey2019' },
       epochs: [
@@ -482,7 +483,7 @@ describe('rotation preserves the blinded-index hmac reference', () => {
       currentEpoch: seed.epochId
     } as unknown as CollectionEncryption
 
-    const state = { encryption: marker }
+    const state = { encryption: descriptor }
     const fake = {
       describeWithEtag: async () => ({
         description: {
@@ -547,19 +548,19 @@ describe('initRecipients', () => {
         return { description: { id: 'c', type: ['Collection'] }, etag: '"v2"' }
       }
     }
-    const marker = await initRecipients({
+    const descriptor = await initRecipients({
       collection: fake as unknown as Collection,
       recipients: [
         { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase },
         { id: bob.kak.id, publicKeyMultibase: bob.publicKeyMultibase }
       ]
     })
-    expect(marker.epochs!.length).toBe(1)
-    expect(marker.currentEpoch).toBe(marker.epochs![0]!.id)
-    expect(marker.epochs![0]!.recipients.length).toBe(2)
-    // Both readers can resolve their keys from the resulting marker.
+    expect(descriptor.epochs!.length).toBe(1)
+    expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
+    expect(descriptor.epochs![0]!.recipients.length).toBe(2)
+    // Both readers can resolve their keys from the resulting descriptor.
     const aliceKeys = await resolveEpochKeys({
-      encryption: marker,
+      encryption: descriptor,
       keyAgreementKey: alice.kak
     })
     expect(aliceKeys!.readKeys.length).toBe(1)
@@ -569,9 +570,9 @@ describe('initRecipients', () => {
 describe('removeRecipient security', () => {
   /**
    * A minimal in-memory Collection whose description read returns the evolving
-   * marker and whose write applies it (no CAS races, no network). The optional
-   * `staleForever` makes every write reject with a 412 so the CAS loop exhausts
-   * its retries (simulating a permanently-losing compare-and-swap).
+   * descriptor and whose write applies it (no CAS races, no network). The
+   * optional `staleForever` makes every write reject with a 412 so the CAS loop
+   * exhausts its retries (simulating a permanently-losing compare-and-swap).
    *
    * @param initial {CollectionEncryption}
    * @param [options] {object}
@@ -606,12 +607,12 @@ describe('removeRecipient security', () => {
   }
 
   /**
-   * Seeds a one-epoch marker wrapping the epoch key to each of `readers`.
+   * Seeds a one-epoch descriptor wrapping the epoch key to each of `readers`.
    *
    * @param readers {Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>}
    * @returns {Promise<CollectionEncryption>}
    */
-  async function seedMarker(
+  async function seedDescriptor(
     readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
   ): Promise<CollectionEncryption> {
     const { epochId, secret } = await mintEpoch()
@@ -644,7 +645,9 @@ describe('removeRecipient security', () => {
     const alice = await makeReader()
     const xavier = await makeReader()
     const yolanda = await makeReader()
-    const fake = mutableCollection(await seedMarker([alice, xavier, yolanda]))
+    const fake = mutableCollection(
+      await seedDescriptor([alice, xavier, yolanda])
+    )
     const fakeSpace = { revoke: async () => undefined }
 
     await removeRecipient({
@@ -670,12 +673,12 @@ describe('removeRecipient security', () => {
   })
 
   it('rotates the epoch BEFORE revoking capabilities', async () => {
-    // At revoke time the marker must already be rotated (rotation is durable
+    // At revoke time the descriptor must already be rotated (rotation is durable
     // first), so a revoke failure cannot leave the reader revoked but the epoch
     // un-rotated.
     const alice = await makeReader()
     const bob = await makeReader()
-    const seed = await seedMarker([alice, bob])
+    const seed = await seedDescriptor([alice, bob])
     const seedEpoch = seed.currentEpoch
     const fake = mutableCollection(seed)
     const epochsAtRevoke: string[] = []
@@ -692,7 +695,8 @@ describe('removeRecipient security', () => {
       recipientId: bob.kak.id,
       revoke: revokedZcap as never
     })
-    // Revoke ran once, and the epoch it observed is the NEW one (already rotated).
+    // Revoke ran once, and the epoch it observed is the NEW one (already
+    // rotated).
     expect(epochsAtRevoke).toEqual([rotated.currentEpoch])
     expect(rotated.currentEpoch).not.toBe(seedEpoch)
   })
@@ -703,7 +707,7 @@ describe('removeRecipient security', () => {
     // still complete the rotation.
     const alice = await makeReader()
     const bob = await makeReader()
-    const fake = mutableCollection(await seedMarker([alice, bob]))
+    const fake = mutableCollection(await seedDescriptor([alice, bob]))
     const fakeSpace = {
       revoke: async () => {
         throw new ValidationError('already revoked')
@@ -730,7 +734,7 @@ describe('removeRecipient security', () => {
     // retryable.
     const alice = await makeReader()
     const bob = await makeReader()
-    const fake = mutableCollection(await seedMarker([alice, bob]), {
+    const fake = mutableCollection(await seedDescriptor([alice, bob]), {
       staleForever: true
     })
     let revoked = false
@@ -758,7 +762,7 @@ describe('removeRecipient security', () => {
     // attempt.
     const alice = await makeReader()
     const bob = await makeReader()
-    const fake = mutableCollection(await seedMarker([alice, bob]))
+    const fake = mutableCollection(await seedDescriptor([alice, bob]))
     let revokeCalls = 0
     const fakeSpace = {
       revoke: async () => {

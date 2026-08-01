@@ -11,8 +11,8 @@ import type { Json } from '../types.js'
 /**
  * Whether a stored body is an EDV encryption envelope (carries an object `jwe`)
  * rather than a plaintext document. Lets read paths stay tolerant of legacy
- * plaintext rows (written before a collection's encryption marker was declared)
- * and lets a one-time migration find the rows it must re-key.
+ * plaintext rows (written before a collection's encryption descriptor was
+ * declared) and lets a one-time migration find the rows it must re-key.
  *
  * @param data {Json | undefined}   the stored resource body
  * @returns {boolean}

@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.23.0 - TBD
+
+### Changed
+
+- **BREAKING** (`./edv` subpath only): rename the `CollectionEncryption` value's
+  noun from "marker" to "descriptor", following the spec wording ("encryption
+  descriptor"). Renamed exports: `MarkerStore` to `EncryptionDescriptorStore`,
+  `collectionMarkerStore` to `collectionDescriptorStore`, `resourceMarkerStore`
+  to `resourceDescriptorStore`. The rename is full-depth: `read()` now resolves
+  `{ descriptor, etag }` (previously `{ marker, etag }`), and the `replace()` /
+  `create()` / `verifyEpochsMac()` parameters are named `descriptor`. Wire
+  shapes and stored bytes are unchanged -- the word never appeared on the wire.
+  The root `.` and `./sync` subpaths are unaffected.
+- Update to `@interop/storage-core@0.3.12` (the descriptor wording in the
+  `CollectionEncryption` type docs).
+
 ## 0.22.0 - 2026-08-01
 
 ### Added

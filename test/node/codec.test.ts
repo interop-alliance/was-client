@@ -55,7 +55,7 @@ function clientWithRouter({
   readEtag,
   writeEtag,
   readStatus = 200,
-  marker
+  descriptor
 }: {
   encryption?: EncryptionProvider
   readData?: unknown
@@ -64,7 +64,7 @@ function clientWithRouter({
   writeEtag?: string
   readStatus?: number
   /** When set, a collection-description GET (`/space/{s}/{c}`) carries it. */
-  marker?: CollectionEncryption
+  descriptor?: CollectionEncryption
 } = {}): { client: WasClient; calls: RequestArgs[] } {
   const calls: RequestArgs[] = []
   const zcapClient = {
@@ -97,13 +97,14 @@ function clientWithRouter({
         if (readStatus === 404) {
           throw { status: 404, response: { status: 404 } }
         }
-        // A collection-description GET (`/space/{spaceId}/{collectionId}`, three
-        // path segments) drives marker discovery; carry the marker when set.
+        // A collection-description GET (`/space/{spaceId}/{collectionId}`,
+        // three path segments) drives descriptor discovery; carry the
+        // descriptor when set.
         if (segments.length === 3 && segments[0] === 'space') {
           const description = {
             id: segments[2],
             type: ['Collection'],
-            ...(marker && { encryption: marker })
+            ...(descriptor && { encryption: descriptor })
           }
           return {
             status: 200,
@@ -209,8 +210,9 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
         return fakeCodec([])
       }
     }
-    // No override and (the GET marker resolves undefined) no marker => identity,
-    // so the provider's codecFor is never reached and the write stays plaintext.
+    // No override and (the GET descriptor resolves undefined) no descriptor =>
+    // identity, so the provider's codecFor is never reached and the write stays
+    // plaintext.
     const { client, calls } = clientWithRouter({ encryption })
     await client.space('s').collection('c').put('r', { hello: 'world' })
     const write = calls.find(call => call.method === 'PUT')
@@ -225,8 +227,9 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
       }
     }
     const { client, calls } = clientWithRouter({ encryption })
-    // The override marks the collection encrypted and skips marker discovery.
-    // add(): codec mints an id, so the write is a PUT to that id, not a POST.
+    // The override marks the collection encrypted and skips descriptor
+    // discovery. add(): codec mints an id, so the write is a PUT to that id,
+    // not a POST.
     const result = await client
       .space('s')
       .collection('c', { encryption: { scheme: 'edv' } })
@@ -237,7 +240,8 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
     expect(write?.url).toBe('https://was.example/space/s/c/zMintedEdvId')
     expect(write?.headers?.['content-type']).toBe('application/jose+json')
     expect(write?.body).toBeInstanceOf(Uint8Array)
-    // The override skips both the backend probe and marker discovery: no GET.
+    // The override skips both the backend probe and descriptor discovery: no
+    // GET.
     expect(calls.every(call => !call.url?.endsWith('/backend'))).toBe(true)
     expect(calls.some(call => (call.method ?? 'GET') === 'GET')).toBe(false)
   })
@@ -269,9 +273,9 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
         return fakeCodec(log)
       }
     }
-    // The parent collection has no marker and no override (it would be
+    // The parent collection has no descriptor and no override (it would be
     // plaintext); the per-resource override marks just this resource encrypted
-    // and binds the codec, skipping marker discovery (no GET).
+    // and binds the codec, skipping descriptor discovery (no GET).
     const { client, calls } = clientWithRouter({ encryption })
     await client
       .space('s')
@@ -283,11 +287,11 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
     expect(write?.url).toBe('https://was.example/space/s/c/zDoc')
     expect(write?.body).toBeInstanceOf(Uint8Array)
     expect(write?.json).toBeUndefined()
-    // The override skips marker discovery: no collection-description GET.
+    // The override skips descriptor discovery: no collection-description GET.
     expect(calls.every(call => (call.method ?? 'GET') !== 'GET')).toBe(true)
   })
 
-  it("a per-resource 'plaintext' override beats the collection's marker", async () => {
+  it("a per-resource 'plaintext' override beats the collection's descriptor", async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
       async codecFor() {
@@ -295,11 +299,11 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
         return fakeCodec(log)
       }
     }
-    // The collection declares an encryption marker, but the resource forces
+    // The collection declares an encryption descriptor, but the resource forces
     // plaintext: the provider is never consulted and the write stays JSON.
     const { client, calls } = clientWithRouter({
       encryption,
-      marker: { scheme: 'edv' }
+      descriptor: { scheme: 'edv' }
     })
     await client
       .space('s')
@@ -331,8 +335,8 @@ describe('codec seam: encryption override binds the codec (no backend probe)', (
   })
 })
 
-describe('codec seam: policy resolution (override > marker > plaintext)', () => {
-  it('discovers the marker and binds the codec (no override)', async () => {
+describe('codec seam: policy resolution (override > descriptor > plaintext)', () => {
+  it('discovers the descriptor and binds the codec (no override)', async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
       async codecFor() {
@@ -341,24 +345,24 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
     }
     const { client, calls } = clientWithRouter({
       encryption,
-      marker: { scheme: 'edv' }
+      descriptor: { scheme: 'edv' }
     })
-    // No override: the collection-description GET reveals the marker, which
+    // No override: the collection-description GET reveals the descriptor, which
     // binds the codec; the write is then an encrypted PUT (bytes, not JSON).
     await client.space('s').collection('c').put('zDoc', { secret: 1 })
-    const markerGet = calls.find(
+    const descriptorGet = calls.find(
       call =>
         (call.method ?? 'GET') === 'GET' &&
         call.url === 'https://was.example/space/s/c'
     )
-    expect(markerGet).toBeTruthy()
+    expect(descriptorGet).toBeTruthy()
     expect(log).toContain('encode:zDoc')
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.body).toBeInstanceOf(Uint8Array)
     expect(write?.json).toBeUndefined()
   })
 
-  it("a 'plaintext' override beats a marker (and skips discovery)", async () => {
+  it("a 'plaintext' override beats a descriptor (and skips discovery)", async () => {
     const log: string[] = []
     const encryption: EncryptionProvider = {
       async codecFor() {
@@ -368,7 +372,7 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
     }
     const { client, calls } = clientWithRouter({
       encryption,
-      marker: { scheme: 'edv' }
+      descriptor: { scheme: 'edv' }
     })
     await client
       .space('s')
@@ -395,7 +399,7 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
     ).rejects.toThrow(EncryptionError)
   })
 
-  it('fails closed when a marker declares encryption but no keys are held', async () => {
+  it('fails closed when a descriptor declares encryption but no keys are held', async () => {
     const encryption: EncryptionProvider = {
       async codecFor() {
         return null
@@ -403,7 +407,7 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
     }
     const { client } = clientWithRouter({
       encryption,
-      marker: { scheme: 'edv' }
+      descriptor: { scheme: 'edv' }
     })
     await expect(client.space('s').collection('c').get('zDoc')).rejects.toThrow(
       EncryptionError
@@ -420,9 +424,9 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
     ).rejects.toThrow(EncryptionError)
   })
 
-  it('fails closed when the marker is unreadable (no fail-open to plaintext)', async () => {
+  it('fails closed when the descriptor is unreadable (no fail-open to plaintext)', async () => {
     // An encryption-capable client whose collection-description GET 404s (the
-    // resource-scoped-capability case WAS masks as not-found). The marker is
+    // resource-scoped-capability case WAS masks as not-found). The descriptor is
     // ambiguous, so resolveCodec must refuse rather than write plaintext.
     const log: string[] = []
     const encryption: EncryptionProvider = {
@@ -440,15 +444,16 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
     expect(log).not.toContain('codecFor')
   })
 
-  it("a 'plaintext' override is the documented escape hatch for an unreadable marker", async () => {
+  it("a 'plaintext' override is the documented escape hatch for an unreadable descriptor", async () => {
     const encryption: EncryptionProvider = {
       async codecFor() {
         return fakeCodec([])
       }
     }
     const { client, calls } = clientWithRouter({ encryption, readStatus: 404 })
-    // The override skips marker discovery, so the same unreadable-marker case
-    // writes plaintext deliberately rather than throwing.
+    // The override skips descriptor discovery, so the same
+    // unreadable-descriptor case writes plaintext deliberately rather than
+    // throwing.
     await client
       .space('s')
       .collection('c', { encryption: 'plaintext' })
@@ -461,9 +466,9 @@ describe('codec seam: policy resolution (override > marker > plaintext)', () => 
 describe('codec seam: configure() invalidates the memoized codec', () => {
   /**
    * Builds a client over a stub whose collection is plaintext until a
-   * `configure` PUT carrying an `encryption` body flips it encrypted. The marker
-   * GET reflects the current server-side state, so a codec memoized while
-   * plaintext is stale once encryption is enabled.
+   * `configure` PUT carrying an `encryption` body flips it encrypted. The
+   * descriptor GET reflects the current server-side state, so a codec memoized
+   * while plaintext is stale once encryption is enabled.
    *
    * @returns {object} { client, calls }
    */
@@ -487,7 +492,7 @@ describe('codec seam: configure() invalidates the memoized codec', () => {
         const isCollectionDescription =
           segments.length === 3 && segments[0] === 'space'
         // A configure PUT to the collection description with an `encryption`
-        // body flips the server-side marker on.
+        // body flips the server-side descriptor on.
         if (
           method === 'PUT' &&
           isCollectionDescription &&
@@ -561,18 +566,22 @@ describe('codec seam: configure() invalidates the memoized codec', () => {
   })
 })
 
-describe('codec seam: a transient marker-read failure does not poison the handle', () => {
+describe('codec seam: a transient descriptor-read failure does not poison the handle', () => {
   /**
-   * Builds a client whose collection-description GET (marker discovery) throws a
-   * transient 500 on its first call and succeeds (revealing the marker) on every
-   * call after. Resource writes succeed. This exercises the codec memo: a
-   * rejected resolution must not be cached, so the next call retries.
+   * Builds a client whose collection-description GET (descriptor discovery)
+   * throws a transient 500 on its first call and succeeds (revealing the
+   * descriptor) on every call after. Resource writes succeed. This exercises
+   * the codec memo: a rejected resolution must not be cached, so the next call
+   * retries.
    *
    * @returns {object} { client, calls }
    */
-  function flakyMarkerClient(): { client: WasClient; calls: RequestArgs[] } {
+  function flakyDescriptorClient(): {
+    client: WasClient
+    calls: RequestArgs[]
+  } {
     const calls: RequestArgs[] = []
-    let markerGets = 0
+    let descriptorGets = 0
     const log: string[] = []
     const encryption: EncryptionProvider = {
       async codecFor() {
@@ -590,9 +599,9 @@ describe('codec seam: a transient marker-read failure does not poison the handle
         const isCollectionDescription =
           segments.length === 3 && segments[0] === 'space'
         if (method === 'GET' && isCollectionDescription) {
-          markerGets++
-          if (markerGets === 1) {
-            // Transient server failure during marker discovery.
+          descriptorGets++
+          if (descriptorGets === 1) {
+            // Transient server failure during descriptor discovery.
             throw { status: 500, response: { status: 500 } }
           }
           const description = {
@@ -627,13 +636,15 @@ describe('codec seam: a transient marker-read failure does not poison the handle
     return { client, calls }
   }
 
-  it('retries marker discovery after a transient failure (same handle)', async () => {
-    const { client, calls } = flakyMarkerClient()
+  it('retries descriptor discovery after a transient failure (same handle)', async () => {
+    const { client, calls } = flakyDescriptorClient()
     const collection = client.space('s').collection('c')
-    // First call: the marker GET 500s, so the resolution rejects and must throw.
+    // First call: the descriptor GET 500s, so the resolution rejects and must
+    // throw.
     await expect(collection.put('r', { secret: 1 })).rejects.toThrow()
-    // The transient failure must not be cached: a retry re-runs marker discovery,
-    // resolves the encrypting codec, and writes encrypted bytes (not plaintext).
+    // The transient failure must not be cached: a retry re-runs descriptor
+    // discovery, resolves the encrypting codec, and writes encrypted bytes (not
+    // plaintext).
     await collection.put('r', { secret: 1 })
     const write = calls.find(
       call => call.method === 'PUT' && call.url?.endsWith('/c/r')

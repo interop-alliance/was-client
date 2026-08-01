@@ -3,7 +3,7 @@
  */
 /**
  * Shared EDV-over-WAS constants: the stored-envelope content types (the portable
- * default and the preferred JOSE marker) and the envelope byte serialization.
+ * default and the preferred JOSE type) and the envelope byte serialization.
  * Kept in one place so `WasTransport` and `EdvCodec` stay in lockstep instead
  * of each declaring their own copy.
  */

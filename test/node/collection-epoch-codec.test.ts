@@ -8,7 +8,7 @@
  *  - an epoch-bearing per-handle encryption override is forwarded to the
  *    provider's `codecFor` (so it resolves the epoch path, not the single-key
  *    path);
- *  - rotating the `encryption` marker on a handle (via `replaceDescription`, the
+ *  - rotating the `encryption` descriptor on a handle (via `replaceDescription`, the
  *    primitive the recipient operations build on) drops the memoized codec, so
  *    the next write on the SAME handle re-resolves under the new epoch rather
  *    than reusing the stale one.
@@ -58,7 +58,7 @@ function epochCodec(epoch: string, log: string[]): ResourceCodec {
 }
 
 describe('epoch-bearing encryption override', () => {
-  it('forwards the full marker so codecFor takes the epoch path', async () => {
+  it('forwards the full descriptor so codecFor takes the epoch path', async () => {
     const seen: Array<{
       encryption?: CollectionEncryption
       keys?: unknown
@@ -69,7 +69,7 @@ describe('epoch-bearing encryption override', () => {
         return identityCodec
       }
     }
-    const marker: CollectionEncryption = {
+    const descriptor: CollectionEncryption = {
       scheme: 'edv',
       epochs: [{ id: 'did:key:zEpoch1', recipients: [] }],
       currentEpoch: 'did:key:zEpoch1'
@@ -78,8 +78,8 @@ describe('epoch-bearing encryption override', () => {
     await resolveCodec(context, {
       spaceId: 's',
       collectionId: 'c',
-      // A full CollectionEncryption marker is a valid EncryptionOverride.
-      override: marker as unknown as EncryptionOverride
+      // A full CollectionEncryption descriptor is a valid EncryptionOverride.
+      override: descriptor as unknown as EncryptionOverride
     })
     expect(seen).toHaveLength(1)
     expect(seen[0]!.encryption?.epochs?.length).toBe(1)
@@ -90,16 +90,16 @@ describe('epoch-bearing encryption override', () => {
 describe('rotate-then-write on the same handle', () => {
   /**
    * Builds a `WasClient` whose collection-description GET returns a mutable
-   * marker (a PUT to the description path rotates it), so a handle's marker
-   * discovery re-reads the current epoch. `codecFor` records the epoch of every
-   * codec it builds.
+   * descriptor (a PUT to the description path rotates it), so a handle's
+   * descriptor discovery re-reads the current epoch. `codecFor` records the
+   * epoch of every codec it builds.
    *
    * @returns {object}
    */
   function rotatingClient() {
     const builtEpochs: string[] = []
     const encodeLog: string[] = []
-    let marker: CollectionEncryption = {
+    let descriptor: CollectionEncryption = {
       scheme: 'edv',
       epochs: [{ id: 'epoch-1', recipients: [] }],
       currentEpoch: 'epoch-1'
@@ -125,8 +125,9 @@ describe('rotate-then-write on the same handle', () => {
         const isCollectionDesc =
           segments.length === 3 && segments[0] === 'space'
         if (method === 'PUT' && isCollectionDesc && args.json?.encryption) {
-          // Rotate the served marker (what replaceDescription does server-side).
-          marker = args.json.encryption
+          // Rotate the served descriptor (what replaceDescription does
+          // server-side).
+          descriptor = args.json.encryption
           return {
             status: 200,
             headers: new Headers({ etag: '"v2"' }),
@@ -140,7 +141,7 @@ describe('rotate-then-write on the same handle', () => {
           const description = {
             id: 'c',
             type: ['Collection'],
-            encryption: marker
+            encryption: descriptor
           }
           return {
             status: 200,
@@ -176,16 +177,17 @@ describe('rotate-then-write on the same handle', () => {
     return { client, builtEpochs, encodeLog }
   }
 
-  it('re-resolves the codec under the new epoch after a marker rotation', async () => {
+  it('re-resolves the codec under the new epoch after a descriptor rotation', async () => {
     const { client, builtEpochs, encodeLog } = rotatingClient()
     const collection = client.space('s').collection('c')
 
-    // First write: marker discovery resolves the codec under epoch-1.
+    // First write: descriptor discovery resolves the codec under epoch-1.
     await collection.put('r1', { a: 1 })
     expect(builtEpochs).toEqual(['epoch-1'])
     expect(encodeLog).toEqual(['encode:epoch-1'])
 
-    // Rotate the marker on the same handle (the recipient ops CAS this field).
+    // Rotate the descriptor on the same handle (the recipient ops CAS this
+    // field).
     await collection.replaceDescription({
       encryption: {
         scheme: 'edv',

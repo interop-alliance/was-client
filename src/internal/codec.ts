@@ -3,18 +3,20 @@
  */
 /**
  * The identity (plaintext) resource codec and the per-collection codec
- * resolver. The identity codec wraps the existing `prepareBody` / `parseResource`
- * helpers so plaintext writes and reads are byte-for-byte unchanged.
+ * resolver. The identity codec wraps the existing `prepareBody` /
+ * `parseResource` helpers so plaintext writes and reads are byte-for-byte
+ * unchanged.
  *
  * The resolver splits policy from keys. Policy -- is this collection encrypted,
- * and under which scheme? -- is decided by, in order: (1) a per-handle override,
- * (2) the Collection's declared `encryption` marker (read lazily via
- * `describeCollection`), (3) plaintext. Only once policy says "encrypted" does it
- * ask the injected `EncryptionProvider` (a pure keystore) to build the codec;
- * if the keystore holds no keys it fails closed (throws), never silently
+ * and under which scheme? -- is decided by, in order: (1) a per-handle
+ * override, (2) the Collection's declared `encryption` descriptor (read lazily
+ * via `describeCollection`), (3) plaintext. Only once policy says "encrypted"
+ * does it ask the injected `EncryptionProvider` (a pure keystore) to build the
+ * codec; if the keystore holds no keys it fails closed (throws), never silently
  * downgrading to plaintext. A plaintext-only client (no provider) and an
- * override both short-circuit the marker read, so only an encryption-capable
- * client reading an undeclared handle pays the one-time `describe()` round-trip.
+ * override both short-circuit the descriptor read, so only an
+ * encryption-capable client reading an undeclared handle pays the one-time
+ * `describe()` round-trip.
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite, ResourceCodec } from '../codec.js'
@@ -34,9 +36,9 @@ import type {
 /**
  * A per-handle codec cache. Memoizes the in-flight resolution so concurrent
  * callers share one round-trip, but drops it on rejection so a transient
- * failure (e.g. a 500/network error during marker discovery) does not
+ * failure (e.g. a 500/network error during descriptor discovery) does not
  * permanently poison the handle, and exposes `reset()` for when a handle's
- * encryption state changes (e.g. `Collection.configure()` adds the marker).
+ * encryption state changes (e.g. `Collection.configure()` adds the descriptor).
  */
 export class CodecHolder {
   #promise?: Promise<ResourceCodec>
@@ -154,20 +156,20 @@ export const identityCodec: ResourceCodec = {
 }
 
 /**
- * Resolves the codec for a collection by deciding policy (override > marker >
- * plaintext) and then, when encrypted, building the encrypting codec from the
+ * Resolves the codec for a collection by deciding policy (override > descriptor
+ * > plaintext) and then, when encrypted, building the encrypting codec from the
  * keystore. Fails closed: a collection declared encrypted (by override or
- * marker) for which no codec can be built throws {@link EncryptionError} rather
- * than falling back to {@link identityCodec}.
+ * descriptor) for which no codec can be built throws {@link EncryptionError}
+ * rather than falling back to {@link identityCodec}.
  *
  * @param context {ClientContext}
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param [options.override] {EncryptionOverride}   per-handle override; wins
- *   over the marker and skips the marker read
+ *   over the descriptor and skips the descriptor read
  * @param [options.capability] {IZcap}   the handle's bound capability, used for
- *   the marker-discovery describe (which happens only when there is no
+ *   the descriptor-discovery describe (which happens only when there is no
  *   override and the client has a keystore)
  * @returns {Promise<ResourceCodec>}
  */
@@ -185,7 +187,7 @@ export async function resolveCodec(
     capability?: IZcap
   }
 ): Promise<ResourceCodec> {
-  // 1. A per-handle override wins and skips the marker read.
+  // 1. A per-handle override wins and skips the descriptor read.
   if (override !== undefined) {
     if (override === 'plaintext') {
       return identityCodec
@@ -195,9 +197,9 @@ export async function resolveCodec(
       collectionId,
       scheme: override.scheme,
       keys: override.keys,
-      // A full `CollectionEncryption` marker is itself a valid override
+      // A full `CollectionEncryption` descriptor is itself a valid override
       // (Space.createCollection pre-seeds exactly this). Forward the whole
-      // override as the `encryption` marker so an epoch-bearing override
+      // override as the `encryption` descriptor so an epoch-bearing override
       // resolves the epoch codec -- the provider's `codecFor` selects the epoch
       // path solely on `encryption?.epochs?.length > 0`, so dropping it here
       // would force the single-key path and break epoch reads/writes.
@@ -208,7 +210,7 @@ export async function resolveCodec(
   if (!context.encryption) {
     return identityCodec
   }
-  // 3. Otherwise the Collection's declared `encryption` marker decides -- but
+  // 3. Otherwise the Collection's declared `encryption` descriptor decides -- but
   // only if we could actually read the description. An unreadable description
   // (a resource-scoped capability cannot GET the collection description, and
   // WAS masks that as a 404) is ambiguous: it is indistinguishable from

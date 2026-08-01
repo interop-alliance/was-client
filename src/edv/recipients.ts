@@ -5,18 +5,18 @@
  * Recipient and key-epoch management for multi-recipient encrypted Collections:
  * initializing the first epoch, adding a reader (escrow -- history included),
  * and removing a reader (the full revoke-and-rotate procedure). Each operation
- * mutates a `CollectionEncryption` marker through the marker-store seam (see
- * `markerStore.ts`) -- the Collection Description's `encryption` member for the
- * `collection` sugar, or any explicit `store`, such as a marker hosted as a
- * plain JSON Resource -- and writes it back with a compare-and-swap
- * (`If-Match`), retrying on a concurrent change so two racing recipient edits
- * cannot clobber one another.
+ * mutates a `CollectionEncryption` descriptor through the descriptor-store seam
+ * (see `descriptorStore.ts`) -- the Collection Description's `encryption`
+ * member for the `collection` sugar, or any explicit `store`, such as a
+ * descriptor hosted as a plain JSON Resource -- and writes it back with a
+ * compare-and-swap (`If-Match`), retrying on a concurrent change so two racing
+ * recipient edits cannot clobber one another.
  *
  * The two axes stay separate and are both required to actually remove a reader:
  *
  * - **pull** -- the reader's server-side access. For a Collection this is the
  *   zcap the server checks at request time: revoking it stops the server
- *   serving that reader ciphertext. Immediate and total. A marker whose pull
+ *   serving that reader ciphertext. Immediate and total. A descriptor whose pull
  *   axis lives elsewhere (e.g. a DID document naming the readers) supplies a
  *   `pull` action instead of the default zcap revocation.
  * - **read** -- possession of an epoch key. Rotating the epoch means resources
@@ -34,8 +34,8 @@ import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { Collection } from '../Collection.js'
 import type { Space } from '../Space.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
-import { collectionMarkerStore } from './markerStore.js'
-import type { MarkerStore } from './markerStore.js'
+import { collectionDescriptorStore } from './descriptorStore.js'
+import type { EncryptionDescriptorStore } from './descriptorStore.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionEpoch,
@@ -67,23 +67,24 @@ export interface OwnerKey {
 const MAX_CAS_ATTEMPTS = 3
 
 /**
- * Initializes the first key epoch on a marker that has no epochs yet: mints a
- * fresh epoch key, wraps it to each initial recipient, and writes
- * `epochs: [epoch]` / `currentEpoch` back with a compare-and-swap. After this,
- * resources written by any recipient are encrypted under the epoch, and readers
- * unwrap it with their own key-agreement key.
+ * Initializes the first key epoch on a descriptor that has no epochs yet: mints
+ * a fresh epoch key, wraps it to each initial recipient, and writes `epochs:
+ * [epoch]` / `currentEpoch` back with a compare-and-swap. After this, resources
+ * written by any recipient are encrypted under the epoch, and readers unwrap it
+ * with their own key-agreement key.
  *
  * On the `collection` host the collection must already be declared encrypted
- * (its marker exists; this fills in the first epochs). On a store whose marker
- * host starts absent (e.g. `resourceMarkerStore`, whose roster resource does
- * not exist before the first init), the marker itself is created from scratch
- * with a create-if-absent guard (`If-None-Match: *`), so two racing first
- * inits cannot clobber one another.
+ * (its descriptor exists; this fills in the first epochs). On a store whose
+ * descriptor host starts absent (e.g. `resourceDescriptorStore`, whose roster
+ * resource does not exist before the first init), the descriptor itself is
+ * created from scratch with a create-if-absent guard (`If-None-Match: *`), so
+ * two racing first inits cannot clobber one another.
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the (already encrypted) collection
- *   whose Description hosts the marker; exactly one of `collection` / `store`
- * @param [options.store] {MarkerStore}   an explicit marker store
+ *   whose Description hosts the descriptor; exactly one of `collection` /
+ *   `store`
+ * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
  * @param options.recipients {RecipientPublicKey[]}   the initial readers' public
  *   key-agreement keys (each `id` is the reader's `kid`)
  * @param [options.epoch] {{ epochId: string, secret: Uint8Array }}   a
@@ -91,7 +92,7 @@ const MAX_CAS_ATTEMPTS = 3
  *   whose epoch key already exists (e.g. a per-user key being enrolled into
  *   its wrap-set roster). The `epochId` must be the key's did:key and `secret`
  *   its raw 32-byte private key, exactly what {@link mintEpoch} returns.
- * @returns {Promise<CollectionEncryption>}   the new marker
+ * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function initRecipients({
   collection,
@@ -100,7 +101,7 @@ export async function initRecipients({
   epoch: premintedEpoch
 }: {
   collection?: Collection
-  store?: MarkerStore
+  store?: EncryptionDescriptorStore
   recipients: RecipientPublicKey[]
   epoch?: { epochId: string; secret: Uint8Array }
 }): Promise<CollectionEncryption> {
@@ -118,31 +119,32 @@ export async function initRecipients({
       )
     )
   }
-  return casUpdateMarker({
-    store: markerStoreFor({ collection, store }),
-    // A store whose marker starts absent initializes from a bare `edv` marker
-    // (the create-if-absent branch); a Collection Description's marker always
-    // exists, so its adapter never reaches the seed.
+  return casUpdateDescriptor({
+    store: descriptorStoreFor({ collection, store }),
+    // A store whose descriptor starts absent initializes from a bare `edv`
+    // descriptor (the create-if-absent branch); a Collection Description's
+    // descriptor always exists, so its adapter never reaches the seed.
     seed: { scheme: 'edv' },
-    mutate: async marker => {
-      if (marker.epochs && marker.epochs.length > 0) {
+    mutate: async descriptor => {
+      if (descriptor.epochs && descriptor.epochs.length > 0) {
         throw new ValidationError(
           'This collection already has key epochs; use addRecipient to add a ' +
             'reader instead of initRecipients.'
         )
       }
-      // Declaring the first epochs, so stamp scheme version 1 when the marker
-      // does not already carry one, and authenticate the epoch configuration
-      // with a MAC keyed from this first epoch's secret (computed over the exact
-      // marker being written, since a CAS retry re-reads the marker).
+      // Declaring the first epochs, so stamp scheme version 1 when the
+      // descriptor does not already carry one, and authenticate the epoch
+      // configuration with a MAC keyed from this first epoch's secret (computed
+      // over the exact descriptor being written, since a CAS retry re-reads the
+      // descriptor).
       const next: CollectionEncryption = {
-        ...marker,
-        version: marker.version ?? 1,
+        ...descriptor,
+        version: descriptor.version ?? 1,
         epochs: [epoch],
         currentEpoch: epochId
       }
       const epochsMac = await computeEpochsMac({
-        marker: next,
+        descriptor: next,
         epochSecret: secret
       })
       return { ...next, epochsMac }
@@ -162,12 +164,12 @@ export async function initRecipients({
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the collection whose Description
- *   hosts the marker; exactly one of `collection` / `store`
- * @param [options.store] {MarkerStore}   an explicit marker store
+ *   hosts the descriptor; exactly one of `collection` / `store`
+ * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
  * @param options.recipient {RecipientPublicKey}   the new reader's public KAK
  * @param options.owner {OwnerKey}   the caller's own key-agreement key, to
  *   unwrap each epoch key for re-wrapping to the new reader
- * @returns {Promise<CollectionEncryption>}   the new marker
+ * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function addRecipient({
   collection,
@@ -176,14 +178,14 @@ export async function addRecipient({
   owner
 }: {
   collection?: Collection
-  store?: MarkerStore
+  store?: EncryptionDescriptorStore
   recipient: RecipientPublicKey
   owner: OwnerKey
 }): Promise<CollectionEncryption> {
-  return casUpdateMarker({
-    store: markerStoreFor({ collection, store }),
-    mutate: async marker => {
-      const epochs = marker.epochs
+  return casUpdateDescriptor({
+    store: descriptorStoreFor({ collection, store }),
+    mutate: async descriptor => {
+      const epochs = descriptor.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
           'Cannot addRecipient: this collection has no key epochs. Call ' +
@@ -231,7 +233,7 @@ export async function addRecipient({
           }
         })
       )
-      return { ...marker, epochs: nextEpochs }
+      return { ...descriptor, epochs: nextEpochs }
     }
   })
 }
@@ -268,8 +270,8 @@ export async function addRecipient({
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the collection whose Description
- *   hosts the marker; exactly one of `collection` / `store`
- * @param [options.store] {MarkerStore}   an explicit marker store
+ *   hosts the descriptor; exactly one of `collection` / `store`
+ * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
  * @param [options.space] {Space}   the collection's Space, for the default
  *   pull axis (zcap revocation); required together with `revoke` unless a
  *   custom `pull` is supplied
@@ -289,7 +291,7 @@ export async function addRecipient({
  *   self-describing `did:key`. May resolve `null` to signal drop-this-kid:
  *   the rotation then excludes that entry from the fresh epoch instead of
  *   throwing (subject to the no-recipients-remaining guard).
- * @returns {Promise<CollectionEncryption>}   the new marker
+ * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function removeRecipient({
   collection,
@@ -301,16 +303,16 @@ export async function removeRecipient({
   resolveRecipientKey = defaultResolveRecipientKey
 }: {
   collection?: Collection
-  store?: MarkerStore
+  store?: EncryptionDescriptorStore
   space?: Space
   recipientId: string
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
   resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
 }): Promise<CollectionEncryption> {
-  const markerStore = markerStoreFor({ collection, store })
+  const descriptorStore = descriptorStoreFor({ collection, store })
   // Resolve the pull axis up front, before any rotation, so a malformed call
-  // fails before the marker is mutated.
+  // fails before the descriptor is mutated.
   const pullAxis = resolvePullAxis({ space, revoke, pull })
   // 1. Read axis: mint a fresh epoch, wrap it to every remaining recipient,
   // append it, and repoint `currentEpoch` (compare-and-swap, retried on race).
@@ -318,10 +320,10 @@ export async function removeRecipient({
   // if the CAS keeps losing the race and throws, the reader is neither pulled
   // nor rotated, so `removeRecipient` is safely retryable to convergence.
   const { epochId, secret } = await mintEpoch()
-  const rotatedMarker = await casUpdateMarker({
-    store: markerStore,
-    mutate: async marker => {
-      const epochs = marker.epochs
+  const rotatedDescriptor = await casUpdateDescriptor({
+    store: descriptorStore,
+    mutate: async descriptor => {
+      const epochs = descriptor.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
           'Cannot removeRecipient: this collection has no key epochs.'
@@ -334,7 +336,7 @@ export async function removeRecipient({
       // it into the fresh epoch and hand it back read access. Older epochs exist
       // only so existing readers can decrypt history.
       const currentEpoch =
-        epochs.find(epoch => epoch.id === marker.currentEpoch) ??
+        epochs.find(epoch => epoch.id === descriptor.currentEpoch) ??
         epochs[epochs.length - 1]!
       // Already excluded from the current epoch? A prior attempt's rotation
       // landed (its revoke step then failed transiently and the caller
@@ -383,15 +385,15 @@ export async function removeRecipient({
         recipients: newRecipients
       }
       // Re-authenticate the epoch configuration under the NEW epoch's secret
-      // (the rotating caller just minted it), computed over the exact marker
-      // being written so a CAS retry re-MACs the re-read marker state.
+      // (the rotating caller just minted it), computed over the exact descriptor
+      // being written so a CAS retry re-MACs the re-read descriptor state.
       const next: CollectionEncryption = {
-        ...marker,
+        ...descriptor,
         epochs: [...epochs, newEpoch],
         currentEpoch: epochId
       }
       const epochsMac = await computeEpochsMac({
-        marker: next,
+        descriptor: next,
         epochSecret: secret
       })
       return { ...next, epochsMac }
@@ -402,7 +404,7 @@ export async function removeRecipient({
   // is durable -- the default zcap revocation, or the caller-supplied `pull`.
   await pullAxis()
 
-  return rotatedMarker
+  return rotatedDescriptor
 }
 
 /**
@@ -478,73 +480,73 @@ async function defaultResolveRecipientKey(
 }
 
 /**
- * Resolves the marker store a recipient operation targets: the explicit
+ * Resolves the descriptor store a recipient operation targets: the explicit
  * `store`, or the Collection Description adapter over the `collection` sugar.
  * Exactly one of the two must be supplied.
  *
  * @param options {object}
  * @param [options.collection] {Collection}
- * @param [options.store] {MarkerStore}
- * @returns {MarkerStore}
+ * @param [options.store] {EncryptionDescriptorStore}
+ * @returns {EncryptionDescriptorStore}
  */
-function markerStoreFor({
+function descriptorStoreFor({
   collection,
   store
 }: {
   collection?: Collection
-  store?: MarkerStore
-}): MarkerStore {
+  store?: EncryptionDescriptorStore
+}): EncryptionDescriptorStore {
   if (collection !== undefined && store !== undefined) {
     throw new ValidationError(
       'Pass either `collection` (the Collection Description hosts the ' +
-        'marker) or `store` (an explicit marker store), not both.'
+        'descriptor) or `store` (an explicit descriptor store), not both.'
     )
   }
   if (store !== undefined) {
     return store
   }
   if (collection !== undefined) {
-    return collectionMarkerStore({ collection })
+    return collectionDescriptorStore({ collection })
   }
   throw new ValidationError(
-    'A recipient operation needs its marker host: pass `collection` or ' +
+    'A recipient operation needs its descriptor host: pass `collection` or ' +
       '`store`.'
   )
 }
 
 /**
- * Reads the store's marker, applies `mutate`, and writes the result back with
- * a compare-and-swap (`If-Match`). Retries on a stale (`412`) validator,
- * re-reading the fresh marker each time, up to {@link MAX_CAS_ATTEMPTS};
+ * Reads the store's descriptor, applies `mutate`, and writes the result back
+ * with a compare-and-swap (`If-Match`). Retries on a stale (`412`) validator,
+ * re-reading the fresh descriptor each time, up to {@link MAX_CAS_ATTEMPTS};
  * surfaces {@link PreconditionFailedError} if it keeps losing the race. A
- * `mutate` that resolves `null` signals "no change needed" (the marker already
- * reflects the desired state, e.g. an idempotent retry): nothing is written
- * and the current marker is returned as-is.
+ * `mutate` that resolves `null` signals "no change needed" (the descriptor
+ * already reflects the desired state, e.g. an idempotent retry): nothing is
+ * written and the current descriptor is returned as-is.
  *
- * When the store reports no marker yet (`read()` resolves `null`, e.g. the
+ * When the store reports no descriptor yet (`read()` resolves `null`, e.g. the
  * resource adapter before the first `initRecipients`), the optional `seed` is
  * mutated instead and the result written with the store's create-if-absent
  * guard (`If-None-Match: *`). Only `initRecipients` passes a seed; without
- * one an absent marker is refused. Losing the create race (a concurrent
- * writer created the first marker) re-enters the loop and re-reads, like a
+ * one an absent descriptor is refused. Losing the create race (a concurrent
+ * writer created the first descriptor) re-enters the loop and re-reads, like a
  * stale CAS.
  *
  * @param options {object}
- * @param options.store {MarkerStore}
- * @param options.mutate {function}   marker to the next marker (may be async),
+ * @param options.store {EncryptionDescriptorStore}
+ * @param options.mutate {function}   descriptor to the next descriptor (may be async),
  *   or `null` to skip the write
- * @param [options.seed] {CollectionEncryption}   the marker to mutate when the
+ * @param [options.seed] {CollectionEncryption}   the descriptor to mutate when the
  *   store holds none yet
- * @returns {Promise<CollectionEncryption>}   the written (or current) marker
+ * @returns {Promise<CollectionEncryption>}   the written (or current) descriptor
  */
-async function casUpdateMarker({
+async function casUpdateDescriptor({
   store,
   mutate,
   seed
 }: {
-  store: MarkerStore
+  store: EncryptionDescriptorStore
   mutate: (
-    marker: CollectionEncryption
+    descriptor: CollectionEncryption
   ) => CollectionEncryption | null | Promise<CollectionEncryption | null>
   seed?: CollectionEncryption
 }): Promise<CollectionEncryption> {
@@ -554,13 +556,13 @@ async function casUpdateMarker({
     if (current === null) {
       if (seed === undefined) {
         throw new ValidationError(
-          'Cannot manage recipients: this marker store holds no encryption ' +
-            'marker yet. Call initRecipients first.'
+          'Cannot manage recipients: this descriptor store holds no encryption ' +
+            'descriptor yet. Call initRecipients first.'
         )
       }
       if (store.create === undefined) {
         throw new ValidationError(
-          'Cannot initialize recipients: this marker store holds no marker ' +
+          'Cannot initialize recipients: this descriptor store holds no descriptor ' +
             'and does not support creating one.'
         )
       }
@@ -573,17 +575,18 @@ async function casUpdateMarker({
         return created
       } catch (err) {
         if (err instanceof PreconditionFailedError) {
-          // A concurrent writer created the first marker: re-read and re-apply.
+          // A concurrent writer created the first descriptor: re-read and
+          // re-apply.
           lastError = err
           continue
         }
         throw err
       }
     }
-    const next = await mutate(current.marker)
+    const next = await mutate(current.descriptor)
     if (next === null) {
-      // The marker already reflects the desired state: nothing to write.
-      return current.marker
+      // The descriptor already reflects the desired state: nothing to write.
+      return current.descriptor
     }
     try {
       await store.replace(next, { ifMatch: current.etag })
@@ -599,7 +602,7 @@ async function casUpdateMarker({
   }
   throw new PreconditionFailedError(
     `Recipient change lost the compare-and-swap race after ${MAX_CAS_ATTEMPTS} ` +
-      'attempts (another writer kept updating the stored marker). ' +
+      'attempts (another writer kept updating the stored descriptor). ' +
       'Retry the operation.',
     { cause: lastError as Error }
   )

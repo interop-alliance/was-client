@@ -14,21 +14,22 @@
  *
  * A collection may be single-recipient (only the wallet's own key-agreement key
  * reads it) or multi-recipient. Multi-recipient collections carry a
- * `CollectionEncryption` marker with key epochs: each epoch wraps one collection
- * key to every reader, writes encrypt under the marker's `currentEpoch`, and
- * removing a reader appends a fresh epoch that excludes it. This module is the
- * **read** axis only: it turns a reader's own key-agreement key plus the marker
- * into a cipher that encrypts under the current epoch and decrypts any epoch that
- * reader still holds a key for.
+ * `CollectionEncryption` descriptor with key epochs: each epoch wraps one
+ * collection key to every reader, writes encrypt under the descriptor's
+ * `currentEpoch`, and removing a reader appends a fresh epoch that excludes it.
+ * This module is the **read** axis only: it turns a reader's own key-agreement
+ * key plus the descriptor into a cipher that encrypts under the current epoch
+ * and decrypts any epoch that reader still holds a key for.
  *
- * Rotation is prospective, never retroactive: appending an epoch does not rewrite
- * existing resources, and because resource ids are content-derived they stay
- * stable across a rotation. Reads stay tolerant of unstamped pre-epoch resources
- * indefinitely -- an envelope encrypted straight to the key-agreement key (before
- * any epoch existed) always decrypts through the single-key path.
+ * Rotation is prospective, never retroactive: appending an epoch does not
+ * rewrite existing resources, and because resource ids are content-derived they
+ * stay stable across a rotation. Reads stay tolerant of unstamped pre-epoch
+ * resources indefinitely -- an envelope encrypted straight to the key-agreement
+ * key (before any epoch existed) always decrypts through the single-key path.
  *
- * Runtime note (React Native): this exercises the cipher's AES-KW (with a pure-JS
- * Hermes fallback) and `TextDecoder`; both must be present on the device.
+ * Runtime note (React Native): this exercises the cipher's AES-KW (with a
+ * pure-JS Hermes fallback) and `TextDecoder`; both must be present on the
+ * device.
  */
 import type {
   IKeyAgreementKey,
@@ -53,9 +54,9 @@ export type { DocCipher } from '../sync/types.js'
  * -- on an epoch-aware cipher -- any epoch this cipher knows about. It signals
  * that the caller's cached Collection Description may be stale and should be
  * re-read before retrying: an epoch rotation emits no change-feed entry, so a
- * cipher built from a pre-rotation marker meets envelopes stamped with a newer
- * epoch it has never seen. It also fires on a single-key cipher that meets an
- * envelope encrypted to a different key-agreement key entirely.
+ * cipher built from a pre-rotation descriptor meets envelopes stamped with a
+ * newer epoch it has never seen. It also fires on a single-key cipher that
+ * meets an envelope encrypted to a different key-agreement key entirely.
  */
 export class UnknownEpochError extends Error {
   constructor({
@@ -79,10 +80,11 @@ export class UnknownEpochError extends Error {
 /**
  * A wallet's own key-agreement key as a `RecipientPublicKey` -- the "recipient
  * zero" entry a caller passes to `initRecipients` when it first makes a
- * collection multi-recipient (the owner must be a recipient of every epoch, or it
- * could write envelopes it cannot itself read). An `X25519KeyAgreementKey2020`
- * carries a did:key-shaped `id` and a `publicKeyMultibase`, so its `kid`'s
- * fragment resolves through the default did:key recipient resolver.
+ * collection multi-recipient (the owner must be a recipient of every epoch, or
+ * it could write envelopes it cannot itself read). An
+ * `X25519KeyAgreementKey2020` carries a did:key-shaped `id` and a
+ * `publicKeyMultibase`, so its `kid`'s fragment resolves through the default
+ * did:key recipient resolver.
  *
  * @param options {object}
  * @param options.keyAgreementKey {IKeyAgreementKey}
@@ -147,15 +149,15 @@ function envelopeRecipientKids(envelope: Json): string[] {
  * id updated in place via `sequence` (the mutable head-document model, driven by
  * `encryptUpdate`).
  *
- * With no `encryption` marker (or a marker with no epochs) the cipher is single-
- * recipient: the key-agreement key encrypts and decrypts directly. With epochs on
- * the marker the cipher becomes multi-recipient: it ALSO builds an epoch codec
- * that encrypts every write under the marker's `currentEpoch` and decrypts any
- * epoch this reader still holds a key for. The single-key codec stays built
- * either way, so a pre-epoch envelope keeps decrypting -- a permanent tolerance,
- * not a migration shim.
+ * With no `encryption` descriptor (or a descriptor with no epochs) the cipher
+ * is single- recipient: the key-agreement key encrypts and decrypts directly.
+ * With epochs on the descriptor the cipher becomes multi-recipient: it ALSO
+ * builds an epoch codec that encrypts every write under the descriptor's
+ * `currentEpoch` and decrypts any epoch this reader still holds a key for. The
+ * single-key codec stays built either way, so a pre-epoch envelope keeps
+ * decrypting -- a permanent tolerance, not a migration shim.
  *
- * The reader must be a recipient of every epoch on the marker (the owner is
+ * The reader must be a recipient of every epoch on the descriptor (the owner is
  * "recipient zero"). If it is a recipient of none, building the epoch codec
  * throws {@link KeyUnwrapError}; this surfaces it with a clearer error rather
  * than silently writing envelopes other recipients cannot read.
@@ -166,7 +168,7 @@ function envelopeRecipientKids(envelope: Json): string[] {
  * @param options.collectionId {string}   labels errors; the codec is agnostic
  * @param [options.idDerivation] {'content' | 'random'}   defaults to `'content'`
  * @param [options.encryption] {CollectionEncryption}   the collection's
- *   encryption marker; when it carries key epochs, the cipher becomes
+ *   encryption descriptor; when it carries key epochs, the cipher becomes
  *   multi-recipient
  * @returns {Promise<DocCipher>}
  */
@@ -202,9 +204,9 @@ export async function createEdvDocCipher({
   }
 
   // On a multi-recipient collection, ALSO build the epoch codec: same provider
-  // and keys, but with the marker so `codecFor` resolves this reader's per-epoch
-  // keys. Writes go under the marker's `currentEpoch`; reads pick the epoch key
-  // matching the envelope's recipient kid.
+  // and keys, but with the descriptor so `codecFor` resolves this reader's
+  // per-epoch keys. Writes go under the descriptor's `currentEpoch`; reads pick
+  // the epoch key matching the envelope's recipient kid.
   const hasEpochs =
     encryption?.epochs !== undefined && encryption.epochs.length > 0
   let epochCodec: Awaited<ReturnType<typeof provider.codecFor>> | undefined
@@ -268,9 +270,10 @@ export async function createEdvDocCipher({
 
   return {
     async encrypt({ data }: { data: Json }) {
-      // `encode` with no caller id is the add() path: encrypt, then either derive
-      // and stamp the content-hash id (`'content'`) or use the minted random id.
-      // Writes go under the current epoch on a multi-recipient cipher.
+      // `encode` with no caller id is the add() path: encrypt, then either
+      // derive and stamp the content-hash id (`'content'`) or use the minted
+      // random id. Writes go under the current epoch on a multi-recipient
+      // cipher.
       const codec = epochCodec ?? directCodec
       const encoded = await codec.encode({
         data: data as Extract<Json, object>
@@ -311,7 +314,7 @@ export async function createEdvDocCipher({
       //      direct codec (permanent tolerance, not a migration shim);
       //   2. else, on an epoch cipher, any kid names a known epoch -- the epoch
       //      codec;
-      //   3. else UnknownEpochError: the marker is likely stale, or a single-key
+      //   3. else UnknownEpochError: the descriptor is likely stale, or a single-key
       //      cipher met an envelope encrypted to a different key entirely.
       const kids = envelopeRecipientKids(envelope)
       const codec = selectCodec()
@@ -330,7 +333,7 @@ export async function createEdvDocCipher({
         }
         // A malformed/empty-kid envelope falls through to the direct codec so it
         // can surface its own decrypt error; a non-empty set of unroutable kids
-        // is the stale-marker signal.
+        // is the stale-descriptor signal.
         if (kids.length === 0) {
           return directCodec!
         }

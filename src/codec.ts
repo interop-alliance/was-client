@@ -22,9 +22,9 @@
  *
  * - **Policy** (is this collection encrypted, and under which scheme?) is
  *   decided by a per-handle override, else the Collection's declared
- *   `encryption` marker (read from its Description; see `internal/codec.ts`),
- *   else plaintext. A delegated consumer that did not create the collection
- *   discovers this from the marker.
+ *   `encryption` descriptor (read from its Description; see
+ *   `internal/codec.ts`), else plaintext. A delegated consumer that did not
+ *   create the collection discovers this from the descriptor.
  * - **Keys** (the material to encrypt/decrypt with) come from the injected
  *   {@link EncryptionProvider}, a pure keystore. When policy says "encrypted"
  *   but the keystore holds no keys, core fails closed (throws) rather than
@@ -105,8 +105,8 @@ export interface ResourceCodec {
    * @param input.data {ResourceData}                 the plaintext value
    * @param [input.contentType] {string}              caller-supplied content type
    * @param [input.current] {HttpResponse | null}     the current stored response
-   *   (or `null` if absent), supplied only when {@link conditionalWrites} is set,
-   *   so the codec can derive the next `sequence` and the `If-Match` ETag.
+   *   (or `null` if absent), supplied only when {@link conditionalWrites} is
+   *   set, so the codec can derive the next `sequence` and the `If-Match` ETag.
    * @returns {Promise<EncodedWrite>}
    */
   encode(input: {
@@ -177,11 +177,12 @@ export interface ResourceCodec {
  * and never imports the crypto graph.
  *
  * It is **not** the policy decider: core calls {@link codecFor} only after it
- * has already decided -- from a per-handle override or the Collection's declared
- * `encryption` marker -- that a collection is encrypted. `codecFor` then turns
- * the declared `scheme` (and the client's keys for the collection) into a codec.
- * Returning `null` means "I hold no keys for this collection"; core then fails
- * closed (throws) rather than silently downgrading to plaintext.
+ * has already decided -- from a per-handle override or the Collection's
+ * declared `encryption` descriptor -- that a collection is encrypted.
+ * `codecFor` then turns the declared `scheme` (and the client's keys for the
+ * collection) into a codec. Returning `null` means "I hold no keys for this
+ * collection"; core then fails closed (throws) rather than silently downgrading
+ * to plaintext.
  */
 export interface EncryptionProvider {
   /**
@@ -192,11 +193,11 @@ export interface EncryptionProvider {
    * @param input.collectionId {string}
    * @param input.scheme {string}   the declared encryption scheme (e.g. `edv`)
    * @param [input.encryption] {CollectionEncryption}   the full encryption
-   *   marker read from the Collection Description (when core discovered it via
-   *   the marker rather than an override). Carries the key-epoch public
-   *   references (`epochs` / `currentEpoch`) a multi-recipient provider needs to
-   *   resolve per-epoch keys; absent on an override-driven resolution, where the
-   *   provider falls back to its single-key path.
+   *   descriptor read from the Collection Description (when core discovered it
+   *   via the descriptor rather than an override). Carries the key-epoch public
+   *   references (`epochs` / `currentEpoch`) a multi-recipient provider needs
+   *   to resolve per-epoch keys; absent on an override-driven resolution, where
+   *   the provider falls back to its single-key path.
    * @param [input.keys] {unknown}   override-supplied key material (a per-handle
    *   `encryption` override); when present the provider uses it instead of its
    *   keystore. Opaque to core; the provider interprets it per `scheme`.

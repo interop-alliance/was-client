@@ -3,21 +3,21 @@
  */
 /**
  * Idempotent Space + Collection provisioning for a synced collection. Re-running
- * is safe: the server upserts the Space and allows a late encryption-marker
+ * is safe: the server upserts the Space and allows a late encryption-descriptor
  * declaration, so reconnecting an existing account is a no-op upgrade.
  */
 import type { WasClient } from '../WasClient.js'
 
 /**
- * Ensures the controller's Space exists and one synced collection is configured.
- * An `'edv'` collection declares the encryption marker `{ scheme: 'edv' }` (so
- * the server stores only ciphertext it can never decrypt); a `'plaintext'`
- * collection is configured without one, with `force` so the marker-less upsert
- * can create a fresh collection (running with the root capability, a 404 from
- * the pre-merge describe really means absent). A public collection additionally
- * gets a collection-level world-read grant (`setPublic`), which is what makes a
- * resource URL in it resolve for anyone. Runs full-tier -- the client invokes
- * its own root capability.
+ * Ensures the controller's Space exists and one synced collection is
+ * configured. An `'edv'` collection declares the encryption descriptor `{
+ * scheme: 'edv' }` (so the server stores only ciphertext it can never decrypt);
+ * a `'plaintext'` collection is configured without one, with `force` so the
+ * descriptor-less upsert can create a fresh collection (running with the root
+ * capability, a 404 from the pre-merge describe really means absent). A public
+ * collection additionally gets a collection-level world-read grant
+ * (`setPublic`), which is what makes a resource URL in it resolve for anyone.
+ * Runs full-tier -- the client invokes its own root capability.
  *
  * @param options {object}
  * @param options.was {WasClient}

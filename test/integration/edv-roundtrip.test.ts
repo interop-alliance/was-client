@@ -123,7 +123,7 @@ describeLive('EDV-over-WAS round trip (live server)', () => {
     expect(JSON.stringify(stored)).not.toContain('do not leak')
 
     // Stored as application/json (the zero-server-change default). The
-    // preferred `application/jose+json` marker needs a server-side parser.
+    // preferred `application/jose+json` descriptor needs a server-side parser.
     const meta = await collection.resource(inserted.id).meta()
     expect(meta?.contentType).toMatch(/application\/json/)
   })
@@ -145,9 +145,9 @@ describeLive('EDV-over-WAS round trip (live server)', () => {
     expect(refetched.content).toEqual({ v: 2 })
   })
 
-  it('can store the preferred application/jose+json marker', async () => {
+  it('can store the preferred application/jose+json descriptor', async () => {
     // A server that registers an `application/*+json` content-type parser (the
-    // reference server does) accepts the preferred EDV marker.
+    // reference server does) accepts the preferred EDV descriptor.
     const edvTransport = new WasTransport({
       was,
       spaceId: space.id,

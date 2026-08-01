@@ -85,8 +85,8 @@ async function makeCodec(
     resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
     ...options
   })
-  // Core decides policy (marker/override) and then asks the provider to build
-  // the codec for the declared scheme; mirror that here.
+  // Core decides policy (descriptor/override) and then asks the provider to
+  // build the codec for the declared scheme; mirror that here.
   const codec = await provider.codecFor({
     spaceId: 's',
     collectionId: 'c',
@@ -388,7 +388,7 @@ describe('EdvCodec: text', () => {
   })
 })
 
-describe('EdvCodec: caller-data collision (no in-band marker)', () => {
+describe('EdvCodec: caller-data collision (no in-band descriptor)', () => {
   it('round-trips a JSON object shaped like the binary container as itself', async () => {
     const codec = await makeCodec()
     const value = { bytes: 'aGk=' }
@@ -620,7 +620,8 @@ describe('EdvCodec: conditional writes (sequence enforcement)', () => {
       data: { v: 2 },
       current: currentFrom(first.body, null)
     })
-    // The sequence still advances, but with no validator there is no precondition.
+    // The sequence still advances, but with no validator there is no
+    // precondition.
     expect(sequenceOf(second.body)).toBe(1)
     expect(second.ifMatch).toBeUndefined()
     expect(second.ifNoneMatch).toBeUndefined()
@@ -671,7 +672,8 @@ describe('EdvCodec: decrypt failure discrimination', () => {
     const failure = await codec.decode(response).catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(IntegrityError)
     expect(failure).not.toBeInstanceOf(KeyUnwrapError)
-    // Still under the EncryptionError umbrella (fail-closed handling catches it).
+    // Still under the EncryptionError umbrella (fail-closed handling catches
+    // it).
     expect(failure).toBeInstanceOf(EncryptionError)
   })
 

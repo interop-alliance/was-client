@@ -3,15 +3,15 @@
  */
 /**
  * Authenticated epoch configuration for multi-recipient encrypted Collections:
- * a MAC over a Collection `encryption` marker's epoch configuration, keyed from
- * the current epoch's secret (which the server never holds). It lets a reader
- * detect a server-side rollback of `currentEpoch` or a fabricated epoch list --
- * a malicious server cannot forge a valid MAC without the epoch secret.
+ * a MAC over a Collection `encryption` descriptor's epoch configuration, keyed
+ * from the current epoch's secret (which the server never holds). It lets a
+ * reader detect a server-side rollback of `currentEpoch` or a fabricated epoch
+ * list -- a malicious server cannot forge a valid MAC without the epoch secret.
  *
  * The MAC covers only `scheme`, `version`, `currentEpoch`, and the ordered list
  * of epoch ids -- deliberately NOT the recipient entries, so adding a recipient
  * (which cannot be forged without the epoch secret anyway) does not invalidate
- * the MAC. Covering `version` makes stripping the marker's scheme version
+ * the MAC. Covering `version` makes stripping the descriptor's scheme version
  * MAC-detectable.
  *
  * Documented limitation (mirrors Cryptomator's versionMac): a server can still
@@ -69,22 +69,22 @@ async function deriveMacKey(epochSecret: Uint8Array): Promise<CryptoKey> {
 }
 
 /**
- * Builds the MACed payload bytes for a marker's epoch configuration:
+ * Builds the MACed payload bytes for a descriptor's epoch configuration:
  * `UTF8("was-epoch-config/v1." + JSON.stringify({ scheme, version,
  * currentEpoch, epochs }))`, with `version` normalized to `null` when absent
  * and `epochs` the ordered list of epoch id strings. The object member order is
  * fixed so both sides serialize identically.
  *
- * @param marker {CollectionEncryption}   the marker whose epoch configuration is
+ * @param descriptor {CollectionEncryption}   the descriptor whose epoch configuration is
  *   being authenticated
  * @returns {Uint8Array}
  */
-function macPayload(marker: CollectionEncryption): ArrayBuffer {
+function macPayload(descriptor: CollectionEncryption): ArrayBuffer {
   const payload = {
-    scheme: marker.scheme,
-    version: marker.version ?? null,
-    currentEpoch: marker.currentEpoch,
-    epochs: (marker.epochs ?? []).map(epoch => epoch.id)
+    scheme: descriptor.scheme,
+    version: descriptor.version ?? null,
+    currentEpoch: descriptor.currentEpoch,
+    epochs: (descriptor.epochs ?? []).map(epoch => epoch.id)
   }
   const bytes = TEXT_ENCODER.encode(
     MAC_PAYLOAD_PREFIX + JSON.stringify(payload)
@@ -96,24 +96,29 @@ function macPayload(marker: CollectionEncryption): ArrayBuffer {
 }
 
 /**
- * Computes the `epochsMac` field for a marker under the current epoch's secret.
- * Compute this over the exact marker state being written (member fields already
- * stamped), since a compare-and-swap retry re-reads the marker.
+ * Computes the `epochsMac` field for a descriptor under the current epoch's
+ * secret. Compute this over the exact descriptor state being written (member
+ * fields already stamped), since a compare-and-swap retry re-reads the
+ * descriptor.
  *
  * @param options {object}
- * @param options.marker {CollectionEncryption}   the marker being written
+ * @param options.descriptor {CollectionEncryption}   the descriptor being written
  * @param options.epochSecret {Uint8Array}   the 32-byte current epoch secret
  * @returns {Promise<CollectionEncryptionEpochsMac>}
  */
 export async function computeEpochsMac({
-  marker,
+  descriptor,
   epochSecret
 }: {
-  marker: CollectionEncryption
+  descriptor: CollectionEncryption
   epochSecret: Uint8Array
 }): Promise<CollectionEncryptionEpochsMac> {
   const key = await deriveMacKey(epochSecret)
-  const signature = await crypto.subtle.sign('HMAC', key, macPayload(marker))
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    macPayload(descriptor)
+  )
   return {
     v: 1,
     alg: 'HS256',
@@ -122,25 +127,25 @@ export async function computeEpochsMac({
 }
 
 /**
- * Verifies a marker's `epochsMac` against a recomputation from the current
+ * Verifies a descriptor's `epochsMac` against a recomputation from the current
  * epoch's secret. Returns `false` on any mismatch (or a malformed `mac`); the
  * caller decides the error semantics. The MAC construction's own version/alg
  * (`v` / `alg`) is validated by the caller before this is called.
  *
  * @param options {object}
- * @param options.marker {CollectionEncryption}   the marker to verify (its
+ * @param options.descriptor {CollectionEncryption}   the descriptor to verify (its
  *   `epochsMac.mac` is the tag under test)
  * @param options.epochSecret {Uint8Array}   the 32-byte current epoch secret
  * @returns {Promise<boolean>}
  */
 export async function verifyEpochsMac({
-  marker,
+  descriptor,
   epochSecret
 }: {
-  marker: CollectionEncryption
+  descriptor: CollectionEncryption
   epochSecret: Uint8Array
 }): Promise<boolean> {
-  const epochsMac = marker.epochsMac
+  const epochsMac = descriptor.epochsMac
   if (!epochsMac) {
     return false
   }
@@ -155,6 +160,6 @@ export async function verifyEpochsMac({
     'HMAC',
     key,
     mac as unknown as ArrayBuffer,
-    macPayload(marker)
+    macPayload(descriptor)
   )
 }

@@ -11,8 +11,9 @@
  *
  * - `createEdvEncryption` -- the EDV keystore for the handle seam. Pass its
  *   result as `WasClient`'s `encryption` option; it supplies keys for the
- *   collections declared encrypted (by their `encryption` marker or a per-handle
- *   override), so `collection.put`/`get` transparently encrypt/decrypt.
+ *   collections declared encrypted (by their `encryption` descriptor or a
+ *   per-handle override), so `collection.put`/`get` transparently
+ *   encrypt/decrypt.
  * - `WasTransport` -- the standalone `@interop/edv-client`
  *   transport, for driving an `EdvClient` directly against WAS.
  *
@@ -20,17 +21,20 @@
  * `addRecipient` / `removeRecipient` manage the readers and rotate the epoch
  * key, so the same `createEdvEncryption` provider transparently encrypts each
  * write under the current epoch and decrypts any epoch a reader still holds.
- * They mutate the marker through the marker-store seam: the Collection
- * Description by default, or any `MarkerStore` -- e.g. `resourceMarkerStore`
- * for a marker hosted as a plain JSON Resource.
+ * They mutate the descriptor through the descriptor-store seam: the Collection
+ * Description by default, or any `EncryptionDescriptorStore` -- e.g.
+ * `resourceDescriptorStore` for a descriptor hosted as a plain JSON Resource.
  */
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
 export { WasTransport, JOSE_CONTENT_TYPE } from './WasTransport.js'
 export { initRecipients, addRecipient, removeRecipient } from './recipients.js'
 export type { OwnerKey, RecipientPublicKey } from './recipients.js'
-export { collectionMarkerStore, resourceMarkerStore } from './markerStore.js'
-export type { MarkerStore } from './markerStore.js'
+export {
+  collectionDescriptorStore,
+  resourceDescriptorStore
+} from './descriptorStore.js'
+export type { EncryptionDescriptorStore } from './descriptorStore.js'
 export { mintEpoch, epochKeyIdFor, unwrapEpochSecret } from './epochCrypto.js'
 export { verifyEpochsMac } from './epochMac.js'
 export {

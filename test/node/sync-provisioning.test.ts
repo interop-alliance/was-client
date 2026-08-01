@@ -4,10 +4,10 @@
 /**
  * Unit tests for `ensureSpaceAndCollection`. The module imports the client only
  * as a type, so at runtime it is pure -- all effects flow through an injected
- * `was`. These assert the configure call shapes (the `edv` encryption marker in
- * particular), the world-read grant for a public collection, idempotency (a
- * re-run issues the same upserts), and the labelled-error + `cause` wrapping on
- * failure, without a live server.
+ * `was`. These assert the configure call shapes (the `edv` encryption
+ * descriptor in particular), the world-read grant for a public collection,
+ * idempotency (a re-run issues the same upserts), and the labelled-error +
+ * `cause` wrapping on failure, without a live server.
  */
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '../../src/index.js'
@@ -76,7 +76,7 @@ const SPACE = 'space-abc'
 const COLL = 'private-credentials'
 
 describe('ensureSpaceAndCollection', () => {
-  it('configures the space then the collection with the edv encryption marker', async () => {
+  it('configures the space then the collection with the edv encryption descriptor', async () => {
     const space = new FakeSpace()
     const was = new FakeWas(space)
     await ensureSpaceAndCollection({
@@ -97,7 +97,7 @@ describe('ensureSpaceAndCollection', () => {
     expect(space.collectionObj.setPublicCalls).toBe(0)
   })
 
-  it('configures a plaintext public collection without the marker and grants world read', async () => {
+  it('configures a plaintext public collection without the descriptor and grants world read', async () => {
     const space = new FakeSpace()
     const was = new FakeWas(space)
     await ensureSpaceAndCollection({
