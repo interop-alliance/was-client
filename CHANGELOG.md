@@ -1,5 +1,29 @@
 # @interop/was-client Changelog
 
+## 0.24.0 - TBD
+
+### Added
+
+- `replaceRecipient` on the `./edv` subpath: replaces one reader (or several --
+  `retire` takes a kid or an array) with another in ONE descriptor write, the
+  shape of a key rotation cascading over a collection (e.g. a per-user key
+  replaced by its successor). The incoming recipient is escrowed into every
+  epoch, history included (`addRecipient`'s semantics), and the current epoch is
+  rotated off the retiring recipient(s) (`removeRecipient`'s semantics), in a
+  single compare-and-swap -- two requests total against the four a compose of
+  the two halves would cost, and no intermediate state in which both keys are
+  current. Idempotent to convergence like its halves: a naive re-run after a
+  crash appends zero redundant epochs, and an escrow-only write leaves the
+  `epochsMac` untouched (it binds the epoch configuration, not the recipient
+  wraps). The pull-axis contract is `removeRecipient`'s verbatim (default zcap
+  revocation, or a caller-supplied `pull` run only after the rotation is
+  durable). The rotation ceiling is unchanged: nothing is re-encrypted, so a
+  retired key still opens every pre-rotation epoch it was a recipient of.
+- The `./edv` subpath exports `resolveEpochKeys` and its `ResolvedEpochKeys`
+  type (previously internal to the cipher construction), so a consumer holding a
+  bare `CollectionEncryption` descriptor can resolve the per-epoch read/write
+  keys its own recipient entries unwrap.
+
 ## 0.23.0 - 2026-08-01
 
 ### Changed

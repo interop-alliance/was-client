@@ -28,7 +28,12 @@
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
 export { WasTransport, JOSE_CONTENT_TYPE } from './WasTransport.js'
-export { initRecipients, addRecipient, removeRecipient } from './recipients.js'
+export {
+  initRecipients,
+  addRecipient,
+  removeRecipient,
+  replaceRecipient
+} from './recipients.js'
 export type { OwnerKey, RecipientPublicKey } from './recipients.js'
 export {
   collectionDescriptorStore,
@@ -37,6 +42,8 @@ export {
 export type { EncryptionDescriptorStore } from './descriptorStore.js'
 export { mintEpoch, epochKeyIdFor, unwrapEpochSecret } from './epochCrypto.js'
 export { verifyEpochsMac } from './epochMac.js'
+export { resolveEpochKeys } from './epochKeys.js'
+export type { ResolvedEpochKeys } from './epochKeys.js'
 export {
   createEdvDocCipher,
   ownerRecipient,

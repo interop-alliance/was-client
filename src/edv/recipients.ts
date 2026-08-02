@@ -408,6 +408,195 @@ export async function removeRecipient({
 }
 
 /**
+ * Replaces one reader (or several) with another in ONE descriptor write -- the
+ * shape of a key rotation cascading over a collection (e.g. a per-user key
+ * replaced by its successor): the incoming recipient is escrowed into EVERY
+ * epoch (history included, {@link addRecipient}'s semantics) and the current
+ * epoch is rotated off the retiring recipient(s) ({@link removeRecipient}'s
+ * semantics), in a single compare-and-swap. Two requests total (the read and
+ * the CAS write) against the four a compose of addRecipient + removeRecipient
+ * would cost, and no intermediate state in which both keys are current.
+ *
+ * Idempotent to convergence like its two halves: an epoch already carrying the
+ * incoming recipient is left untouched; when additionally no retiring
+ * recipient remains in the current epoch, nothing is written at all -- a naive
+ * re-run after a crash appends zero redundant epochs. An escrow-only state
+ * (the incoming recipient missing from some epoch but no retiring recipient
+ * current) writes the escrow wraps without minting an epoch; the `epochsMac`
+ * is untouched then, since it binds the epoch configuration, not the
+ * recipient wraps.
+ *
+ * The pull-axis contract is {@link removeRecipient}'s verbatim: the default
+ * zcap revocation (`space` + `revoke`) or a caller-supplied `pull` action,
+ * run only after the rotation is durable. A caller whose pull axis has
+ * already run elsewhere (e.g. a DID-document edit under a current-key-set
+ * rule) passes a no-op `pull`.
+ *
+ * The rotation ceiling is unchanged: nothing is re-encrypted, so a retired
+ * key still opens every pre-rotation epoch it was a recipient of.
+ *
+ * @param options {object}
+ * @param [options.collection] {Collection}   the collection whose Description
+ *   hosts the descriptor; exactly one of `collection` / `store`
+ * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
+ * @param [options.space] {Space}   the default pull axis, with `revoke`
+ * @param options.retire {string | string[]}   the retiring recipient kid(s),
+ *   dropped from the fresh epoch's roster
+ * @param options.recipient {RecipientPublicKey}   the incoming reader's public
+ *   key-agreement key, escrowed into every epoch and wrapped into the fresh one
+ * @param options.owner {OwnerKey}   the caller's own key-agreement key,
+ *   unwrapping each epoch key for the escrow -- it must be a recipient of
+ *   every epoch (a retiring key that was escrowed everywhere qualifies)
+ * @param [options.revoke] {IDelegatedZcap | IDelegatedZcap[]}   the default
+ *   pull axis, with `space`
+ * @param [options.pull] {function}   a caller-supplied pull action; mutually
+ *   exclusive with `space` / `revoke`
+ * @param [options.resolveRecipientKey] {function}   resolves a remaining
+ *   recipient's kid for the fresh epoch, `null` to drop it -- the
+ *   {@link removeRecipient} contract (the incoming recipient never routes
+ *   through it)
+ * @returns {Promise<CollectionEncryption>}   the new descriptor
+ */
+export async function replaceRecipient({
+  collection,
+  store,
+  space,
+  retire,
+  recipient,
+  owner,
+  revoke,
+  pull,
+  resolveRecipientKey = defaultResolveRecipientKey
+}: {
+  collection?: Collection
+  store?: EncryptionDescriptorStore
+  space?: Space
+  retire: string | string[]
+  recipient: RecipientPublicKey
+  owner: OwnerKey
+  revoke?: IDelegatedZcap | IDelegatedZcap[]
+  pull?: () => Promise<void>
+  resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
+}): Promise<CollectionEncryption> {
+  const descriptorStore = descriptorStoreFor({ collection, store })
+  const pullAxis = resolvePullAxis({ space, revoke, pull })
+  const retiring = Array.isArray(retire) ? retire : [retire]
+  if (retiring.length === 0) {
+    throw new ValidationError(
+      'replaceRecipient needs at least one retiring recipient kid; use ' +
+        'addRecipient for a pure escrow.'
+    )
+  }
+  if (retiring.includes(recipient.id)) {
+    throw new ValidationError(
+      'replaceRecipient cannot retire the incoming recipient itself.'
+    )
+  }
+  const { epochId, secret } = await mintEpoch()
+  const rotatedDescriptor = await casUpdateDescriptor({
+    store: descriptorStore,
+    mutate: async descriptor => {
+      const epochs = descriptor.epochs
+      if (!epochs || epochs.length === 0) {
+        throw new ValidationError(
+          'Cannot replaceRecipient: this collection has no key epochs.'
+        )
+      }
+      // Escrow the incoming recipient into every epoch it is missing from
+      // (addRecipient's loop, inlined so the whole replacement is one write).
+      let escrowChanged = false
+      const escrowed = await Promise.all(
+        epochs.map(async (epoch): Promise<CollectionEncryptionEpoch> => {
+          if (
+            epoch.recipients.some(entry => entry.header.kid === recipient.id)
+          ) {
+            return epoch
+          }
+          const ownEntry = epoch.recipients.find(
+            entry => entry.header.kid === owner.keyAgreementKey.id
+          )
+          if (!ownEntry) {
+            throw new ValidationError(
+              `Cannot replaceRecipient: the caller is not a recipient of ` +
+                `epoch "${epoch.id}", so it cannot unwrap that epoch key to ` +
+                'escrow it to the incoming reader.'
+            )
+          }
+          const epochSecret = await unwrapEpochSecret({
+            entry: ownEntry,
+            keyAgreementKey: owner.keyAgreementKey
+          })
+          if (!epochSecret) {
+            throw new ValidationError(
+              `Cannot replaceRecipient: unwrapping epoch "${epoch.id}" with ` +
+                "the caller's key-agreement key failed."
+            )
+          }
+          escrowChanged = true
+          return {
+            ...epoch,
+            recipients: [
+              ...epoch.recipients,
+              await wrapEpochSecret({ epochSecret, recipient })
+            ]
+          }
+        })
+      )
+      // Rotate only when a retiring kid is still current (the removeRecipient
+      // no-op rule, so a naive re-run appends zero redundant epochs).
+      const currentEpoch =
+        escrowed.find(epoch => epoch.id === descriptor.currentEpoch) ??
+        escrowed[escrowed.length - 1]!
+      const rotating = currentEpoch.recipients.some(entry =>
+        retiring.includes(entry.header.kid)
+      )
+      if (!rotating) {
+        return escrowChanged ? { ...descriptor, epochs: escrowed } : null
+      }
+      const remaining = new Set<string>()
+      for (const entry of currentEpoch.recipients) {
+        if (!retiring.includes(entry.header.kid)) {
+          remaining.add(entry.header.kid)
+        }
+      }
+      // The escrow above already placed the incoming recipient in the current
+      // epoch, so it is in `remaining`; wrap it directly (its public key is in
+      // hand) and route only the other survivors through the resolver.
+      const wrapped = await Promise.all(
+        [...remaining].map(async kid => {
+          if (kid === recipient.id) {
+            return wrapEpochSecret({ epochSecret: secret, recipient })
+          }
+          const resolved = await resolveRecipientKey(kid)
+          return resolved === null
+            ? null
+            : wrapEpochSecret({ epochSecret: secret, recipient: resolved })
+        })
+      )
+      const newRecipients = wrapped.filter(entry => entry !== null)
+      const newEpoch: CollectionEncryptionEpoch = {
+        id: epochId,
+        recipients: newRecipients
+      }
+      const next: CollectionEncryption = {
+        ...descriptor,
+        epochs: [...escrowed, newEpoch],
+        currentEpoch: epochId
+      }
+      const epochsMac = await computeEpochsMac({
+        descriptor: next,
+        epochSecret: secret
+      })
+      return { ...next, epochsMac }
+    }
+  })
+
+  await pullAxis()
+
+  return rotatedDescriptor
+}
+
+/**
  * Resolves the pull axis of {@link removeRecipient} -- exactly one of the
  * default zcap revocation (`space` + `revoke`) or a caller-supplied `pull`
  * action -- into the single action run after the rotation is durable.
