@@ -141,9 +141,9 @@ export interface WasSyncPort {
  * The members reconcile a plaintext (identity) cipher, a single-recipient EDV
  * cipher, and a multi-recipient (key-epoch) EDV cipher:
  *
- * - `encrypt` may surface the `epoch` id a multi-recipient write encrypted
- *   under (the descriptor's `currentEpoch`); absent on a single-key or plaintext
- *   cipher.
+ * - `encrypt` and `encryptUpdate` may surface the `epoch` id a multi-recipient
+ *   write encrypted under (the descriptor's `currentEpoch`); absent on a
+ *   single-key or plaintext cipher.
  * - `encryptUpdate` is optional -- present only for a mutable, random-id
  *   collection that re-encrypts a head document in place under its existing id
  *   (advancing the envelope `sequence`). A content-addressed cipher (plaintext
@@ -158,6 +158,6 @@ export interface DocCipher {
     id: string
     data: Json
     current: Json
-  }): Promise<{ id: string; envelope: Json }>
+  }): Promise<{ id: string; envelope: Json; epoch?: string }>
   decrypt(options: { envelope: Json }): Promise<Json>
 }

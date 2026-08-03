@@ -20,9 +20,13 @@
  * Scope (documents-only):
  *
  * - **Restrict-mode ids.** `add()` mints a 128-bit multibase EDV id; the WAS
- *   resource id IS that EDV id. `put(id, ...)` accepts only an EDV-format id --
- *   a human-readable id is rejected (it would leak onto the URL). Carry a
- *   human-readable label inside the encrypted content instead. By default the
+ *   resource id IS that EDV id. A *create* by `put(id, ...)` accepts only an
+ *   EDV-format id -- a human-readable id is rejected (it would leak onto the
+ *   URL). Carry a human-readable label inside the encrypted content instead.
+ *   An *update* (the write path pre-read a current envelope) accepts the
+ *   pre-existing resource id verbatim, whatever its format: the id is already
+ *   on the server, so rejecting it prevents no leak -- it would only strand
+ *   documents authored by clients with their own id scheme. By default the
  *   minted id is random (`generateId()`, the classic mutable-document model);
  *   with `idDerivation: 'content'` it is content-derived instead -- encrypt
  *   first, then `deriveId()` a truncated SHA-256 of the JWE ciphertext and
@@ -246,11 +250,15 @@ export class EdvCodec implements ResourceCodec {
     contentType?: string
     current?: HttpResponse | null
   }): Promise<EncodedWrite> {
-    if (id !== undefined) {
+    if (id !== undefined && !current) {
       try {
         // A full multibase decode + multihash length check (the same assertion
         // the EDV core applies), tighter than a charset heuristic: it rejects a
-        // human-readable id, which would otherwise leak onto the URL.
+        // human-readable id, which would otherwise leak onto the URL. Only
+        // creates are guarded: on an update (`current` present, pre-read from
+        // the server) the id IS already the server resource id, so refusing it
+        // prevents no leak -- it only blocks editing a document another client
+        // authored under its own id scheme (e.g. a legacy uuid row).
         assertDocId(id)
       } catch {
         throw new ValidationError(

@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.25.0 - TBD
+
+### Changed
+
+- The EDV codec's update path (`encode` with a pre-read `current` envelope) now
+  accepts the pre-existing resource id verbatim instead of asserting the EDV
+  multibase id format. The assertion guards _creates_ against a human-readable
+  id leaking onto the URL; on an update the id is already the server resource
+  id, so rejecting it prevented no leak -- it only stranded documents authored
+  by clients with their own id scheme (e.g. legacy uuid contact rows), making
+  them uneditable through `DocCipher.encryptUpdate`. Creates keep the guard
+  unchanged.
+- `DocCipher.encryptUpdate` now surfaces the `epoch` id a multi-recipient update
+  encrypted under (the descriptor's `currentEpoch`), matching `encrypt`, so an
+  updater can re-stamp the write's key epoch.
+
 ## 0.24.0 - 2026-08-01
 
 ### Added

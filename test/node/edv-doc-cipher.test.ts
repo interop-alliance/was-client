@@ -102,6 +102,31 @@ describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
     const seqOf = (env: Json) => (env as { sequence?: number }).sequence
     expect(seqOf(updated.envelope)).toBe((seqOf(first.envelope) ?? 0) + 1)
   })
+
+  it('updates in place under a pre-existing foreign (uuid) id', async () => {
+    // A head document authored by a client that minted its own row id (e.g. a
+    // legacy freewallet uuidv7 contact): the id is already the server resource
+    // id, so the update path takes it verbatim instead of asserting the EDV
+    // multibase format (which only guards creates against URL leaks).
+    const keys = await makeKeys()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'contacts',
+      idDerivation: 'random'
+    })
+
+    const uuid = '01890a5d-ac96-774b-bcce-b302099a8057'
+    const { envelope } = await cipher.encrypt({ data: { v: 1 } })
+    const updated = await cipher.encryptUpdate!({
+      id: uuid,
+      data: { v: 2 },
+      current: envelope
+    })
+    expect(updated.id).toBe(uuid)
+    expect(await cipher.decrypt({ envelope: updated.envelope })).toEqual({
+      v: 2
+    })
+  })
 })
 
 describe('ownerRecipient', () => {

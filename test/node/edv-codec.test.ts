@@ -213,6 +213,41 @@ describe('EdvCodec: id strategy', () => {
     const decoded = await codec.decode(responseFrom(updated.body))
     expect(decoded).toEqual({ v: 2 })
   })
+
+  it('accepts a pre-existing non-EDV id verbatim on the update path', async () => {
+    // A resource authored by a client that mints its own row ids (e.g. a
+    // legacy uuid): the id is already on the server, so an update (`current`
+    // pre-read) must take it verbatim -- refusing it prevents no leak, it only
+    // strands the document. The create path keeps the guard.
+    const codec = await makeCodec()
+    const uuid = '01890a5d-ac96-774b-bcce-b302099a8057'
+    const prior = await codec.encode({ data: { v: 1 } })
+    const priorEnvelope = JSON.parse(
+      new TextDecoder().decode(prior.body as Uint8Array)
+    ) as Record<string, unknown>
+    const updated = await codec.encode({
+      id: uuid,
+      data: { v: 2 },
+      current: {
+        data: priorEnvelope,
+        async json() {
+          return priorEnvelope
+        },
+        headers: { get: () => '"1"' }
+      } as unknown as HttpResponse
+    })
+    expect(updated.id).toBe(uuid)
+    expect(updated.ifMatch).toBe('"1"')
+    // The re-encrypted envelope binds the true (foreign) resource id, and
+    // decodes under it.
+    expect(await codec.decode(responseFrom(updated.body), uuid)).toEqual({
+      v: 2
+    })
+    // Without `current` (a create), the same id is still rejected.
+    await expect(codec.encode({ id: uuid, data: { v: 1 } })).rejects.toThrow(
+      ValidationError
+    )
+  })
 })
 
 describe("EdvCodec: content-derived ids (idDerivation: 'content')", () => {

@@ -304,8 +304,7 @@ export async function createEdvDocCipher({
         data: data as Extract<Json, object>,
         current: priorResponse
       })
-      const { id: encodedId, envelope } = readEncoded(encoded)
-      return { id: encodedId, envelope }
+      return readEncoded(encoded)
     },
 
     async decrypt({ envelope }: { envelope: Json }) {
