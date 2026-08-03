@@ -1,5 +1,23 @@
 # @interop/was-client Changelog
 
+## 0.26.0 - TBD
+
+### Added
+
+- `x25519RecipientFromDidKey` and `isEd25519DidKey` on the `./edv` subpath: the
+  single rule for deriving a grantee's epoch-recipient key from the Ed25519
+  `did:key` a capability request already names as its `controller`, producing a
+  `RecipientPublicKey` ready for `initRecipients` / `addRecipient` /
+  `replaceRecipient`. The recipient key therefore never travels on the wire --
+  an explicit `{ id, publicKeyMultibase }` field would let a request pair
+  controller DID A with recipient key B, and a granting client would have to
+  verify the binding anyway, which for a `did:key` means performing this exact
+  derivation. The derived id (`did:key:z6Mk...#z6LS...`) is byte-identical to
+  what the grantee derives on its own side and resolves through the default
+  `did:key` recipient resolver, so both axes of a share -- the pull zcap and the
+  epoch roster entry -- point at the same entity. Previously each wallet carried
+  its own copy of the Ed25519-to-Montgomery conversion.
+
 ## 0.25.0 - 2026-08-03
 
 ### Changed

@@ -24,6 +24,11 @@
  * They mutate the descriptor through the descriptor-store seam: the Collection
  * Description by default, or any `EncryptionDescriptorStore` -- e.g.
  * `resourceDescriptorStore` for a descriptor hosted as a plain JSON Resource.
+ *
+ * `x25519RecipientFromDidKey` is the one rule for turning a grantee named only
+ * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a
+ * recipient key is always derived from an identifier both sides already hold
+ * rather than transmitted.
  */
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
@@ -35,6 +40,10 @@ export {
   replaceRecipient
 } from './recipients.js'
 export type { OwnerKey, RecipientPublicKey } from './recipients.js'
+export {
+  isEd25519DidKey,
+  x25519RecipientFromDidKey
+} from './didKeyRecipient.js'
 export {
   collectionDescriptorStore,
   resourceDescriptorStore

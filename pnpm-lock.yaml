@@ -24,8 +24,8 @@ importers:
         specifier: ^1.0.4
         version: 1.0.4
       '@interop/minimal-cipher':
-        specifier: ^7.8.0
-        version: 7.8.0
+        specifier: ^7.8.1
+        version: 7.8.1
       '@interop/storage-core':
         specifier: ^0.3.12
         version: 0.3.12
@@ -274,6 +274,10 @@ packages:
 
   '@interop/minimal-cipher@7.8.0':
     resolution: {integrity: sha512-O3bKm2V4SjDAOqgMKSUYF9b+HRK47e8Cy52I45Fs7MXcGSkT6nOrbhEHwwKGX+BH0WoaNSqsKVdyt03MvoPZgA==}
+    engines: {node: '>=24.0'}
+
+  '@interop/minimal-cipher@7.8.1':
+    resolution: {integrity: sha512-LvnfEO2D2HmVuZi0g17PWA2+P2ZsPPWAHetTZe24T5oRElPVb5G2RDrwpxX2ZMGTXhZWT0uxFt0ShgPFAjjY4g==}
     engines: {node: '>=24.0'}
 
   '@interop/storage-core@0.3.12':
@@ -1428,6 +1432,16 @@ snapshots:
   '@interop/minimal-cipher@7.8.0':
     dependencies:
       '@interop/data-integrity-core': 8.3.0
+      '@interop/ecdsa-multikey': 2.3.3
+      '@noble/ciphers': 2.2.0
+      '@noble/curves': 2.2.0
+      '@scure/base': 2.2.0
+      '@stablelib/chacha': 2.0.1
+      '@stablelib/chacha20poly1305': 2.0.1
+
+  '@interop/minimal-cipher@7.8.1':
+    dependencies:
+      '@interop/data-integrity-core': 8.4.0
       '@interop/ecdsa-multikey': 2.3.3
       '@noble/ciphers': 2.2.0
       '@noble/curves': 2.2.0
