@@ -1,5 +1,12 @@
 # @interop/was-client Changelog
 
+## Unreleased - TBD
+
+### Changed
+
+- Update dependencies; upgrade TypeScript to 6.x (pinned to `~6.0.3`), setting
+  the now-required explicit `rootDir` in both tsconfigs.
+
 ## 0.27.0 - 2026-08-05
 
 ### Added
