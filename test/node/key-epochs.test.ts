@@ -565,6 +565,50 @@ describe('initRecipients', () => {
     })
     expect(aliceKeys!.readKeys.length).toBe(1)
   })
+
+  it('stamps epochsSig from the signEpochs hook beside the epochsMac', async () => {
+    const alice = await makeReader()
+    const state = { encryption: { scheme: 'edv' } as CollectionEncryption }
+    const fake = {
+      describeWithEtag: async () => ({
+        description: {
+          id: 'c',
+          type: ['Collection'],
+          encryption: state.encryption
+        },
+        etag: '"v1"'
+      }),
+      replaceDescription: async (desc: {
+        encryption?: CollectionEncryption
+      }) => {
+        state.encryption = desc.encryption!
+        return { description: { id: 'c', type: ['Collection'] }, etag: '"v2"' }
+      }
+    }
+    const seen: Uint8Array[] = []
+    const descriptor = await initRecipients({
+      collection: fake as unknown as Collection,
+      recipients: [
+        { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+      ],
+      signEpochs: async ({ payload }) => {
+        seen.push(payload)
+        return { v: 1, alg: 'EdDSA', kid: 'signer-kid', sig: 'signature' }
+      }
+    })
+    expect(descriptor.epochsMac).toBeDefined()
+    expect(descriptor.epochsSig).toEqual({
+      v: 1,
+      alg: 'EdDSA',
+      kid: 'signer-kid',
+      sig: 'signature'
+    })
+    // The signer saw the canonical payload over the exact descriptor written.
+    expect(seen.length).toBe(1)
+    const payloadText = new TextDecoder().decode(seen[0]!)
+    expect(payloadText.startsWith('was-epoch-config-sig/v1.')).toBe(true)
+    expect(payloadText).toContain(descriptor.currentEpoch!)
+  })
 })
 
 describe('removeRecipient security', () => {
@@ -637,6 +681,38 @@ describe('removeRecipient security', () => {
       currentEpoch: epochId
     }
   }
+
+  it('re-signs a signed rotation and strips the stale sig when unsigned', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const seeded = await seedDescriptor([alice, bob])
+    seeded.epochsSig = { v: 1, alg: 'EdDSA', kid: 'old-kid', sig: 'old-sig' }
+
+    // A rotation WITH a signer replaces the stale signature.
+    const signedFake = mutableCollection(structuredClone(seeded))
+    const signed = await removeRecipient({
+      collection: signedFake as unknown as Collection,
+      recipientId: bob.kak.id,
+      pull: async () => {},
+      signEpochs: async () => ({
+        v: 1,
+        alg: 'EdDSA',
+        kid: 'fresh-kid',
+        sig: 'fresh-sig'
+      })
+    })
+    expect(signed.epochsSig!.kid).toBe('fresh-kid')
+
+    // A rotation WITHOUT a signer drops the now-invalid signature instead of
+    // carrying it forward over a changed epoch configuration.
+    const unsignedFake = mutableCollection(structuredClone(seeded))
+    const unsigned = await removeRecipient({
+      collection: unsignedFake as unknown as Collection,
+      recipientId: bob.kak.id,
+      pull: async () => {}
+    })
+    expect(unsigned.epochsSig).toBeUndefined()
+  })
 
   it('does not re-add a previously removed reader on a later removal', async () => {
     // Readers {A, X, Y} in epoch1. Remove X, then remove Y. The survivor set of

@@ -47,7 +47,8 @@ import {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
-import { computeEpochsMac } from './epochMac.js'
+import { computeEpochsMac, epochsSigPayload } from './epochMac.js'
+import type { EpochsSigner } from './epochMac.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
 
 export type { RecipientPublicKey } from './epochCrypto.js'
@@ -65,6 +66,43 @@ export interface OwnerKey {
  * before surfacing {@link PreconditionFailedError}.
  */
 const MAX_CAS_ATTEMPTS = 3
+
+/**
+ * Stamps the epoch-configuration authenticators onto a descriptor about to be
+ * written: the `epochsMac` under the current epoch's secret always, and the
+ * detached `epochsSig` when the caller supplied a signer. Without a signer any
+ * prior `epochsSig` is dropped rather than carried forward -- the epoch
+ * configuration just changed, so a stale signature over the old configuration
+ * would only ever fail verification.
+ *
+ * @param options {object}
+ * @param options.descriptor {CollectionEncryption}   the exact descriptor
+ *   state being written (epochs / currentEpoch already updated)
+ * @param options.epochSecret {Uint8Array}   the current epoch's 32-byte secret
+ * @param [options.signEpochs] {EpochsSigner}   the caller's epoch-config signer
+ * @returns {Promise<CollectionEncryption>}   the descriptor with `epochsMac`
+ *   (and `epochsSig`, when signed) stamped
+ */
+async function stampEpochsAuth({
+  descriptor,
+  epochSecret,
+  signEpochs
+}: {
+  descriptor: CollectionEncryption
+  epochSecret: Uint8Array
+  signEpochs?: EpochsSigner
+}): Promise<CollectionEncryption> {
+  const epochsMac = await computeEpochsMac({ descriptor, epochSecret })
+  const stamped: CollectionEncryption = { ...descriptor, epochsMac }
+  if (signEpochs) {
+    stamped.epochsSig = await signEpochs({
+      payload: epochsSigPayload(stamped)
+    })
+  } else {
+    delete stamped.epochsSig
+  }
+  return stamped
+}
 
 /**
  * Initializes the first key epoch on a descriptor that has no epochs yet: mints
@@ -92,18 +130,23 @@ const MAX_CAS_ATTEMPTS = 3
  *   whose epoch key already exists (e.g. a per-user key being enrolled into
  *   its wrap-set roster). The `epochId` must be the key's did:key and `secret`
  *   its raw 32-byte private key, exactly what {@link mintEpoch} returns.
+ * @param [options.signEpochs] {EpochsSigner}   signs the epoch configuration
+ *   being written, stamping the descriptor's `epochsSig` beside its
+ *   `epochsMac`
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function initRecipients({
   collection,
   store,
   recipients,
-  epoch: premintedEpoch
+  epoch: premintedEpoch,
+  signEpochs
 }: {
   collection?: Collection
   store?: EncryptionDescriptorStore
   recipients: RecipientPublicKey[]
   epoch?: { epochId: string; secret: Uint8Array }
+  signEpochs?: EpochsSigner
 }): Promise<CollectionEncryption> {
   if (recipients.length === 0) {
     throw new ValidationError(
@@ -143,11 +186,11 @@ export async function initRecipients({
         epochs: [epoch],
         currentEpoch: epochId
       }
-      const epochsMac = await computeEpochsMac({
+      return stampEpochsAuth({
         descriptor: next,
-        epochSecret: secret
+        epochSecret: secret,
+        signEpochs
       })
-      return { ...next, epochsMac }
     }
   })
 }
@@ -291,6 +334,9 @@ export async function addRecipient({
  *   self-describing `did:key`. May resolve `null` to signal drop-this-kid:
  *   the rotation then excludes that entry from the fresh epoch instead of
  *   throwing (subject to the no-recipients-remaining guard).
+ * @param [options.signEpochs] {EpochsSigner}   signs the rotated epoch
+ *   configuration, stamping the descriptor's `epochsSig` beside its
+ *   `epochsMac`
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function removeRecipient({
@@ -300,7 +346,8 @@ export async function removeRecipient({
   recipientId,
   revoke,
   pull,
-  resolveRecipientKey = defaultResolveRecipientKey
+  resolveRecipientKey = defaultResolveRecipientKey,
+  signEpochs
 }: {
   collection?: Collection
   store?: EncryptionDescriptorStore
@@ -309,6 +356,7 @@ export async function removeRecipient({
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
   resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
+  signEpochs?: EpochsSigner
 }): Promise<CollectionEncryption> {
   const descriptorStore = descriptorStoreFor({ collection, store })
   // Resolve the pull axis up front, before any rotation, so a malformed call
@@ -392,11 +440,11 @@ export async function removeRecipient({
         epochs: [...epochs, newEpoch],
         currentEpoch: epochId
       }
-      const epochsMac = await computeEpochsMac({
+      return stampEpochsAuth({
         descriptor: next,
-        epochSecret: secret
+        epochSecret: secret,
+        signEpochs
       })
-      return { ...next, epochsMac }
     }
   })
 
@@ -455,6 +503,9 @@ export async function removeRecipient({
  *   recipient's kid for the fresh epoch, `null` to drop it -- the
  *   {@link removeRecipient} contract (the incoming recipient never routes
  *   through it)
+ * @param [options.signEpochs] {EpochsSigner}   signs the rotated epoch
+ *   configuration, stamping the descriptor's `epochsSig` beside its
+ *   `epochsMac` (an escrow-only write leaves both untouched)
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function replaceRecipient({
@@ -466,7 +517,8 @@ export async function replaceRecipient({
   owner,
   revoke,
   pull,
-  resolveRecipientKey = defaultResolveRecipientKey
+  resolveRecipientKey = defaultResolveRecipientKey,
+  signEpochs
 }: {
   collection?: Collection
   store?: EncryptionDescriptorStore
@@ -477,6 +529,7 @@ export async function replaceRecipient({
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
   resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
+  signEpochs?: EpochsSigner
 }): Promise<CollectionEncryption> {
   const descriptorStore = descriptorStoreFor({ collection, store })
   const pullAxis = resolvePullAxis({ space, revoke, pull })
@@ -583,11 +636,11 @@ export async function replaceRecipient({
         epochs: [...escrowed, newEpoch],
         currentEpoch: epochId
       }
-      const epochsMac = await computeEpochsMac({
+      return stampEpochsAuth({
         descriptor: next,
-        epochSecret: secret
+        epochSecret: secret,
+        signEpochs
       })
-      return { ...next, epochsMac }
     }
   })
 

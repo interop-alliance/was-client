@@ -53,6 +53,7 @@ export type {
   CollectionWritableFields,
   CollectionEncryption,
   CollectionEncryptionEpoch,
+  CollectionEncryptionEpochsSig,
   CollectionEncryptionRecipient,
   CollectionSummary,
   CollectionsList,

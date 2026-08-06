@@ -49,8 +49,18 @@ export {
   resourceDescriptorStore
 } from './descriptorStore.js'
 export type { EncryptionDescriptorStore } from './descriptorStore.js'
-export { mintEpoch, epochKeyIdFor, unwrapEpochSecret } from './epochCrypto.js'
-export { verifyEpochsMac } from './epochMac.js'
+export {
+  mintEpoch,
+  epochKeyIdFor,
+  unwrapEpochSecret,
+  wrapEpochSecret
+} from './epochCrypto.js'
+export {
+  computeEpochsMac,
+  epochsSigPayload,
+  verifyEpochsMac
+} from './epochMac.js'
+export type { EpochsSigner } from './epochMac.js'
 export { resolveEpochKeys } from './epochKeys.js'
 export type { ResolvedEpochKeys } from './epochKeys.js'
 export {

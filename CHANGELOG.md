@@ -1,5 +1,23 @@
 # @interop/was-client Changelog
 
+## 0.27.0 - TBD
+
+### Added
+
+- `signEpochs` option on `initRecipients` / `removeRecipient` /
+  `replaceRecipient` (the epoch-configuration writers): a caller-supplied
+  `EpochsSigner` that signs the epoch configuration being written, stamping the
+  descriptor's new `epochsSig` member beside its `epochsMac`. Lets a consumer
+  bind epoch acceptance to a root of trust the storage host cannot mint (the MAC
+  alone cannot authenticate a configuration to a reader meeting an epoch for the
+  first time, since its key is unwrapped from the served descriptor itself). An
+  unsigned write to a changed configuration drops any stale `epochsSig` rather
+  than carrying it forward.
+- `epochsSigPayload` on the `./edv` subpath: the canonical, domain-separated
+  payload bytes an `epochsSig` signs, so signer and verifier construct
+  byte-identical input from the descriptor alone. `computeEpochsMac` and
+  `wrapEpochSecret` are now exported from `./edv` as well.
+
 ## 0.26.0 - 2026-08-03
 
 ### Added
