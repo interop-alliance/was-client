@@ -67,7 +67,7 @@ describeLive('resource-hosted descriptor store (live server)', () => {
   let carol: Awaited<ReturnType<typeof makeReader>>
 
   const collectionId = 'keys'
-  const rosterId = 'puk.json'
+  const rosterId = 'user-key.json'
 
   beforeAll(async () => {
     const keyPair = await Ed25519VerificationKey.generate()

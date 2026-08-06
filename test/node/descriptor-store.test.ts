@@ -84,7 +84,7 @@ function fakeRosterResource(initial?: CollectionEncryption | JsonObject) {
   }
   const etag = () => `"v${state.version}"`
   const resource = {
-    id: 'puk.json',
+    id: 'user-key.json',
     getWithEtag: async () =>
       state.content === null ? null : { data: state.content, etag: etag() },
     put: async (

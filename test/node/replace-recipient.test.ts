@@ -45,11 +45,11 @@ async function makeReader(): Promise<{
 
 /**
  * A per-user-key stand-in: the epoch construction's key pair, presented the
- * way the wallet presents a PUK (kid = `epochKeyIdFor(id)`).
+ * way the wallet presents a user key (kid = `epochKeyIdFor(id)`).
  *
  * @returns {Promise<object>}
  */
-async function makePukLike(): Promise<{
+async function makeUserKeyLike(): Promise<{
   id: string
   secret: Uint8Array
   kid: string
@@ -127,12 +127,15 @@ async function seedDescriptor(
 
 describe('replaceRecipient', () => {
   it('escrows the incoming key into history and rotates off the retiring key in ONE write', async () => {
-    const oldPuk = await makePukLike()
-    const newPuk = await makePukLike()
+    const oldUserKey = await makeUserKeyLike()
+    const newUserKey = await makeUserKeyLike()
     const app = await makeReader()
     const store = memoryStore(
       await seedDescriptor([
-        { kid: oldPuk.kid, publicKeyMultibase: oldPuk.publicKeyMultibase },
+        {
+          kid: oldUserKey.kid,
+          publicKeyMultibase: oldUserKey.publicKeyMultibase
+        },
         { kid: app.kak.id, publicKeyMultibase: app.publicKeyMultibase }
       ])
     )
@@ -140,12 +143,12 @@ describe('replaceRecipient', () => {
 
     const result = await replaceRecipient({
       store,
-      retire: oldPuk.kid,
+      retire: oldUserKey.kid,
       recipient: {
-        id: newPuk.kid,
-        publicKeyMultibase: newPuk.publicKeyMultibase
+        id: newUserKey.kid,
+        publicKeyMultibase: newUserKey.publicKeyMultibase
       },
-      owner: { keyAgreementKey: oldPuk.kak },
+      owner: { keyAgreementKey: oldUserKey.kak },
       pull: async () => {}
     })
 
@@ -154,34 +157,34 @@ describe('replaceRecipient', () => {
     // The historical epoch gained the incoming key's escrow wrap.
     const historic = result.epochs!.find(epoch => epoch.id === historicEpochId)!
     const historicKids = historic.recipients.map(entry => entry.header.kid)
-    expect(historicKids).toContain(newPuk.kid)
-    expect(historicKids).toContain(oldPuk.kid)
+    expect(historicKids).toContain(newUserKey.kid)
+    expect(historicKids).toContain(oldUserKey.kid)
     // The fresh current epoch carries the survivors plus the incoming key,
     // never the retired one.
     const current = result.epochs!.find(
       epoch => epoch.id === result.currentEpoch
     )!
     const currentKids = current.recipients.map(entry => entry.header.kid)
-    expect(currentKids).toContain(newPuk.kid)
+    expect(currentKids).toContain(newUserKey.kid)
     expect(currentKids).toContain(app.kak.id)
-    expect(currentKids).not.toContain(oldPuk.kid)
+    expect(currentKids).not.toContain(oldUserKey.kid)
     // The incoming key unwraps both epochs; the retired key fails on the
     // fresh one.
     const currentEntryNew = current.recipients.find(
-      entry => entry.header.kid === newPuk.kid
+      entry => entry.header.kid === newUserKey.kid
     )!
     const freshSecret = await unwrapEpochSecret({
       entry: currentEntryNew,
-      keyAgreementKey: newPuk.kak
+      keyAgreementKey: newUserKey.kak
     })
     expect(freshSecret).not.toBeNull()
     const historicEntryNew = historic.recipients.find(
-      entry => entry.header.kid === newPuk.kid
+      entry => entry.header.kid === newUserKey.kid
     )!
     expect(
       await unwrapEpochSecret({
         entry: historicEntryNew,
-        keyAgreementKey: newPuk.kak
+        keyAgreementKey: newUserKey.kak
       })
     ).not.toBeNull()
     // The epoch configuration re-authenticates under the fresh secret.
@@ -191,21 +194,24 @@ describe('replaceRecipient', () => {
   })
 
   it('appends zero redundant epochs on a naive re-run', async () => {
-    const oldPuk = await makePukLike()
-    const newPuk = await makePukLike()
+    const oldUserKey = await makeUserKeyLike()
+    const newUserKey = await makeUserKeyLike()
     const store = memoryStore(
       await seedDescriptor([
-        { kid: oldPuk.kid, publicKeyMultibase: oldPuk.publicKeyMultibase }
+        {
+          kid: oldUserKey.kid,
+          publicKeyMultibase: oldUserKey.publicKeyMultibase
+        }
       ])
     )
     const args = {
       store,
-      retire: oldPuk.kid,
+      retire: oldUserKey.kid,
       recipient: {
-        id: newPuk.kid,
-        publicKeyMultibase: newPuk.publicKeyMultibase
+        id: newUserKey.kid,
+        publicKeyMultibase: newUserKey.publicKeyMultibase
       },
-      owner: { keyAgreementKey: oldPuk.kak },
+      owner: { keyAgreementKey: oldUserKey.kak },
       pull: async () => {}
     }
     const first = await replaceRecipient(args)
@@ -213,7 +219,7 @@ describe('replaceRecipient', () => {
       ...args,
       // The re-run's owner is the incoming key (the retired one is gone from
       // the current epoch); it is a recipient of every epoch via the escrow.
-      owner: { keyAgreementKey: newPuk.kak }
+      owner: { keyAgreementKey: newUserKey.kak }
     })
     expect(store.writes).toBe(1)
     expect(second.epochs).toHaveLength(first.epochs!.length)
@@ -224,12 +230,15 @@ describe('replaceRecipient', () => {
     // Two epochs; the retiree was already rotated off the current one, but the
     // incoming key is missing from the historical epoch (a crash between the
     // two halves of an older, composed add+remove).
-    const oldPuk = await makePukLike()
-    const midPuk = await makePukLike()
-    const newPuk = await makePukLike()
+    const oldUserKey = await makeUserKeyLike()
+    const midUserKey = await makeUserKeyLike()
+    const newUserKey = await makeUserKeyLike()
     const seeded = await seedDescriptor([
-      { kid: oldPuk.kid, publicKeyMultibase: oldPuk.publicKeyMultibase },
-      { kid: midPuk.kid, publicKeyMultibase: midPuk.publicKeyMultibase }
+      {
+        kid: oldUserKey.kid,
+        publicKeyMultibase: oldUserKey.publicKeyMultibase
+      },
+      { kid: midUserKey.kid, publicKeyMultibase: midUserKey.publicKeyMultibase }
     ])
     const { epochId, secret } = await mintEpoch()
     const descriptor: CollectionEncryption = {
@@ -242,15 +251,15 @@ describe('replaceRecipient', () => {
             await wrapEpochSecret({
               epochSecret: secret,
               recipient: {
-                id: midPuk.kid,
-                publicKeyMultibase: midPuk.publicKeyMultibase
+                id: midUserKey.kid,
+                publicKeyMultibase: midUserKey.publicKeyMultibase
               }
             }),
             await wrapEpochSecret({
               epochSecret: secret,
               recipient: {
-                id: newPuk.kid,
-                publicKeyMultibase: newPuk.publicKeyMultibase
+                id: newUserKey.kid,
+                publicKeyMultibase: newUserKey.publicKeyMultibase
               }
             })
           ]
@@ -263,12 +272,12 @@ describe('replaceRecipient', () => {
 
     const result = await replaceRecipient({
       store,
-      retire: oldPuk.kid,
+      retire: oldUserKey.kid,
       recipient: {
-        id: newPuk.kid,
-        publicKeyMultibase: newPuk.publicKeyMultibase
+        id: newUserKey.kid,
+        publicKeyMultibase: newUserKey.publicKeyMultibase
       },
-      owner: { keyAgreementKey: midPuk.kak },
+      owner: { keyAgreementKey: midUserKey.kak },
       pull: async () => {}
     })
 
@@ -278,14 +287,14 @@ describe('replaceRecipient', () => {
     expect(result.epochsMac).toBe(macBefore)
     const historic = result.epochs![0]!
     expect(historic.recipients.map(entry => entry.header.kid)).toContain(
-      newPuk.kid
+      newUserKey.kid
     )
   })
 
   it('retires several stranded keys in one rotation', async () => {
-    const gen1 = await makePukLike()
-    const gen2 = await makePukLike()
-    const gen3 = await makePukLike()
+    const gen1 = await makeUserKeyLike()
+    const gen2 = await makeUserKeyLike()
+    const gen3 = await makeUserKeyLike()
     const app = await makeReader()
     const store = memoryStore(
       await seedDescriptor([
@@ -312,23 +321,26 @@ describe('replaceRecipient', () => {
   })
 
   it('drops a surviving kid the resolver resolves null for', async () => {
-    const oldPuk = await makePukLike()
-    const newPuk = await makePukLike()
+    const oldUserKey = await makeUserKeyLike()
+    const newUserKey = await makeUserKeyLike()
     const ghost = await makeReader()
     const store = memoryStore(
       await seedDescriptor([
-        { kid: oldPuk.kid, publicKeyMultibase: oldPuk.publicKeyMultibase },
+        {
+          kid: oldUserKey.kid,
+          publicKeyMultibase: oldUserKey.publicKeyMultibase
+        },
         { kid: ghost.kak.id, publicKeyMultibase: ghost.publicKeyMultibase }
       ])
     )
     const result = await replaceRecipient({
       store,
-      retire: oldPuk.kid,
+      retire: oldUserKey.kid,
       recipient: {
-        id: newPuk.kid,
-        publicKeyMultibase: newPuk.publicKeyMultibase
+        id: newUserKey.kid,
+        publicKeyMultibase: newUserKey.publicKeyMultibase
       },
-      owner: { keyAgreementKey: oldPuk.kak },
+      owner: { keyAgreementKey: oldUserKey.kak },
       pull: async () => {},
       resolveRecipientKey: async kid =>
         kid === ghost.kak.id
@@ -339,26 +351,29 @@ describe('replaceRecipient', () => {
       epoch => epoch.id === result.currentEpoch
     )!
     const kids = current.recipients.map(entry => entry.header.kid)
-    expect(kids).toEqual([newPuk.kid])
+    expect(kids).toEqual([newUserKey.kid])
   })
 
   it('runs the pull axis only after the rotation is durable', async () => {
-    const oldPuk = await makePukLike()
-    const newPuk = await makePukLike()
+    const oldUserKey = await makeUserKeyLike()
+    const newUserKey = await makeUserKeyLike()
     const store = memoryStore(
       await seedDescriptor([
-        { kid: oldPuk.kid, publicKeyMultibase: oldPuk.publicKeyMultibase }
+        {
+          kid: oldUserKey.kid,
+          publicKeyMultibase: oldUserKey.publicKeyMultibase
+        }
       ])
     )
     const epochsAtPull: string[] = []
     await replaceRecipient({
       store,
-      retire: oldPuk.kid,
+      retire: oldUserKey.kid,
       recipient: {
-        id: newPuk.kid,
-        publicKeyMultibase: newPuk.publicKeyMultibase
+        id: newUserKey.kid,
+        publicKeyMultibase: newUserKey.publicKeyMultibase
       },
-      owner: { keyAgreementKey: oldPuk.kak },
+      owner: { keyAgreementKey: oldUserKey.kak },
       pull: async () => {
         epochsAtPull.push(store.state.descriptor.currentEpoch!)
       }
@@ -368,14 +383,17 @@ describe('replaceRecipient', () => {
   })
 
   it('refuses to retire the incoming recipient, an empty retire list, and a descriptor with no epochs', async () => {
-    const puk = await makePukLike()
+    const userKey = await makeUserKeyLike()
     const store = memoryStore({ scheme: 'edv' })
     await expect(
       replaceRecipient({
         store,
-        retire: puk.kid,
-        recipient: { id: puk.kid, publicKeyMultibase: puk.publicKeyMultibase },
-        owner: { keyAgreementKey: puk.kak },
+        retire: userKey.kid,
+        recipient: {
+          id: userKey.kid,
+          publicKeyMultibase: userKey.publicKeyMultibase
+        },
+        owner: { keyAgreementKey: userKey.kak },
         pull: async () => {}
       })
     ).rejects.toThrow(ValidationError)
@@ -383,39 +401,48 @@ describe('replaceRecipient', () => {
       replaceRecipient({
         store,
         retire: [],
-        recipient: { id: puk.kid, publicKeyMultibase: puk.publicKeyMultibase },
-        owner: { keyAgreementKey: puk.kak },
+        recipient: {
+          id: userKey.kid,
+          publicKeyMultibase: userKey.publicKeyMultibase
+        },
+        owner: { keyAgreementKey: userKey.kak },
         pull: async () => {}
       })
     ).rejects.toThrow(ValidationError)
-    const other = await makePukLike()
+    const other = await makeUserKeyLike()
     await expect(
       replaceRecipient({
         store,
         retire: other.kid,
-        recipient: { id: puk.kid, publicKeyMultibase: puk.publicKeyMultibase },
-        owner: { keyAgreementKey: puk.kak },
+        recipient: {
+          id: userKey.kid,
+          publicKeyMultibase: userKey.publicKeyMultibase
+        },
+        owner: { keyAgreementKey: userKey.kak },
         pull: async () => {}
       })
     ).rejects.toThrow(/no key epochs/)
   })
 
   it('throws when the owner cannot unwrap an epoch for the escrow', async () => {
-    const oldPuk = await makePukLike()
-    const newPuk = await makePukLike()
-    const stranger = await makePukLike()
+    const oldUserKey = await makeUserKeyLike()
+    const newUserKey = await makeUserKeyLike()
+    const stranger = await makeUserKeyLike()
     const store = memoryStore(
       await seedDescriptor([
-        { kid: oldPuk.kid, publicKeyMultibase: oldPuk.publicKeyMultibase }
+        {
+          kid: oldUserKey.kid,
+          publicKeyMultibase: oldUserKey.publicKeyMultibase
+        }
       ])
     )
     await expect(
       replaceRecipient({
         store,
-        retire: oldPuk.kid,
+        retire: oldUserKey.kid,
         recipient: {
-          id: newPuk.kid,
-          publicKeyMultibase: newPuk.publicKeyMultibase
+          id: newUserKey.kid,
+          publicKeyMultibase: newUserKey.publicKeyMultibase
         },
         owner: { keyAgreementKey: stranger.kak },
         pull: async () => {}
