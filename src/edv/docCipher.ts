@@ -23,9 +23,7 @@
  *
  * Rotation is prospective, never retroactive: appending an epoch does not
  * rewrite existing resources, and because resource ids are content-derived they
- * stay stable across a rotation. Reads stay tolerant of unstamped pre-epoch
- * resources indefinitely -- an envelope encrypted straight to the key-agreement
- * key (before any epoch existed) always decrypts through the single-key path.
+ * stay stable across a rotation.
  *
  * Runtime note (React Native): this exercises the cipher's AES-KW (with a
  * pure-JS Hermes fallback) and `TextDecoder`; both must be present on the
@@ -40,43 +38,15 @@ import { KeyUnwrapError } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
 import { createEdvEncryption } from './EdvCodec.js'
-import { epochKeyIdFor } from './epochCrypto.js'
 import type { RecipientPublicKey } from './recipients.js'
 
 // `isEncryptedEnvelope` and the `DocCipher` interface live in the crypto-free
-// `../sync` module; re-exported here so an encrypted-collection consumer that
-// imports this subpath gets both without a second import.
+// `../sync` module, and `UnknownEpochError` (thrown by the codec's decrypt
+// routing) in the errors module; re-exported here so an encrypted-collection
+// consumer that imports this subpath gets all three without a second import.
 export { isEncryptedEnvelope } from '../sync/envelope.js'
 export type { DocCipher } from '../sync/types.js'
-
-/**
- * Thrown by a {@link DocCipher.decrypt} when a stored envelope names a JWE
- * recipient (`kid`) this cipher cannot route: neither the key-agreement key nor
- * -- on an epoch-aware cipher -- any epoch this cipher knows about. It signals
- * that the caller's cached Collection Description may be stale and should be
- * re-read before retrying: an epoch rotation emits no change-feed entry, so a
- * cipher built from a pre-rotation descriptor meets envelopes stamped with a
- * newer epoch it has never seen. It also fires on a single-key cipher that
- * meets an envelope encrypted to a different key-agreement key entirely.
- */
-export class UnknownEpochError extends Error {
-  constructor({
-    collectionId,
-    kids
-  }: {
-    collectionId: string
-    kids: string[]
-  }) {
-    super(
-      `Cannot decrypt a resource in collection "${collectionId}": its ` +
-        `envelope names recipient key id(s) [${kids.join(', ')}] that match ` +
-        'neither the key-agreement key nor any known key epoch. The cached ' +
-        'Collection Description may be stale (an epoch rotation emits no ' +
-        'change-feed entry); re-read it and rebuild the cipher.'
-    )
-    this.name = 'UnknownEpochError'
-  }
-}
+export { UnknownEpochError } from '../errors.js'
 
 /**
  * A wallet's own key-agreement key as a `RecipientPublicKey` -- the "recipient
@@ -133,34 +103,6 @@ function envelopeResponse(envelope: Json): HttpResponse {
 }
 
 /**
- * Extracts the JWE recipient key ids (`kid`) an EDV envelope names. An epoch
- * envelope carries one kid (the epoch key id); a single-recipient envelope
- * carries the key-agreement key id. Returns `[]` for a malformed envelope, so
- * routing falls through to letting a codec surface its own error.
- */
-function envelopeRecipientKids(envelope: Json): string[] {
-  if (envelope === null || typeof envelope !== 'object') {
-    return []
-  }
-  const jwe = (envelope as { jwe?: unknown }).jwe
-  if (jwe === null || typeof jwe !== 'object') {
-    return []
-  }
-  const recipients = (jwe as { recipients?: unknown }).recipients
-  if (!Array.isArray(recipients)) {
-    return []
-  }
-  const kids: string[] = []
-  for (const recipient of recipients) {
-    const kid = (recipient as { header?: { kid?: unknown } })?.header?.kid
-    if (typeof kid === 'string') {
-      kids.push(kid)
-    }
-  }
-  return kids
-}
-
-/**
  * Builds a {@link DocCipher} for one encrypted collection from a reader's key
  * material (the key-agreement key + resolver). Keys are supplied directly (no
  * keystore lookup).
@@ -172,15 +114,16 @@ function envelopeRecipientKids(envelope: Json): string[] {
  * `encryptUpdate`).
  *
  * With no `encryption` descriptor (or a descriptor with no epochs) the cipher
- * is single- recipient: the key-agreement key encrypts and decrypts directly.
- * With epochs on the descriptor the cipher becomes multi-recipient: it ALSO
- * builds an epoch codec that encrypts every write under the descriptor's
- * `currentEpoch` and decrypts any epoch this reader still holds a key for. The
- * single-key codec stays built either way, so a pre-epoch envelope keeps
- * decrypting -- a permanent tolerance, not a migration shim.
+ * is single-recipient: the key-agreement key encrypts and decrypts directly.
+ * With epochs on the descriptor the cipher is multi-recipient: it encrypts
+ * every write under the descriptor's `currentEpoch` and decrypts any epoch
+ * this reader still holds a key for. Either way one codec owns both axes --
+ * decrypt routing (matching an envelope's JWE recipient `kid`s against the
+ * reader's candidate keys, raising `UnknownEpochError` for an envelope no
+ * candidate can route) lives in the codec, not here.
  *
  * The reader must be a recipient of every epoch on the descriptor (the owner is
- * "recipient zero"). If it is a recipient of none, building the epoch codec
+ * "recipient zero"). If it is a recipient of none, building the cipher
  * throws {@link KeyUnwrapError}; this surfaces it with a clearer error rather
  * than silently writing envelopes other recipients cannot read.
  *
@@ -211,61 +154,39 @@ export async function createEdvDocCipher({
     resolveKeys: async () => null,
     idDerivation
   })
-  // The direct (single-key) codec is always built: it decrypts pre-epoch
-  // envelopes and is the whole cipher for a single-recipient collection.
-  const directCodec = await provider.codecFor({
-    spaceId: 'local',
-    collectionId,
-    scheme: 'edv',
-    keys: { keyAgreementKey, keyResolver }
-  })
-  if (!directCodec) {
+  // One codec owns both axes. With epochs on the descriptor, `codecFor`
+  // resolves this reader's per-epoch keys: writes go under the descriptor's
+  // `currentEpoch`, and reads pick the epoch key matching the envelope's
+  // recipient kid. Without epochs it is the single-recipient cipher keyed
+  // straight to the key-agreement key.
+  let resolved: Awaited<ReturnType<typeof provider.codecFor>>
+  try {
+    resolved = await provider.codecFor({
+      spaceId: 'local',
+      collectionId,
+      scheme: 'edv',
+      encryption,
+      keys: { keyAgreementKey, keyResolver }
+    })
+  } catch (err) {
+    if (err instanceof KeyUnwrapError) {
+      throw new Error(
+        `Cannot build the multi-recipient EDV cipher for collection ` +
+          `"${collectionId}": the key-agreement key is not a recipient of any ` +
+          'key epoch on this collection. The owner must be a recipient of ' +
+          'every epoch (recipient zero) before writing, or it would encrypt ' +
+          'envelopes it cannot itself read.',
+        { cause: err }
+      )
+    }
+    throw err
+  }
+  if (!resolved) {
     throw new Error(
       `Could not build the EDV cipher for collection "${collectionId}".`
     )
   }
-
-  // On a multi-recipient collection, ALSO build the epoch codec: same provider
-  // and keys, but with the descriptor so `codecFor` resolves this reader's
-  // per-epoch keys. Writes go under the descriptor's `currentEpoch`; reads pick
-  // the epoch key matching the envelope's recipient kid.
-  const hasEpochs =
-    encryption?.epochs !== undefined && encryption.epochs.length > 0
-  let epochCodec: Awaited<ReturnType<typeof provider.codecFor>> | undefined
-  if (hasEpochs) {
-    try {
-      epochCodec = await provider.codecFor({
-        spaceId: 'local',
-        collectionId,
-        scheme: 'edv',
-        encryption,
-        keys: { keyAgreementKey, keyResolver }
-      })
-    } catch (err) {
-      if (err instanceof KeyUnwrapError) {
-        throw new Error(
-          `Cannot build the multi-recipient EDV cipher for collection ` +
-            `"${collectionId}": the key-agreement key is not a recipient of any ` +
-            'key epoch on this collection. The owner must be a recipient of ' +
-            'every epoch (recipient zero) before writing, or it would encrypt ' +
-            'envelopes it cannot itself read.',
-          { cause: err }
-        )
-      }
-      throw err
-    }
-    if (!epochCodec) {
-      throw new Error(
-        `Could not build the multi-recipient EDV cipher for collection ` +
-          `"${collectionId}".`
-      )
-    }
-  }
-
-  const vaultKid = keyAgreementKey.id
-  const knownEpochKids = new Set<string>(
-    (encryption?.epochs ?? []).map(epoch => epochKeyIdFor(epoch.id))
-  )
+  const codec = resolved
 
   // Parses the codec's `EncodedWrite` (id + envelope body bytes) to the stored
   // `{ id, envelope, epoch? }` shape. Shared by the create and update paths.
@@ -296,16 +217,12 @@ export async function createEdvDocCipher({
     }
   }
 
-  // Writes go under the current epoch on a multi-recipient cipher, and straight
-  // to the key-agreement key on a single-recipient one.
-  const writeCodec = epochCodec ?? directCodec
-
   return {
     async encrypt({ data }: { data: Json }) {
       // `encode` with no caller id is the add() path: encrypt, then either
       // derive and stamp the content-hash id (`'content'`) or use the minted
       // random id.
-      const encoded = await writeCodec.encode({
+      const encoded = await codec.encode({
         data: data as Extract<Json, object>
       })
       return readEncoded(encoded)
@@ -323,7 +240,7 @@ export async function createEdvDocCipher({
       // The update path (mutable random-id head document): hand the codec the
       // prior stored envelope so it advances `sequence` from it and re-encrypts
       // under the same id.
-      const encoded = await writeCodec.encode({
+      const encoded = await codec.encode({
         id,
         data: data as Extract<Json, object>,
         current: envelopeResponse(current)
@@ -332,32 +249,10 @@ export async function createEdvDocCipher({
     },
 
     async decrypt({ envelope }: { envelope: Json }) {
-      // Route by the envelope's JWE recipient kids:
-      //   1. any kid is the key-agreement key id -- a pre-epoch envelope, so the
-      //      direct codec (permanent tolerance, not a migration shim);
-      //   2. else, on an epoch cipher, any kid names a known epoch -- the epoch
-      //      codec;
-      //   3. else UnknownEpochError: the descriptor is likely stale, or a single-key
-      //      cipher met an envelope encrypted to a different key entirely.
-      const kids = envelopeRecipientKids(envelope)
-      const codec = selectCodec()
+      // Routing by the envelope's JWE recipient kids -- including the
+      // stale-descriptor `UnknownEpochError` for an envelope no candidate key
+      // routes -- is owned by the codec's decrypt.
       return (await codec.decode(envelopeResponse(envelope))) as Json
-
-      function selectCodec() {
-        if (kids.some(kid => kid === vaultKid)) {
-          return directCodec!
-        }
-        if (epochCodec && kids.some(kid => knownEpochKids.has(kid))) {
-          return epochCodec
-        }
-        // A malformed/empty-kid envelope falls through to the direct codec so it
-        // can surface its own decrypt error; a non-empty set of unroutable kids
-        // is the stale-descriptor signal.
-        if (kids.length === 0) {
-          return directCodec!
-        }
-        throw new UnknownEpochError({ collectionId, kids })
-      }
     }
   }
 }

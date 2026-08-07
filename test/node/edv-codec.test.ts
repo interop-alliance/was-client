@@ -31,7 +31,8 @@ import type { ResourceCodec } from '../../src/index.js'
 import {
   createEdvEncryption,
   EdvCodec,
-  JOSE_CONTENT_TYPE
+  JOSE_CONTENT_TYPE,
+  UnknownEpochError
 } from '../../src/edv/index.js'
 
 /**
@@ -721,10 +722,11 @@ describe('EdvCodec: decrypt failure discrimination', () => {
     await expect(codec.decode(response)).rejects.toThrow(IntegrityError)
   })
 
-  it('throws KeyUnwrapError (not IntegrityError) when no candidate key is a recipient', async () => {
+  it('throws UnknownEpochError (not IntegrityError) when no candidate key is a recipient', async () => {
     // Encode under one key, then read with a codec built over an unrelated key:
-    // the reader is not a recipient of the envelope, so decryption never reaches
-    // the AEAD stage and must fail as a key/membership miss.
+    // the envelope's recipient kids match none of the reader's candidate keys,
+    // so routing fails fast with the stale-descriptor signal -- decryption
+    // never reaches the AEAD stage and must not misreport tampering.
     const writer = await makeCodec()
     const encoded = await writer.encode({
       data: { secret: 'for someone else' }
@@ -733,7 +735,7 @@ describe('EdvCodec: decrypt failure discrimination', () => {
     const failure = await reader
       .decode(responseFrom(encoded.body))
       .catch((err: unknown) => err)
-    expect(failure).toBeInstanceOf(KeyUnwrapError)
+    expect(failure).toBeInstanceOf(UnknownEpochError)
     expect(failure).not.toBeInstanceOf(IntegrityError)
   })
 

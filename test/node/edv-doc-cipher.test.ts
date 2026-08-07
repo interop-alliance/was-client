@@ -75,6 +75,24 @@ describe('createEdvDocCipher (single-recipient, content derivation)', () => {
     const { envelope } = await cipher.encrypt({ data: DOC })
     expect(await cipher.decrypt({ envelope })).toEqual(DOC)
   })
+
+  it('throws UnknownEpochError for an envelope encrypted to another key', async () => {
+    // The codec owns decrypt routing: an envelope whose recipient kids match
+    // none of the reader's candidate keys is unroutable, the signal that the
+    // reader's cached descriptor (or here, its key) does not cover the writer.
+    const alice = await createEdvDocCipher({
+      ...(await makeKeys()),
+      collectionId: 'private-credentials'
+    })
+    const mallory = await createEdvDocCipher({
+      ...(await makeKeys()),
+      collectionId: 'private-credentials'
+    })
+    const { envelope } = await alice.encrypt({ data: DOC })
+    await expect(mallory.decrypt({ envelope })).rejects.toThrow(
+      UnknownEpochError
+    )
+  })
 })
 
 describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {

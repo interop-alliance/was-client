@@ -212,13 +212,14 @@ content-addressed collection (`idDerivation: 'content'`, or plaintext) is
 insert-only -- a changed document is a different id, so `encryptUpdate` is
 omitted or throws; a mutable head-document collection uses `'random'` ids and
 `encryptUpdate`, which re-encrypts in place under the existing id while
-advancing the envelope `sequence`. On decrypt, the EDV cipher routes by the
-envelope's JWE recipient `kid`s: the key-agreement key id means a pre-epoch
-envelope (decrypted by the always-built single-key codec -- a permanent
-tolerance, not a migration shim), a known epoch key id means the epoch codec,
-and anything else throws `UnknownEpochError` -- the signal that the cached
-Collection description is stale (epoch rotation emits no change-feed entry) and
-the cipher must be rebuilt from a re-read descriptor.
+advancing the envelope `sequence`. Decrypt routing is owned by the EDV codec
+itself (one codec per collection, for the handle and sync paths alike): it
+matches the envelope's JWE recipient `kid`s against the reader's candidate keys
+-- the per-epoch keys resolved from the descriptor, or the key-agreement key on
+a single-key collection -- and an envelope naming only recipients no candidate
+matches throws `UnknownEpochError`, the signal that the cached Collection
+description is stale (epoch rotation emits no change-feed entry) and the codec
+must be rebuilt from a re-read descriptor.
 
 `ensureSpaceAndCollection` (`provisioning.ts`) is the idempotent setup step:
 upsert the Space, configure the collection (declaring the `{ scheme: 'edv' }`

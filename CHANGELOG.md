@@ -6,6 +6,16 @@
 
 - Update dependencies; upgrade TypeScript to 6.x (pinned to `~6.0.3`), setting
   the now-required explicit `rootDir` in both tsconfigs.
+- Encrypted-collection decrypt routing now lives in the EDV codec itself, for
+  the handle and sync paths alike: an envelope whose JWE recipient `kid`s match
+  none of the reader's candidate keys throws `UnknownEpochError` (moved to the
+  errors module; still exported from `./edv`). The sync `DocCipher` no longer
+  builds a separate single-key fallback codec, so envelopes encrypted directly
+  to the key-agreement key are not readable on a collection with key epochs.
+- `EncodedWrite` gained an optional `envelope` field: the already-parsed object
+  form of `body` for consumers that need the object (`body` remains the wire
+  truth). `EdvCodec` gained an optional `collectionId` constructor option to
+  label decrypt-routing errors.
 
 ## 0.27.0 - 2026-08-05
 

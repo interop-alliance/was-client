@@ -74,6 +74,7 @@ import {
   EncryptionError,
   IntegrityError,
   KeyUnwrapError,
+  UnknownEpochError,
   ValidationError
 } from '../errors.js'
 import { readEtag } from '../internal/conditional.js'
@@ -181,6 +182,35 @@ function isKeyMiss(err: unknown): boolean {
 }
 
 /**
+ * Extracts the JWE recipient key ids (`kid`) a stored envelope names. An epoch
+ * envelope carries one kid (the epoch key id); a single-recipient envelope
+ * carries the key-agreement key id. Returns `[]` for a malformed recipient
+ * shape, so routing falls through to letting the cipher surface its own typed
+ * decrypt error.
+ *
+ * @param encryptedDoc {IEncryptedDocument}
+ * @returns {string[]}
+ */
+function envelopeRecipientKids(encryptedDoc: IEncryptedDocument): string[] {
+  const jwe = encryptedDoc.jwe as { recipients?: unknown } | null | undefined
+  if (jwe === null || typeof jwe !== 'object') {
+    return []
+  }
+  const recipients = jwe.recipients
+  if (!Array.isArray(recipients)) {
+    return []
+  }
+  const kids: string[] = []
+  for (const recipient of recipients) {
+    const kid = (recipient as { header?: { kid?: unknown } })?.header?.kid
+    if (typeof kid === 'string') {
+      kids.push(kid)
+    }
+  }
+  return kids
+}
+
+/**
  * A {@link ResourceCodec} that encrypts on write and decrypts on read using an
  * `EdvClientCore`'s public `documentCipher`. One instance is bound per encrypted
  * collection handle.
@@ -213,6 +243,11 @@ export class EdvCodec implements ResourceCodec {
    * actually decrypted it.
    */
   readonly #hasEpochs: boolean
+  /**
+   * Labels decrypt-routing errors ({@link UnknownEpochError}); the codec is
+   * otherwise collection-agnostic.
+   */
+  readonly #collectionId: string
 
   /**
    * @param options {object}
@@ -239,6 +274,7 @@ export class EdvCodec implements ResourceCodec {
    * @param [options.hasEpochs] {boolean}   whether the collection has key
    *   epochs, so a decoded envelope's `was.epoch` binding is checked against the
    *   decrypting key's epoch (defaults to `false`)
+   * @param [options.collectionId] {string}   labels decrypt-routing errors
    */
   constructor({
     edv,
@@ -249,7 +285,8 @@ export class EdvCodec implements ResourceCodec {
     maxBlobBytes,
     idDerivation,
     version,
-    hasEpochs
+    hasEpochs,
+    collectionId
   }: {
     edv: EdvClientCore
     keyAgreementKey: IKeyAgreementKey
@@ -260,6 +297,7 @@ export class EdvCodec implements ResourceCodec {
     idDerivation: 'random' | 'content'
     version?: number
     hasEpochs?: boolean
+    collectionId?: string
   }) {
     this.#edv = edv
     this.#recipients =
@@ -271,6 +309,7 @@ export class EdvCodec implements ResourceCodec {
     this.#idDerivation = idDerivation
     this.#version = version ?? 1
     this.#hasEpochs = hasEpochs ?? false
+    this.#collectionId = collectionId ?? '(unknown)'
   }
 
   /**
@@ -450,8 +489,11 @@ export class EdvCodec implements ResourceCodec {
    * one candidate; on a multi-recipient collection a resource written under an
    * older epoch selects that epoch's key, so history stays readable.
    *
-   * A stored envelope naming an epoch this reader holds no key for (it was never
-   * a recipient of that epoch, or was removed and the epoch rotated) fails with
+   * A stored envelope naming only recipients this reader holds no candidate
+   * key for fails fast with {@link UnknownEpochError} -- the signal that the
+   * cached Collection Description may be stale (an epoch rotation emits no
+   * change-feed entry) and the codec must be rebuilt from a re-read
+   * descriptor. A candidate whose entry then fails to unwrap surfaces
    * {@link KeyUnwrapError} -- the **read** axis only; it says nothing about
    * whether the server will still serve (pull) the ciphertext.
    *
@@ -468,26 +510,21 @@ export class EdvCodec implements ResourceCodec {
     meta?: Record<string, unknown>
     keyId?: string
   }> {
-    const recipients =
-      (
-        encryptedDoc.jwe as {
-          recipients?: Array<{ header?: { kid?: string } }>
-        }
-      ).recipients ?? []
-    const kids = new Set(
-      recipients
-        .map(recipient => recipient.header?.kid)
-        .filter((kid): kid is string => typeof kid === 'string')
-    )
-    // Prefer the read key whose id names a recipient of this envelope. The
-    // `rest` fallback then tries the remaining candidates: it serves an
-    // envelope whose recipient `kid` matches no local key id -- format drift,
-    // or a single-key envelope read with a differently-labeled key -- where the
-    // exact-match partition is empty even though a candidate can still unwrap
-    // it. For a well-formed epoch envelope the exact match always hits, so
-    // `rest` is normally unreached.
-    const preferred = this.#readKeys.filter(key => kids.has(key.id))
-    const rest = this.#readKeys.filter(key => !kids.has(key.id))
+    const kids = envelopeRecipientKids(encryptedDoc)
+    const kidSet = new Set(kids)
+    // Prefer the read key whose id names a recipient of this envelope; for a
+    // well-formed envelope the exact match always hits. A non-empty recipient
+    // set that matches NO candidate is unroutable: the envelope was encrypted
+    // under an epoch (or key) this codec's descriptor knows nothing about, so
+    // fail fast with the stale-descriptor signal rather than burning ECDH
+    // attempts that cannot succeed. The `rest` fallback below is then reached
+    // only for a malformed envelope naming no recipient kid at all, letting a
+    // candidate surface the cipher's own typed decrypt error.
+    const preferred = this.#readKeys.filter(key => kidSet.has(key.id))
+    if (preferred.length === 0 && kids.length > 0) {
+      throw new UnknownEpochError({ collectionId: this.#collectionId, kids })
+    }
+    const rest = this.#readKeys.filter(key => !kidSet.has(key.id))
     for (const keyAgreementKey of [...preferred, ...rest]) {
       try {
         const decrypted = await this.#edv.documentCipher.decrypt({
@@ -1024,7 +1061,8 @@ export function createEdvEncryption({
         maxBlobBytes,
         idDerivation,
         version: descriptorVersion ?? 1,
-        hasEpochs: !!(encryption?.epochs && encryption.epochs.length > 0)
+        hasEpochs: !!(encryption?.epochs && encryption.epochs.length > 0),
+        collectionId
       })
     }
   }
