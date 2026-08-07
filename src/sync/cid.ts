@@ -22,6 +22,13 @@ import { canonicalize } from 'json-canonicalize'
 import type { Json } from '../types.js'
 
 /**
+ * The one UTF-8 encoder every derivation here shares: hashing runs on the
+ * per-document hot path, so the encoder is allocated once for the module rather
+ * than per call. `TextEncoder` is stateless, so reuse is safe.
+ */
+const ENCODER = new TextEncoder()
+
+/**
  * Derives a document's content id: `base64url(SHA-256(utf8(canonicalize(doc))))`,
  * no padding. Byte-identical across replicas for the same logical document, so a
  * content-addressed resource lands on the same id everywhere it is stored.
@@ -30,9 +37,7 @@ import type { Json } from '../types.js'
  * @returns {string}   the unpadded base64url content id (43 chars for SHA-256)
  */
 export function contentCid(doc: Json): string {
-  return base64urlnopad.encode(
-    sha256(new TextEncoder().encode(canonicalize(doc)))
-  )
+  return base64urlnopad.encode(sha256(ENCODER.encode(canonicalize(doc))))
 }
 
 /**
@@ -56,5 +61,5 @@ export function cidFrom({ doc }: { doc: object }): string {
  * @returns {string}   the unpadded base64url Space id
  */
 export function deriveSpaceId(controllerDid: string): string {
-  return base64urlnopad.encode(sha256(new TextEncoder().encode(controllerDid)))
+  return base64urlnopad.encode(sha256(ENCODER.encode(controllerDid)))
 }

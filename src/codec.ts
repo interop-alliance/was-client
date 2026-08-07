@@ -61,6 +61,12 @@ import type {
  *   ETag for lost-update-safe updates, or `If-None-Match: *` for a fresh
  *   insert). The write path forwards these as the request's conditional headers.
  *   Only honored for a codec that sets {@link ResourceCodec.conditionalWrites}.
+ * - `envelope` -- the already-parsed object form of `body`, for a consumer that
+ *   needs the object rather than the bytes (an encrypting codec that built an
+ *   envelope object before serializing it can hand it over instead of making
+ *   the consumer decode and re-parse the bytes). Purely an optimization and
+ *   always optional: `body` stays the wire truth, and a consumer that finds no
+ *   `envelope` parses `body` itself.
  * - `epoch` -- the key-epoch id the codec encrypted this write under, on a
  *   multi-recipient encrypted collection. The write path emits it as the
  *   `WAS-Key-Epoch` request header, so the server stamps
@@ -75,6 +81,7 @@ export interface EncodedWrite {
   resourceContentType?: string
   ifMatch?: string
   ifNoneMatch?: boolean
+  envelope?: unknown
   epoch?: string
 }
 

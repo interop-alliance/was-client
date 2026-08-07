@@ -95,28 +95,28 @@ export function spacePath(spaceId: string): string {
  * `/space/:spaceId/` -- create a collection within a space (trailing slash).
  */
 export function spaceItems(spaceId: string): string {
-  return `/space/${encode(spaceId)}/`
+  return `${spacePath(spaceId)}/`
 }
 
 /**
  * `/space/:spaceId/collections/` -- list collections (trailing slash).
  */
 export function spaceCollections(spaceId: string): string {
-  return `/space/${encode(spaceId)}/collections/`
+  return `${spacePath(spaceId)}/collections/`
 }
 
 /**
  * `/space/:spaceId/export` -- export a space as a tar archive.
  */
 export function spaceExport(spaceId: string): string {
-  return `/space/${encode(spaceId)}/export`
+  return `${spacePath(spaceId)}/export`
 }
 
 /**
  * `/space/:spaceId/import` -- import a tar archive into a space.
  */
 export function spaceImport(spaceId: string): string {
-  return `/space/${encode(spaceId)}/import`
+  return `${spacePath(spaceId)}/import`
 }
 
 /**
@@ -124,7 +124,7 @@ export function spaceImport(spaceId: string): string {
  * register a new `external` backend).
  */
 export function spaceBackends(spaceId: string): string {
-  return `/space/${encode(spaceId)}/backends`
+  return `${spacePath(spaceId)}/backends`
 }
 
 /**
@@ -132,28 +132,28 @@ export function spaceBackends(spaceId: string): string {
  * backend (replace / deregister by id).
  */
 export function registeredBackend(spaceId: string, backendId: string): string {
-  return `/space/${encode(spaceId)}/backends/${encode(backendId)}`
+  return `${spaceBackends(spaceId)}/${encode(backendId)}`
 }
 
 /**
  * `/space/:spaceId/quotas` -- the space-level storage quota report.
  */
 export function spaceQuotas(spaceId: string): string {
-  return `/space/${encode(spaceId)}/quotas`
+  return `${spacePath(spaceId)}/quotas`
 }
 
 /**
  * `/space/:spaceId/policy` -- the space-level access-control policy resource.
  */
 export function spacePolicy(spaceId: string): string {
-  return `/space/${encode(spaceId)}/policy`
+  return `${spacePath(spaceId)}/policy`
 }
 
 /**
  * `/space/:spaceId/linkset` -- the space-level linkset (policy discovery).
  */
 export function spaceLinkset(spaceId: string): string {
-  return `/space/${encode(spaceId)}/linkset`
+  return `${spacePath(spaceId)}/linkset`
 }
 
 /**
@@ -165,7 +165,7 @@ export function spaceLinkset(spaceId: string): string {
  * deeper than any Collection or Resource route, so it shadows nothing.
  */
 export function spaceRevocation(spaceId: string, capabilityId: string): string {
-  return `/space/${encode(spaceId)}/zcaps/revocations/${encode(capabilityId)}`
+  return `${spacePath(spaceId)}/zcaps/revocations/${encode(capabilityId)}`
 }
 
 /**
@@ -173,7 +173,7 @@ export function spaceRevocation(spaceId: string, capabilityId: string): string {
  * (no trailing slash).
  */
 export function collectionPath(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}`
+  return `${spacePath(spaceId)}/${encodeCollectionId(collectionId)}`
 }
 
 /**
@@ -181,7 +181,7 @@ export function collectionPath(spaceId: string, collectionId: string): string {
  * (trailing slash).
  */
 export function collectionItems(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/`
+  return `${collectionPath(spaceId, collectionId)}/`
 }
 
 /**
@@ -192,7 +192,7 @@ export function collectionPolicy(
   spaceId: string,
   collectionId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/policy`
+  return `${collectionPath(spaceId, collectionId)}/policy`
 }
 
 /**
@@ -203,7 +203,7 @@ export function collectionLinkset(
   spaceId: string,
   collectionId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/linkset`
+  return `${collectionPath(spaceId, collectionId)}/linkset`
 }
 
 /**
@@ -214,7 +214,7 @@ export function collectionBackend(
   spaceId: string,
   collectionId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/backend`
+  return `${collectionPath(spaceId, collectionId)}/backend`
 }
 
 /**
@@ -222,7 +222,7 @@ export function collectionBackend(
  * report (spec "Quotas").
  */
 export function collectionQuota(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/quota`
+  return `${collectionPath(spaceId, collectionId)}/quota`
 }
 
 /**
@@ -230,7 +230,7 @@ export function collectionQuota(spaceId: string, collectionId: string): string {
  * whose body's `profile` selects the query (e.g. `changes`, `blinded-index`).
  */
 export function collectionQuery(spaceId: string, collectionId: string): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/query`
+  return `${collectionPath(spaceId, collectionId)}/query`
 }
 
 /**
@@ -242,7 +242,7 @@ export function resourcePath(
   collectionId: string,
   resourceId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/${encodeResourceId(resourceId)}`
+  return `${collectionPath(spaceId, collectionId)}/${encodeResourceId(resourceId)}`
 }
 
 /**
@@ -254,7 +254,7 @@ export function resourceMeta(
   collectionId: string,
   resourceId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/${encodeResourceId(resourceId)}/meta`
+  return `${resourcePath(spaceId, collectionId, resourceId)}/meta`
 }
 
 /**
@@ -266,7 +266,7 @@ export function resourcePolicy(
   collectionId: string,
   resourceId: string
 ): string {
-  return `/space/${encode(spaceId)}/${encodeCollectionId(collectionId)}/${encodeResourceId(resourceId)}/policy`
+  return `${resourcePath(spaceId, collectionId, resourceId)}/policy`
 }
 
 /**
@@ -289,24 +289,6 @@ export function resourceChunkPath(
   chunkIndex: number
 ): string {
   return `${resourcePath(spaceId, collectionId, resourceId)}/chunks/${chunkIndex}`
-}
-
-/**
- * `/space/:spaceId/:collectionId/:resourceId/chunks/` -- the chunk-listing
- * (container) form of a chunked Resource (trailing slash is canonical). A
- * reader discovers the chunk count here, then fetches `0..count-1`.
- *
- * @param spaceId {string}
- * @param collectionId {string}
- * @param resourceId {string}
- * @returns {string}
- */
-export function chunksContainerPath(
-  spaceId: string,
-  collectionId: string,
-  resourceId: string
-): string {
-  return `${resourcePath(spaceId, collectionId, resourceId)}/chunks/`
 }
 
 /**

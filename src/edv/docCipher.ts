@@ -31,6 +31,7 @@
  * pure-JS Hermes fallback) and `TextDecoder`; both must be present on the
  * device.
  */
+import type { HttpResponse } from '@interop/http-client'
 import type {
   IKeyAgreementKey,
   IKeyResolver
@@ -108,6 +109,27 @@ export function ownerRecipient({
     )
   }
   return { id, publicKeyMultibase, type }
+}
+
+/**
+ * Presents a locally-held envelope to the codec seam as the read response the
+ * seam is typed against. A replica's envelope never came from HTTP, so this is
+ * the minimum the codec actually consults -- the pre-parsed body, the `json()`
+ * fallback, and a headers stub -- cast once here instead of at each call site.
+ *
+ * @param envelope {Json}   the stored envelope
+ * @returns {HttpResponse}
+ */
+function envelopeResponse(envelope: Json): HttpResponse {
+  return {
+    // The http-client pre-parses a JSON body into `data`, so the codec reads it
+    // there and never touches the stream or the headers; the `get` stub keeps
+    // an ETag lookup (`readEtag`) resolving to "no validator" rather than
+    // throwing on a local replica's envelope, which has no HTTP response.
+    data: envelope,
+    json: async () => envelope,
+    headers: { get: () => null }
+  } as unknown as HttpResponse
 }
 
 /**
@@ -250,6 +272,7 @@ export async function createEdvDocCipher({
   const readEncoded = (encoded: {
     id?: string
     body?: Uint8Array | Blob
+    envelope?: unknown
     epoch?: string
   }): { id: string; envelope: Json; epoch?: string } => {
     if (
@@ -260,7 +283,12 @@ export async function createEdvDocCipher({
         `EDV encrypt for collection "${collectionId}" returned no id/envelope body.`
       )
     }
-    const envelope = JSON.parse(new TextDecoder().decode(encoded.body)) as Json
+    // Prefer the object form the codec already holds; parse the wire bytes only
+    // when a codec does not surface it.
+    const envelope =
+      encoded.envelope !== undefined
+        ? (encoded.envelope as Json)
+        : (JSON.parse(new TextDecoder().decode(encoded.body)) as Json)
     return {
       id: encoded.id,
       envelope,
@@ -268,14 +296,16 @@ export async function createEdvDocCipher({
     }
   }
 
+  // Writes go under the current epoch on a multi-recipient cipher, and straight
+  // to the key-agreement key on a single-recipient one.
+  const writeCodec = epochCodec ?? directCodec
+
   return {
     async encrypt({ data }: { data: Json }) {
       // `encode` with no caller id is the add() path: encrypt, then either
       // derive and stamp the content-hash id (`'content'`) or use the minted
-      // random id. Writes go under the current epoch on a multi-recipient
-      // cipher.
-      const codec = epochCodec ?? directCodec
-      const encoded = await codec.encode({
+      // random id.
+      const encoded = await writeCodec.encode({
         data: data as Extract<Json, object>
       })
       return readEncoded(encoded)
@@ -293,16 +323,10 @@ export async function createEdvDocCipher({
       // The update path (mutable random-id head document): hand the codec the
       // prior stored envelope so it advances `sequence` from it and re-encrypts
       // under the same id.
-      const codec = epochCodec ?? directCodec
-      const priorResponse = {
-        data: current,
-        json: async () => current,
-        headers: { get: () => null }
-      } as unknown as Parameters<typeof codec.encode>[0]['current']
-      const encoded = await codec.encode({
+      const encoded = await writeCodec.encode({
         id,
         data: data as Extract<Json, object>,
-        current: priorResponse
+        current: envelopeResponse(current)
       })
       return readEncoded(encoded)
     },
@@ -317,11 +341,7 @@ export async function createEdvDocCipher({
       //      cipher met an envelope encrypted to a different key entirely.
       const kids = envelopeRecipientKids(envelope)
       const codec = selectCodec()
-      const response = {
-        data: envelope,
-        json: async () => envelope
-      } as unknown as Parameters<typeof codec.decode>[0]
-      return (await codec.decode(response)) as Json
+      return (await codec.decode(envelopeResponse(envelope))) as Json
 
       function selectCodec() {
         if (kids.some(kid => kid === vaultKid)) {

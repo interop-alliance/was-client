@@ -36,7 +36,7 @@ export const ENCODER = new TextEncoder()
  * @param contentType {string}
  * @returns {boolean}
  */
-export function isJsonContentType(contentType: string): boolean {
+function isJsonContentType(contentType: string): boolean {
   return /^application\/([^+\s;]+\+)?json\s*(;.*)?$/i.test(contentType)
 }
 
@@ -112,7 +112,7 @@ export function guessContentTypeFromId(id: string): string | undefined {
  * A write body resolved into either a JSON payload (passed to ezcap as `json`)
  * or a binary payload with its content-type (passed as `body` + header).
  */
-export interface PreparedBody {
+interface PreparedBody {
   json?: object
   body?: Uint8Array | Blob
   contentType?: string
@@ -148,7 +148,7 @@ export function toPlainBytes(bytes: Uint8Array): Uint8Array {
  * with its resolved content-type), JSON (a plain object/array), or invalid (a
  * bare primitive -- the caller throws its own error message).
  */
-export type ResolvedPayload =
+type ResolvedPayload =
   | { kind: 'binary'; data: Blob | Uint8Array; contentType: string }
   | { kind: 'json' }
   | { kind: 'invalid' }
@@ -257,17 +257,26 @@ export function prepareBody(
 }
 
 /**
- * Extracts the id of a just-created resource from a create response. Prefers
- * the response body's `id`; for a body-less 2xx falls back to the last path
- * segment of the `Location` header (decoded, since the server emits a
- * percent-encoded path). Throws a `WasServerError` when the response carries
- * neither -- a malformed create response -- rather than letting an absent body
- * surface as a raw `TypeError` on `data.id`.
+ * Extracts the id of a just-created resource from a create response, together
+ * with the raw `Location` header it carried (if any). Prefers the response
+ * body's `id`; for a body-less 2xx falls back to the last path segment of the
+ * `Location` header (decoded, since the server emits a percent-encoded path).
+ * Throws a `WasServerError` when the response carries neither -- a malformed
+ * create response -- rather than letting an absent body surface as a raw
+ * `TypeError` on `data.id`.
+ *
+ * The header is read once and returned verbatim so a caller that also needs
+ * the created resource's URL (`Collection.add`, which resolves it against the
+ * items URL) does not re-read and re-parse it.
  *
  * @param response {HttpResponse | null}
- * @returns {string}
+ * @returns {{ id: string; location?: string }}
  */
-export function createdId(response: HttpResponse | null): string {
+export function createdResource(response: HttpResponse | null): {
+  id: string
+  location?: string
+} {
+  const location = response?.headers.get('location') ?? undefined
   const data = (response as { data?: unknown } | null)?.data as
     { id?: unknown } | undefined
   if (
@@ -275,9 +284,8 @@ export function createdId(response: HttpResponse | null): string {
     typeof data === 'object' &&
     typeof data.id === 'string'
   ) {
-    return data.id
+    return { id: data.id, location }
   }
-  const location = response?.headers.get('location')
   // Parse the `Location` as a URL (relative to the response URL) so a query
   // string or fragment on the create response -- e.g.
   // `/space/s/c/newid?token=abc` -- is dropped before the last path segment is
@@ -289,12 +297,23 @@ export function createdId(response: HttpResponse | null): string {
         .pop()
     : undefined
   if (segment) {
-    return decodeURIComponent(segment)
+    return { id: decodeURIComponent(segment), location }
   }
   throw new WasServerError(
     'Create response carried no resource id: the body has no `id` and there ' +
       'is no `Location` header.'
   )
+}
+
+/**
+ * The id of a just-created resource -- {@link createdResource} for callers that
+ * need only the id.
+ *
+ * @param response {HttpResponse | null}
+ * @returns {string}
+ */
+export function createdId(response: HttpResponse | null): string {
+  return createdResource(response).id
 }
 
 /**

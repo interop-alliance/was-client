@@ -5,10 +5,13 @@
  * The shared write orchestration. `sendEncodedWrite` turns a codec's
  * {@link EncodedWrite} plus a conditional-write precondition into request
  * headers and sends it (the shape `Collection.add` and `Resource.put` would
- * otherwise each re-implement). `upsertResource` layers the upsert flow on
- * top: the conditional-codec pre-read of the current document, the
- * codec-vs-caller precondition selection, and the masked-404 policy for a
- * document that exists but is not readable with the bound capability.
+ * otherwise each re-implement). Two flows layer on top: `insertResource` (the
+ * create path behind `Collection.add` -- encode, the minted-id `PUT` vs
+ * server-minting `POST` branch, and the precondition selection) and
+ * `upsertResource` (the write-by-id path behind `Resource.put` -- the
+ * conditional-codec pre-read of the current document, the codec-vs-caller
+ * precondition selection, and the masked-404 policy for a document that exists
+ * but is not readable with the bound capability).
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite, ResourceCodec } from '../codec.js'
@@ -63,6 +66,71 @@ export async function sendEncodedWrite(
     })
   })
   return response as HttpResponse
+}
+
+/**
+ * Creates a resource with a codec-minted or server-minted id (insert) through
+ * its codec, owning the create orchestration in one place: the encode, the
+ * `PUT`-vs-`POST` branch, and the precondition selection.
+ *
+ * A codec that mints its own id (e.g. the encrypting codec's EDV id) writes it
+ * by `PUT` to that id's path; a codec that mints none (the identity codec)
+ * `POST`s to the items path and lets the server mint one. As in
+ * {@link upsertResource}, a conditional codec computes the precondition itself
+ * (the EDV codec guards its fresh insert with `If-None-Match: *`) and a
+ * non-conditional one defers to the caller's explicit precondition.
+ *
+ * Returns the codec's encoded write and the path actually written alongside the
+ * response, so the caller can shape its result (the created id and URL) without
+ * re-deriving either.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.itemsPath {string}       the collection's items path, the
+ *   `POST` target when the codec mints no id
+ * @param options.pathForId {function}     builds the resource path for a
+ *   codec-minted id
+ * @param options.codec {ResourceCodec}    the collection's resolved codec
+ * @param options.data {ResourceData}      the plaintext value
+ * @param [options.contentType] {string}   caller-supplied content type
+ * @param [options.capability] {IZcap}
+ * @param [options.precondition] {WritePrecondition}   the caller's explicit
+ *   precondition (used only for a non-conditional codec)
+ * @returns {Promise<{ encoded: EncodedWrite; path: string; response: HttpResponse }>}
+ */
+export async function insertResource(
+  context: ClientContext,
+  {
+    itemsPath,
+    pathForId,
+    codec,
+    data,
+    contentType,
+    capability,
+    precondition
+  }: {
+    itemsPath: string
+    pathForId: (id: string) => string
+    codec: ResourceCodec
+    data: ResourceData
+    contentType?: string
+    capability?: IZcap
+    precondition?: WritePrecondition
+  }
+): Promise<{ encoded: EncodedWrite; path: string; response: HttpResponse }> {
+  const encoded = await codec.encode({ data, contentType })
+  const chosen = codec.conditionalWrites
+    ? encodedPrecondition(encoded)
+    : precondition
+  const path = encoded.id !== undefined ? pathForId(encoded.id) : itemsPath
+  const response = await sendEncodedWrite(context, {
+    path,
+    method: encoded.id !== undefined ? 'PUT' : 'POST',
+    capability,
+    encoded,
+    precondition: chosen
+  })
+  return { encoded, path, response }
 }
 
 /**

@@ -11,6 +11,13 @@ import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite } from '../codec.js'
 
 /**
+ * The request header the server reads a content write's key-epoch id from,
+ * stamping it onto the Resource's metadata (an absent header clears any prior
+ * stamp). HTTP header names are case-insensitive; the wire form is `WAS-Key-Epoch`.
+ */
+export const WAS_KEY_EPOCH_HEADER = 'WAS-Key-Epoch'
+
+/**
  * A conditional-write precondition: `ifMatch` is the quoted ETag an
  * update-if-unchanged write must match; `ifNoneMatch` requests a create-if-absent
  * (`If-None-Match: *`). At most one is normally set.
@@ -69,7 +76,8 @@ export function writeHeaders({
     headers['if-none-match'] = '*'
   }
   if (epoch !== undefined) {
-    headers['was-key-epoch'] = epoch
+    // This record keys every header in lower case; the name is case-insensitive.
+    headers[WAS_KEY_EPOCH_HEADER.toLowerCase()] = epoch
   }
   return Object.keys(headers).length > 0 ? headers : undefined
 }

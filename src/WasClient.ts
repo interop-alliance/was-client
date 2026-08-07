@@ -20,16 +20,12 @@ import {
 } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
-import {
-  createdId,
-  dataOrNull,
-  parseResource,
-  readJsonData
-} from './internal/content.js'
+import { createdId, parseResource, readJsonData } from './internal/content.js'
 import {
   buildPageWalk,
   collectPages,
   collectWalk,
+  signedPageWalk,
   walkItems,
   walkPagesOrEmpty
 } from './internal/pagination.js'
@@ -178,12 +174,10 @@ export class WasClient {
     desc: { id?: string; name?: string; controller?: string } = {}
   ): Promise<Space> {
     const controller = desc.controller ?? this.controllerDid
-    const body: Record<string, unknown> = { controller }
-    if (desc.id !== undefined) {
-      body.id = desc.id
-    }
-    if (desc.name !== undefined) {
-      body.name = desc.name
+    const body = {
+      controller,
+      ...(desc.id !== undefined && { id: desc.id }),
+      ...(desc.name !== undefined && { name: desc.name })
     }
     const response = await send(this.#context, {
       path: spacesRoot(),
@@ -210,16 +204,8 @@ export class WasClient {
    * @returns {Promise<SpaceListing>}
    */
   async listSpaces(): Promise<SpaceListing> {
-    const walk = await buildPageWalk<SpaceListing>({
-      firstUrl: toUrl({ serverUrl: this.serverUrl, path: spacesRoot() }),
-      fetchPage: async url => {
-        const pageResponse = await send(this.#context, {
-          url,
-          method: 'GET',
-          read: true
-        })
-        return dataOrNull<SpaceListing>(pageResponse)
-      }
+    const walk = await signedPageWalk<SpaceListing>(this.#context, {
+      firstUrl: toUrl({ serverUrl: this.serverUrl, path: spacesRoot() })
     })
     // The first page always carries the listing body (an unauthorized caller
     // still gets an empty `items` list, not an error), so the walk -- and thus

@@ -32,7 +32,6 @@ import {
   resourcePolicy,
   resourceMeta,
   resourceChunkPath,
-  chunksContainerPath,
   toUrl,
   parseSpacePath
 } from '../../src/internal/paths.js'
@@ -117,12 +116,6 @@ describe('path builders', () => {
     )
     expect(resourceChunkPath('a b', 'c/d', 'e#f', 12)).toBe(
       '/space/a%20b/c%2Fd/e%23f/chunks/12'
-    )
-  })
-
-  it('builds the chunks container path (trailing slash is canonical)', () => {
-    expect(chunksContainerPath('home', 'docs', 'note')).toBe(
-      '/space/home/docs/note/chunks/'
     )
   })
 

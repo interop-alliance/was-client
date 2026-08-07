@@ -8,7 +8,9 @@
  * place. Also owns the masked-404 fail-closed policy: WAS returns 404 for both
  * not-found and unauthorized, so a `null` description is ambiguous and an
  * operation that must know the current state fails closed via
- * `unreadableDescriptionError` rather than guessing.
+ * `unreadableDescriptionError` rather than guessing. `collectionWritableFields`
+ * lives here too: it is the one inclusion rule for the writable description
+ * fields, shared by every path that builds a description body.
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { ClientContext } from './request.js'
@@ -17,7 +19,31 @@ import { dataOrNull } from './content.js'
 import { collectionPath } from './paths.js'
 import { ValidationError } from '../errors.js'
 import type { WasError } from '../errors.js'
-import type { CollectionDescription, IZcap } from '../types.js'
+import type {
+  CollectionDescription,
+  CollectionWritableFields,
+  IZcap
+} from '../types.js'
+
+/**
+ * Picks the writable Collection Description fields that are set. The one
+ * inclusion rule (`!== undefined`) behind every description body -- the
+ * `configure` / `replaceDescription` request bodies and their echoed return
+ * descriptions, and `Space.createCollection`'s create body -- so the paths
+ * cannot drift and a new writable field is added in one place.
+ *
+ * @param fields {CollectionWritableFields}
+ * @returns {CollectionWritableFields}
+ */
+export function collectionWritableFields(
+  fields: CollectionWritableFields
+): CollectionWritableFields {
+  return {
+    ...(fields.name !== undefined && { name: fields.name }),
+    ...(fields.backend !== undefined && { backend: fields.backend }),
+    ...(fields.encryption !== undefined && { encryption: fields.encryption })
+  }
+}
 
 /**
  * Sends the Collection Description GET, returning the raw response -- or

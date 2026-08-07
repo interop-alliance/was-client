@@ -7,8 +7,7 @@
  * these with its own JSDoc and the trivial `isPublic` / `setPublic` sugar.
  */
 import type { ClientContext } from './request.js'
-import { send } from './request.js'
-import { dataOrNull } from './content.js'
+import { readData, send } from './request.js'
 import type { IZcap, PolicyDocument } from '../types.js'
 
 /**
@@ -25,13 +24,7 @@ export async function readPolicy(
   context: ClientContext,
   { policyPath, capability }: { policyPath: string; capability?: IZcap }
 ): Promise<PolicyDocument | null> {
-  const response = await send(context, {
-    path: policyPath,
-    method: 'GET',
-    capability,
-    read: true
-  })
-  return dataOrNull<PolicyDocument>(response)
+  return readData<PolicyDocument>(context, { path: policyPath, capability })
 }
 
 /**

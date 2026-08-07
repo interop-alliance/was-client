@@ -54,20 +54,14 @@ export class WasError extends Error {
  * means "not visible to you" rather than strictly "does not exist".
  */
 export class NotFoundError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'NotFoundError'
-  }
+  override name = 'NotFoundError'
 }
 
 /**
  * The request was malformed or rejected as invalid (HTTP 400).
  */
 export class ValidationError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'ValidationError'
-  }
+  override name = 'ValidationError'
 }
 
 /**
@@ -76,10 +70,7 @@ export class ValidationError extends WasError {
  * 403).
  */
 export class AuthRequiredError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'AuthRequiredError'
-  }
+  override name = 'AuthRequiredError'
 }
 
 /**
@@ -87,10 +78,7 @@ export class AuthRequiredError extends WasError {
  * (HTTP 501).
  */
 export class NotImplementedError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'NotImplementedError'
-  }
+  override name = 'NotImplementedError'
 }
 
 /**
@@ -100,10 +88,7 @@ export class NotImplementedError extends WasError {
  * the space's available list). The specific kind is on the `type` URI.
  */
 export class ConflictError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'ConflictError'
-  }
+  override name = 'ConflictError'
 }
 
 /**
@@ -115,10 +100,7 @@ export class ConflictError extends WasError {
  * conflict family.
  */
 export class PreconditionFailedError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'PreconditionFailedError'
-  }
+  override name = 'PreconditionFailedError'
 }
 
 /**
@@ -127,10 +109,7 @@ export class PreconditionFailedError extends WasError {
  * upload may still succeed.
  */
 export class PayloadTooLargeError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'PayloadTooLargeError'
-  }
+  override name = 'PayloadTooLargeError'
 }
 
 /**
@@ -139,10 +118,7 @@ export class PayloadTooLargeError extends WasError {
  * fault.
  */
 export class QuotaExceededError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'QuotaExceededError'
-  }
+  override name = 'QuotaExceededError'
 }
 
 /**
@@ -155,10 +131,7 @@ export class QuotaExceededError extends WasError {
  * per-handle `encryption` override). Never silently downgrades to plaintext.
  */
 export class EncryptionError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'EncryptionError'
-  }
+  override name = 'EncryptionError'
 }
 
 /**
@@ -176,10 +149,7 @@ export class EncryptionError extends WasError {
  * already decrypt.
  */
 export class KeyUnwrapError extends EncryptionError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'KeyUnwrapError'
-  }
+  override name = 'KeyUnwrapError'
 }
 
 /**
@@ -194,10 +164,7 @@ export class KeyUnwrapError extends EncryptionError {
  * problem. Raised client-side before/independent of any HTTP status.
  */
 export class IntegrityError extends EncryptionError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'IntegrityError'
-  }
+  override name = 'IntegrityError'
 }
 
 /**
@@ -240,10 +207,7 @@ export class WasSyncNotFoundError extends NotFoundError {
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {
-  constructor(message: string, options: WasErrorOptions = {}) {
-    super(message, options)
-    this.name = 'WasServerError'
-  }
+  override name = 'WasServerError'
 }
 
 /**
@@ -305,30 +269,6 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
 }
 
 /**
- * Constructs a `WasError` subclass from a problem-kind anchor (the fragment of
- * the `type` URI, e.g. `quota-exceeded`). Returns `null` for an unrecognized or
- * absent kind so the caller can fall back to status-based dispatch.
- *
- * @param options {object}
- * @param [options.kind] {string}   the `type` URI fragment
- * @param options.message {string}
- * @param options.options {WasErrorOptions}
- * @returns {WasError | null}
- */
-function errorForKind({
-  kind,
-  message,
-  options
-}: {
-  kind?: string
-  message: string
-  options: WasErrorOptions
-}): WasError | null {
-  const ErrorClass = kind === undefined ? undefined : ERROR_CLASS_BY_KIND[kind]
-  return ErrorClass ? new ErrorClass(message, options) : null
-}
-
-/**
  * Reads the HTTP status from a raw ky/ezcap error, checking both the flat
  * `status` and the nested `response.status` shapes.
  *
@@ -373,10 +313,12 @@ export function mapError(err: unknown): WasError {
   const message = title ?? httpError.message ?? 'WAS request failed'
   const options = { status, type, title, details, requestUrl, cause: err }
 
+  // Dispatch on the problem-kind anchor when the server sent one, falling
+  // through to the status-based switch for an unrecognized or absent kind.
   const kind = typeof type === 'string' ? problemFragment(type) : undefined
-  const byKind = errorForKind({ kind, message, options })
-  if (byKind !== null) {
-    return byKind
+  const ErrorClass = kind === undefined ? undefined : ERROR_CLASS_BY_KIND[kind]
+  if (ErrorClass) {
+    return new ErrorClass(message, options)
   }
 
   switch (status) {

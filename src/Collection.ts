@@ -26,23 +26,20 @@ import type { CodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
 import type { BackendFeatures } from './internal/features.js'
 import {
-  buildPageWalk,
   collectWalk,
+  signedPageWalk,
   walkItems,
   walkPagesOrEmpty
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import {
+  collectionWritableFields,
   describeCollection,
   describeCollectionResponse,
   unreadableDescriptionError
 } from './internal/describe.js'
-import {
-  encodedPrecondition,
-  readEtag,
-  writeHeaders
-} from './internal/conditional.js'
-import { sendEncodedWrite } from './internal/write.js'
+import { readEtag, writeHeaders } from './internal/conditional.js'
+import { insertResource } from './internal/write.js'
 import {
   readPolicy,
   writePolicy,
@@ -50,7 +47,7 @@ import {
   isPublicPolicy,
   setPublicPolicy
 } from './internal/policy.js'
-import { createdId, dataOrNull } from './internal/content.js'
+import { createdResource, dataOrNull } from './internal/content.js'
 import type { ResourceCodec } from './codec.js'
 import { Resource } from './Resource.js'
 import type { ChangesCheckpoint, ChangesPage } from '@interop/storage-core'
@@ -151,25 +148,6 @@ export class Collection {
   }
 
   /**
-   * The writable Collection Description fields, present only when set. The one
-   * inclusion rule (`!== undefined`) shared by the `configure` /
-   * `replaceDescription` request bodies and their echoed return descriptions, so
-   * the two paths cannot drift and a new writable field is added in one place.
-   *
-   * @param fields {CollectionWritableFields}
-   * @returns {CollectionWritableFields}
-   */
-  #writableFields(fields: CollectionWritableFields): CollectionWritableFields {
-    return {
-      ...(fields.name !== undefined ? { name: fields.name } : {}),
-      ...(fields.backend !== undefined ? { backend: fields.backend } : {}),
-      ...(fields.encryption !== undefined
-        ? { encryption: fields.encryption }
-        : {})
-    }
-  }
-
-  /**
    * Resolves (once, then caches) the codec for this collection's reads and
    * writes: the identity codec for a plaintext collection, or the encrypting
    * codec when this collection is declared encrypted -- by a per-handle
@@ -255,7 +233,7 @@ export class Collection {
     const name = desc.name ?? current?.name
     const backend = desc.backend ?? current?.backend
     const encryption = desc.encryption ?? current?.encryption
-    const fields = this.#writableFields({ name, backend, encryption })
+    const fields = collectionWritableFields({ name, backend, encryption })
     await send(this.#context, {
       path: this.#path,
       method: 'PUT',
@@ -332,7 +310,7 @@ export class Collection {
     description: CollectionWritableFields,
     options: { ifMatch?: string } = {}
   ): Promise<{ description: CollectionDescription; etag?: string }> {
-    const fields = this.#writableFields(description)
+    const fields = collectionWritableFields(description)
     const response = await send(this.#context, {
       path: this.#path,
       method: 'PUT',
@@ -423,27 +401,21 @@ export class Collection {
     options: { contentType?: string } = {}
   ): Promise<AddResult> {
     const codec = await this.#codec()
-    const encoded = await codec.encode({
+    const itemsPath = this.#itemsPath
+    const { encoded, path, response } = await insertResource(this.#context, {
+      itemsPath,
+      pathForId: mintedId => resourcePath(this.spaceId, this.id, mintedId),
+      codec,
       data,
-      contentType: options.contentType
+      contentType: options.contentType,
+      capability: this.#capability
     })
-    // A codec may attach a create-if-absent precondition for its minted id (the
-    // EDV codec guards a fresh insert with `If-None-Match: *`); plaintext add
-    // carries none.
-    const precondition = encodedPrecondition(encoded)
+    const etag = readEtag(response)
 
-    // A codec that mints its own id (e.g. the encrypting codec's EDV id) writes
-    // by `PUT`; the identity codec returns no id and lets the server mint one
-    // via `POST`.
+    // A codec that mints its own id (e.g. the encrypting codec's EDV id) was
+    // written by `PUT` to that id's path, so the created id and URL are known
+    // without consulting the response.
     if (encoded.id !== undefined) {
-      const path = resourcePath(this.spaceId, this.id, encoded.id)
-      const response = await sendEncodedWrite(this.#context, {
-        path,
-        method: 'PUT',
-        capability: this.#capability,
-        encoded,
-        precondition
-      })
       return {
         id: encoded.id,
         url: toUrl({ serverUrl: this.#context.serverUrl, path }),
@@ -451,25 +423,16 @@ export class Collection {
         // EDV codec's `resourceContentType`); otherwise the wire `contentType`,
         // which for the identity codec already is the resource type.
         contentType: encoded.resourceContentType ?? encoded.contentType,
-        etag: readEtag(response)
+        etag
       }
     }
 
-    const response = await sendEncodedWrite(this.#context, {
-      path: this.#itemsPath,
-      method: 'POST',
-      capability: this.#capability,
-      encoded,
-      precondition
-    })
     // POST always returns a response (404/errors throw via send()). The id is
-    // the body's `id`, or -- for a body-less 2xx -- the `Location` header.
-    const id = createdId(response)
-    const responseBody = (
-      response as { data?: { 'content-type'?: string } } | null
-    )?.data
-    const location =
-      (response as { headers: Headers }).headers.get('location') ?? undefined
+    // the body's `id`, or -- for a body-less 2xx -- the `Location` header, read
+    // once here and reused for the URL below.
+    const { id, location } = createdResource(response)
+    const responseBody = response.data as
+      { 'content-type'?: string } | undefined
     return {
       id,
       // RFC 9110 permits a relative `Location`; resolve it against the request
@@ -478,7 +441,7 @@ export class Collection {
       url: location
         ? new URL(
             location,
-            toUrl({ serverUrl: this.#context.serverUrl, path: this.#itemsPath })
+            toUrl({ serverUrl: this.#context.serverUrl, path: itemsPath })
           ).toString()
         : toUrl({
             serverUrl: this.#context.serverUrl,
@@ -488,7 +451,7 @@ export class Collection {
         responseBody?.['content-type'] ??
         encoded.resourceContentType ??
         encoded.contentType,
-      etag: readEtag(response)
+      etag
     }
   }
 
@@ -540,20 +503,12 @@ export class Collection {
    * @returns {Promise<PageWalk | null>}
    */
   async #listWalk(): Promise<PageWalk | null> {
-    return buildPageWalk({
+    return signedPageWalk(this.#context, {
       firstUrl: toUrl({
         serverUrl: this.#context.serverUrl,
         path: this.#itemsPath
       }),
-      fetchPage: async url => {
-        const pageResponse = await send(this.#context, {
-          url,
-          method: 'GET',
-          capability: this.#capability,
-          read: true
-        })
-        return dataOrNull<CollectionResourcesList>(pageResponse)
-      }
+      capability: this.#capability
     })
   }
 

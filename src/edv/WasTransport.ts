@@ -62,13 +62,7 @@ import {
   resourceChunkPath,
   resourcePath
 } from '../internal/paths.js'
-import {
-  DEFAULT_CONTENT_TYPE,
-  envelopeBytes,
-  JOSE_CONTENT_TYPE
-} from './constants.js'
-
-export { JOSE_CONTENT_TYPE }
+import { DEFAULT_CONTENT_TYPE, envelopeBytes } from './constants.js'
 
 /**
  * The content type a serialized EDV chunk is stored under. Deliberately an
@@ -254,35 +248,32 @@ export class WasTransport extends Transport {
     if (!encrypted) {
       throw new TypeError('"encrypted" is required.')
     }
-    if (await this.#features.has('conditional-writes')) {
-      try {
-        await this.#put(encrypted.id, encrypted, { 'if-none-match': '*' })
-      } catch (err) {
-        mapTransportError(err, {
-          412: {
-            name: 'DuplicateError',
-            message: `A document with id "${encrypted.id}" already exists.`
-          },
-          409: {
-            name: 'DuplicateError',
-            message: DUPLICATE_ATTRIBUTE_MESSAGE
-          }
-        })
-      }
-      return
+    const conditional = await this.#features.has('conditional-writes')
+    const duplicateId = {
+      name: 'DuplicateError',
+      message: `A document with id "${encrypted.id}" already exists.`
     }
-    if (await this.#exists(encrypted.id)) {
-      throw namedError({
-        name: 'DuplicateError',
-        message: `A document with id "${encrypted.id}" already exists.`
-      })
+    // Without the atomic precondition, fall back to the advisory (non-atomic)
+    // existence check.
+    if (!conditional && (await this.#exists(encrypted.id))) {
+      throw namedError(duplicateId)
     }
     try {
-      await this.#put(encrypted.id, encrypted)
+      await this.#put(
+        encrypted.id,
+        encrypted,
+        conditional ? { 'if-none-match': '*' } : {}
+      )
     } catch (err) {
-      mapTransportError(err, {
+      const mapping: Record<number, { name: string; message: string }> = {
         409: { name: 'DuplicateError', message: DUPLICATE_ATTRIBUTE_MESSAGE }
-      })
+      }
+      // Only the conditional insert can trip a 412: its `If-None-Match: *`
+      // precondition failing IS "the document already exists".
+      if (conditional) {
+        mapping[412] = duplicateId
+      }
+      mapTransportError(err, mapping)
     }
   }
 

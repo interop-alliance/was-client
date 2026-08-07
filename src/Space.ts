@@ -22,14 +22,17 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { unreadableDescriptionError } from './internal/describe.js'
+import {
+  collectionWritableFields,
+  unreadableDescriptionError
+} from './internal/describe.js'
 import { delegateGrantAt } from './internal/grant.js'
 import { submitRevocation } from './internal/revoke.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
 import {
-  buildPageWalk,
   collectWalk,
+  signedPageWalk,
   walkPagesOrEmpty
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
@@ -227,18 +230,11 @@ export class Space {
     if (desc.id !== undefined) {
       assertNotReserved({ id: desc.id, kind: 'collection' })
     }
-    const body: Record<string, unknown> = {}
-    if (desc.id !== undefined) {
-      body.id = desc.id
-    }
-    if (desc.name !== undefined) {
-      body.name = desc.name
-    }
-    if (desc.backend) {
-      body.backend = desc.backend
-    }
-    if (desc.encryption) {
-      body.encryption = desc.encryption
+    // The writable fields follow the shared inclusion rule; only `id` (not part
+    // of the writable description) is handled here.
+    const body = {
+      ...(desc.id !== undefined && { id: desc.id }),
+      ...collectionWritableFields(desc)
     }
     const response = await send(this.#context, {
       path: spaceItems(this.id),
@@ -264,20 +260,12 @@ export class Space {
    * @returns {Promise<PageWalk<CollectionsList> | null>}
    */
   async #collectionsWalk(): Promise<PageWalk<CollectionsList> | null> {
-    return buildPageWalk<CollectionsList>({
+    return signedPageWalk<CollectionsList>(this.#context, {
       firstUrl: toUrl({
         serverUrl: this.#context.serverUrl,
         path: spaceCollections(this.id)
       }),
-      fetchPage: async url => {
-        const pageResponse = await send(this.#context, {
-          url,
-          method: 'GET',
-          capability: this.#capability,
-          read: true
-        })
-        return dataOrNull<CollectionsList>(pageResponse)
-      }
+      capability: this.#capability
     })
   }
 

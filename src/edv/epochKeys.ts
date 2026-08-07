@@ -101,11 +101,9 @@ export async function resolveEpochKeys({
   // server rejects via its revoked zcap anyway; selecting a deterministic
   // fallback here only keeps the local `writeEpoch`/`writeKey` well-defined
   // instead of assuming the `epochs` array is append-ordered newest-last.
-  const currentEpoch = encryption.currentEpoch
   const writeEpochEntry =
-    (currentEpoch !== undefined &&
-      namedEpochs.find(epoch => epoch.id === currentEpoch)) ||
-    namedEpochs[namedEpochs.length - 1]!
+    namedEpochs.find(epoch => epoch.id === encryption.currentEpoch) ??
+    namedEpochs.at(-1)!
   // The write epoch is unwrapped eagerly: `writeKey` must be a full key pair the
   // EDV cipher can name recipients with and encrypt under right away. Its raw
   // secret is surfaced alongside so the epoch-configuration MAC can be verified.

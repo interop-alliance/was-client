@@ -105,6 +105,119 @@ async function stampEpochsAuth({
 }
 
 /**
+ * Escrows a recipient into every epoch it is not already a recipient of: for
+ * each such epoch the caller unwraps the epoch key with its own key-agreement
+ * key and re-wraps it to the incoming reader. Shared by {@link addRecipient}
+ * (whose whole job this is) and {@link replaceRecipient} (which does it in the
+ * same write as its rotation), so the two cannot drift.
+ *
+ * Each epoch's unwrap + re-wrap is independent of the others', so they run
+ * concurrently (order-preserving), like `initRecipients` and `removeRecipient`
+ * wrap their recipients.
+ *
+ * @param options {object}
+ * @param options.epochs {CollectionEncryptionEpoch[]}   the descriptor's epochs
+ * @param options.recipient {RecipientPublicKey}   the reader being escrowed
+ * @param options.owner {OwnerKey}   the caller's own key-agreement key, to
+ *   unwrap each epoch key for re-wrapping
+ * @param options.operation {string}   the calling operation's name, as the error
+ *   messages name it (`addRecipient` / `replaceRecipient`)
+ * @param options.reader {string}   how those messages name the incoming reader
+ *   (`new` / `incoming`)
+ * @returns {Promise<{ epochs: CollectionEncryptionEpoch[], changed: boolean }>}
+ *   the epochs with the escrow wraps applied, and whether any epoch changed
+ */
+async function escrowIntoEpochs({
+  epochs,
+  recipient,
+  owner,
+  operation,
+  reader
+}: {
+  epochs: CollectionEncryptionEpoch[]
+  recipient: RecipientPublicKey
+  owner: OwnerKey
+  operation: string
+  reader: string
+}): Promise<{ epochs: CollectionEncryptionEpoch[]; changed: boolean }> {
+  let changed = false
+  const escrowed = await Promise.all(
+    epochs.map(async (epoch): Promise<CollectionEncryptionEpoch> => {
+      // Already a recipient of this epoch? Leave it untouched (idempotent).
+      if (epoch.recipients.some(entry => entry.header.kid === recipient.id)) {
+        return epoch
+      }
+      const ownEntry = epoch.recipients.find(
+        entry => entry.header.kid === owner.keyAgreementKey.id
+      )
+      if (!ownEntry) {
+        throw new ValidationError(
+          `Cannot ${operation}: the caller is not a recipient of epoch ` +
+            `"${epoch.id}", so it cannot unwrap that epoch key to escrow it ` +
+            `to the ${reader} reader.`
+        )
+      }
+      const epochSecret = await unwrapEpochSecret({
+        entry: ownEntry,
+        keyAgreementKey: owner.keyAgreementKey
+      })
+      if (!epochSecret) {
+        throw new ValidationError(
+          `Cannot ${operation}: unwrapping epoch "${epoch.id}" with the ` +
+            "caller's key-agreement key failed."
+        )
+      }
+      changed = true
+      return {
+        ...epoch,
+        recipients: [
+          ...epoch.recipients,
+          await wrapEpochSecret({ epochSecret, recipient })
+        ]
+      }
+    })
+  )
+  return { epochs: escrowed, changed }
+}
+
+/**
+ * Wraps a freshly minted epoch key to each remaining recipient kid, building the
+ * epoch to append. The resolver may signal drop-this-kid by resolving `null`
+ * (e.g. a roster entry whose key material is no longer resolvable), so the
+ * rotation excludes that entry instead of throwing; the caller applies its own
+ * rule to an epoch that ends up with no recipients at all.
+ *
+ * @param options {object}
+ * @param options.epochId {string}   the fresh epoch's id (its `did:key`)
+ * @param options.secret {Uint8Array}   the fresh epoch's 32-byte secret
+ * @param options.remaining {Set<string>}   the surviving recipients' kids
+ * @param options.resolveRecipientKey {function}   resolves a kid to its public
+ *   key-agreement key, or `null` to drop it
+ * @returns {Promise<CollectionEncryptionEpoch>}   the fresh epoch
+ */
+async function rotateEpoch({
+  epochId,
+  secret,
+  remaining,
+  resolveRecipientKey
+}: {
+  epochId: string
+  secret: Uint8Array
+  remaining: Set<string>
+  resolveRecipientKey: (kid: string) => Promise<RecipientPublicKey | null>
+}): Promise<CollectionEncryptionEpoch> {
+  const wrapped = await Promise.all(
+    [...remaining].map(async kid => {
+      const recipient = await resolveRecipientKey(kid)
+      return recipient === null
+        ? null
+        : wrapEpochSecret({ epochSecret: secret, recipient })
+    })
+  )
+  return { id: epochId, recipients: wrapped.filter(entry => entry !== null) }
+}
+
+/**
  * Initializes the first key epoch on a descriptor that has no epochs yet: mints
  * a fresh epoch key, wraps it to each initial recipient, and writes `epochs:
  * [epoch]` / `currentEpoch` back with a compare-and-swap. After this, resources
@@ -235,47 +348,13 @@ export async function addRecipient({
             'initRecipients first.'
         )
       }
-      // Each epoch's unwrap + re-wrap is independent of the others', so run
-      // them concurrently (order-preserving), like `initRecipients` and
-      // `removeRecipient` wrap their recipients.
-      const nextEpochs = await Promise.all(
-        epochs.map(async (epoch): Promise<CollectionEncryptionEpoch> => {
-          // Already a recipient of this epoch? Leave it untouched (idempotent).
-          if (
-            epoch.recipients.some(entry => entry.header.kid === recipient.id)
-          ) {
-            return epoch
-          }
-          const ownEntry = epoch.recipients.find(
-            entry => entry.header.kid === owner.keyAgreementKey.id
-          )
-          if (!ownEntry) {
-            throw new ValidationError(
-              `Cannot addRecipient: the caller is not a recipient of epoch ` +
-                `"${epoch.id}", so it cannot unwrap that epoch key to escrow ` +
-                'it to the new reader.'
-            )
-          }
-          const secret = await unwrapEpochSecret({
-            entry: ownEntry,
-            keyAgreementKey: owner.keyAgreementKey
-          })
-          if (!secret) {
-            throw new ValidationError(
-              `Cannot addRecipient: unwrapping epoch "${epoch.id}" with the ` +
-                "caller's key-agreement key failed."
-            )
-          }
-          const wrapped = await wrapEpochSecret({
-            epochSecret: secret,
-            recipient
-          })
-          return {
-            ...epoch,
-            recipients: [...epoch.recipients, wrapped]
-          }
-        })
-      )
+      const { epochs: nextEpochs } = await escrowIntoEpochs({
+        epochs,
+        recipient,
+        owner,
+        operation: 'addRecipient',
+        reader: 'new'
+      })
       return { ...descriptor, epochs: nextEpochs }
     }
   })
@@ -412,25 +491,18 @@ export async function removeRecipient({
       // signal drop-this-kid by resolving `null` (e.g. a roster entry whose
       // key material is no longer resolvable), so the rotation excludes that
       // entry instead of throwing.
-      const wrapped = await Promise.all(
-        [...remaining].map(async kid => {
-          const recipient = await resolveRecipientKey(kid)
-          return recipient === null
-            ? null
-            : wrapEpochSecret({ epochSecret: secret, recipient })
-        })
-      )
-      const newRecipients = wrapped.filter(entry => entry !== null)
-      if (newRecipients.length === 0) {
+      const newEpoch = await rotateEpoch({
+        epochId,
+        secret,
+        remaining,
+        resolveRecipientKey
+      })
+      if (newEpoch.recipients.length === 0) {
         throw new ValidationError(
           'Cannot removeRecipient: no recipients would remain after the ' +
             'removal (resolveRecipientKey dropped every remaining entry, ' +
             'and a collection with no readers cannot be rotated to).'
         )
-      }
-      const newEpoch: CollectionEncryptionEpoch = {
-        id: epochId,
-        recipients: newRecipients
       }
       // Re-authenticate the epoch configuration under the NEW epoch's secret
       // (the rotating caller just minted it), computed over the exact descriptor
@@ -556,45 +628,15 @@ export async function replaceRecipient({
         )
       }
       // Escrow the incoming recipient into every epoch it is missing from
-      // (addRecipient's loop, inlined so the whole replacement is one write).
-      let escrowChanged = false
-      const escrowed = await Promise.all(
-        epochs.map(async (epoch): Promise<CollectionEncryptionEpoch> => {
-          if (
-            epoch.recipients.some(entry => entry.header.kid === recipient.id)
-          ) {
-            return epoch
-          }
-          const ownEntry = epoch.recipients.find(
-            entry => entry.header.kid === owner.keyAgreementKey.id
-          )
-          if (!ownEntry) {
-            throw new ValidationError(
-              `Cannot replaceRecipient: the caller is not a recipient of ` +
-                `epoch "${epoch.id}", so it cannot unwrap that epoch key to ` +
-                'escrow it to the incoming reader.'
-            )
-          }
-          const epochSecret = await unwrapEpochSecret({
-            entry: ownEntry,
-            keyAgreementKey: owner.keyAgreementKey
-          })
-          if (!epochSecret) {
-            throw new ValidationError(
-              `Cannot replaceRecipient: unwrapping epoch "${epoch.id}" with ` +
-                "the caller's key-agreement key failed."
-            )
-          }
-          escrowChanged = true
-          return {
-            ...epoch,
-            recipients: [
-              ...epoch.recipients,
-              await wrapEpochSecret({ epochSecret, recipient })
-            ]
-          }
+      // (addRecipient's escrow, so the whole replacement is one write).
+      const { epochs: escrowed, changed: escrowChanged } =
+        await escrowIntoEpochs({
+          epochs,
+          recipient,
+          owner,
+          operation: 'replaceRecipient',
+          reader: 'incoming'
         })
-      )
       // Rotate only when a retiring kid is still current (the removeRecipient
       // no-op rule, so a naive re-run appends zero redundant epochs).
       const currentEpoch =
@@ -613,24 +655,16 @@ export async function replaceRecipient({
         }
       }
       // The escrow above already placed the incoming recipient in the current
-      // epoch, so it is in `remaining`; wrap it directly (its public key is in
-      // hand) and route only the other survivors through the resolver.
-      const wrapped = await Promise.all(
-        [...remaining].map(async kid => {
-          if (kid === recipient.id) {
-            return wrapEpochSecret({ epochSecret: secret, recipient })
-          }
-          const resolved = await resolveRecipientKey(kid)
-          return resolved === null
-            ? null
-            : wrapEpochSecret({ epochSecret: secret, recipient: resolved })
-        })
-      )
-      const newRecipients = wrapped.filter(entry => entry !== null)
-      const newEpoch: CollectionEncryptionEpoch = {
-        id: epochId,
-        recipients: newRecipients
-      }
+      // epoch, so it is in `remaining`; short-circuit the resolver for it (its
+      // public key is in hand) and route only the other survivors through the
+      // caller's resolver.
+      const newEpoch = await rotateEpoch({
+        epochId,
+        secret,
+        remaining,
+        resolveRecipientKey: async kid =>
+          kid === recipient.id ? recipient : resolveRecipientKey(kid)
+      })
       const next: CollectionEncryption = {
         ...descriptor,
         epochs: [...escrowed, newEpoch],

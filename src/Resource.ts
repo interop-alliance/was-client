@@ -186,8 +186,17 @@ export class Resource {
    * @returns {Promise<Json | Blob | null>}
    */
   async get(): Promise<Json | Blob | null> {
-    const codec = await this.#codec()
-    const response = await this.#read()
+    // The read is the same signed GET whatever the codec turns out to be, so
+    // the two round trips overlap. The codec promise is awaited first, so a
+    // codec failure still takes precedence over a read failure; the no-op
+    // handler on the read keeps an abandoned read from surfacing as an
+    // unhandled rejection in that case (the read is still awaited below, so
+    // its error is not swallowed).
+    const codecPromise = this.#codec()
+    const responsePromise = this.#read()
+    responsePromise.catch(() => {})
+    const codec = await codecPromise
+    const response = await responsePromise
     return response === null ? null : codec.decode(response, this.id)
   }
 
@@ -204,8 +213,14 @@ export class Resource {
    * @returns {Promise<{ data: Json | Blob; etag?: string } | null>}
    */
   async getWithEtag(): Promise<{ data: Json | Blob; etag?: string } | null> {
-    const codec = await this.#codec()
-    const response = await this.#read()
+    // Overlapped like `get()`: codec resolution and the read are independent,
+    // the codec is awaited first for error precedence, and the no-op handler
+    // keeps an abandoned read from becoming an unhandled rejection.
+    const codecPromise = this.#codec()
+    const responsePromise = this.#read()
+    responsePromise.catch(() => {})
+    const codec = await codecPromise
+    const response = await responsePromise
     if (response === null) {
       return null
     }
@@ -359,13 +374,20 @@ export class Resource {
    * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(ResourceMetadata & { etag?: string }) | null> {
-    const codec = await this.#codec()
-    const response = await send(this.#context, {
+    // Overlapped like `get()`: the metadata GET does not depend on the codec
+    // (only its `custom` decode below does), the codec is awaited first for
+    // error precedence, and the no-op handler keeps an abandoned read from
+    // becoming an unhandled rejection.
+    const codecPromise = this.#codec()
+    const responsePromise = send(this.#context, {
       path: this.#metaPath,
       method: 'GET',
       capability: this.#capability,
       read: true
     })
+    responsePromise.catch(() => {})
+    const codec = await codecPromise
+    const response = await responsePromise
     if (response === null) {
       return null
     }

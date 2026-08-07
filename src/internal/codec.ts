@@ -85,6 +85,19 @@ export class CodecHolder {
 }
 
 /**
+ * The collection a codec is being resolved for, plus the per-handle inputs that
+ * decide it: the encryption override and the handle's bound capability. Shared
+ * by {@link collectionCodecHolder} and {@link resolveCodec}, which forwards it
+ * through unchanged.
+ */
+interface CodecTarget {
+  spaceId: string
+  collectionId: string
+  override?: EncryptionOverride
+  capability?: IZcap
+}
+
+/**
  * Builds the per-handle {@link CodecHolder} for a collection's codec -- the
  * one resolver wiring shared by the `Collection` and standalone `Resource`
  * constructors, so the two cannot drift.
@@ -99,12 +112,7 @@ export class CodecHolder {
  */
 export function collectionCodecHolder(
   context: ClientContext,
-  options: {
-    spaceId: string
-    collectionId: string
-    override?: EncryptionOverride
-    capability?: IZcap
-  }
+  options: CodecTarget
 ): CodecHolder {
   return new CodecHolder(() => resolveCodec(context, options))
 }
@@ -128,12 +136,7 @@ export const identityCodec: ResourceCodec = {
     contentType?: string
   }): Promise<EncodedWrite> {
     const prepared = prepareBody(data, { contentType, filename: id })
-    return {
-      id,
-      json: prepared.json,
-      body: prepared.body,
-      contentType: prepared.contentType
-    }
+    return { id, ...prepared }
   },
 
   async decode(response: HttpResponse): Promise<Json | Blob> {
@@ -175,17 +178,7 @@ export const identityCodec: ResourceCodec = {
  */
 export async function resolveCodec(
   context: ClientContext,
-  {
-    spaceId,
-    collectionId,
-    override,
-    capability
-  }: {
-    spaceId: string
-    collectionId: string
-    override?: EncryptionOverride
-    capability?: IZcap
-  }
+  { spaceId, collectionId, override, capability }: CodecTarget
 ): Promise<ResourceCodec> {
   // 1. A per-handle override wins and skips the descriptor read.
   if (override !== undefined) {

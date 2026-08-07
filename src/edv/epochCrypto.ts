@@ -39,19 +39,18 @@ import {
   MULTICODEC_X25519_PUB_HEADER
 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
+import { ENCODER } from '../internal/content.js'
 import type { CollectionEncryptionRecipient } from '../types.js'
 
 /**
  * The JOSE key-management algorithm for every epoch/recipient wrap.
  */
-export const KEY_WRAP_ALG = 'ECDH-ES+A256KW'
+const KEY_WRAP_ALG = 'ECDH-ES+A256KW'
 
 /**
  * The X25519 suite tag used for the ephemeral and reconstructed key pairs.
  */
 const X25519_TYPE = 'X25519KeyAgreementKey2020'
-
-const TEXT_ENCODER = new TextEncoder()
 
 /**
  * A reader's public key-agreement key, as needed to wrap an epoch key to it:
@@ -90,7 +89,7 @@ export async function wrapEpochSecret({
     publicKey: { publicKeyMultibase: recipient.publicKeyMultibase }
   })
   const producerInfo = ephemeralPublicKey
-  const consumerInfo = TEXT_ENCODER.encode(recipient.id)
+  const consumerInfo = ENCODER.encode(recipient.id)
   const keyData = await deriveKey({ secret, producerInfo, consumerInfo })
   const kek = await createKek({ keyData })
   const encryptedKey = await kek.wrapKey({ unwrappedKey: epochSecret })
@@ -157,7 +156,7 @@ export async function unwrapEpochSecret({
     return null
   }
   const producerInfo = ephemeralPublicKey
-  const consumerInfo = TEXT_ENCODER.encode(keyAgreementKey.id)
+  const consumerInfo = ENCODER.encode(keyAgreementKey.id)
   const keyData = await deriveKey({ secret, producerInfo, consumerInfo })
   const kek = await createKek({ keyData })
   try {

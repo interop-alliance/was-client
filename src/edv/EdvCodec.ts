@@ -77,10 +77,10 @@ import {
   ValidationError
 } from '../errors.js'
 import { readEtag } from '../internal/conditional.js'
+import { isEncryptedEnvelope } from '../sync/envelope.js'
 import { resolveEpochKeys } from './epochKeys.js'
 import { didKeyResolver } from './epochCrypto.js'
 import {
-  ENCODER,
   isBlob,
   isTextContentType,
   readJsonData,
@@ -111,6 +111,43 @@ const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
  * instance is reused.
  */
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
+/**
+ * A shared lenient UTF-8 decoder for a JWE protected header (already proven
+ * authentic by a successful decrypt). Deliberately NOT {@link UTF8_DECODER},
+ * whose `fatal: true` would turn malformed bytes into a throw rather than the
+ * documented `undefined` return.
+ */
+const HEADER_DECODER = new TextDecoder()
+
+/**
+ * Builds the AEAD-bound `was` protected-header parameter: the scheme version
+ * always, the resource id when it is known at encrypt time (absent for a
+ * content-derived id, which does not exist until after encryption), and the key
+ * epoch on a multi-recipient write. The one shape both the content and the
+ * metadata write paths bind.
+ *
+ * @param options {object}
+ * @param options.version {number}   the EDV-over-WAS scheme version
+ * @param [options.resource] {string}   the resource id the envelope is bound to
+ * @param [options.epoch] {string}   the key epoch the write encrypts under
+ * @returns {{ v: number, resource?: string, epoch?: string }}
+ */
+function wasParam({
+  version,
+  resource,
+  epoch
+}: {
+  version: number
+  resource?: string
+  epoch?: string
+}): { v: number; resource?: string; epoch?: string } {
+  return {
+    v: version,
+    ...(resource !== undefined && { resource }),
+    ...(epoch !== undefined && { epoch })
+  }
+}
 
 /**
  * Whether a decrypt error means "this candidate key does not open the envelope"
@@ -300,15 +337,11 @@ export class EdvCodec implements ResourceCodec {
     // and the write epoch on a multi-recipient collection. A server that swaps
     // two envelopes between ids (or replays one under a rolled-back epoch) is
     // then detected on decrypt.
-    const was: { v: number; resource?: string; epoch?: string } = {
-      v: this.#version
-    }
-    if (docId !== undefined) {
-      was.resource = docId
-    }
-    if (this.#writeEpoch !== undefined) {
-      was.epoch = this.#writeEpoch
-    }
+    const was = wasParam({
+      version: this.#version,
+      resource: docId,
+      epoch: this.#writeEpoch
+    })
     const encrypted = await documentCipher.encrypt({
       doc: {
         ...(docId !== undefined && { id: docId }),
@@ -335,6 +368,10 @@ export class EdvCodec implements ResourceCodec {
     return {
       id: docId,
       body: envelopeBytes(encrypted),
+      // The same envelope in object form, so a consumer holding a local replica
+      // (the sync `DocCipher`) need not decode and re-parse the bytes it was
+      // just serialized from. `body` remains the wire truth.
+      envelope: encrypted,
       contentType: this.#contentType,
       // Surface the plaintext content type (the server-opaque envelope type
       // stays `contentType`) so `add()` reports the real resource type.
@@ -369,17 +406,41 @@ export class EdvCodec implements ResourceCodec {
     },
     expectedId?: string
   ): Promise<Json | Blob> {
-    const encryptedDoc = await readJsonData(
+    const stored = await readJsonData(
       response as Parameters<typeof readJsonData>[0]
     )
-    this.#assertEnvelope(encryptedDoc, 'read')
-    const decrypted = await this.#decrypt(encryptedDoc)
+    const decrypted = await this.#openEnvelope(stored, expectedId)
+    return this.#fromDocument(decrypted.content, decrypted.meta)
+  }
+
+  /**
+   * Opens a stored envelope: asserts it IS an EDV envelope, decrypts it with
+   * whichever read key its JWE recipient names, and only then verifies the
+   * AEAD-authenticated `was` binding (decrypt success is what proves the
+   * protected header authentic, so the order is load-bearing). The one opening
+   * shared by {@link decode} and {@link decodeMeta}.
+   *
+   * @param doc {unknown}   the stored document read from the server
+   * @param [expectedId] {string}   the resource id the read targeted
+   * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
+   *   keyId?: string }>}   the decrypted document
+   */
+  async #openEnvelope(
+    doc: unknown,
+    expectedId?: string
+  ): Promise<{
+    content?: unknown
+    meta?: Record<string, unknown>
+    keyId?: string
+  }> {
+    this.#assertEnvelope(doc, 'read')
+    const decrypted = await this.#decrypt(doc)
     await this.#verifyBinding({
-      jwe: encryptedDoc.jwe,
+      jwe: doc.jwe,
       expectedId,
       keyId: decrypted.keyId
     })
-    return this.#fromDocument(decrypted.content, decrypted.meta)
+    return decrypted
   }
 
   /**
@@ -580,10 +641,7 @@ export class EdvCodec implements ResourceCodec {
     // AEAD-detected on decode. The metadata envelope always knows the resource
     // id at encrypt time, so `resource` is always present here (never content-
     // derived) and it carries no `epoch`.
-    const was: { v: number; resource?: string } = { v: this.#version }
-    if (resourceId !== undefined) {
-      was.resource = resourceId
-    }
+    const was = wasParam({ version: this.#version, resource: resourceId })
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
       recipients: this.#recipients,
@@ -613,14 +671,7 @@ export class EdvCodec implements ResourceCodec {
     if (custom === undefined || custom === null) {
       return {}
     }
-    this.#assertEnvelope(custom, 'read')
-    const encryptedDoc = custom as IEncryptedDocument
-    const decrypted = await this.#decrypt(encryptedDoc)
-    await this.#verifyBinding({
-      jwe: encryptedDoc.jwe,
-      expectedId,
-      keyId: decrypted.keyId
-    })
+    const decrypted = await this.#openEnvelope(custom, expectedId)
     return (decrypted.content ?? {}) as ResourceMetadataCustom
   }
 
@@ -629,7 +680,10 @@ export class EdvCodec implements ResourceCodec {
    * (`{ jwe, ... }`) before it is handed to the cipher. A plaintext or foreign
    * resource -- one written without this codec -- carries no `jwe`, which would
    * otherwise make the EDV core throw a raw `TypeError`. Surfacing a typed
-   * `EncryptionError` keeps the fail-closed contract legible to callers.
+   * `EncryptionError` keeps the fail-closed contract legible to callers. The
+   * envelope test itself is the shared `isEncryptedEnvelope` predicate, so this
+   * guard and the crypto-free read paths cannot disagree on what an envelope
+   * is.
    *
    * For an `update`, the envelope's `sequence` is also validated: the cipher
    * requires a non-negative safe integer to advance from, so a foreign envelope
@@ -645,11 +699,7 @@ export class EdvCodec implements ResourceCodec {
     doc: unknown,
     context: string
   ): asserts doc is IEncryptedDocument {
-    const jwe =
-      doc !== null && typeof doc === 'object'
-        ? (doc as { jwe?: unknown }).jwe
-        : undefined
-    if (jwe === null || typeof jwe !== 'object') {
+    if (!isEncryptedEnvelope(doc as Json | undefined)) {
       throw new EncryptionError(
         `Cannot ${context} an encrypted resource: the stored document is not ` +
           'an EDV envelope (it carries no `jwe` field). It was likely written ' +
@@ -787,7 +837,9 @@ export class EdvCodec implements ResourceCodec {
             'content.text is not a string.'
         )
       }
-      return new Blob([ENCODER.encode(text) as BlobPart], { type: contentType })
+      // `Blob` encodes a string part as UTF-8 itself, with the same
+      // unpaired-surrogate handling as `TextEncoder`.
+      return new Blob([text], { type: contentType })
     }
     if (encoding === 'base64') {
       const base64Text = (content as { bytes?: unknown } | null)?.bytes
@@ -838,7 +890,7 @@ function parseWasHeader(jwe: unknown): Record<string, unknown> | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(
-      new TextDecoder().decode(base64urlnopad.decode(protectedHeader))
+      HEADER_DECODER.decode(base64urlnopad.decode(protectedHeader))
     )
   } catch {
     return undefined

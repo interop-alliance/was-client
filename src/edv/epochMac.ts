@@ -20,18 +20,17 @@
  * out of scope here.
  */
 import { base64urlnopad } from '@scure/base'
+import { ENCODER } from '../internal/content.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionEpochsMac,
   CollectionEncryptionEpochsSig
 } from '../types.js'
 
-const TEXT_ENCODER = new TextEncoder()
-
 /**
  * The HKDF `info` string binding the derived key to this MAC construction.
  */
-const MAC_KEY_INFO = TEXT_ENCODER.encode('was-epoch-config-mac/v1')
+const MAC_KEY_INFO = ENCODER.encode('was-epoch-config-mac/v1')
 
 /**
  * The domain-separation prefix prepended to the JSON payload before it is MACed.
@@ -117,7 +116,7 @@ function epochsConfigJson(descriptor: CollectionEncryption): string {
  * @returns {ArrayBuffer}
  */
 function macPayload(descriptor: CollectionEncryption): ArrayBuffer {
-  const bytes = TEXT_ENCODER.encode(
+  const bytes = ENCODER.encode(
     MAC_PAYLOAD_PREFIX + epochsConfigJson(descriptor)
   )
   return bytes.buffer.slice(
@@ -138,7 +137,7 @@ function macPayload(descriptor: CollectionEncryption): ArrayBuffer {
  * @returns {Uint8Array}
  */
 export function epochsSigPayload(descriptor: CollectionEncryption): Uint8Array {
-  return TEXT_ENCODER.encode(SIG_PAYLOAD_PREFIX + epochsConfigJson(descriptor))
+  return ENCODER.encode(SIG_PAYLOAD_PREFIX + epochsConfigJson(descriptor))
 }
 
 /**

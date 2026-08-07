@@ -15,7 +15,14 @@
  * List Collections (`CollectionsList`), and List Spaces (`SpaceListing`). Each
  * envelope shares the `{ items, next? }` shape the traversal relies on.
  */
-import type { CollectionResourcesList, ResourceSummary } from '../types.js'
+import type {
+  CollectionResourcesList,
+  IZcap,
+  ResourceSummary
+} from '../types.js'
+import type { ClientContext } from './request.js'
+import { send } from './request.js'
+import { dataOrNull } from './content.js'
 
 /**
  * The shared shape of every paginated listing envelope: an `items` array and an
@@ -58,6 +65,35 @@ export async function buildPageWalk<
 }): Promise<PageWalk<T> | null> {
   const first = await fetchPage(firstUrl)
   return first === null ? null : { first, firstUrl, fetchPage }
+}
+
+/**
+ * Builds a {@link PageWalk} whose every page is fetched with the same signed,
+ * null-on-404 `GET` -- the one traversal shape shared by all three authorized
+ * WAS listings (Collection items, Collections, Spaces), which differ only in
+ * the first URL, the envelope type, and whether a capability is bound. Returns
+ * `null` when the first page is missing/unauthorized (404 conflation caveat).
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.firstUrl {string}      the absolute listing URL
+ * @param [options.capability] {IZcap}   capability attached to every page
+ *   request
+ * @returns {Promise<PageWalk<T> | null>}
+ */
+export async function signedPageWalk<
+  T extends PageEnvelope = CollectionResourcesList
+>(
+  context: ClientContext,
+  { firstUrl, capability }: { firstUrl: string; capability?: IZcap }
+): Promise<PageWalk<T> | null> {
+  return buildPageWalk<T>({
+    firstUrl,
+    fetchPage: async url =>
+      dataOrNull<T>(
+        await send(context, { url, method: 'GET', capability, read: true })
+      )
+  })
 }
 
 /**

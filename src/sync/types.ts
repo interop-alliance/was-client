@@ -81,10 +81,10 @@ export interface WasSyncPort {
    * Returns the page's `documents` and its resume `checkpoint`, or
    * `checkpoint: null` for an empty (no-change) page.
    */
-  query(options: { checkpoint?: SyncCheckpoint; limit: number }): Promise<{
-    documents: WireDoc[]
-    checkpoint: SyncCheckpoint | null
-  }>
+  query(options: {
+    checkpoint?: SyncCheckpoint
+    limit: number
+  }): Promise<SyncPage>
 
   /**
    * Conditionally writes the content body verbatim (`PUT /:id`). Pass
