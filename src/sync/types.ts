@@ -49,16 +49,16 @@ export type SyncPage = ChangesPage
 
 /**
  * The current master state of a single resource, read back for the 412-conflict
- * path ({@link WasSyncPort.get}). `deleted` distinguishes a tombstone from a
- * live resource. `updatedAt`, `metaVersion`, `custom`, `createdBy`, and `epoch`
- * are populated from the resource's `/meta` document when it exists; a resource
- * with no metadata yet reports an epoch-zero `updatedAt` placeholder (a valid,
- * sortable timestamp -- the change feed remains the authority on ordering).
+ * path ({@link WasSyncPort.get}). An absent or tombstoned resource surfaces as
+ * `get` resolving `null`, never as a `MasterState`. `updatedAt`, `metaVersion`,
+ * `custom`, `createdBy`, and `epoch` are populated from the resource's `/meta`
+ * document when it exists; a resource with no metadata yet reports an
+ * epoch-zero `updatedAt` placeholder (a valid, sortable timestamp -- the
+ * change feed remains the authority on ordering).
  */
 export interface MasterState {
   version: number
   updatedAt: string
-  deleted: boolean
   metaVersion?: number
   data?: Json
   custom?: Json

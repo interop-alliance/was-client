@@ -29,11 +29,11 @@
  * pure-JS Hermes fallback) and `TextDecoder`; both must be present on the
  * device.
  */
-import type { HttpResponse } from '@interop/http-client'
 import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
+import type { ResponseLike } from '../codec.js'
 import { KeyUnwrapError } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
@@ -82,24 +82,20 @@ export function ownerRecipient({
 }
 
 /**
- * Presents a locally-held envelope to the codec seam as the read response the
- * seam is typed against. A replica's envelope never came from HTTP, so this is
- * the minimum the codec actually consults -- the pre-parsed body, the `json()`
- * fallback, and a headers stub -- cast once here instead of at each call site.
+ * Presents a locally-held envelope to the codec seam as the {@link
+ * ResponseLike} the seam is typed against. A replica's envelope never came
+ * from HTTP: the pre-parsed body, the `json()` fallback, and a headers stub
+ * (so an ETag lookup resolves to "no validator") are the whole surface.
  *
  * @param envelope {Json}   the stored envelope
- * @returns {HttpResponse}
+ * @returns {ResponseLike}
  */
-function envelopeResponse(envelope: Json): HttpResponse {
+function envelopeResponse(envelope: Json): ResponseLike {
   return {
-    // The http-client pre-parses a JSON body into `data`, so the codec reads it
-    // there and never touches the stream or the headers; the `get` stub keeps
-    // an ETag lookup (`readEtag`) resolving to "no validator" rather than
-    // throwing on a local replica's envelope, which has no HTTP response.
     data: envelope,
     json: async () => envelope,
     headers: { get: () => null }
-  } as unknown as HttpResponse
+  }
 }
 
 /**

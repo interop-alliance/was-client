@@ -7,8 +7,7 @@
  * `If-Match` / `If-None-Match: *` preconditions, and reading the `ETag` a write
  * response returns.
  */
-import type { HttpResponse } from '@interop/http-client'
-import type { EncodedWrite } from '../codec.js'
+import type { EncodedWrite, ResponseLike } from '../codec.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -87,9 +86,9 @@ export function writeHeaders({
  * `undefined` when the backend sent none (it does not advertise the
  * `conditional-writes` feature).
  *
- * @param response {HttpResponse | null}
+ * @param response {ResponseLike | null}
  * @returns {string | undefined}
  */
-export function readEtag(response: HttpResponse | null): string | undefined {
+export function readEtag(response: ResponseLike | null): string | undefined {
   return response?.headers.get('etag') ?? undefined
 }

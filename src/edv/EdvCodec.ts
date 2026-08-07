@@ -58,7 +58,6 @@
  */
 import { base64, base64urlnopad } from '@scure/base'
 import { EdvClientCore, assertDocId } from '@interop/edv-client'
-import type { HttpResponse } from '@interop/http-client'
 import type {
   IEncryptedDocument,
   IKeyAgreementKey,
@@ -68,7 +67,8 @@ import type {
 import type {
   EncodedWrite,
   EncryptionProvider,
-  ResourceCodec
+  ResourceCodec,
+  ResponseLike
 } from '../codec.js'
 import {
   EncryptionError,
@@ -227,6 +227,11 @@ export class EdvCodec implements ResourceCodec {
    */
   readonly #recipients: IRecipientTemplate[]
   readonly #readKeys: IKeyAgreementKey[]
+  /**
+   * The key-epoch id writes stamp (`currentEpoch`); absent on a single-key
+   * collection. Its presence IS the has-epochs signal: a decoded envelope's
+   * `was.epoch` binding is checked exactly when a write epoch exists.
+   */
   readonly #writeEpoch?: string
   readonly #contentType: string
   readonly #maxBlobBytes: number
@@ -237,12 +242,6 @@ export class EdvCodec implements ResourceCodec {
    * absent). Read side rejects an envelope stamped with a greater version.
    */
   readonly #version: number
-  /**
-   * Whether this codec's collection has key epochs. When it does, an envelope's
-   * `was.epoch` binding is checked on decode against the epoch of the key that
-   * actually decrypted it.
-   */
-  readonly #hasEpochs: boolean
   /**
    * Labels decrypt-routing errors ({@link UnknownEpochError}); the codec is
    * otherwise collection-agnostic.
@@ -263,7 +262,8 @@ export class EdvCodec implements ResourceCodec {
    *   decrypts.
    * @param [options.writeEpoch] {string}   the key-epoch id to stamp on writes
    *   (the `currentEpoch`), surfaced as {@link EncodedWrite.epoch}; absent on a
-   *   single-key collection.
+   *   single-key collection. Its presence also arms the decode-side check of an
+   *   envelope's `was.epoch` binding against the decrypting key's epoch.
    * @param options.contentType {string}            stored envelope content type
    * @param options.maxBlobBytes {number}           single-document binary cap
    * @param options.idDerivation {string}           how `add()` mints a document
@@ -271,9 +271,6 @@ export class EdvCodec implements ResourceCodec {
    *   JWE ciphertext, content-addressed)
    * @param [options.version] {number}   the EDV-over-WAS scheme version to bind
    *   into each envelope's `was.v` (defaults to `1`)
-   * @param [options.hasEpochs] {boolean}   whether the collection has key
-   *   epochs, so a decoded envelope's `was.epoch` binding is checked against the
-   *   decrypting key's epoch (defaults to `false`)
    * @param [options.collectionId] {string}   labels decrypt-routing errors
    */
   constructor({
@@ -285,7 +282,6 @@ export class EdvCodec implements ResourceCodec {
     maxBlobBytes,
     idDerivation,
     version,
-    hasEpochs,
     collectionId
   }: {
     edv: EdvClientCore
@@ -296,7 +292,6 @@ export class EdvCodec implements ResourceCodec {
     maxBlobBytes: number
     idDerivation: 'random' | 'content'
     version?: number
-    hasEpochs?: boolean
     collectionId?: string
   }) {
     this.#edv = edv
@@ -308,7 +303,6 @@ export class EdvCodec implements ResourceCodec {
     this.#maxBlobBytes = maxBlobBytes
     this.#idDerivation = idDerivation
     this.#version = version ?? 1
-    this.#hasEpochs = hasEpochs ?? false
     this.#collectionId = collectionId ?? '(unknown)'
   }
 
@@ -324,7 +318,7 @@ export class EdvCodec implements ResourceCodec {
     id?: string
     data: ResourceData
     contentType?: string
-    current?: HttpResponse | null
+    current?: ResponseLike | null
   }): Promise<EncodedWrite> {
     if (id !== undefined && !current) {
       try {
@@ -362,9 +356,7 @@ export class EdvCodec implements ResourceCodec {
     // (create-if-absent), so a concurrent first writer cannot be clobbered.
     let priorDoc: IEncryptedDocument | null = null
     if (current) {
-      const read = await readJsonData(
-        current as Parameters<typeof readJsonData>[0]
-      )
+      const read = await readJsonData(current)
       this.#assertEnvelope(read, 'update')
       priorDoc = read
     }
@@ -439,15 +431,10 @@ export class EdvCodec implements ResourceCodec {
    * @inheritdoc
    */
   async decode(
-    response: {
-      data?: unknown
-      json(): Promise<unknown>
-    },
+    response: ResponseLike,
     expectedId?: string
   ): Promise<Json | Blob> {
-    const stored = await readJsonData(
-      response as Parameters<typeof readJsonData>[0]
-    )
+    const stored = await readJsonData(response)
     const decrypted = await this.#openEnvelope(stored, expectedId)
     return this.#fromDocument(decrypted.content, decrypted.meta)
   }
@@ -638,7 +625,11 @@ export class EdvCodec implements ResourceCodec {
         )
       }
     }
-    if (this.#hasEpochs && typeof was.epoch === 'string' && keyId) {
+    if (
+      this.#writeEpoch !== undefined &&
+      typeof was.epoch === 'string' &&
+      keyId
+    ) {
       const decryptedEpoch = keyId.split('#')[0]
       if (decryptedEpoch !== was.epoch) {
         throw new IntegrityError(
@@ -1061,7 +1052,6 @@ export function createEdvEncryption({
         maxBlobBytes,
         idDerivation,
         version: descriptorVersion ?? 1,
-        hasEpochs: !!(encryption?.epochs && encryption.epochs.length > 0),
         collectionId
       })
     }

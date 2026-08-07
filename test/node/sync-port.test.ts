@@ -275,7 +275,6 @@ describe('createWasSyncPort.get', () => {
     expect(master).toEqual({
       version: 4,
       updatedAt: '2026-01-01T00:00:00.000Z',
-      deleted: false,
       data: { a: 1 },
       createdBy: 'did:key:zCreator',
       epoch: 'epoch-3',
@@ -297,7 +296,6 @@ describe('createWasSyncPort.get', () => {
 
     const master = await port.get({ id: 'res-1' })
     expect(master?.version).toBe(4)
-    expect(master?.deleted).toBe(false)
     // A valid, sortable epoch-zero timestamp (not an empty string).
     expect(new Date(master!.updatedAt).getTime()).toBe(0)
   })

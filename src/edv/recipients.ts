@@ -54,14 +54,6 @@ import type { RecipientPublicKey } from './epochCrypto.js'
 export type { RecipientPublicKey } from './epochCrypto.js'
 
 /**
- * The caller's own key material, used to unwrap existing epoch keys so they can
- * be re-wrapped to a newly added reader (escrow).
- */
-export interface OwnerKey {
-  keyAgreementKey: IKeyAgreementKey
-}
-
-/**
  * How many times a recipient CAS write retries a stale (`412`) description
  * before surfacing {@link PreconditionFailedError}.
  */
@@ -118,8 +110,9 @@ async function stampEpochsAuth({
  * @param options {object}
  * @param options.epochs {CollectionEncryptionEpoch[]}   the descriptor's epochs
  * @param options.recipient {RecipientPublicKey}   the reader being escrowed
- * @param options.owner {OwnerKey}   the caller's own key-agreement key, to
- *   unwrap each epoch key for re-wrapping
+ * @param options.owner {object}   the caller's own key material
+ * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps each epoch
+ *   key for re-wrapping
  * @param options.operation {string}   the calling operation's name, as the error
  *   messages name it (`addRecipient` / `replaceRecipient`)
  * @param options.reader {string}   how those messages name the incoming reader
@@ -136,7 +129,7 @@ async function escrowIntoEpochs({
 }: {
   epochs: CollectionEncryptionEpoch[]
   recipient: RecipientPublicKey
-  owner: OwnerKey
+  owner: { keyAgreementKey: IKeyAgreementKey }
   operation: string
   reader: string
 }): Promise<{ epochs: CollectionEncryptionEpoch[]; changed: boolean }> {
@@ -323,8 +316,9 @@ export async function initRecipients({
  *   hosts the descriptor; exactly one of `collection` / `store`
  * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
  * @param options.recipient {RecipientPublicKey}   the new reader's public KAK
- * @param options.owner {OwnerKey}   the caller's own key-agreement key, to
- *   unwrap each epoch key for re-wrapping to the new reader
+ * @param options.owner {object}   the caller's own key material
+ * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps each epoch
+ *   key for re-wrapping to the new reader
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function addRecipient({
@@ -336,7 +330,7 @@ export async function addRecipient({
   collection?: Collection
   store?: EncryptionDescriptorStore
   recipient: RecipientPublicKey
-  owner: OwnerKey
+  owner: { keyAgreementKey: IKeyAgreementKey }
 }): Promise<CollectionEncryption> {
   return casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
@@ -564,9 +558,10 @@ export async function removeRecipient({
  *   dropped from the fresh epoch's roster
  * @param options.recipient {RecipientPublicKey}   the incoming reader's public
  *   key-agreement key, escrowed into every epoch and wrapped into the fresh one
- * @param options.owner {OwnerKey}   the caller's own key-agreement key,
- *   unwrapping each epoch key for the escrow -- it must be a recipient of
- *   every epoch (a retiring key that was escrowed everywhere qualifies)
+ * @param options.owner {object}   the caller's own key material
+ * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps each epoch
+ *   key for the escrow -- it must be a recipient of every epoch (a retiring
+ *   key that was escrowed everywhere qualifies)
  * @param [options.revoke] {IDelegatedZcap | IDelegatedZcap[]}   the default
  *   pull axis, with `space`
  * @param [options.pull] {function}   a caller-supplied pull action; mutually
@@ -597,7 +592,7 @@ export async function replaceRecipient({
   space?: Space
   retire: string | string[]
   recipient: RecipientPublicKey
-  owner: OwnerKey
+  owner: { keyAgreementKey: IKeyAgreementKey }
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
   resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>

@@ -30,13 +30,31 @@
  *   but the keystore holds no keys, core fails closed (throws) rather than
  *   silently writing plaintext.
  */
-import type { HttpResponse } from '@interop/http-client'
 import type {
   CollectionEncryption,
   Json,
   ResourceData,
   ResourceMetadataCustom
 } from './types.js'
+
+/**
+ * The minimal read-response surface a codec consumes: the pre-parsed JSON body
+ * (`data`), the `json()` fallback for a body the http-client did not
+ * pre-parse, and the response headers (for the `ETag` validator). A real
+ * `HttpResponse` satisfies it structurally, and so does a stored-body adapter
+ * wrapping a local replica's envelope -- so a non-HTTP consumer of a codec
+ * (the sync `DocCipher`) needs no fake response object, and the compiler
+ * checks the adapter's shape the day a codec reads another field.
+ *
+ * The identity codec is the exception: it passes bytes through untransformed,
+ * so its `decode` needs the full `HttpResponse` stream surface and is only
+ * ever called with one (the handle read path).
+ */
+export interface ResponseLike {
+  data?: unknown
+  json(): Promise<unknown>
+  headers: { get(name: string): string | null }
+}
 
 /**
  * The result of {@link ResourceCodec.encode}: the stored representation of a
@@ -111,7 +129,7 @@ export interface ResourceCodec {
    * @param [input.id] {string}                       resource id (absent on add)
    * @param input.data {ResourceData}                 the plaintext value
    * @param [input.contentType] {string}              caller-supplied content type
-   * @param [input.current] {HttpResponse | null}     the current stored response
+   * @param [input.current] {ResponseLike | null}     the current stored response
    *   (or `null` if absent), supplied only when {@link conditionalWrites} is
    *   set, so the codec can derive the next `sequence` and the `If-Match` ETag.
    * @returns {Promise<EncodedWrite>}
@@ -120,7 +138,7 @@ export interface ResourceCodec {
     id?: string
     data: ResourceData
     contentType?: string
-    current?: HttpResponse | null
+    current?: ResponseLike | null
   }): Promise<EncodedWrite>
 
   /**
@@ -128,7 +146,7 @@ export interface ResourceCodec {
    * parsed object for JSON, a `Blob` for binary, decrypting first when the
    * codec encrypts.
    *
-   * @param response {HttpResponse}
+   * @param response {ResponseLike}
    * @param [expectedId] {string}   the resource id the read targeted. An
    *   encrypting codec verifies the decrypted envelope's AEAD-authenticated
    *   binding against it (a server-side swap of two envelopes is then detected);
@@ -136,7 +154,7 @@ export interface ResourceCodec {
    *   caller that does not know the id (or the plaintext codec) omits it.
    * @returns {Promise<Json | Blob>}
    */
-  decode(response: HttpResponse, expectedId?: string): Promise<Json | Blob>
+  decode(response: ResponseLike, expectedId?: string): Promise<Json | Blob>
 
   /**
    * Transforms a caller's user-writable metadata (`custom`) into the value to

@@ -162,7 +162,6 @@ export function createWasSyncPort({
     return {
       version: parseEtag(readEtag(response) ?? null) ?? 0,
       updatedAt: UNKNOWN_UPDATED_AT,
-      deleted: false,
       data: response.data as Json
     }
   }

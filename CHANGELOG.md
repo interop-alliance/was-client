@@ -1,6 +1,6 @@
 # @interop/was-client Changelog
 
-## Unreleased - TBD
+## 0.27.1 - TBD
 
 ### Changed
 
@@ -16,6 +16,19 @@
   form of `body` for consumers that need the object (`body` remains the wire
   truth). `EdvCodec` gained an optional `collectionId` constructor option to
   label decrypt-routing errors.
+- The codec seam's read input is now the minimal structural `ResponseLike`
+  (`data`/`json()`/`headers.get`) instead of `HttpResponse`, so a stored-body
+  consumer needs no fake response object; `readJsonData`/`readEtag` accept it.
+
+### Removed
+
+- `EdvCodec`'s `hasEpochs` constructor option: the presence of `writeEpoch` now
+  arms the decode-side `was.epoch` binding check (the two could only ever
+  agree).
+- `MasterState.deleted`: an absent or tombstoned resource surfaces as
+  `WasSyncPort.get` resolving `null`, so the flag could never be `true`.
+- The `OwnerKey` interface on `./edv`: its single `keyAgreementKey` field is
+  inlined at the `addRecipient`/`replaceRecipient` signatures.
 
 ## 0.27.0 - 2026-08-05
 

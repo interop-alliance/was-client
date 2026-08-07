@@ -37,7 +37,8 @@ export {
 export type {
   ResourceCodec,
   EncryptionProvider,
-  EncodedWrite
+  EncodedWrite,
+  ResponseLike
 } from './codec.js'
 
 export type {

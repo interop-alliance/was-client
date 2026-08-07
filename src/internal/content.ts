@@ -10,6 +10,7 @@
  * `application/octet-stream`.
  */
 import type { HttpResponse } from '@interop/http-client'
+import type { ResponseLike } from '../codec.js'
 import { ValidationError, WasServerError } from '../errors.js'
 import type { Json, ResourceData } from '../types.js'
 
@@ -341,10 +342,10 @@ export function dataOrNull<T>(response: HttpResponse | null): T | null {
  * Test for `undefined` rather than using `??`; otherwise the nullish fallback
  * would re-invoke `.json()` on the already-consumed stream and throw.
  *
- * @param response {HttpResponse}
+ * @param response {ResponseLike}
  * @returns {Promise<unknown>}
  */
-export async function readJsonData(response: HttpResponse): Promise<unknown> {
+export async function readJsonData(response: ResponseLike): Promise<unknown> {
   return response.data === undefined ? await response.json() : response.data
 }
 

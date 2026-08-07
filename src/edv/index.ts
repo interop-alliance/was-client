@@ -40,7 +40,7 @@ export {
   removeRecipient,
   replaceRecipient
 } from './recipients.js'
-export type { OwnerKey, RecipientPublicKey } from './recipients.js'
+export type { RecipientPublicKey } from './recipients.js'
 export {
   isEd25519DidKey,
   x25519RecipientFromDidKey

@@ -139,6 +139,9 @@ export const identityCodec: ResourceCodec = {
     return { id, ...prepared }
   },
 
+  // Deliberately narrower than the seam's `ResponseLike`: a byte-exact
+  // pass-through needs the full response stream surface (blob, content-type),
+  // and core's read path only ever hands it a real HttpResponse.
   async decode(response: HttpResponse): Promise<Json | Blob> {
     return (await parseResource(response)) as Json | Blob
   },
