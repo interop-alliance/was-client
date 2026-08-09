@@ -33,6 +33,7 @@
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { Collection } from '../Collection.js'
 import type { Space } from '../Space.js'
+import { EDV_SCHEME_VERSION } from './constants.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
 import { collectionDescriptorStore } from './descriptorStore.js'
 import type { EncryptionDescriptorStore } from './descriptorStore.js'
@@ -270,10 +271,11 @@ export async function initRecipients({
   }
   return casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
-    // A store whose descriptor starts absent initializes from a bare `edv`
-    // descriptor (the create-if-absent branch); a Collection Description's
-    // descriptor always exists, so its adapter never reaches the seed.
-    seed: { scheme: 'edv' },
+    // A store whose descriptor starts absent initializes from a versioned
+    // `edv` descriptor (the create-if-absent branch); a Collection
+    // Description's descriptor always exists, so its adapter never reaches
+    // the seed.
+    seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
     mutate: async descriptor => {
       if (descriptor.epochs && descriptor.epochs.length > 0) {
         throw new ValidationError(
@@ -281,14 +283,14 @@ export async function initRecipients({
             'reader instead of initRecipients.'
         )
       }
-      // Declaring the first epochs, so stamp scheme version 1 when the
+      // Declaring the first epochs, so stamp the scheme version when the
       // descriptor does not already carry one, and authenticate the epoch
       // configuration with a MAC keyed from this first epoch's secret (computed
       // over the exact descriptor being written, since a CAS retry re-reads the
       // descriptor).
       const next: CollectionEncryption = {
         ...descriptor,
-        version: descriptor.version ?? 1,
+        version: descriptor.version ?? EDV_SCHEME_VERSION,
         epochs: [epoch],
         currentEpoch: epochId
       }

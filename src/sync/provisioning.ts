@@ -7,11 +7,17 @@
  * declaration, so reconnecting an existing account is a no-op upgrade.
  */
 import type { WasClient } from '../WasClient.js'
+// A direct module import (not the `./edv` subpath entry), so the crypto-free
+// sync module does not pull the EDV crypto graph for one number.
+import { EDV_SCHEME_VERSION } from '../edv/constants.js'
 
 /**
  * Ensures the controller's Space exists and one synced collection is
  * configured. An `'edv'` collection declares the encryption descriptor `{
- * scheme: 'edv' }` (so the server stores only ciphertext it can never decrypt);
+ * scheme: 'edv', version: EDV_SCHEME_VERSION }`, so the server stores only
+ * ciphertext it can never decrypt and validates every write against the
+ * declared envelope wire format -- the same version the cipher binds into each
+ * envelope's AEAD-protected header, so descriptor and envelopes cannot drift;
  * a `'plaintext'` collection is configured without one, with `force` so the
  * descriptor-less upsert can create a fresh collection (running with the root
  * capability, a 404 from the pre-merge describe really means absent). A public
@@ -66,7 +72,10 @@ export async function ensureSpaceAndCollection({
     const collection = space.collection(collectionId)
     await collection.configure(
       encryption === 'edv'
-        ? { name: collectionName, encryption: { scheme: 'edv' } }
+        ? {
+            name: collectionName,
+            encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION }
+          }
         : { name: collectionName, force: true }
     )
     if (isPublic) {

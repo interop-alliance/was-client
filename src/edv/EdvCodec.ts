@@ -88,7 +88,11 @@ import {
   resolvePayload
 } from '../internal/content.js'
 import type { Json, ResourceData, ResourceMetadataCustom } from '../types.js'
-import { DEFAULT_CONTENT_TYPE, envelopeBytes } from './constants.js'
+import {
+  DEFAULT_CONTENT_TYPE,
+  EDV_SCHEME_VERSION,
+  envelopeBytes
+} from './constants.js'
 
 /**
  * Default ceiling for a single-document (unchunked) encrypted binary or text
@@ -238,8 +242,9 @@ export class EdvCodec implements ResourceCodec {
   readonly #idDerivation: 'random' | 'content'
   /**
    * The EDV-over-WAS scheme version this codec binds into every envelope's
-   * `was.v` protected-header parameter (the descriptor's `version`, `1` when
-   * absent). Read side rejects an envelope stamped with a greater version.
+   * `was.v` protected-header parameter (the descriptor's `version`,
+   * {@link EDV_SCHEME_VERSION} when absent). Read side rejects an envelope
+   * stamped with a greater version.
    */
   readonly #version: number
   /**
@@ -270,7 +275,7 @@ export class EdvCodec implements ResourceCodec {
    *   id: `'random'` (classic `generateId()`) or `'content'` (derived from the
    *   JWE ciphertext, content-addressed)
    * @param [options.version] {number}   the EDV-over-WAS scheme version to bind
-   *   into each envelope's `was.v` (defaults to `1`)
+   *   into each envelope's `was.v` (defaults to {@link EDV_SCHEME_VERSION})
    * @param [options.collectionId] {string}   labels decrypt-routing errors
    */
   constructor({
@@ -302,7 +307,7 @@ export class EdvCodec implements ResourceCodec {
     this.#contentType = contentType
     this.#maxBlobBytes = maxBlobBytes
     this.#idDerivation = idDerivation
-    this.#version = version ?? 1
+    this.#version = version ?? EDV_SCHEME_VERSION
     this.#collectionId = collectionId ?? '(unknown)'
   }
 
@@ -1002,11 +1007,14 @@ export function createEdvEncryption({
       // Refuse a descriptor from a future scheme version: this client does not
       // implement it, and silently operating on it could mis-handle the data.
       const descriptorVersion = encryption?.version
-      if (typeof descriptorVersion === 'number' && descriptorVersion > 1) {
+      if (
+        typeof descriptorVersion === 'number' &&
+        descriptorVersion > EDV_SCHEME_VERSION
+      ) {
         throw new EncryptionError(
           `Collection ${spaceId}/${collectionId} declares EDV-over-WAS scheme ` +
-            `version ${descriptorVersion}, which this client (version 1) does not ` +
-            'implement. Upgrade the client.'
+            `version ${descriptorVersion}, which this client (version ` +
+            `${EDV_SCHEME_VERSION}) does not implement. Upgrade the client.`
         )
       }
       // Prefer override-supplied keys; otherwise consult the keystore.
@@ -1051,7 +1059,7 @@ export function createEdvEncryption({
         contentType,
         maxBlobBytes,
         idDerivation,
-        version: descriptorVersion ?? 1,
+        version: descriptorVersion ?? EDV_SCHEME_VERSION,
         collectionId
       })
     }

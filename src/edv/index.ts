@@ -33,7 +33,7 @@
 export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
 export type { EdvKeys } from './EdvCodec.js'
 export { WasTransport } from './WasTransport.js'
-export { JOSE_CONTENT_TYPE } from './constants.js'
+export { EDV_SCHEME_VERSION, JOSE_CONTENT_TYPE } from './constants.js'
 export {
   initRecipients,
   addRecipient,

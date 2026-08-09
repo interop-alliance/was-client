@@ -1,5 +1,25 @@
 # @interop/was-client Changelog
 
+## 0.27.2 - TBD
+
+### Added
+
+- `./edv` exports `EDV_SCHEME_VERSION`: the EDV-over-WAS scheme version (the
+  version of the envelope wire format this package's cipher writes, per the WAS
+  spec's Encryption Scheme Registry). It is the only place that number is
+  declared; the codec's version gates and defaults now source it.
+
+### Changed
+
+- `ensureSpaceAndCollection` and the `initRecipients` descriptor seed stamp
+  `version` (from `EDV_SCHEME_VERSION`) into the `encryption` descriptor they
+  write, matching the `was.v` value the cipher binds into each envelope's
+  AEAD-protected header -- one constant, two bindings, so the descriptor and the
+  envelopes can never disagree. A collection already declared as a bare
+  `{ scheme: 'edv' }` gains the explicit `version` on its next re-provision,
+  which the spec defines as an idempotent no-op re-declaration (absent means
+  `1`).
+
 ## 0.27.1 - 2026-08-06
 
 ### Changed

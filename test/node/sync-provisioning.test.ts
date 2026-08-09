@@ -12,11 +12,12 @@
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '../../src/index.js'
 import { ensureSpaceAndCollection } from '../../src/sync/index.js'
+import { EDV_SCHEME_VERSION } from '../../src/edv/constants.js'
 
 interface ConfigureOpts {
   name: string
   controller?: string
-  encryption?: { scheme: string }
+  encryption?: { scheme: string; version: number }
   force?: boolean
 }
 
@@ -92,7 +93,7 @@ describe('ensureSpaceAndCollection', () => {
     ])
     expect(space.collectionIds).toEqual([COLL])
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: COLL, encryption: { scheme: 'edv' } }
+      { name: COLL, encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION } }
     ])
     expect(space.collectionObj.setPublicCalls).toBe(0)
   })
@@ -132,8 +133,11 @@ describe('ensureSpaceAndCollection', () => {
       { name: 'WAS Space', controller: DID }
     ])
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: COLL, encryption: { scheme: 'edv' } },
-      { name: COLL, encryption: { scheme: 'edv' } }
+      {
+        name: COLL,
+        encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION }
+      },
+      { name: COLL, encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION } }
     ])
   })
 
