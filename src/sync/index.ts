@@ -17,7 +17,9 @@
  *
  * The 412 conflict / 404 not-found port signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`) live in the client's typed error hierarchy and are
- * re-exported here for convenience.
+ * re-exported here for convenience -- as is the stale-descriptor decrypt
+ * signal (`UnknownEpochError`), so a crypto-free sync consumer can
+ * `instanceof`-match it without importing the `/edv` entry that throws it.
  */
 export {
   createWasSyncPort,
@@ -30,7 +32,11 @@ export { contentCid, cidFrom, deriveSpaceId } from './cid.js'
 export { isEncryptedEnvelope } from './envelope.js'
 export { createPlaintextDocCipher } from './plaintextCipher.js'
 export { ensureSpaceAndCollection } from './provisioning.js'
-export { WasSyncConflictError, WasSyncNotFoundError } from '../errors.js'
+export {
+  UnknownEpochError,
+  WasSyncConflictError,
+  WasSyncNotFoundError
+} from '../errors.js'
 
 export type {
   Json,

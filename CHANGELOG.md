@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.29.1 - TBD
+
+### Added
+
+- `/sync` re-exports `UnknownEpochError` alongside the other sync error signals,
+  so a crypto-free sync consumer can `instanceof`-match the stale-descriptor
+  decrypt signal without importing the `/edv` crypto graph.
+
 ## 0.29.0 - 2026-08-09
 
 ### Changed
