@@ -1,5 +1,15 @@
 # @interop/was-client Changelog
 
+## 0.29.2 - TBD
+
+### Changed
+
+- `ensureFirstEpoch` reads the descriptor before minting: the fresh epoch key
+  and its recipient wraps are generated only when no epoch-bearing descriptor
+  exists yet, and a minting call reuses the staged epoch across compare-and-swap
+  retries instead of re-minting per attempt. Adoption and create-loss behavior
+  are unchanged.
+
 ## 0.29.1 - 2026-08-10
 
 ### Added

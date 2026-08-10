@@ -10,7 +10,7 @@
  * logic of `addRecipient` against a fake collection whose description writes
  * race.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 
@@ -633,16 +633,21 @@ describe('ensureFirstEpoch', () => {
    *   a 412 before one lands
    * @param [options.winner] {CollectionEncryption}   the descriptor `read()`
    *   serves once a `create` has lost the race
+   * @param [options.conflict] {function}   builds the 412 a losing `create`
+   *   throws; a test driving a freshly imported module graph passes that
+   *   graph's error class, since the CAS loop matches it with `instanceof`
    * @returns {object}   the store plus its call counters and current state
    */
   function memoryStore({
     initial,
     createFails = 0,
-    winner
+    winner,
+    conflict = () => new PreconditionFailedError('exists', { status: 412 })
   }: {
     initial?: CollectionEncryption
     createFails?: number
     winner?: CollectionEncryption
+    conflict?: () => Error
   } = {}): EncryptionDescriptorStore & {
     state: { descriptor?: CollectionEncryption }
     creates: number
@@ -669,7 +674,7 @@ describe('ensureFirstEpoch', () => {
           // A concurrent provisioner got there first: its descriptor is what
           // the next read serves.
           holder.state.descriptor = winner
-          throw new PreconditionFailedError('exists', { status: 412 })
+          throw conflict()
         }
         holder.state.descriptor = descriptor
       }
@@ -837,6 +842,108 @@ describe('ensureFirstEpoch', () => {
     expect(descriptor).toBe(winner)
     expect(store.creates).toBe(1)
     expect(store.replaces).toBe(0)
+  })
+
+  /**
+   * Loads a fresh `ensureFirstEpoch` over an `epochCrypto` module whose
+   * `mintEpoch` is counted, so a test can assert how much key material a call
+   * actually minted (the read-before-mint ordering).
+   *
+   * The fresh graph carries its own error classes, so the fresh
+   * `PreconditionFailedError` comes back too -- a store racing this call must
+   * throw that class for the CAS loop's `instanceof` check to match.
+   *
+   * @returns {Promise<object>}   the fresh `ensureFirstEpoch`, the fresh
+   *   `PreconditionFailedError`, and the counter
+   */
+  async function countingEnsureFirstEpoch(): Promise<{
+    ensureFirstEpoch: typeof ensureFirstEpoch
+    conflict: () => Error
+    mints: () => number
+  }> {
+    let mints = 0
+    vi.resetModules()
+    vi.doMock('../../src/edv/epochCrypto.js', async () => {
+      const actual = await vi.importActual<
+        typeof import('../../src/edv/epochCrypto.js')
+      >('../../src/edv/epochCrypto.js')
+      return {
+        ...actual,
+        async mintEpoch() {
+          mints += 1
+          return actual.mintEpoch()
+        }
+      }
+    })
+    const fresh = await import('../../src/edv/recipients.js')
+    const freshErrors = await import('../../src/errors.js')
+    return {
+      ensureFirstEpoch: fresh.ensureFirstEpoch,
+      conflict: () =>
+        new freshErrors.PreconditionFailedError('exists', { status: 412 }),
+      mints: () => mints
+    }
+  }
+
+  it('mints no epoch key when adopting an existing roster', async () => {
+    const alice = await makeReader()
+    const existing = await installedDescriptor(alice)
+    const store = memoryStore({ initial: existing })
+    const { ensureFirstEpoch: counted, mints } =
+      await countingEnsureFirstEpoch()
+
+    try {
+      const { descriptor, installed } = await counted({
+        store,
+        recipients: [
+          { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+        ]
+      })
+
+      // Read before mint: the adopting call never minted key material at all.
+      expect(installed).toBe(false)
+      expect(descriptor).toBe(existing)
+      expect(mints()).toBe(0)
+    } finally {
+      vi.doUnmock('../../src/edv/epochCrypto.js')
+      vi.resetModules()
+    }
+  })
+
+  it('reuses its staged epoch across a lost create race', async () => {
+    const alice = await makeReader()
+    const {
+      ensureFirstEpoch: counted,
+      conflict,
+      mints
+    } = await countingEnsureFirstEpoch()
+    // The concurrent provisioner won the create with an epoch-less descriptor,
+    // so the retry still installs -- and must install the epoch already staged
+    // rather than minting a second one.
+    const store = memoryStore({
+      createFails: 1,
+      winner: { scheme: 'edv' },
+      conflict
+    })
+
+    try {
+      const { descriptor, installed } = await counted({
+        store,
+        recipients: [
+          { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+        ]
+      })
+
+      expect(installed).toBe(true)
+      expect(store.creates).toBe(1)
+      expect(store.replaces).toBe(1)
+      expect(descriptor.epochs).toHaveLength(1)
+      expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
+      expect(mints()).toBe(1)
+    } finally {
+      vi.doUnmock('../../src/edv/epochCrypto.js')
+      vi.resetModules()
+    }
   })
 
   it('refuses an install with no recipients', async () => {

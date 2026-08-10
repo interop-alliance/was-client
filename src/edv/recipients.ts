@@ -257,14 +257,56 @@ async function withFirstEpoch({
 }
 
 /**
+ * Mints a fresh random epoch key and wraps it to each initial recipient,
+ * building the first epoch to install. Shared by {@link initRecipients} (which
+ * may hand in a pre-minted key instead) and {@link ensureFirstEpoch} (which
+ * calls this only once its read has shown there is no roster to adopt), so the
+ * two cannot drift.
+ *
+ * @param options {object}
+ * @param options.recipients {RecipientPublicKey[]}   the initial readers'
+ *   public key-agreement keys
+ * @param [options.preminted] {{ epochId: string, secret: Uint8Array }}   an
+ *   already-existing epoch key to wrap instead of minting one
+ * @returns {Promise<{ epoch: CollectionEncryptionEpoch, secret: Uint8Array }>}
+ *   the first epoch and the secret keying its `epochsMac`
+ */
+async function mintFirstEpoch({
+  recipients,
+  preminted
+}: {
+  recipients: RecipientPublicKey[]
+  preminted?: { epochId: string; secret: Uint8Array }
+}): Promise<{ epoch: CollectionEncryptionEpoch; secret: Uint8Array }> {
+  const { epochId, secret } = preminted ?? (await mintEpoch())
+  const epoch: CollectionEncryptionEpoch = {
+    id: epochId,
+    recipients: await Promise.all(
+      recipients.map(recipient =>
+        wrapEpochSecret({ epochSecret: secret, recipient })
+      )
+    )
+  }
+  return { epoch, secret }
+}
+
+/**
  * Installs a collection's first key epoch at provision time, create-if-absent:
- * mints a fresh random epoch key, wraps it to each initial recipient, and
- * writes the epoch roster onto the descriptor through the descriptor-store
- * seam -- the guarded create (`If-None-Match: *`) on a store whose descriptor
- * starts absent, or a compare-and-swap onto an existing epoch-less descriptor
- * (the state `ensureSpaceAndCollection` leaves an `'edv'` collection in; that
- * ensure stays crypto-free, so this install is the EDV-bearing second step
- * every encrypted collection's provisioning runs).
+ * reads the descriptor, and only if it carries no epoch roster mints a fresh
+ * random epoch key, wraps it to each initial recipient, and writes the roster
+ * back through the descriptor-store seam -- the guarded create
+ * (`If-None-Match: *`) on a store whose descriptor starts absent, or a
+ * compare-and-swap onto an existing epoch-less descriptor (the state
+ * `ensureSpaceAndCollection` leaves an `'edv'` collection in; that ensure stays
+ * crypto-free, so this install is the EDV-bearing second step every encrypted
+ * collection's provisioning runs).
+ *
+ * Read before mint: an adopting call (the common case once provisioning has
+ * landed once) mints no key material at all, and a call that does mint reuses
+ * that one epoch across its compare-and-swap retries rather than minting a
+ * fresh key per attempt -- the retry re-reads the descriptor, so an adoption
+ * discovered on a later attempt still adopts and the staged epoch is simply
+ * never written.
  *
  * Non-clobbering to convergence: a descriptor that already carries epochs is
  * returned as-is (`installed: false`) -- in particular, on losing the
@@ -303,16 +345,13 @@ export async function ensureFirstEpoch({
       'ensureFirstEpoch needs at least one recipient to wrap the epoch key to.'
     )
   }
-  const { epochId, secret } = await mintEpoch()
-  const epoch: CollectionEncryptionEpoch = {
-    id: epochId,
-    recipients: await Promise.all(
-      recipients.map(recipient =>
-        wrapEpochSecret({ epochSecret: secret, recipient })
-      )
-    )
-  }
   let installed = false
+  // Staged on the first attempt that finds no roster to adopt, and reused by
+  // any later attempt, so a CAS retry does not mint a second epoch key.
+  let staged: Promise<{
+    epoch: CollectionEncryptionEpoch
+    secret: Uint8Array
+  }> | null = null
   const descriptor = await casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
@@ -324,6 +363,8 @@ export async function ensureFirstEpoch({
         return null
       }
       installed = true
+      staged ??= mintFirstEpoch({ recipients })
+      const { epoch, secret } = await staged
       return withFirstEpoch({ descriptor, epoch, secret, signEpochs })
     }
   })
@@ -379,15 +420,10 @@ export async function initRecipients({
       'initRecipients needs at least one recipient to wrap the epoch key to.'
     )
   }
-  const { epochId, secret } = premintedEpoch ?? (await mintEpoch())
-  const epoch: CollectionEncryptionEpoch = {
-    id: epochId,
-    recipients: await Promise.all(
-      recipients.map(recipient =>
-        wrapEpochSecret({ epochSecret: secret, recipient })
-      )
-    )
-  }
+  const { epoch, secret } = await mintFirstEpoch({
+    recipients,
+    preminted: premintedEpoch
+  })
   return casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     // A store whose descriptor starts absent initializes from a versioned
