@@ -1,5 +1,22 @@
 # @interop/was-client Changelog
 
+## 0.28.1 - TBD
+
+### Fixed
+
+- The permanent pre-epoch read tolerance, dropped by 0.27.1's decrypt-routing
+  refactor, is restored inside the unified codec: on a collection with key
+  epochs, the reader's own key-agreement key is again a (last-resort) read
+  candidate, so an envelope sealed straight to it before the collection's first
+  epoch existed keeps decrypting indefinitely. Without this, the first share of
+  a collection (a fresh `initRecipients` roster) made every pre-share envelope
+  unreadable to its own owner -- and content-addressed envelopes cannot be
+  re-encrypted in place. The tolerance covers only the reader's OWN key: a
+  pre-epoch envelope sealed to someone else's key is still unroutable
+  (`UnknownEpochError`, whose message now matches the behavior again). Writes
+  are unchanged (always under `currentEpoch`), as is the `was.epoch` binding
+  check.
+
 ## 0.28.0 - 2026-08-09
 
 ### Changed

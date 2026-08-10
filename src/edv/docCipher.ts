@@ -113,7 +113,10 @@ function envelopeResponse(envelope: Json): ResponseLike {
  * is single-recipient: the key-agreement key encrypts and decrypts directly.
  * With epochs on the descriptor the cipher is multi-recipient: it encrypts
  * every write under the descriptor's `currentEpoch` and decrypts any epoch
- * this reader still holds a key for. Either way one codec owns both axes --
+ * this reader still holds a key for -- plus, indefinitely, envelopes sealed
+ * straight to the reader's own key-agreement key before the collection's
+ * first epoch existed (the permanent pre-epoch tolerance: content-addressed
+ * envelopes cannot be re-encrypted in place). Either way one codec owns both axes --
  * decrypt routing (matching an envelope's JWE recipient `kid`s against the
  * reader's candidate keys, raising `UnknownEpochError` for an envelope no
  * candidate can route) lives in the codec, not here.

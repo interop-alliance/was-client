@@ -261,10 +261,11 @@ export class EdvCodec implements ResourceCodec {
    *   wallet's own key-agreement key; on a multi-recipient (key-epoch)
    *   collection it is the reconstructed `currentEpoch` key pair.
    * @param [options.readKeys] {IKeyAgreementKey[]}   the candidate keys a read
-   *   may decrypt with, one per epoch this reader can unwrap (defaults to just
-   *   `keyAgreementKey`). A read selects the one whose id matches the stored
-   *   envelope's recipient, so a resource written under an older epoch still
-   *   decrypts.
+   *   may decrypt with: one per epoch this reader can unwrap, plus the reader's
+   *   own key-agreement key as the last-resort pre-epoch candidate (defaults to
+   *   just `keyAgreementKey`). A read selects the one whose id matches the
+   *   stored envelope's recipient, so a resource written under an older epoch
+   *   -- or before any epoch existed -- still decrypts.
    * @param [options.writeEpoch] {string}   the key-epoch id to stamp on writes
    *   (the `currentEpoch`), surfaced as {@link EncodedWrite.epoch}; absent on a
    *   single-key collection. Its presence also arms the decode-side check of an
@@ -1033,8 +1034,12 @@ export function createEdvEncryption({
       // Multi-recipient (key-epoch) collection: resolve the reader's per-epoch
       // keys from the descriptor -- the `currentEpoch` key pair for writes,
       // every epoch key it can unwrap for reads -- and drive the cipher with
-      // those. The reader's own key-agreement key is used only to unwrap the
-      // epoch keys, never to encrypt resources.
+      // those. The reader's own key-agreement key never encrypts resources
+      // here, but it stays a last-resort read candidate: envelopes written
+      // before the collection's first epoch are sealed straight to it, and the
+      // permanent pre-epoch tolerance says they decrypt indefinitely (a
+      // content-addressed envelope cannot be re-encrypted in place -- that
+      // would change its id).
       if (encryption?.epochs && encryption.epochs.length > 0) {
         const epochKeys = await resolveEpochKeys({
           encryption,
@@ -1046,7 +1051,13 @@ export function createEdvEncryption({
           // standard did:key resolver, independent of the reader's own keystore.
           keyAgreementKey = epochKeys.writeKey
           keyResolver = didKeyResolver
-          readKeys = epochKeys.readKeys
+          // Dedupe by id: a user-key-generation epoch's read key carries the
+          // reader's own kid when the reader IS that generation's key.
+          readKeys = epochKeys.readKeys.some(
+            key => key.id === resolved.keyAgreementKey.id
+          )
+            ? epochKeys.readKeys
+            : [...epochKeys.readKeys, resolved.keyAgreementKey]
           writeEpoch = epochKeys.writeEpoch
         }
       }

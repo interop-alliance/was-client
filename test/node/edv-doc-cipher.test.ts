@@ -20,10 +20,13 @@ import type {
 
 import {
   createEdvDocCipher,
+  initRecipients,
   ownerRecipient,
   UnknownEpochError,
   isEncryptedEnvelope
 } from '../../src/edv/index.js'
+import type { CollectionEncryption } from '../../src/index.js'
+import type { Collection } from '../../src/Collection.js'
 import type { Json } from '../../src/sync/index.js'
 
 /** A fresh real X25519 key-agreement key plus a resolver that returns it. */
@@ -90,6 +93,76 @@ describe('createEdvDocCipher (single-recipient, content derivation)', () => {
     })
     const { envelope } = await alice.encrypt({ data: DOC })
     await expect(mallory.decrypt({ envelope })).rejects.toThrow(
+      UnknownEpochError
+    )
+  })
+})
+
+describe('createEdvDocCipher (pre-epoch tolerance on an epoch collection)', () => {
+  /** A fake collection whose description lives in memory (initRecipients). */
+  function fakeCollection() {
+    const state = { encryption: { scheme: 'edv' } as CollectionEncryption }
+    return {
+      describeWithEtag: async () => ({
+        description: {
+          id: 'c',
+          type: ['Collection'],
+          encryption: state.encryption
+        },
+        etag: '"v1"'
+      }),
+      replaceDescription: async (desc: {
+        encryption?: CollectionEncryption
+      }) => {
+        state.encryption = desc.encryption!
+        return { description: { id: 'c', type: ['Collection'] }, etag: '"v2"' }
+      }
+    } as unknown as Collection
+  }
+
+  it('keeps decrypting pre-epoch envelopes after the collection gains epochs', async () => {
+    const owner = await makeKeys()
+    // Written before any roster existed: sealed straight to the owner's own
+    // key-agreement key. Immutable and content-addressed, so it can never be
+    // re-encrypted in place -- the tolerance is permanent.
+    const preEpochCipher = await createEdvDocCipher({
+      ...owner,
+      collectionId: 'private-credentials'
+    })
+    const { envelope } = await preEpochCipher.encrypt({ data: DOC })
+
+    // The collection's first share mints a fresh epoch roster.
+    const grantee = await makeKeys()
+    const descriptor = await initRecipients({
+      collection: fakeCollection(),
+      recipients: [
+        ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+        ownerRecipient({ keyAgreementKey: grantee.keyAgreementKey })
+      ]
+    })
+
+    const epochAwareCipher = await createEdvDocCipher({
+      ...owner,
+      collectionId: 'private-credentials',
+      encryption: descriptor
+    })
+    // The owner's own key-agreement key stays a last-resort read candidate,
+    // so the pre-epoch envelope still routes...
+    expect(await epochAwareCipher.decrypt({ envelope })).toEqual(DOC)
+    // ...while writes go under the current epoch and round-trip as before.
+    const fresh = await epochAwareCipher.encrypt({ data: DOC })
+    expect(fresh.epoch).toBe(descriptor.currentEpoch)
+    expect(
+      await epochAwareCipher.decrypt({ envelope: fresh.envelope })
+    ).toEqual(DOC)
+    // The tolerance is for the reader's OWN key only: a pre-epoch envelope
+    // sealed to someone else's key stays unroutable.
+    const granteeCipher = await createEdvDocCipher({
+      ...grantee,
+      collectionId: 'private-credentials',
+      encryption: descriptor
+    })
+    await expect(granteeCipher.decrypt({ envelope })).rejects.toThrow(
       UnknownEpochError
     )
   })
