@@ -104,6 +104,17 @@ export class PreconditionFailedError extends WasError {
 }
 
 /**
+ * A resource-log append was acknowledged by the host but the read-back did not
+ * contain the appended entry (the profile's "acknowledgement is a promise"
+ * rule): the served log is shorter than the appended entry's ordinal, or the
+ * entry at that ordinal differs from what was written. Recover by re-reading,
+ * re-verifying, and re-appending on the current head.
+ */
+export class LogNotConfirmedError extends WasError {
+  override name = 'LogNotConfirmedError'
+}
+
+/**
  * A single upload exceeded the target backend's `maxUploadBytes` constraint
  * (HTTP 413). Unlike `QuotaExceededError`, this is per-request -- a smaller
  * upload may still succeed.

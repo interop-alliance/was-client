@@ -25,6 +25,7 @@
   - [Registering a Bring-Your-Own-Storage backend](#registering-a-bring-your-own-storage-backend)
   - [Encrypted collections (EDV-over-WAS): pass-through encryption via the WAS client (recommended)](#encrypted-collections-edv-over-was-pass-through-encryption-via-the-was-client-recommended)
   - [Cross-replica sync](#cross-replica-sync)
+  - [Resource logs (co-managed key resources)](#resource-logs-co-managed-key-resources)
   - [Export and import](#export-and-import)
   - [The manual-request escape hatch](#the-manual-request-escape-hatch)
 - [Errors and the 404/null caveat](#errors-and-the-404null-caveat)
@@ -744,6 +745,34 @@ The subpath is crypto-free: importing it never pulls the `./edv` dependency
 graph. To sync an encrypted collection, keep the same port and swap in
 `createEdvDocCipher` -- the change feed and the port ship the envelope bytes
 unchanged either way, so the server never sees plaintext.
+
+### Resource logs (co-managed key resources)
+
+The opt-in `@interop/was-client/log` subpath is the transport layer for resource
+logs -- the hash-linked, JSON Lines log format (the App Connect spec's Resource
+Log Profile) governing key resources co-managed between a wallet's clients and
+the storage server, such as encryption descriptors and key rosters. It is
+transport only: chain verification (SCID, entry hashes, proofs, authorization,
+the chain-head pin) lives in the consuming verifier.
+
+- **`parseResourceLog` / `serializeResourceLog`** -- strict JSON Lines: a
+  non-object line is a parse failure, not a skip.
+- **`resourceLogStore({ resource })`** -- the log-store seam over a WAS Resource
+  (stored as `text/jsonl`): read-with-etag of the full log, compare-and-swap
+  append conditioned on that etag, and the guarded create of a genesis entry.
+  Appends carry the prior lines' bytes forward verbatim. Both writes ride the
+  backend's `conditional-writes` feature, which the profile requires.
+- **`confirmAppend({ store, entry })`** -- the profile's "acknowledgement is a
+  promise" rule: read the log back after an acked append and check the entry is
+  actually in the served history (else `LogNotConfirmedError`) before treating
+  the append as durable.
+- **`writeLogProjection({ resource, state, history })`** -- the point-state
+  document a non-verifying consumer reads: the verified head entry's `state`
+  plus the `history: { method, resource }` dispatch hint. The log is the source
+  of truth; the projection follows it.
+
+The subpath is crypto-free and re-exports the wire types (`ResourceLogEntry` et
+al.) from `@interop/storage-core`.
 
 ### Export and import
 

@@ -1,5 +1,31 @@
 # @interop/was-client Changelog
 
+## 0.31.0 - TBD
+
+### Added
+
+- The `@interop/was-client/log` subpath: transport for resource logs (the App
+  Connect spec's Resource Log Profile) -- strict JSON Lines parse/serialize, the
+  `ResourceLogStore` seam with its WAS Resource adapter (read-with-etag,
+  compare-and-swap append, guarded genesis create), the read-back
+  `confirmAppend` helper (throws the new `LogNotConfirmedError` when an acked
+  append is missing from the served history), and the point-state projection
+  writer `writeLogProjection`. Crypto-free; the wire types come from
+  `@interop/storage-core` and are re-exported.
+
+### Changed
+
+- **BREAKING**: Retired the detached epoch-configuration signature:
+  `epochsSigPayload`, the `EpochsSigner` type, and the `signEpochs` option on
+  `ensureFirstEpoch` / `initRecipients` / `removeRecipient` / `replaceRecipient`
+  are removed, along with the `CollectionEncryptionEpochsSig` re-export. A
+  resource-log entry's Data Integrity proof now covers the epoch configuration;
+  `epochsMac` stays as the one guard that travels with the point-state
+  projection.
+- **BREAKING**: `@interop/storage-core` `^0.4.0` (drops the `epochsSig`
+  descriptor member; adds the resource-log wire types and the `type` / `history`
+  members on `CollectionEncryption`).
+
 ## 0.30.0 - 2026-08-10
 
 ### Changed

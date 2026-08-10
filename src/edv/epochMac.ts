@@ -18,13 +18,18 @@
  * replay an ENTIRE prior consistent configuration (an old epoch list with its
  * matching old MAC). Detecting that needs client-side monotonic state, which is
  * out of scope here.
+ *
+ * The MAC deliberately survives the move to log-governed descriptors (the
+ * Resource Log Profile): a verified log entry's proof covers the full epoch
+ * configuration for any reader that verifies the log, but the MAC is the only
+ * guard that travels with the point-state projection, which non-log readers
+ * still consume. Its prefix and payload bytes are frozen.
  */
 import { base64urlnopad } from '@scure/base'
 import { ENCODER } from '../internal/content.js'
 import type {
   CollectionEncryption,
-  CollectionEncryptionEpochsMac,
-  CollectionEncryptionEpochsSig
+  CollectionEncryptionEpochsMac
 } from '../types.js'
 
 /**
@@ -36,25 +41,6 @@ const MAC_KEY_INFO = ENCODER.encode('was-epoch-config-mac/v1')
  * The domain-separation prefix prepended to the JSON payload before it is MACed.
  */
 const MAC_PAYLOAD_PREFIX = 'was-epoch-config/v1.'
-
-/**
- * The domain-separation prefix of the detached `epochsSig` signature payload --
- * distinct from the MAC prefix so a signature can never be replayed as a MAC
- * input or vice versa.
- */
-const SIG_PAYLOAD_PREFIX = 'was-epoch-config-sig/v1.'
-
-/**
- * A caller-supplied signer for the `epochsSig` member: given the canonical
- * signature payload bytes ({@link epochsSigPayload} over the descriptor being
- * written), it returns the full signature member to stamp. The signing key --
- * and the root of trust the reader resolves its `kid` against -- are entirely
- * the caller's; this module only defines the payload and where the result
- * lands.
- */
-export type EpochsSigner = (options: {
-  payload: Uint8Array
-}) => Promise<CollectionEncryptionEpochsSig>
 
 /**
  * Derives the HMAC-SHA256 key from a 32-byte epoch secret:
@@ -89,10 +75,10 @@ async function deriveMacKey(epochSecret: Uint8Array): Promise<CryptoKey> {
 
 /**
  * The canonical JSON text of a descriptor's epoch configuration -- the part
- * both the MAC and the detached signature cover: `{ scheme, version,
- * currentEpoch, epochs }`, with `version` normalized to `null` when absent and
- * `epochs` the ordered list of epoch id strings. The object member order is
- * fixed so both sides serialize identically.
+ * the MAC covers: `{ scheme, version, currentEpoch, epochs }`, with `version`
+ * normalized to `null` when absent and `epochs` the ordered list of epoch id
+ * strings. The object member order is fixed so both sides serialize
+ * identically.
  *
  * @param descriptor {CollectionEncryption}   the descriptor whose epoch
  *   configuration is being authenticated
@@ -123,21 +109,6 @@ function macPayload(descriptor: CollectionEncryption): ArrayBuffer {
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength
   ) as ArrayBuffer
-}
-
-/**
- * Builds the payload bytes an `epochsSig` signs: `UTF8(
- * "was-epoch-config-sig/v1." + epochsConfigJson(descriptor))` -- the same
- * epoch configuration the MAC covers, under its own domain-separation prefix.
- * Exported so a signing caller and a verifying reader construct
- * byte-identical input from the descriptor alone.
- *
- * @param descriptor {CollectionEncryption}   the descriptor whose epoch
- *   configuration is being signed or verified
- * @returns {Uint8Array}
- */
-export function epochsSigPayload(descriptor: CollectionEncryption): Uint8Array {
-  return ENCODER.encode(SIG_PAYLOAD_PREFIX + epochsConfigJson(descriptor))
 }
 
 /**
