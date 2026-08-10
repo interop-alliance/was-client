@@ -23,7 +23,7 @@
  */
 export {
   createWasSyncPort,
-  WAS_KEY_EPOCH_HEADER,
+  KEY_EPOCH_HEADER,
   formatEtag,
   parseEtag,
   errorStatus

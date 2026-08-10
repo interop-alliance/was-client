@@ -766,10 +766,6 @@ the chain-head pin) lives in the consuming verifier.
   promise" rule: read the log back after an acked append and check the entry is
   actually in the served history (else `LogNotConfirmedError`) before treating
   the append as durable.
-- **`writeLogProjection({ resource, state, history })`** -- the point-state
-  document a non-verifying consumer reads: the verified head entry's `state`
-  plus the `history: { method, resource }` dispatch hint. The log is the source
-  of truth; the projection follows it.
 
 The subpath is crypto-free and re-exports the wire types (`ResourceLogEntry` et
 al.) from `@interop/storage-core`.

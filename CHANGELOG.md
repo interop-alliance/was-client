@@ -1,5 +1,20 @@
 # @interop/was-client Changelog
 
+## 0.32.0 - TBD
+
+### Changed
+
+- **BREAKING**: Renamed the key-epoch write header from `WAS-Key-Epoch` to
+  `Key-Epoch`, and the exported constant from `WAS_KEY_EPOCH_HEADER` to
+  `KEY_EPOCH_HEADER` (the `/sync` subpath). Requires a server release that reads
+  the new spelling; the header is not part of any stored artifact, so no data
+  migration is involved.
+- **BREAKING**: Removed `writeLogProjection` from the `/log` subpath: the
+  Resource Log Profile no longer defines a point-state projection, so the log
+  resource is the only serving of a governed resource. `epochsMac` stays as
+  defense in depth on the log state: an independent check under a different
+  mechanism than the entry proofs.
+
 ## 0.31.0 - 2026-08-10
 
 ### Added

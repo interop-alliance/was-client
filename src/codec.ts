@@ -87,7 +87,7 @@ export interface ResponseLike {
  *   `envelope` parses `body` itself.
  * - `epoch` -- the key-epoch id the codec encrypted this write under, on a
  *   multi-recipient encrypted collection. The write path emits it as the
- *   `WAS-Key-Epoch` request header, so the server stamps
+ *   `Key-Epoch` request header, so the server stamps
  *   {@link ResourceMetadata.epoch}. Absent for a plaintext or single-key
  *   encrypted write (the header is then not sent, which clears any prior stamp).
  */

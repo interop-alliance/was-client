@@ -5,7 +5,7 @@
  * Unit tests for `createWasSyncPort` and its ETag/status helpers. A fake
  * `WasClient` records the raw `was.request()` calls (and serves the
  * `Collection.changes()` feed), so these assert the exact request shapes -- path,
- * method, JSON body, conditional-write headers, and the `WAS-Key-Epoch` stamp --
+ * method, JSON body, conditional-write headers, and the `Key-Epoch` stamp --
  * plus the 412-conflict and 404-not-found error mapping and the acked-version
  * parsing, all without a live server.
  */
@@ -118,7 +118,7 @@ describe('createWasSyncPort.putContent', () => {
     expect(calls[0]!.headers).toMatchObject({ 'if-none-match': '*' })
   })
 
-  it('sends if-match and the WAS-Key-Epoch header when given', async () => {
+  it('sends if-match and the Key-Epoch header when given', async () => {
     const calls: RequestOptions[] = []
     const { was } = makeWas({
       onRequest: opts => {
@@ -137,7 +137,7 @@ describe('createWasSyncPort.putContent', () => {
 
     expect(calls[0]!.headers).toMatchObject({
       'if-match': '"4"',
-      'was-key-epoch': 'epoch-7'
+      'key-epoch': 'epoch-7'
     })
   })
 

@@ -21,9 +21,11 @@
  *
  * The MAC deliberately survives the move to log-governed descriptors (the
  * Resource Log Profile): a verified log entry's proof covers the full epoch
- * configuration for any reader that verifies the log, but the MAC is the only
- * guard that travels with the point-state projection, which non-log readers
- * still consume. Its prefix and payload bytes are frozen.
+ * configuration for any reader that verifies the log, but the MAC is kept as
+ * defense in depth beneath that proof: an independent check under a different
+ * mechanism (a secret the server never holds, rather than signature
+ * verification), so a flaw in the log verifier alone does not let a
+ * fabricated configuration through. Its prefix and payload bytes are frozen.
  */
 import { base64urlnopad } from '@scure/base'
 import { ENCODER } from '../internal/content.js'

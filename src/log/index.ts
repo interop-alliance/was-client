@@ -7,9 +7,9 @@
  * hash-linked log format governing key resources co-managed between a
  * wallet's clients and the storage server. Deliberately crypto-free and kept
  * off the `/edv` graph: what lives here is the wire level (strict JSON Lines
- * parse/serialize), the log-store seam (read-with-etag, compare-and-swap
- * append, guarded genesis create, the read-back `confirmAppend`), and the
- * point-state projection write. Chain verification -- SCID and entry-hash
+ * parse/serialize) and the log-store seam (read-with-etag, compare-and-swap
+ * append, guarded genesis create, the read-back `confirmAppend`). Chain
+ * verification -- SCID and entry-hash
  * recomputation, proofs, the external-authorization rule, the chain-head pin
  * -- lives in the consuming verifier, which reads and appends through the
  * seam. The wire types themselves come from `@interop/storage-core` and are
@@ -26,7 +26,6 @@ export {
   confirmAppend
 } from './logStore.js'
 export type { ResourceLogStore } from './logStore.js'
-export { writeLogProjection } from './projection.js'
 export { LogNotConfirmedError } from '../errors.js'
 export { WAS_RESOURCE_LOG_METHOD } from '@interop/storage-core'
 export type {

@@ -4,8 +4,8 @@
 /**
  * Tests for the `/log` subpath: strict JSON Lines parse/serialize, the
  * resource-log store adapter (read-with-etag, CAS append, guarded genesis
- * create), the read-back `confirmAppend`, and the point-state projection
- * write -- all against an in-memory fake Resource (no network).
+ * create), and the read-back `confirmAppend` -- all against an in-memory
+ * fake Resource (no network).
  */
 import { describe, expect, it } from 'vitest'
 import type { ResourceLogEntry } from '@interop/storage-core'
@@ -21,8 +21,7 @@ import {
   parseResourceLog,
   resourceLogStore,
   serializeResourceLog,
-  serializeResourceLogEntry,
-  writeLogProjection
+  serializeResourceLogEntry
 } from '../../src/log/index.js'
 
 /**
@@ -245,35 +244,5 @@ describe('confirmAppend', () => {
     await expect(confirmAppend({ store, entry: bad })).rejects.toBeInstanceOf(
       ValidationError
     )
-  })
-})
-
-describe('writeLogProjection', () => {
-  it('writes the head state with the history dispatch hint added', async () => {
-    const writes: unknown[] = []
-    const resource = {
-      id: 'user-key.json',
-      put: async (data: unknown) => {
-        writes.push(data)
-        return {}
-      }
-    } as unknown as Resource
-    const history = {
-      method: 'was-resource-log:0.1',
-      resource: 'https://h.example/space/s/key-map/user-key.jsonl'
-    }
-    await writeLogProjection({ resource, state: entryAt(2).state, history })
-    expect(writes).toEqual([{ ...entryAt(2).state, history }])
-  })
-
-  it('refuses a state that already carries a history member', async () => {
-    const resource = { id: 'r', put: async () => ({}) } as unknown as Resource
-    await expect(
-      writeLogProjection({
-        resource,
-        state: { type: 'T', history: {} },
-        history: { method: 'm', resource: 'r' }
-      })
-    ).rejects.toBeInstanceOf(ValidationError)
   })
 })

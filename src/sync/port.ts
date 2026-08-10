@@ -28,7 +28,7 @@
 import type { WasClient } from '../WasClient.js'
 import type { HttpResponse } from '@interop/http-client'
 import {
-  WAS_KEY_EPOCH_HEADER,
+  KEY_EPOCH_HEADER,
   readEtag,
   writeHeaders
 } from '../internal/conditional.js'
@@ -46,7 +46,7 @@ import type { Json, MasterState, WasSyncPort } from './types.js'
  * assembly it drives (`internal/conditional.ts`) and re-exported here as part
  * of the sync subpath's public surface.
  */
-export { WAS_KEY_EPOCH_HEADER }
+export { KEY_EPOCH_HEADER }
 
 /**
  * The placeholder `updatedAt` for a 412-conflict re-read whose resource has no

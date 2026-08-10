@@ -18,7 +18,7 @@
  *    readers read everything;
  * 4. two racing `addRecipient` calls both land (the CAS prevents a clobber).
  *
- * Also pins epoch stamping (a write's `WAS-Key-Epoch` surfaces on `meta()`, the
+ * Also pins epoch stamping (a write's `Key-Epoch` surfaces on `meta()`, the
  * listing, and the `changes` feed) and that a rotation preserves any
  * blinded-index `hmac` on the descriptor (the hmac does not rotate with the
  * epoch).
