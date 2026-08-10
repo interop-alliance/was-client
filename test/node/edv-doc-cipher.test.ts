@@ -31,6 +31,7 @@ import {
   isEncryptedEnvelope
 } from '../../src/edv/index.js'
 import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
+import { computeEpochsMac } from '../../src/edv/epochMac.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionRecipient
@@ -78,11 +79,16 @@ async function epochDescriptorFor(
       })
     )
   }
-  return {
+  const encryption: CollectionEncryption = {
     scheme: 'edv',
     epochs: [{ id: epochId, recipients }],
     currentEpoch: epochId
   }
+  encryption.epochsMac = await computeEpochsMac({
+    descriptor: encryption,
+    epochSecret: secret
+  })
+  return encryption
 }
 
 /**

@@ -557,8 +557,10 @@ export class EdvCodec implements ResourceCodec {
    * - No `was` parameter at all: refused -- every envelope binds `was`
    *   (epoch-from-birth left no legacy era), so its absence means a writer this
    *   scheme does not admit -- {@link EncryptionError}.
-   * - `was.v` greater than this codec's scheme version: a future-scheme envelope
-   *   this client does not implement -- {@link EncryptionError}.
+   * - `was.v` missing or not a number: refused like a missing `was` (every
+   *   envelope stamps its scheme version) -- {@link EncryptionError}. Greater
+   *   than this codec's scheme version: a future-scheme envelope this client
+   *   does not implement -- {@link EncryptionError}.
    * - `was.resource` present and the expected id known: a mismatch is a server-side
    *   swap of two resources' envelopes -- {@link IntegrityError}.
    * - `resource` absent (a content-derived write) and the expected
@@ -597,7 +599,15 @@ export class EdvCodec implements ResourceCodec {
           'the binding was written by a writer this scheme does not admit.'
       )
     }
-    if (typeof was.v === 'number' && was.v > this.#version) {
+    if (typeof was.v !== 'number') {
+      throw new EncryptionError(
+        'Cannot decrypt this resource: its envelope binds no `was.v` scheme ' +
+          'version. Every EDV-over-WAS envelope stamps the scheme version at ' +
+          'encrypt time; an envelope without the stamp was written by a ' +
+          'writer this scheme does not admit.'
+      )
+    }
+    if (was.v > this.#version) {
       throw new EncryptionError(
         `Cannot decrypt this resource: its envelope is stamped with ` +
           `EDV-over-WAS scheme version ${was.v}, which this client (version ` +

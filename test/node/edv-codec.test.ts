@@ -32,6 +32,7 @@ import {
 } from '../../src/index.js'
 import type { CollectionEncryption, ResourceCodec } from '../../src/index.js'
 import {
+  computeEpochsMac,
   createEdvEncryption,
   EdvCodec,
   EDV_SCHEME_VERSION,
@@ -131,6 +132,10 @@ async function mintEpochFor({
     ],
     currentEpoch: epochId
   }
+  encryption.epochsMac = await computeEpochsMac({
+    descriptor: encryption,
+    epochSecret: secret
+  })
   return {
     encryption,
     epochId,

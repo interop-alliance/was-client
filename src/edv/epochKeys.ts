@@ -121,15 +121,21 @@ export async function resolveEpochKeys({
   }
   const writeKey = writeUnwrapped.key
   // Authenticate the epoch configuration when this reader holds the
-  // descriptor's `currentEpoch` (its write epoch IS `currentEpoch`) and the
-  // descriptor carries a MAC. A reader whose write epoch is an older held epoch
-  // cannot key the MAC (its secret is not the current epoch's), so it skips
-  // verification -- its writes are rejected server-side via its revoked zcap
-  // anyway. An absent MAC is a legacy descriptor, accepted.
-  if (
-    writeEpochEntry.id === encryption.currentEpoch &&
-    encryption.epochsMac !== undefined
-  ) {
+  // descriptor's `currentEpoch` (its write epoch IS `currentEpoch`). A reader
+  // whose write epoch is an older held epoch cannot key the MAC (its secret is
+  // not the current epoch's), so it skips verification -- its writes are
+  // rejected server-side via its revoked zcap anyway. An absent MAC is refused:
+  // every descriptor carries `epochsMac` from creation (epoch-from-birth left
+  // no MAC-less era), so a descriptor without one is a server-side strip.
+  if (writeEpochEntry.id === encryption.currentEpoch) {
+    if (encryption.epochsMac === undefined) {
+      throw new IntegrityError(
+        'The epoch configuration failed to authenticate: the descriptor ' +
+          'carries no `epochsMac`. Every encrypted collection descriptor is ' +
+          'MAC-authenticated from creation, so an absent MAC is a ' +
+          'server-side strip of the integrity binding.'
+      )
+    }
     const { v, alg } = encryption.epochsMac
     if (v !== 1 || alg !== 'HS256') {
       throw new IntegrityError(

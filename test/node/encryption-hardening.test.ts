@@ -104,6 +104,7 @@ async function makeEpochDescriptor(reader: {
   const { epochId, secret } = await mintEpoch()
   const encryption: CollectionEncryption = {
     scheme: 'edv',
+    version: 1,
     epochs: [
       {
         id: epochId,
@@ -120,6 +121,10 @@ async function makeEpochDescriptor(reader: {
     ],
     currentEpoch: epochId
   }
+  encryption.epochsMac = await computeEpochsMac({
+    descriptor: encryption,
+    epochSecret: secret
+  })
   return { encryption, epoch: epochId, secret }
 }
 
@@ -319,6 +324,23 @@ describe('was binding: malformed or absent binding', () => {
     ).rejects.toBeInstanceOf(EncryptionError)
     await expect(codec.decode(responseFrom(body), CRAFTED_ID)).rejects.toThrow(
       /binds no `was.epoch`/
+    )
+  })
+
+  it('refuses an envelope whose `was` carries no `v` member', async () => {
+    // The `was` parameter is present with a matching `resource` and `epoch`,
+    // but the scheme-version stamp is missing: refused like a missing `was`,
+    // since every envelope stamps its scheme version at encrypt time.
+    const { codec, keyPair, epoch } = await makeCodec()
+    const body = await craftEnvelope({
+      keyPair,
+      was: { resource: CRAFTED_ID, epoch }
+    })
+    await expect(
+      codec.decode(responseFrom(body), CRAFTED_ID)
+    ).rejects.toBeInstanceOf(EncryptionError)
+    await expect(codec.decode(responseFrom(body), CRAFTED_ID)).rejects.toThrow(
+      /binds no `was.v`/
     )
   })
 
@@ -700,7 +722,7 @@ describe('epochsMac verification in resolveEpochKeys', () => {
     ).rejects.toBeInstanceOf(IntegrityError)
   })
 
-  it('accepts a legacy descriptor with no epochsMac', async () => {
+  it('rejects a descriptor with no epochsMac (a server-side strip)', async () => {
     const alice = await makeReader()
     const { epochId, secret } = await mintEpoch()
     const descriptor: CollectionEncryption = {
@@ -720,6 +742,49 @@ describe('epochsMac verification in resolveEpochKeys', () => {
         }
       ],
       currentEpoch: epochId
+    }
+    await expect(
+      resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
+    ).rejects.toThrow(/carries no `epochsMac`/)
+  })
+
+  it('skips MAC verification for a reader whose write epoch is not currentEpoch', async () => {
+    // An archive reader (a recipient of an older epoch only) cannot key the
+    // MAC, so the absent-MAC refusal must not apply to it.
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const first = await mintEpoch()
+    const second = await mintEpoch()
+    const descriptor: CollectionEncryption = {
+      scheme: 'edv',
+      version: 1,
+      epochs: [
+        {
+          id: first.epochId,
+          recipients: [
+            await wrapEpochSecret({
+              epochSecret: first.secret,
+              recipient: {
+                id: alice.kak.id,
+                publicKeyMultibase: alice.publicKeyMultibase
+              }
+            })
+          ]
+        },
+        {
+          id: second.epochId,
+          recipients: [
+            await wrapEpochSecret({
+              epochSecret: second.secret,
+              recipient: {
+                id: bob.kak.id,
+                publicKeyMultibase: bob.publicKeyMultibase
+              }
+            })
+          ]
+        }
+      ],
+      currentEpoch: second.epochId
     }
     await expect(
       resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })

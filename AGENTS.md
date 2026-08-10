@@ -11,9 +11,9 @@ changes.
 
 Other useful reference documents:
 
-- /home/dmitri/code/Interop/zcap-developer-guide
-- /home/dmitri/code/Interop/was-teaching-server/AGENTS.md
-- /home/dmitri/code/Interop/ezcap/AGENTS.md
+- <https://github.com/interop-alliance/zcap-developer-guide>
+- <https://github.com/interop-alliance/was-teaching-server/blob/main/AGENTS.md>
+- the AGENTS.md in <https://github.com/interop-alliance/ezcap>
 
 ## Toolchain & Project Layout
 

@@ -34,7 +34,7 @@ import {
   epochKeyIdFor,
   reconstructEpochKeyPair
 } from '../../src/edv/epochCrypto.js'
-import { verifyEpochsMac } from '../../src/edv/epochMac.js'
+import { computeEpochsMac, verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
@@ -196,9 +196,11 @@ describe('resolveEpochKeys', () => {
   ): Promise<CollectionEncryption> {
     const epochs = []
     let currentEpoch = ''
+    let currentSecret: Uint8Array | undefined
     for (let index = 0; index < epochCount; index++) {
       const { epochId, secret } = await mintEpoch()
       currentEpoch = epochId
+      currentSecret = secret
       epochs.push({
         id: epochId,
         recipients: await Promise.all(
@@ -214,7 +216,16 @@ describe('resolveEpochKeys', () => {
         )
       })
     }
-    return { scheme: 'edv', epochs, currentEpoch }
+    const descriptor: CollectionEncryption = {
+      scheme: 'edv',
+      epochs,
+      currentEpoch
+    }
+    descriptor.epochsMac = await computeEpochsMac({
+      descriptor,
+      epochSecret: currentSecret!
+    })
+    return descriptor
   }
 
   it('returns null for a descriptor carrying no epochs', async () => {
@@ -282,9 +293,11 @@ describe('lazy epoch key unwrap retry', () => {
     const peer = await makeReader()
     const epochs = []
     let currentEpoch = ''
+    let currentSecret: Uint8Array | undefined
     for (let index = 0; index < 2; index++) {
       const { epochId, secret } = await mintEpoch()
       currentEpoch = epochId
+      currentSecret = secret
       epochs.push({
         id: epochId,
         recipients: [
@@ -311,8 +324,17 @@ describe('lazy epoch key unwrap retry', () => {
         return alice.kak.deriveSecret(options)
       }
     } as IKeyAgreementKey
+    const encryption: CollectionEncryption = {
+      scheme: 'edv',
+      epochs,
+      currentEpoch
+    }
+    encryption.epochsMac = await computeEpochsMac({
+      descriptor: encryption,
+      epochSecret: currentSecret!
+    })
     const resolved = await resolveEpochKeys({
-      encryption: { scheme: 'edv', epochs, currentEpoch },
+      encryption,
       keyAgreementKey: flakyKak
     })
     const lazy = resolved!.readKeys[1]!

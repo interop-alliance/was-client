@@ -24,7 +24,7 @@ import {
   unwrapEpochSecret,
   wrapEpochSecret
 } from '../../src/edv/epochCrypto.js'
-import { verifyEpochsMac } from '../../src/edv/epochMac.js'
+import { computeEpochsMac, verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
@@ -120,7 +120,7 @@ async function seedDescriptor(
   readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
 ): Promise<CollectionEncryption> {
   const { epochId, secret } = await mintEpoch()
-  return {
+  const descriptor: CollectionEncryption = {
     scheme: 'edv',
     epochs: [
       {
@@ -137,6 +137,11 @@ async function seedDescriptor(
     ],
     currentEpoch: epochId
   }
+  descriptor.epochsMac = await computeEpochsMac({
+    descriptor,
+    epochSecret: secret
+  })
+  return descriptor
 }
 
 describe('resourceDescriptorStore', () => {

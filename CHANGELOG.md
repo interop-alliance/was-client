@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.30.0 - TBD
+
+### Changed
+
+- **BREAKING**: Closed the last two single-era reader tolerances. A
+  `currentEpoch`-holding reader now refuses a descriptor without `epochsMac`
+  (previously an absent MAC was accepted as a legacy descriptor), and the
+  envelope `was` binding check refuses a `was.v` that is missing or not a number
+  (previously only a numeric `was.v` greater than the client's scheme version
+  was refused).
+
 ## 0.29.2 - 2026-08-10
 
 ### Changed

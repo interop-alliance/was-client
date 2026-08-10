@@ -23,6 +23,7 @@ import {
   wrapEpochSecret,
   epochKeyIdFor
 } from '../../src/edv/epochCrypto.js'
+import { computeEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 
 /**
@@ -114,7 +115,7 @@ async function makeReader(): Promise<{
  */
 async function epochEntryFor(
   readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
-): Promise<{ id: string; recipients: unknown[] }> {
+): Promise<{ id: string; recipients: unknown[]; secret: Uint8Array }> {
   const { epochId, secret } = await mintEpoch()
   const recipients = await Promise.all(
     readers.map(reader =>
@@ -127,7 +128,7 @@ async function epochEntryFor(
       })
     )
   )
-  return { id: epochId, recipients }
+  return { id: epochId, recipients, secret }
 }
 
 describe('resolveEpochKeys write-epoch selection', () => {
@@ -142,6 +143,10 @@ describe('resolveEpochKeys write-epoch selection', () => {
       epochs: [second, first],
       currentEpoch: first.id
     } as unknown as CollectionEncryption
+    encryption.epochsMac = await computeEpochsMac({
+      descriptor: encryption,
+      epochSecret: first.secret
+    })
     const resolved = await resolveEpochKeys({
       encryption,
       keyAgreementKey: alice.kak
