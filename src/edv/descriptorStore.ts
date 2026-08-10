@@ -18,12 +18,14 @@
  *   `version`) on this path.
  * - {@link resourceDescriptorStore} -- a descriptor stored verbatim as a JSON Resource.
  *   The server treats the resource as opaque content and enforces NO descriptor
- *   invariants there; integrity rests on the client-side `epochsMac` (verified
- *   by writers before encrypting) plus client-side epoch pinning. Both the
- *   compare-and-swap and the create-if-absent guard ride the backend's
- *   `conditional-writes` feature. The hosting collection must be plaintext: on
- *   an encrypted collection the EDV codec computes the write preconditions
- *   itself and the store's `ifMatch` would not be honored.
+ *   invariants there; rollback/tamper detection rests on client-side epoch
+ *   pinning plus whatever governance the hosting profile adds -- for a
+ *   log-governed descriptor (the Resource Log Profile), the verified entry
+ *   proofs and the chain-head pin. Both the compare-and-swap and the
+ *   create-if-absent guard ride the backend's `conditional-writes` feature.
+ *   The hosting collection must be plaintext: on an encrypted collection the
+ *   EDV codec computes the write preconditions itself and the store's
+ *   `ifMatch` would not be honored.
  */
 import type { Collection } from '../Collection.js'
 import type { Resource } from '../Resource.js'
@@ -150,9 +152,11 @@ export function collectionDescriptorStore({
  * than an `edv`-scheme descriptor object.
  *
  * The server enforces no descriptor invariants on a resource (unlike a
- * Collection Description): rollback/tamper detection rests on the descriptor's
- * `epochsMac` and client-side epoch pinning, and the CAS/create guards ride the
- * backend's `conditional-writes` feature. Host the resource in a plaintext
+ * Collection Description): rollback/tamper detection rests on client-side
+ * epoch pinning plus whatever governance the hosting profile adds (for a
+ * log-governed descriptor, the Resource Log Profile's verified entry proofs
+ * and chain-head pin), and the CAS/create guards ride the backend's
+ * `conditional-writes` feature. Host the resource in a plaintext
  * collection -- on an encrypted collection the EDV codec computes the write
  * preconditions itself, so this store's `ifMatch` would not be honored.
  *

@@ -7,10 +7,8 @@
  * content-derived id verification, metadata binding, and the unconditional
  * per-envelope epoch binding), the epoch-from-birth routing rule (a descriptor
  * carrying no key-epoch roster is refused fail-closed), the scheme-version
- * refusal gate, and the authenticated epoch configuration (`epochsMac`)
- * lifecycle across initRecipients / addRecipient / removeRecipient and its
- * verification in resolveEpochKeys (including a hand-simulated malicious
- * `currentEpoch` rollback).
+ * refusal gate, and the epoch configuration lifecycle across initRecipients /
+ * addRecipient / removeRecipient.
  */
 import { describe, it, expect } from 'vitest'
 import { base64urlnopad } from '@scure/base'
@@ -38,7 +36,6 @@ import {
   reconstructEpochKeyPair,
   wrapEpochSecret
 } from '../../src/edv/epochCrypto.js'
-import { computeEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
@@ -121,10 +118,6 @@ async function makeEpochDescriptor(reader: {
     ],
     currentEpoch: epochId
   }
-  encryption.epochsMac = await computeEpochsMac({
-    descriptor: encryption,
-    epochSecret: secret
-  })
   return { encryption, epoch: epochId, secret }
 }
 
@@ -577,8 +570,8 @@ function mutableCollection(initial: CollectionEncryption) {
   }
 }
 
-describe('epochsMac lifecycle', () => {
-  it('initRecipients stamps version 1 and writes a valid epochsMac', async () => {
+describe('epoch configuration lifecycle', () => {
+  it('initRecipients stamps version 1', async () => {
     const alice = await makeReader()
     const fake = mutableCollection({ scheme: 'edv' })
     const descriptor = await initRecipients({
@@ -588,19 +581,17 @@ describe('epochsMac lifecycle', () => {
       ]
     })
     expect(descriptor.version).toBe(1)
-    expect(descriptor.epochsMac).toMatchObject({ v: 1, alg: 'HS256' })
-    expect(typeof descriptor.epochsMac!.mac).toBe('string')
-    // Alice can resolve her keys, which verifies the MAC.
+    // Alice can resolve her keys from the stamped descriptor.
     await expect(
       resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
     ).resolves.not.toBeNull()
   })
 
-  it('addRecipient leaves the epochsMac and version untouched', async () => {
+  it('addRecipient leaves the version untouched', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const fake = mutableCollection({ scheme: 'edv' })
-    const initial = await initRecipients({
+    await initRecipients({
       collection: fake as unknown as Collection,
       recipients: [
         { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
@@ -612,14 +603,13 @@ describe('epochsMac lifecycle', () => {
       owner: { keyAgreementKey: alice.kak }
     })
     expect(afterAdd.version).toBe(1)
-    expect(afterAdd.epochsMac).toEqual(initial.epochsMac)
-    // And Bob (a newly-added reader of currentEpoch) verifies the same MAC.
+    // And Bob, a newly-added reader of currentEpoch, resolves his keys.
     await expect(
       resolveEpochKeys({ encryption: afterAdd, keyAgreementKey: bob.kak })
     ).resolves.not.toBeNull()
   })
 
-  it('removeRecipient recomputes the epochsMac under the new epoch', async () => {
+  it('removeRecipient rotates to a new epoch the survivor resolves', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const fake = mutableCollection({ scheme: 'edv' })
@@ -637,120 +627,18 @@ describe('epochsMac lifecycle', () => {
       recipientId: bob.kak.id,
       revoke: []
     })
-    // The MAC changed (new epoch secret, new currentEpoch + epoch list) but is
-    // still valid: Alice, the surviving reader of the new currentEpoch,
-    // verifies it.
-    expect(afterRemove.epochsMac).toBeDefined()
-    expect(afterRemove.epochsMac!.mac).not.toBe(initial.epochsMac!.mac)
+    // A new epoch was appended and made current, and Alice -- the surviving
+    // reader of the new currentEpoch -- resolves her keys under it.
+    expect(afterRemove.currentEpoch).not.toBe(initial.currentEpoch)
     await expect(
       resolveEpochKeys({ encryption: afterRemove, keyAgreementKey: alice.kak })
     ).resolves.not.toBeNull()
   })
 })
 
-describe('epochsMac verification in resolveEpochKeys', () => {
-  /**
-   * Builds a two-epoch descriptor (alice a recipient of both), with
-   * `currentEpoch` set to the second and a valid `epochsMac` keyed by the
-   * second epoch's secret.
-   *
-   * @param alice {{ kak: IKeyAgreementKey; publicKeyMultibase: string }}
-   * @returns {Promise<{ descriptor: CollectionEncryption; firstEpoch: string }>}
-   */
-  async function twoEpochDescriptor(alice: {
-    kak: IKeyAgreementKey
-    publicKeyMultibase: string
-  }): Promise<{ descriptor: CollectionEncryption; firstEpoch: string }> {
-    const first = await mintEpoch()
-    const second = await mintEpoch()
-    const wrapTo = (epochSecret: Uint8Array) =>
-      wrapEpochSecret({
-        epochSecret,
-        recipient: {
-          id: alice.kak.id,
-          publicKeyMultibase: alice.publicKeyMultibase
-        }
-      })
-    const descriptor: CollectionEncryption = {
-      scheme: 'edv',
-      version: 1,
-      epochs: [
-        { id: first.epochId, recipients: [await wrapTo(first.secret)] },
-        { id: second.epochId, recipients: [await wrapTo(second.secret)] }
-      ],
-      currentEpoch: second.epochId
-    }
-    descriptor.epochsMac = await computeEpochsMac({
-      descriptor,
-      epochSecret: second.secret
-    })
-    return { descriptor, firstEpoch: first.epochId }
-  }
-
-  it('accepts a descriptor with a valid epochsMac', async () => {
-    const alice = await makeReader()
-    const { descriptor } = await twoEpochDescriptor(alice)
-    await expect(
-      resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
-    ).resolves.not.toBeNull()
-  })
-
-  it('rejects a currentEpoch rolled back to an older epoch (stale MAC)', async () => {
-    const alice = await makeReader()
-    const { descriptor, firstEpoch } = await twoEpochDescriptor(alice)
-    // Simulate a malicious server: roll `currentEpoch` back to the older epoch
-    // while KEEPING the MAC that was computed for the newer currentEpoch. The
-    // MAC now fails to authenticate under the older epoch's secret.
-    const rolledBack: CollectionEncryption = {
-      ...descriptor,
-      currentEpoch: firstEpoch
-    }
-    await expect(
-      resolveEpochKeys({ encryption: rolledBack, keyAgreementKey: alice.kak })
-    ).rejects.toBeInstanceOf(IntegrityError)
-  })
-
-  it('rejects an epochsMac with an unsupported construction (v/alg)', async () => {
-    const alice = await makeReader()
-    const { descriptor } = await twoEpochDescriptor(alice)
-    const tampered: CollectionEncryption = {
-      ...descriptor,
-      epochsMac: { ...descriptor.epochsMac!, alg: 'HS512' }
-    }
-    await expect(
-      resolveEpochKeys({ encryption: tampered, keyAgreementKey: alice.kak })
-    ).rejects.toBeInstanceOf(IntegrityError)
-  })
-
-  it('rejects a descriptor with no epochsMac (a server-side strip)', async () => {
-    const alice = await makeReader()
-    const { epochId, secret } = await mintEpoch()
-    const descriptor: CollectionEncryption = {
-      scheme: 'edv',
-      epochs: [
-        {
-          id: epochId,
-          recipients: [
-            await wrapEpochSecret({
-              epochSecret: secret,
-              recipient: {
-                id: alice.kak.id,
-                publicKeyMultibase: alice.publicKeyMultibase
-              }
-            })
-          ]
-        }
-      ],
-      currentEpoch: epochId
-    }
-    await expect(
-      resolveEpochKeys({ encryption: descriptor, keyAgreementKey: alice.kak })
-    ).rejects.toThrow(/carries no `epochsMac`/)
-  })
-
-  it('skips MAC verification for a reader whose write epoch is not currentEpoch', async () => {
-    // An archive reader (a recipient of an older epoch only) cannot key the
-    // MAC, so the absent-MAC refusal must not apply to it.
+describe('resolveEpochKeys across epochs', () => {
+  it('resolves for a reader whose write epoch is not currentEpoch', async () => {
+    // An archive reader: a recipient of an older epoch only.
     const alice = await makeReader()
     const bob = await makeReader()
     const first = await mintEpoch()

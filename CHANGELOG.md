@@ -11,9 +11,21 @@
   migration is involved.
 - **BREAKING**: Removed `writeLogProjection` from the `/log` subpath: the
   Resource Log Profile no longer defines a point-state projection, so the log
-  resource is the only serving of a governed resource. `epochsMac` stays as
-  defense in depth on the log state: an independent check under a different
-  mechanism than the entry proofs.
+  resource is the only serving of a governed resource.
+- **BREAKING**: Retired the `epochsMac` epoch-configuration MAC stack-wide:
+  `edv/epochMac.ts` is removed with its `/edv` exports (`computeEpochsMac` /
+  `verifyEpochsMac` and the `CollectionEncryptionEpochsMac` re-export), the
+  recipient operations no longer stamp the MAC on descriptor writes, and
+  `resolveEpochKeys` no longer verifies it (the absent-MAC refusal and the
+  `IntegrityError` MAC variants are gone). On a log-governed descriptor the
+  MAC's coverage is a strict subset of chain verification (the entry proof
+  covers the full epoch configuration and there is no read path around the
+  verifier), and its classic gaps -- whole-configuration replay (the epoch pin's
+  job) and fresh fabrication under a newly minted secret -- are gaps with or
+  without it, so the residual value did not justify a permanently frozen wire
+  construction computed on every roster write. Greenfield: no tolerance for
+  MAC-bearing descriptors, no strip migration. The `epochsMac` member itself is
+  removed from `CollectionEncryption` in `@interop/storage-core`.
 
 ## 0.31.0 - 2026-08-10
 

@@ -24,7 +24,7 @@ external deps       @interop/ezcap, @interop/storage-core,
                     @interop/http-client, ...
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
-  EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochMac,
+  EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys,
   recipients, descriptorStore
   Implements the interfaces in src/codec.ts; imports internal/* and the
   crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
@@ -143,14 +143,14 @@ conditional write, bounded retries) over the **descriptor-store seam**
 (`descriptorStore.ts`): the Collection Description adapter (`describeWithEtag` /
 `replaceDescription({ ifMatch })`, server-enforced descriptor invariants) or the
 plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first
-descriptor created with `If-None-Match: *`; integrity rests on `epochsMac` +
-epoch pinning, so host it in a plaintext collection).
+descriptor created with `If-None-Match: *`; integrity rests on client-side epoch
+pinning plus the hosting profile's governance -- for a log-governed descriptor,
+the Resource Log Profile's verified entry proofs and chain-head pin -- so host
+it in a plaintext collection).
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
-decode (`IntegrityError` on envelope swap or epoch rollback); the epoch
-configuration itself is MACed with a key derived from the current epoch secret
-(`epochMac.ts`), which the server never holds.
+decode (`IntegrityError` on envelope swap or epoch rollback).
 
 ## The sync layer
 

@@ -49,7 +49,6 @@ import {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
-import { computeEpochsMac } from './epochMac.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
 
 export type { RecipientPublicKey } from './epochCrypto.js'
@@ -59,30 +58,6 @@ export type { RecipientPublicKey } from './epochCrypto.js'
  * before surfacing {@link PreconditionFailedError}.
  */
 const MAX_CAS_ATTEMPTS = 3
-
-/**
- * Stamps the `epochsMac` epoch-configuration authenticator onto a descriptor
- * about to be written, keyed from the current epoch's secret and computed over
- * the exact descriptor state being written (a compare-and-swap retry re-reads
- * and re-stamps).
- *
- * @param options {object}
- * @param options.descriptor {CollectionEncryption}   the exact descriptor
- *   state being written (epochs / currentEpoch already updated)
- * @param options.epochSecret {Uint8Array}   the current epoch's 32-byte secret
- * @returns {Promise<CollectionEncryption>}   the descriptor with `epochsMac`
- *   stamped
- */
-async function stampEpochsMac({
-  descriptor,
-  epochSecret
-}: {
-  descriptor: CollectionEncryption
-  epochSecret: Uint8Array
-}): Promise<CollectionEncryption> {
-  const epochsMac = await computeEpochsMac({ descriptor, epochSecret })
-  return { ...descriptor, epochsMac }
-}
 
 /**
  * Escrows a recipient into every epoch it is not already a recipient of: for
@@ -200,38 +175,30 @@ async function rotateEpoch({
 
 /**
  * Builds the descriptor state that installs a first epoch: stamps the scheme
- * version when the descriptor does not already carry one, sets the epoch as
- * the roster (`epochs: [epoch]` / `currentEpoch`), and authenticates the epoch
- * configuration with a MAC keyed from the first epoch's secret -- computed
- * over the exact descriptor being written, since a CAS retry re-reads the
- * descriptor. Shared by {@link initRecipients} and {@link ensureFirstEpoch} so
- * the two cannot drift.
+ * version when the descriptor does not already carry one and sets the epoch as
+ * the roster (`epochs: [epoch]` / `currentEpoch`). Shared by
+ * {@link initRecipients} and {@link ensureFirstEpoch} so the two cannot drift.
  *
  * @param options {object}
  * @param options.descriptor {CollectionEncryption}   the epoch-less descriptor
  *   being extended
  * @param options.epoch {CollectionEncryptionEpoch}   the first epoch, already
  *   wrapped to its recipients
- * @param options.secret {Uint8Array}   the epoch's 32-byte secret, keying the
- *   `epochsMac`
- * @returns {Promise<CollectionEncryption>}   the descriptor to write
+ * @returns {CollectionEncryption}   the descriptor to write
  */
-async function withFirstEpoch({
+function withFirstEpoch({
   descriptor,
-  epoch,
-  secret
+  epoch
 }: {
   descriptor: CollectionEncryption
   epoch: CollectionEncryptionEpoch
-  secret: Uint8Array
-}): Promise<CollectionEncryption> {
-  const next: CollectionEncryption = {
+}): CollectionEncryption {
+  return {
     ...descriptor,
     version: descriptor.version ?? EDV_SCHEME_VERSION,
     epochs: [epoch],
     currentEpoch: epoch.id
   }
-  return stampEpochsMac({ descriptor: next, epochSecret: secret })
 }
 
 /**
@@ -246,8 +213,7 @@ async function withFirstEpoch({
  *   public key-agreement keys
  * @param [options.preminted] {{ epochId: string, secret: Uint8Array }}   an
  *   already-existing epoch key to wrap instead of minting one
- * @returns {Promise<{ epoch: CollectionEncryptionEpoch, secret: Uint8Array }>}
- *   the first epoch and the secret keying its `epochsMac`
+ * @returns {Promise<CollectionEncryptionEpoch>}   the first epoch
  */
 async function mintFirstEpoch({
   recipients,
@@ -255,9 +221,9 @@ async function mintFirstEpoch({
 }: {
   recipients: RecipientPublicKey[]
   preminted?: { epochId: string; secret: Uint8Array }
-}): Promise<{ epoch: CollectionEncryptionEpoch; secret: Uint8Array }> {
+}): Promise<CollectionEncryptionEpoch> {
   const { epochId, secret } = preminted ?? (await mintEpoch())
-  const epoch: CollectionEncryptionEpoch = {
+  return {
     id: epochId,
     recipients: await Promise.all(
       recipients.map(recipient =>
@@ -265,7 +231,6 @@ async function mintFirstEpoch({
       )
     )
   }
-  return { epoch, secret }
 }
 
 /**
@@ -321,10 +286,7 @@ export async function ensureFirstEpoch({
   let installed = false
   // Staged on the first attempt that finds no roster to adopt, and reused by
   // any later attempt, so a CAS retry does not mint a second epoch key.
-  let staged: Promise<{
-    epoch: CollectionEncryptionEpoch
-    secret: Uint8Array
-  }> | null = null
+  let staged: Promise<CollectionEncryptionEpoch> | null = null
   const descriptor = await casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
@@ -337,8 +299,7 @@ export async function ensureFirstEpoch({
       }
       installed = true
       staged ??= mintFirstEpoch({ recipients })
-      const { epoch, secret } = await staged
-      return withFirstEpoch({ descriptor, epoch, secret })
+      return withFirstEpoch({ descriptor, epoch: await staged })
     }
   })
   return { descriptor, installed }
@@ -388,7 +349,7 @@ export async function initRecipients({
       'initRecipients needs at least one recipient to wrap the epoch key to.'
     )
   }
-  const { epoch, secret } = await mintFirstEpoch({
+  const epoch = await mintFirstEpoch({
     recipients,
     preminted: premintedEpoch
   })
@@ -406,7 +367,7 @@ export async function initRecipients({
             'reader instead of initRecipients.'
         )
       }
-      return withFirstEpoch({ descriptor, epoch, secret })
+      return withFirstEpoch({ descriptor, epoch })
     }
   })
 }
@@ -603,15 +564,11 @@ export async function removeRecipient({
             'and a collection with no readers cannot be rotated to).'
         )
       }
-      // Re-authenticate the epoch configuration under the NEW epoch's secret
-      // (the rotating caller just minted it), computed over the exact descriptor
-      // being written so a CAS retry re-MACs the re-read descriptor state.
-      const next: CollectionEncryption = {
+      return {
         ...descriptor,
         epochs: [...epochs, newEpoch],
         currentEpoch: epochId
       }
-      return stampEpochsMac({ descriptor: next, epochSecret: secret })
     }
   })
 
@@ -637,9 +594,7 @@ export async function removeRecipient({
  * recipient remains in the current epoch, nothing is written at all -- a naive
  * re-run after a crash appends zero redundant epochs. An escrow-only state
  * (the incoming recipient missing from some epoch but no retiring recipient
- * current) writes the escrow wraps without minting an epoch; the `epochsMac`
- * is untouched then, since it binds the epoch configuration, not the
- * recipient wraps.
+ * current) writes the escrow wraps without minting an epoch.
  *
  * The pull-axis contract is {@link removeRecipient}'s verbatim: the default
  * zcap revocation (`space` + `revoke`) or a caller-supplied `pull` action,
@@ -756,12 +711,11 @@ export async function replaceRecipient({
         resolveRecipientKey: async kid =>
           kid === recipient.id ? recipient : resolveRecipientKey(kid)
       })
-      const next: CollectionEncryption = {
+      return {
         ...descriptor,
         epochs: [...escrowed, newEpoch],
         currentEpoch: epochId
       }
-      return stampEpochsMac({ descriptor: next, epochSecret: secret })
     }
   })
 

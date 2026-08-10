@@ -18,7 +18,7 @@
  * never retroactive.
  */
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
-import { IntegrityError, KeyUnwrapError } from '../errors.js'
+import { KeyUnwrapError } from '../errors.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionEpoch
@@ -28,7 +28,6 @@ import {
   reconstructEpochKeyPair,
   unwrapEpochSecret
 } from './epochCrypto.js'
-import { verifyEpochsMac } from './epochMac.js'
 
 /**
  * The reader's resolved key-epoch material for a Collection.
@@ -105,56 +104,18 @@ export async function resolveEpochKeys({
     namedEpochs.find(epoch => epoch.id === encryption.currentEpoch) ??
     namedEpochs.at(-1)!
   // The write epoch is unwrapped eagerly: `writeKey` must be a full key pair the
-  // EDV cipher can name recipients with and encrypt under right away. Its raw
-  // secret is surfaced alongside so the epoch-configuration MAC can be verified.
-  const writeUnwrapped = await unwrapEpochKey({
+  // EDV cipher can name recipients with and encrypt under right away.
+  const writeKey = await unwrapEpochKey({
     epoch: writeEpochEntry,
     keyAgreementKey
   })
-  if (!writeUnwrapped) {
+  if (!writeKey) {
     throw new KeyUnwrapError(
       `This reader's recipient entry for the write epoch ` +
         `"${writeEpochEntry.id}" did not unwrap (a corrupt entry). Re-add ` +
         'this reader with addRecipient, or supply the correct key-agreement ' +
         'key.'
     )
-  }
-  const writeKey = writeUnwrapped.key
-  // Authenticate the epoch configuration when this reader holds the
-  // descriptor's `currentEpoch` (its write epoch IS `currentEpoch`). A reader
-  // whose write epoch is an older held epoch cannot key the MAC (its secret is
-  // not the current epoch's), so it skips verification -- its writes are
-  // rejected server-side via its revoked zcap anyway. An absent MAC is refused:
-  // every descriptor carries `epochsMac` from creation (epoch-from-birth left
-  // no MAC-less era), so a descriptor without one is a server-side strip.
-  if (writeEpochEntry.id === encryption.currentEpoch) {
-    if (encryption.epochsMac === undefined) {
-      throw new IntegrityError(
-        'The epoch configuration failed to authenticate: the descriptor ' +
-          'carries no `epochsMac`. Every encrypted collection descriptor is ' +
-          'MAC-authenticated from creation, so an absent MAC is a ' +
-          'server-side strip of the integrity binding.'
-      )
-    }
-    const { v, alg } = encryption.epochsMac
-    if (v !== 1 || alg !== 'HS256') {
-      throw new IntegrityError(
-        'The epoch configuration failed to authenticate: its MAC declares an ' +
-          `unsupported construction (v=${v}, alg="${alg}"). This is a ` +
-          'server-side rollback or tamper.'
-      )
-    }
-    const authentic = await verifyEpochsMac({
-      descriptor: encryption,
-      epochSecret: writeUnwrapped.secret
-    })
-    if (!authentic) {
-      throw new IntegrityError(
-        'The epoch configuration failed to authenticate; a server-side ' +
-          'rollback or tamper of the encryption descriptor was detected (the ' +
-          'MAC over its epoch configuration does not verify).'
-      )
-    }
   }
   // Read keys: the eagerly-unwrapped write key, plus a LAZY key per other named
   // epoch. Each lazy key knows its `id` up front (derived from the epoch id, so
@@ -175,15 +136,12 @@ export async function resolveEpochKeys({
 /**
  * Unwraps and reconstructs a single epoch's key pair for this reader, or returns
  * `null` when the reader is not a recipient of the epoch or its entry does not
- * unwrap (a corrupt entry -- never treat `null` as a key). Returns the raw
- * 32-byte epoch secret alongside the reconstructed key pair, so a caller that
- * must authenticate the epoch configuration (the `epochsMac`) can key the MAC
- * without re-unwrapping.
+ * unwrap (a corrupt entry -- never treat `null` as a key).
  *
  * @param options {object}
  * @param options.epoch {CollectionEncryptionEpoch}   the epoch to unwrap
  * @param options.keyAgreementKey {IKeyAgreementKey}   the reader's own KAK
- * @returns {Promise<{ key: IKeyAgreementKey; secret: Uint8Array } | null>}
+ * @returns {Promise<IKeyAgreementKey | null>}
  */
 async function unwrapEpochKey({
   epoch,
@@ -191,7 +149,7 @@ async function unwrapEpochKey({
 }: {
   epoch: CollectionEncryptionEpoch
   keyAgreementKey: IKeyAgreementKey
-}): Promise<{ key: IKeyAgreementKey; secret: Uint8Array } | null> {
+}): Promise<IKeyAgreementKey | null> {
   const entry = epoch.recipients.find(
     recipient => recipient.header.kid === keyAgreementKey.id
   )
@@ -202,7 +160,7 @@ async function unwrapEpochKey({
   if (!secret) {
     return null
   }
-  return { key: reconstructEpochKeyPair({ epochId: epoch.id, secret }), secret }
+  return reconstructEpochKeyPair({ epochId: epoch.id, secret })
 }
 
 /**
@@ -229,21 +187,19 @@ function lazyEpochKey({
   let pending: Promise<IKeyAgreementKey> | undefined
   const resolve = (): Promise<IKeyAgreementKey> => {
     if (pending === undefined) {
-      const promise = unwrapEpochKey({ epoch, keyAgreementKey }).then(
-        unwrapped => {
-          if (!unwrapped) {
-            // The reader was named in this epoch (else no lazy key was built)
-            // but its entry did not unwrap: a corrupt entry. The codec's
-            // `_decrypt` catches this and tries the next candidate before
-            // surfacing its own typed failure.
-            throw new KeyUnwrapError(
-              `This reader's recipient entry for epoch "${epoch.id}" did not ` +
-                'unwrap (a corrupt entry).'
-            )
-          }
-          return unwrapped.key
+      const promise = unwrapEpochKey({ epoch, keyAgreementKey }).then(key => {
+        if (!key) {
+          // The reader was named in this epoch (else no lazy key was built)
+          // but its entry did not unwrap: a corrupt entry. The codec's
+          // `_decrypt` catches this and tries the next candidate before
+          // surfacing its own typed failure.
+          throw new KeyUnwrapError(
+            `This reader's recipient entry for epoch "${epoch.id}" did not ` +
+              'unwrap (a corrupt entry).'
+          )
         }
-      )
+        return key
+      })
       // Cache only a successful unwrap: drop a rejected promise so the next
       // read re-attempts (the failure may have been transient), rather than
       // replaying the same cached rejection for the life of the handle. The

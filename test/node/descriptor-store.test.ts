@@ -24,7 +24,6 @@ import {
   unwrapEpochSecret,
   wrapEpochSecret
 } from '../../src/edv/epochCrypto.js'
-import { computeEpochsMac, verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
@@ -137,10 +136,6 @@ async function seedDescriptor(
     ],
     currentEpoch: epochId
   }
-  descriptor.epochsMac = await computeEpochsMac({
-    descriptor,
-    epochSecret: secret
-  })
   return descriptor
 }
 
@@ -165,7 +160,6 @@ describe('resourceDescriptorStore', () => {
     expect(descriptor.version).toBe(1)
     expect(descriptor.epochs).toHaveLength(1)
     expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
-    expect(descriptor.epochsMac).toBeDefined()
     // The stored roster is the descriptor verbatim, and a reader resolves keys
     // from it exactly as from a Description-hosted descriptor.
     expect(roster._state.content).toEqual(descriptor)
@@ -199,10 +193,6 @@ describe('resourceDescriptorStore', () => {
       keyAgreementKey: alice.kak
     })
     expect(Array.from(unwrapped!)).toEqual(Array.from(preminted.secret))
-    // The MAC is keyed from the pre-minted secret, so it verifies.
-    expect(
-      await verifyEpochsMac({ descriptor, epochSecret: preminted.secret })
-    ).toBe(true)
   })
 
   it('a lost create race converges on the already-initialized error', async () => {

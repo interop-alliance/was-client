@@ -22,7 +22,6 @@ import {
   epochKeyIdFor,
   reconstructEpochKeyPair
 } from '../../src/edv/epochCrypto.js'
-import { verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { replaceRecipient } from '../../src/edv/recipients.js'
 
 /**
@@ -187,10 +186,6 @@ describe('replaceRecipient', () => {
         keyAgreementKey: newUserKey.kak
       })
     ).not.toBeNull()
-    // The epoch configuration re-authenticates under the fresh secret.
-    expect(
-      await verifyEpochsMac({ descriptor: result, epochSecret: freshSecret! })
-    ).toBe(true)
   })
 
   it('appends zero redundant epochs on a naive re-run', async () => {
@@ -268,7 +263,6 @@ describe('replaceRecipient', () => {
       currentEpoch: epochId
     }
     const store = memoryStore(descriptor)
-    const macBefore = store.state.descriptor.epochsMac
 
     const result = await replaceRecipient({
       store,
@@ -284,7 +278,6 @@ describe('replaceRecipient', () => {
     expect(store.writes).toBe(1)
     expect(result.epochs).toHaveLength(2)
     expect(result.currentEpoch).toBe(epochId)
-    expect(result.epochsMac).toBe(macBefore)
     const historic = result.epochs![0]!
     expect(historic.recipients.map(entry => entry.header.kid)).toContain(
       newUserKey.kid

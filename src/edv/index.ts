@@ -60,7 +60,6 @@ export {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
-export { computeEpochsMac, verifyEpochsMac } from './epochMac.js'
 export { resolveEpochKeys } from './epochKeys.js'
 export type { ResolvedEpochKeys } from './epochKeys.js'
 export {

@@ -84,9 +84,9 @@ describeLive('resource-hosted descriptor store (live server)', () => {
     carol = await makeReader()
 
     space = await owner.createSpace({ name: 'Descriptor Store Integration' })
-    // A PLAINTEXT collection hosts the roster: the descriptor is
-    // integrity-protected by its epochsMac, not encrypted (it is the key
-    // material's root).
+    // A PLAINTEXT collection hosts the roster: the descriptor is stored
+    // as-is, not encrypted (it is the key material's root); its integrity
+    // rests on the hosting profile's governance plus epoch pinning.
     await space.createCollection({ id: collectionId, name: 'Key Roster' })
     roster = owner.space(space.id).collection(collectionId).resource(rosterId)
     store = resourceDescriptorStore({ resource: roster })
@@ -103,7 +103,6 @@ describeLive('resource-hosted descriptor store (live server)', () => {
     })
     expect(descriptor.epochs).toHaveLength(1)
     expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
-    expect(descriptor.epochsMac).toBeDefined()
 
     // The roster is stored verbatim as the resource's content, with a live
     // ETag validator alongside (the conditional-writes feature).

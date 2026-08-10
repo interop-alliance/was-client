@@ -34,7 +34,6 @@ import {
   epochKeyIdFor,
   reconstructEpochKeyPair
 } from '../../src/edv/epochCrypto.js'
-import { computeEpochsMac, verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
@@ -196,11 +195,9 @@ describe('resolveEpochKeys', () => {
   ): Promise<CollectionEncryption> {
     const epochs = []
     let currentEpoch = ''
-    let currentSecret: Uint8Array | undefined
     for (let index = 0; index < epochCount; index++) {
       const { epochId, secret } = await mintEpoch()
       currentEpoch = epochId
-      currentSecret = secret
       epochs.push({
         id: epochId,
         recipients: await Promise.all(
@@ -221,10 +218,6 @@ describe('resolveEpochKeys', () => {
       epochs,
       currentEpoch
     }
-    descriptor.epochsMac = await computeEpochsMac({
-      descriptor,
-      epochSecret: currentSecret!
-    })
     return descriptor
   }
 
@@ -293,11 +286,9 @@ describe('lazy epoch key unwrap retry', () => {
     const peer = await makeReader()
     const epochs = []
     let currentEpoch = ''
-    let currentSecret: Uint8Array | undefined
     for (let index = 0; index < 2; index++) {
       const { epochId, secret } = await mintEpoch()
       currentEpoch = epochId
-      currentSecret = secret
       epochs.push({
         id: epochId,
         recipients: [
@@ -329,10 +320,6 @@ describe('lazy epoch key unwrap retry', () => {
       epochs,
       currentEpoch
     }
-    encryption.epochsMac = await computeEpochsMac({
-      descriptor: encryption,
-      epochSecret: currentSecret!
-    })
     const resolved = await resolveEpochKeys({
       encryption,
       keyAgreementKey: flakyKak
@@ -742,10 +729,8 @@ describe('ensureFirstEpoch', () => {
     expect(descriptor.epochs).toHaveLength(1)
     const epoch = descriptor.epochs![0]!
     expect(descriptor.currentEpoch).toBe(epoch.id)
-    expect(descriptor.epochsMac).toBeDefined()
 
-    // Every recipient's wrap opens to the SAME epoch secret, and that secret
-    // keys the stamped epochsMac.
+    // Every recipient's wrap opens to the SAME epoch secret.
     const aliceSecret = await unwrapEpochSecret({
       entry: epoch.recipients.find(entry => entry.header.kid === alice.kak.id)!,
       keyAgreementKey: alice.kak
@@ -756,9 +741,6 @@ describe('ensureFirstEpoch', () => {
     })
     expect(aliceSecret).not.toBeNull()
     expect(Buffer.from(aliceSecret!).equals(Buffer.from(bobSecret!))).toBe(true)
-    expect(
-      await verifyEpochsMac({ descriptor, epochSecret: aliceSecret! })
-    ).toBe(true)
   })
 
   it('adopts an existing roster as-is, writing nothing', async () => {
