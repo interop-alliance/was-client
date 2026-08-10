@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.28.0 - TBD
+
+### Changed
+
+- **BREAKING**: `ensureSpaceAndCollection` is now non-clobbering,
+  create-if-absent: it describes the Space and the collection first and only
+  configures what is missing. An existing Space description (name and
+  controller), an existing `encryption` descriptor (which may carry appended key
+  epochs), and an existing access policy are never overwritten; `controllerDid`,
+  `spaceName`, and `collectionName` apply only at creation. An existing
+  descriptor-less collection still gets the late in-place `edv` declaration, and
+  a public collection's world-read grant is set only when its policy does not
+  already say public. On a fully settled Space the call issues only reads, so
+  any controller-tier client -- including one that joined a Space another wallet
+  provisioned -- can safely re-run it to heal a torn provisioning run.
+
 ## 0.27.2 - 2026-08-09
 
 ### Added
