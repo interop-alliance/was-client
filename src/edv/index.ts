@@ -17,10 +17,13 @@
  * - `WasTransport` -- the standalone `@interop/edv-client`
  *   transport, for driving an `EdvClient` directly against WAS.
  *
- * Multi-recipient (key-epoch) collections layer on top: `initRecipients` /
- * `addRecipient` / `removeRecipient` manage the readers and rotate the epoch
- * key, so the same `createEdvEncryption` provider transparently encrypts each
- * write under the current epoch and decrypts any epoch a reader still holds.
+ * Every encrypted collection carries a key-epoch roster from birth:
+ * `ensureFirstEpoch` installs epoch[0] at provision time (create-if-absent;
+ * the crypto-free `ensureSpaceAndCollection` only ensures the container), and
+ * `initRecipients` / `addRecipient` / `removeRecipient` manage the readers and
+ * rotate the epoch key, so the same `createEdvEncryption` provider
+ * transparently encrypts each write under the current epoch and decrypts any
+ * epoch a reader still holds.
  * They mutate the descriptor through the descriptor-store seam: the Collection
  * Description by default, or any `EncryptionDescriptorStore` -- e.g.
  * `resourceDescriptorStore` for a descriptor hosted as a plain JSON Resource.
@@ -35,6 +38,7 @@ export type { EdvKeys } from './EdvCodec.js'
 export { WasTransport } from './WasTransport.js'
 export { EDV_SCHEME_VERSION, JOSE_CONTENT_TYPE } from './constants.js'
 export {
+  ensureFirstEpoch,
   initRecipients,
   addRecipient,
   removeRecipient,

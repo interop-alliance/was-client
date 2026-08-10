@@ -5,28 +5,36 @@
  * Unit tests for the EDV `DocCipher` wrapper (`createEdvDocCipher`). Uses real
  * X25519 keys and the real cipher (no network) to prove the seam genuinely
  * encrypts/decrypts: `encrypt` produces an opaque EDV envelope (an object `jwe`,
- * no plaintext leak) keyed by a content-derived id, `decrypt` round-trips it
- * back, and the mutable-collection `encryptUpdate` path re-encrypts under a
- * caller id. The multi-recipient (key-epoch) codec path is a thin pass-through
- * to `codecFor` and is covered by the epoch codec tests; here we cover the
- * wrapper's single-recipient behavior, `ownerRecipient`, and the exports.
+ * no plaintext leak) keyed by a content-derived id and stamped with the
+ * descriptor's current key epoch, `decrypt` round-trips it back, and the
+ * mutable-collection `encryptUpdate` path re-encrypts under a caller id.
+ *
+ * Every encrypted collection carries a key-epoch roster from birth, so the
+ * `encryption` descriptor is required and every cipher here is built over one:
+ * a descriptor without epochs is refused fail-closed, and an envelope sealed
+ * straight to the reader's own key-agreement key is unroutable. Also covers
+ * `ownerRecipient` and the exports.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import { EdvClientCore } from '@interop/edv-client'
 import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
 
+import { EncryptionError } from '../../src/index.js'
 import {
   createEdvDocCipher,
-  initRecipients,
   ownerRecipient,
   UnknownEpochError,
   isEncryptedEnvelope
 } from '../../src/edv/index.js'
-import type { CollectionEncryption } from '../../src/index.js'
-import type { Collection } from '../../src/Collection.js'
+import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
+import type {
+  CollectionEncryption,
+  CollectionEncryptionRecipient
+} from '../../src/index.js'
 import type { Json } from '../../src/sync/index.js'
 
 /** A fresh real X25519 key-agreement key plus a resolver that returns it. */
@@ -50,46 +58,101 @@ async function makeKeys(): Promise<{
   return { keyAgreementKey: kak as unknown as IKeyAgreementKey, keyResolver }
 }
 
+/**
+ * Builds the single-epoch `edv` descriptor an encrypted collection carries from
+ * birth, wrapping one freshly-minted epoch key to every given reader.
+ *
+ * @param readers {IKeyAgreementKey[]}   the recipients of epoch zero
+ * @returns {Promise<CollectionEncryption>}
+ */
+async function epochDescriptorFor(
+  readers: IKeyAgreementKey[]
+): Promise<CollectionEncryption> {
+  const { epochId, secret } = await mintEpoch()
+  const recipients: CollectionEncryptionRecipient[] = []
+  for (const keyAgreementKey of readers) {
+    recipients.push(
+      await wrapEpochSecret({
+        epochSecret: secret,
+        recipient: ownerRecipient({ keyAgreementKey })
+      })
+    )
+  }
+  return {
+    scheme: 'edv',
+    epochs: [{ id: epochId, recipients }],
+    currentEpoch: epochId
+  }
+}
+
+/**
+ * A fresh reader plus the single-epoch descriptor it is recipient zero of --
+ * the whole input every cipher in this file is built from.
+ *
+ * @returns {Promise<{ keyAgreementKey: IKeyAgreementKey;
+ *   keyResolver: IKeyResolver; encryption: CollectionEncryption }>}
+ */
+async function makeReaderWithDescriptor(): Promise<{
+  keyAgreementKey: IKeyAgreementKey
+  keyResolver: IKeyResolver
+  encryption: CollectionEncryption
+}> {
+  const keys = await makeKeys()
+  return {
+    ...keys,
+    encryption: await epochDescriptorFor([keys.keyAgreementKey])
+  }
+}
+
 const DOC: Json = { greeting: 'hello', subject: { name: 'Alice', n: 42 } }
 
-describe('createEdvDocCipher (single-recipient, content derivation)', () => {
+describe('createEdvDocCipher (epoch roster, content derivation)', () => {
   it('encrypts to an opaque envelope keyed by a content-derived id', async () => {
-    const keys = await makeKeys()
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
     const cipher = await createEdvDocCipher({
       ...keys,
-      collectionId: 'private-credentials'
+      collectionId: 'private-credentials',
+      encryption
     })
 
     const { id, envelope, epoch } = await cipher.encrypt({ data: DOC })
     expect(typeof id).toBe('string')
     expect(id.length).toBeGreaterThan(0)
-    expect(epoch).toBeUndefined() // single-key: no epoch stamp
+    // Every write seals to the current epoch key and reports which epoch.
+    expect(epoch).toBe(encryption.currentEpoch)
     expect(isEncryptedEnvelope(envelope)).toBe(true)
     // No plaintext leak in the stored envelope.
     expect(JSON.stringify(envelope)).not.toContain('Alice')
   })
 
   it('round-trips encrypt then decrypt', async () => {
-    const keys = await makeKeys()
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
     const cipher = await createEdvDocCipher({
       ...keys,
-      collectionId: 'private-credentials'
+      collectionId: 'private-credentials',
+      encryption
     })
     const { envelope } = await cipher.encrypt({ data: DOC })
     expect(await cipher.decrypt({ envelope })).toEqual(DOC)
   })
 
-  it('throws UnknownEpochError for an envelope encrypted to another key', async () => {
+  it('throws UnknownEpochError for an envelope from another collection epoch', async () => {
     // The codec owns decrypt routing: an envelope whose recipient kids match
-    // none of the reader's candidate keys is unroutable, the signal that the
-    // reader's cached descriptor (or here, its key) does not cover the writer.
+    // none of the reader's resolved epoch keys is unroutable, the signal that
+    // the reader's cached descriptor does not cover the writer's epoch.
+    const aliceKeys = await makeReaderWithDescriptor()
+    const malloryKeys = await makeReaderWithDescriptor()
     const alice = await createEdvDocCipher({
-      ...(await makeKeys()),
-      collectionId: 'private-credentials'
+      keyAgreementKey: aliceKeys.keyAgreementKey,
+      keyResolver: aliceKeys.keyResolver,
+      collectionId: 'private-credentials',
+      encryption: aliceKeys.encryption
     })
     const mallory = await createEdvDocCipher({
-      ...(await makeKeys()),
-      collectionId: 'private-credentials'
+      keyAgreementKey: malloryKeys.keyAgreementKey,
+      keyResolver: malloryKeys.keyResolver,
+      collectionId: 'private-credentials',
+      encryption: malloryKeys.encryption
     })
     const { envelope } = await alice.encrypt({ data: DOC })
     await expect(mallory.decrypt({ envelope })).rejects.toThrow(
@@ -98,83 +161,65 @@ describe('createEdvDocCipher (single-recipient, content derivation)', () => {
   })
 })
 
-describe('createEdvDocCipher (pre-epoch tolerance on an epoch collection)', () => {
-  /** A fake collection whose description lives in memory (initRecipients). */
-  function fakeCollection() {
-    const state = { encryption: { scheme: 'edv' } as CollectionEncryption }
-    return {
-      describeWithEtag: async () => ({
-        description: {
-          id: 'c',
-          type: ['Collection'],
-          encryption: state.encryption
-        },
-        etag: '"v1"'
-      }),
-      replaceDescription: async (desc: {
-        encryption?: CollectionEncryption
-      }) => {
-        state.encryption = desc.encryption!
-        return { description: { id: 'c', type: ['Collection'] }, etag: '"v2"' }
-      }
-    } as unknown as Collection
-  }
+describe('createEdvDocCipher (epoch-from-birth refusals)', () => {
+  it('refuses a descriptor that carries no key epochs', async () => {
+    const keys = await makeKeys()
+    await expect(
+      createEdvDocCipher({
+        ...keys,
+        collectionId: 'private-credentials',
+        encryption: { scheme: 'edv' }
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
+  })
 
-  it('keeps decrypting pre-epoch envelopes after the collection gains epochs', async () => {
+  it('refuses an envelope sealed straight to the reader own key', async () => {
     const owner = await makeKeys()
-    // Written before any roster existed: sealed straight to the owner's own
-    // key-agreement key. Immutable and content-addressed, so it can never be
-    // re-encrypted in place -- the tolerance is permanent.
-    const preEpochCipher = await createEdvDocCipher({
-      ...owner,
-      collectionId: 'private-credentials'
+    // An envelope sealed directly to the owner's own key-agreement key rather
+    // than to an epoch key. The reader's own key is never a read candidate, so
+    // such an envelope is unroutable even for the very reader it was sealed to.
+    const edv = new EdvClientCore({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver
     })
-    const { envelope } = await preEpochCipher.encrypt({ data: DOC })
-
-    // The collection's first share mints a fresh epoch roster.
-    const grantee = await makeKeys()
-    const descriptor = await initRecipients({
-      collection: fakeCollection(),
-      recipients: [
-        ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
-        ownerRecipient({ keyAgreementKey: grantee.keyAgreementKey })
-      ]
+    const sealedToOwnKey = await edv.documentCipher.encrypt({
+      doc: {
+        id: 'z' + 'A'.repeat(21),
+        content: DOC as Record<string, unknown>,
+        meta: { contentType: 'application/json' }
+      },
+      recipients: edv.documentCipher.createDefaultRecipients(
+        owner.keyAgreementKey
+      ),
+      keyResolver: owner.keyResolver,
+      update: false
     })
 
-    const epochAwareCipher = await createEdvDocCipher({
+    const encryption = await epochDescriptorFor([owner.keyAgreementKey])
+    const cipher = await createEdvDocCipher({
       ...owner,
       collectionId: 'private-credentials',
-      encryption: descriptor
+      encryption
     })
-    // The owner's own key-agreement key stays a last-resort read candidate,
-    // so the pre-epoch envelope still routes...
-    expect(await epochAwareCipher.decrypt({ envelope })).toEqual(DOC)
-    // ...while writes go under the current epoch and round-trip as before.
-    const fresh = await epochAwareCipher.encrypt({ data: DOC })
-    expect(fresh.epoch).toBe(descriptor.currentEpoch)
-    expect(
-      await epochAwareCipher.decrypt({ envelope: fresh.envelope })
-    ).toEqual(DOC)
-    // The tolerance is for the reader's OWN key only: a pre-epoch envelope
-    // sealed to someone else's key stays unroutable.
-    const granteeCipher = await createEdvDocCipher({
-      ...grantee,
-      collectionId: 'private-credentials',
-      encryption: descriptor
-    })
-    await expect(granteeCipher.decrypt({ envelope })).rejects.toThrow(
-      UnknownEpochError
-    )
+    await expect(
+      cipher.decrypt({ envelope: sealedToOwnKey as unknown as Json })
+    ).rejects.toThrow(UnknownEpochError)
+
+    // Writes under the epoch roster round-trip as usual.
+    const fresh = await cipher.encrypt({ data: DOC })
+    expect(fresh.epoch).toBe(encryption.currentEpoch)
+    expect(await cipher.decrypt({ envelope: fresh.envelope })).toEqual(DOC)
   })
 })
 
 describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
   it('re-encrypts a mutable head document under its existing id', async () => {
-    const keys = await makeKeys()
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
     const cipher = await createEdvDocCipher({
       ...keys,
       collectionId: 'wallet-head',
-      idDerivation: 'random'
+      idDerivation: 'random',
+      encryption
     })
 
     const first = await cipher.encrypt({ data: { v: 1 } })
@@ -199,11 +244,12 @@ describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
     // legacy freewallet uuidv7 contact): the id is already the server resource
     // id, so the update path takes it verbatim instead of asserting the EDV
     // multibase format (which only guards creates against URL leaks).
-    const keys = await makeKeys()
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
     const cipher = await createEdvDocCipher({
       ...keys,
       collectionId: 'contacts',
-      idDerivation: 'random'
+      idDerivation: 'random',
+      encryption
     })
 
     const uuid = '01890a5d-ac96-774b-bcce-b302099a8057'
@@ -247,5 +293,6 @@ describe('UnknownEpochError', () => {
     expect(err.name).toBe('UnknownEpochError')
     expect(err.message).toContain('private-credentials')
     expect(err.message).toContain('did:key:zEpoch#k')
+    expect(err.message).toContain('match no key epoch this reader resolved')
   })
 })

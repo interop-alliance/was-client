@@ -2,14 +2,17 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for the EDV codec. These use real X25519
- * keys and the real `EdvClientCore` cipher (no network) to prove that the codec
- * genuinely encrypts/decrypts at the seam: `encode` produces an opaque JWE
- * envelope (no plaintext leak) and `decode` round-trips it back. Also covers the
- * documents-only contract decisions: minted EDV ids on add (random by default,
- * content-derived with `idDerivation: 'content'`), human ids rejected on put,
- * small binary as a single JWE, oversized binary rejected, and the provider's
- * null (no-keys) path.
+ * Unit tests for the EDV codec. These use real X25519 keys, real key epochs and
+ * the real `EdvClientCore` cipher (no network) to prove that the codec genuinely
+ * encrypts/decrypts at the seam: `encode` produces an opaque JWE envelope (no
+ * plaintext leak) and `decode` round-trips it back. Every fixture here carries
+ * the epoch-bearing `encryption` descriptor an encrypted collection has from
+ * birth, so each envelope seals to the collection's current epoch key and binds
+ * that epoch into its protected header. Also covers the documents-only contract
+ * decisions: minted EDV ids on add (random by default, content-derived with
+ * `idDerivation: 'content'`), human ids rejected on put, small binary as a
+ * single JWE, oversized binary rejected, and the provider's null (no-keys) and
+ * fail-closed (no-epochs) paths.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -27,22 +30,42 @@ import {
   KeyUnwrapError,
   ValidationError
 } from '../../src/index.js'
-import type { ResourceCodec } from '../../src/index.js'
+import type { CollectionEncryption, ResourceCodec } from '../../src/index.js'
 import {
   createEdvEncryption,
   EdvCodec,
+  EDV_SCHEME_VERSION,
   JOSE_CONTENT_TYPE,
   UnknownEpochError
 } from '../../src/edv/index.js'
+import {
+  didKeyResolver,
+  epochKeyIdFor,
+  mintEpoch,
+  reconstructEpochKeyPair,
+  wrapEpochSecret
+} from '../../src/edv/epochCrypto.js'
+
+/**
+ * The provider options every codec fixture in this file forwards to
+ * `createEdvEncryption`.
+ */
+interface EdvFixtureOptions {
+  contentType?: string
+  maxBlobBytes?: number
+  idDerivation?: 'random' | 'content'
+}
 
 /**
  * Generates a fresh real X25519 key agreement key and a matching resolver, so
  * the codec's encrypt/decrypt actually run.
  *
- * @returns {Promise<{ kak: IKeyAgreementKey; keyResolver: function }>}
+ * @returns {Promise<{ kak: IKeyAgreementKey; publicKeyMultibase: string;
+ *   keyResolver: function }>}
  */
 async function makeKeys(): Promise<{
   kak: IKeyAgreementKey
+  publicKeyMultibase: string
   keyResolver: IKeyResolver
 }> {
   const kak = await X25519KeyAgreementKey2020.generate({
@@ -61,82 +84,128 @@ async function makeKeys(): Promise<{
   // `X25519KeyAgreementKey2020.id` is typed optional, but a key generated with a
   // `controller` always derives one, so narrow it to the `IKeyAgreementKey`
   // contract the EDV keystore expects.
-  return { kak: kak as IKeyAgreementKey, keyResolver }
+  return {
+    kak: kak as IKeyAgreementKey,
+    publicKeyMultibase: kak.publicKeyMultibase,
+    keyResolver
+  }
 }
 
 /**
- * Builds an EDV codec over a fresh real X25519 key, via the public
- * `createEdvEncryption` provider.
+ * Mints a key epoch and wraps its secret to one reader, producing the
+ * epoch-bearing `CollectionEncryption` descriptor an encrypted collection
+ * carries from birth, plus the reconstructed epoch key pair. That pair is the
+ * key every envelope is sealed to; the reader's own key-agreement key only
+ * unwraps the epoch secret and never encrypts or decrypts a resource itself.
  *
- * @param [options] {object}
- * @param [options.contentType] {string}
- * @param [options.maxBlobBytes] {number}
- * @param [options.idDerivation] {string}
- * @returns {Promise<ResourceCodec>}
+ * @param reader {object}
+ * @param reader.id {string}                   the reader's key-agreement key id
+ * @param reader.publicKeyMultibase {string}   its public key
+ * @returns {Promise<{ encryption: CollectionEncryption; epochId: string;
+ *   epochKeyPair: IKeyAgreementKey }>}
  */
-async function makeCodec(
-  options: {
-    contentType?: string
-    maxBlobBytes?: number
-    idDerivation?: 'random' | 'content'
-  } = {}
-): Promise<ResourceCodec> {
-  const { kak, keyResolver } = await makeKeys()
+async function mintEpochFor({
+  id,
+  publicKeyMultibase
+}: {
+  id: string
+  publicKeyMultibase: string
+}): Promise<{
+  encryption: CollectionEncryption
+  epochId: string
+  epochKeyPair: IKeyAgreementKey
+}> {
+  const { epochId, secret } = await mintEpoch()
+  const encryption: CollectionEncryption = {
+    scheme: 'edv',
+    epochs: [
+      {
+        id: epochId,
+        recipients: [
+          await wrapEpochSecret({
+            epochSecret: secret,
+            recipient: { id, publicKeyMultibase }
+          })
+        ]
+      }
+    ],
+    currentEpoch: epochId
+  }
+  return {
+    encryption,
+    epochId,
+    epochKeyPair: reconstructEpochKeyPair({ epochId, secret })
+  }
+}
+
+/**
+ * Builds an EDV codec over a fresh real X25519 reader and a freshly-minted
+ * epoch wrapped to it, via the public `createEdvEncryption` provider, and
+ * returns the epoch material alongside it. Also hands back a `decrypt` helper
+ * that unseals an encoded envelope to its decrypted `{ content, meta }`, so a
+ * test can assert the on-the-wire inner document (e.g. that text is stored
+ * verbatim, not base64); it decrypts with the epoch key pair, the recipient
+ * every envelope names.
+ *
+ * @param [options] {EdvFixtureOptions}
+ * @returns {Promise<{ codec: ResourceCodec; encryption: CollectionEncryption;
+ *   epochId: string; decrypt: function }>}
+ */
+async function makeFixture(options: EdvFixtureOptions = {}): Promise<{
+  codec: ResourceCodec
+  encryption: CollectionEncryption
+  epochId: string
+  decrypt: (body: Uint8Array | Blob | undefined) => Promise<IEDVDocument>
+}> {
+  const { kak, publicKeyMultibase, keyResolver } = await makeKeys()
+  const { encryption, epochId, epochKeyPair } = await mintEpochFor({
+    id: kak.id,
+    publicKeyMultibase
+  })
   const provider = createEdvEncryption({
     resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
     ...options
   })
   // Core decides policy (descriptor/override) and then asks the provider to
-  // build the codec for the declared scheme; mirror that here.
+  // build the codec for the declared scheme; mirror that here, descriptor and
+  // all -- `codecFor` routes on the descriptor's epoch roster.
   const codec = await provider.codecFor({
     spaceId: 's',
     collectionId: 'c',
-    scheme: 'edv'
+    scheme: 'edv',
+    encryption
   })
   if (!codec) {
     throw new Error('expected a codec')
   }
-  return codec
-}
-
-/**
- * Builds a codec plus a `decrypt` helper that unseals an encoded envelope back
- * to its decrypted `{ content, meta }`, so a test can assert the on-the-wire
- * inner document (e.g. that text is stored verbatim, not base64).
- *
- * @param [options] {object}
- * @param [options.maxBlobBytes] {number}
- * @returns {Promise<{ codec: ResourceCodec; decrypt: function }>}
- */
-async function makeInspectableCodec(
-  options: { maxBlobBytes?: number } = {}
-): Promise<{
-  codec: ResourceCodec
-  decrypt: (body: Uint8Array | Blob | undefined) => Promise<IEDVDocument>
-}> {
-  const { kak, keyResolver } = await makeKeys()
-  const provider = createEdvEncryption({
-    resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
-    ...options
+  const edv = new EdvClientCore({
+    keyAgreementKey: epochKeyPair,
+    keyResolver: didKeyResolver
   })
-  const codec = await provider.codecFor({
-    spaceId: 's',
-    collectionId: 'c',
-    scheme: 'edv'
-  })
-  if (!codec) {
-    throw new Error('expected a codec')
-  }
-  const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
   const decrypt = async (
     body: Uint8Array | Blob | undefined
   ): Promise<IEDVDocument> => {
     const encryptedDoc = JSON.parse(
       new TextDecoder().decode(body as Uint8Array)
     )
-    return edv.documentCipher.decrypt({ encryptedDoc, keyAgreementKey: kak })
+    return edv.documentCipher.decrypt({
+      encryptedDoc,
+      keyAgreementKey: epochKeyPair
+    })
   }
-  return { codec, decrypt }
+  return { codec, encryption, epochId, decrypt }
+}
+
+/**
+ * The codec alone, for the tests that need no epoch material of their own.
+ *
+ * @param [options] {EdvFixtureOptions}
+ * @returns {Promise<ResourceCodec>}
+ */
+async function makeCodec(
+  options: EdvFixtureOptions = {}
+): Promise<ResourceCodec> {
+  return (await makeFixture(options)).codec
 }
 
 /**
@@ -158,7 +227,7 @@ function responseFrom(body?: Uint8Array | Blob): HttpResponse {
 
 describe('EdvCodec: JSON round trip', () => {
   it('encrypts on encode (no plaintext leak) and decrypts on decode', async () => {
-    const codec = await makeCodec()
+    const { codec, epochId } = await makeFixture()
     const encoded = await codec.encode({
       data: { secret: 'do not leak', n: 42 }
     })
@@ -173,13 +242,18 @@ describe('EdvCodec: JSON round trip', () => {
     const envelope = JSON.parse(json)
     expect(envelope.jwe).toBeTruthy()
     expect(envelope.content).toBeUndefined()
+    // The envelope seals to the collection's CURRENT EPOCH key (not to the
+    // reader's own key-agreement key, which only unwraps that epoch), and the
+    // write reports the epoch it encrypted under.
+    expect(envelope.jwe.recipients[0].header.kid).toBe(epochKeyIdFor(epochId))
+    expect(encoded.epoch).toBe(epochId)
 
     const decoded = await codec.decode(responseFrom(encoded.body))
     expect(decoded).toEqual({ secret: 'do not leak', n: 42 })
   })
 
   it('stores JSON content verbatim and typed application/json in meta', async () => {
-    const { codec, decrypt } = await makeInspectableCodec()
+    const { codec, decrypt } = await makeFixture()
     const value = { type: ['VerifiableCredential'], claim: 'legible' }
     const encoded = await codec.encode({ data: value })
 
@@ -300,7 +374,7 @@ describe("EdvCodec: content-derived ids (idDerivation: 'content')", () => {
 
 describe('EdvCodec: binary', () => {
   it('round-trips a small blob as base64 in a single JWE document', async () => {
-    const { codec, decrypt } = await makeInspectableCodec()
+    const { codec, decrypt } = await makeFixture()
     const bytes = new Uint8Array([1, 2, 3, 4, 250])
     const encoded = await codec.encode({
       data: bytes,
@@ -366,7 +440,7 @@ describe('EdvCodec: binary', () => {
 
 describe('EdvCodec: text', () => {
   it('stores text as a legible UTF-8 string (no base64) and reads a Blob', async () => {
-    const { codec, decrypt } = await makeInspectableCodec()
+    const { codec, decrypt } = await makeFixture()
     const html = '<!doctype html><h1>héllo</h1>'
     const encoded = await codec.encode({
       data: new Blob([html], { type: 'text/html' })
@@ -387,7 +461,7 @@ describe('EdvCodec: text', () => {
   })
 
   it('falls back to base64 for a text-typed blob carrying invalid UTF-8', async () => {
-    const { codec, decrypt } = await makeInspectableCodec()
+    const { codec, decrypt } = await makeFixture()
     // 0xff is not valid UTF-8; the text gate must reject it and store base64.
     const encoded = await codec.encode({
       data: new Blob([new Uint8Array([0xff, 0xfe, 0x00])], {
@@ -404,7 +478,7 @@ describe('EdvCodec: text', () => {
     // string -- and the decoder must not strip the BOM (`ignoreBOM: true`), or
     // the round-tripped bytes come back 3 bytes short, corrupting any hash or
     // signature over the original file.
-    const { codec, decrypt } = await makeInspectableCodec()
+    const { codec, decrypt } = await makeFixture()
     const bytes = new Uint8Array([
       0xef,
       0xbb,
@@ -447,9 +521,10 @@ describe('EdvCodec: caller-data collision (no in-band descriptor)', () => {
 
 describe('EdvCodec: malformed inner document', () => {
   /**
-   * Encrypts an arbitrary `{ content, meta }` under a fresh key and returns a
-   * `{ codec, response }` pair so `decode` can be exercised against a
-   * deliberately malformed inner shape.
+   * Encrypts an arbitrary `{ content, meta }` under a fresh collection's epoch
+   * key -- a well-formed envelope, `was` binding and all, that only its inner
+   * shape is wrong -- and returns a `{ codec, response }` pair so `decode` can
+   * be exercised against that deliberately malformed inner document.
    *
    * @param content {Record<string, unknown>}
    * @param meta {Record<string, unknown>}
@@ -459,22 +534,34 @@ describe('EdvCodec: malformed inner document', () => {
     content: Record<string, unknown>,
     meta: Record<string, unknown>
   ): Promise<{ codec: ResourceCodec; response: HttpResponse }> {
-    const { kak, keyResolver } = await makeKeys()
+    const { kak, publicKeyMultibase, keyResolver } = await makeKeys()
+    const { encryption, epochId, epochKeyPair } = await mintEpochFor({
+      id: kak.id,
+      publicKeyMultibase
+    })
     const provider = createEdvEncryption({
       resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
     })
     const codec = (await provider.codecFor({
       spaceId: 's',
       collectionId: 'c',
-      scheme: 'edv'
+      scheme: 'edv',
+      encryption
     })) as ResourceCodec
-    const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
-    const recipients = edv.documentCipher.createDefaultRecipients(kak)
+    const edv = new EdvClientCore({
+      keyAgreementKey: epochKeyPair,
+      keyResolver: didKeyResolver
+    })
+    const recipients = edv.documentCipher.createDefaultRecipients(epochKeyPair)
+    const docId = 'z' + 'A'.repeat(21)
     const encrypted = await edv.documentCipher.encrypt({
-      doc: { id: 'z' + 'A'.repeat(21), content, meta },
+      doc: { id: docId, content, meta },
       recipients,
-      keyResolver,
-      update: false
+      keyResolver: didKeyResolver,
+      update: false,
+      additionalProtectedParams: {
+        was: { v: EDV_SCHEME_VERSION, resource: docId, epoch: epochId }
+      }
     })
     return {
       codec,
@@ -723,8 +810,9 @@ describe('EdvCodec: decrypt failure discrimination', () => {
   })
 
   it('throws UnknownEpochError (not IntegrityError) when no candidate key is a recipient', async () => {
-    // Encode under one key, then read with a codec built over an unrelated key:
-    // the envelope's recipient kids match none of the reader's candidate keys,
+    // Encode under one collection's epoch, then read with a codec resolved
+    // from an unrelated collection's epoch roster: the envelope's recipient
+    // kid (the writer's epoch key) matches none of the reader's epoch keys,
     // so routing fails fast with the stale-descriptor signal -- decryption
     // never reaches the AEAD stage and must not misreport tampering.
     const writer = await makeCodec()
@@ -744,22 +832,28 @@ describe('EdvCodec: decrypt failure discrimination', () => {
     // from its own deriveSecret when a decrypt first forces the unwrap. That
     // says nothing about the stored envelope, so the loop must move on to the
     // next candidate (which decrypts fine) instead of misreporting tampering.
-    const { kak, keyResolver } = await makeKeys()
-    const edv = new EdvClientCore({ keyAgreementKey: kak, keyResolver })
+    const { epochId, secret } = await mintEpoch()
+    const epochKeyPair = reconstructEpochKeyPair({ epochId, secret })
+    const edv = new EdvClientCore({
+      keyAgreementKey: epochKeyPair,
+      keyResolver: didKeyResolver
+    })
     const corrupt = {
-      // Same kid as the envelope recipient, so this candidate is tried first.
-      id: kak.id,
+      // Same kid as the envelope recipient (the epoch key id), so this
+      // candidate is tried first.
+      id: epochKeyPair.id,
       async deriveSecret(): Promise<Uint8Array> {
         throw new KeyUnwrapError(
-          'This reader\'s recipient entry for epoch "did:key:zFake" did ' +
+          `This reader's recipient entry for epoch "${epochId}" did ` +
             'not unwrap (a corrupt entry).'
         )
       }
     } as IKeyAgreementKey
     const codec = new EdvCodec({
       edv,
-      keyAgreementKey: kak,
-      readKeys: [corrupt, kak],
+      keyAgreementKey: epochKeyPair,
+      readKeys: [corrupt, epochKeyPair],
+      writeEpoch: epochId,
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random'
@@ -772,48 +866,74 @@ describe('EdvCodec: decrypt failure discrimination', () => {
 })
 
 describe('createEdvEncryption: provider (keystore)', () => {
+  /**
+   * A minimal epoch-bearing descriptor for the routing tests that never reach
+   * the crypto (no real wrap needed -- the roster only has to be non-empty).
+   */
+  const epochBearing: CollectionEncryption = {
+    scheme: 'edv',
+    epochs: [{ id: 'did:key:zEpoch1', recipients: [] }],
+    currentEpoch: 'did:key:zEpoch1'
+  }
+
   it('returns null when resolveKeys yields no keys (core then fails closed)', async () => {
     const provider = createEdvEncryption({ resolveKeys: async () => null })
     const codec = await provider.codecFor({
       spaceId: 's',
       collectionId: 'c',
-      scheme: 'edv'
+      scheme: 'edv',
+      encryption: epochBearing
     })
     // Null no longer means "plaintext" -- policy already said encrypted, so core
     // turns this into a fail-closed EncryptionError rather than a codec.
     expect(codec).toBeNull()
   })
 
-  it('returns null for a scheme it does not handle', async () => {
-    const kak = await X25519KeyAgreementKey2020.generate({
-      controller: 'did:example:alice'
-    })
+  it('refuses an encrypted descriptor that carries no key epochs', async () => {
+    // Epoch-from-birth: there is no single-recipient era to route to, so a
+    // descriptor whose epoch roster is missing (or empty) is refused rather
+    // than encrypted straight to the reader's key-agreement key.
+    const { kak, keyResolver } = await makeKeys()
     const provider = createEdvEncryption({
-      resolveKeys: async () => ({
-        keyAgreementKey: kak as IKeyAgreementKey,
-        keyResolver: async () => ({
-          id: kak.id,
-          type: kak.type,
-          publicKeyMultibase: kak.publicKeyMultibase
-        })
+      resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
+    })
+    await expect(
+      provider.codecFor({
+        spaceId: 's',
+        collectionId: 'c',
+        scheme: 'edv',
+        encryption: { scheme: 'edv' }
       })
+    ).rejects.toBeInstanceOf(EncryptionError)
+    await expect(
+      provider.codecFor({
+        spaceId: 's',
+        collectionId: 'c',
+        scheme: 'edv',
+        encryption: { scheme: 'edv', epochs: [] }
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
+  })
+
+  it('returns null for a scheme it does not handle', async () => {
+    const { kak, keyResolver } = await makeKeys()
+    const provider = createEdvEncryption({
+      resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
     })
     const codec = await provider.codecFor({
       spaceId: 's',
       collectionId: 'c',
-      scheme: 'age'
+      scheme: 'age',
+      encryption: epochBearing
     })
     expect(codec).toBeNull()
   })
 
   it('uses override-supplied keys instead of the keystore', async () => {
-    const kak = await X25519KeyAgreementKey2020.generate({
-      controller: 'did:example:alice'
-    })
-    const keyResolver = async () => ({
+    const { kak, publicKeyMultibase, keyResolver } = await makeKeys()
+    const { encryption } = await mintEpochFor({
       id: kak.id,
-      type: kak.type,
-      publicKeyMultibase: kak.publicKeyMultibase
+      publicKeyMultibase
     })
     let keystoreCalls = 0
     const provider = createEdvEncryption({
@@ -826,6 +946,7 @@ describe('createEdvEncryption: provider (keystore)', () => {
       spaceId: 's',
       collectionId: 'c',
       scheme: 'edv',
+      encryption,
       keys: { keyAgreementKey: kak, keyResolver }
     })
     expect(codec).not.toBeNull()

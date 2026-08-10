@@ -1,5 +1,44 @@
 # @interop/was-client Changelog
 
+## 0.29.0 - TBD
+
+### Changed
+
+- **BREAKING**: Epoch-from-birth. Every encrypted collection's descriptor
+  carries a key-epoch roster from creation, and that roster is the EDV codec's
+  one routing rule: `codecFor` refuses an `edv` descriptor without epochs
+  fail-closed instead of building a single-recipient cipher sealed straight to
+  the reader's key-agreement key. The single-recipient era, and with it the dual
+  cipher path, is eliminated.
+- **BREAKING**: The `was.epoch` envelope binding is unconditional. Every
+  envelope -- metadata envelopes included, which now bind the epoch too -- must
+  carry the `was` protected-header parameter with the epoch it sealed under,
+  checked against the decrypting key's epoch on every read. The "no `was` member
+  = legacy envelope, accept" carve-out is removed.
+- **BREAKING**: The pre-epoch read tolerance (restored in 0.28.1) is removed:
+  the reader's own key-agreement key is never a read candidate; reads route
+  through resolved epoch keys only. No deployments exist, so no stored envelopes
+  depend on the tolerance.
+- **BREAKING**: `createEdvDocCipher` requires its `encryption` descriptor, and
+  `EdvCodec`'s constructor requires `readKeys` and `writeEpoch`.
+- `Space.createCollection` no longer pre-seeds the returned handle's encryption
+  override from a rosterless `'edv'` declaration (an override is fixed at handle
+  construction, so it would pin the handle to a permanently fail-closed codec);
+  such a handle falls back to descriptor discovery, which resolves the roster
+  once `ensureFirstEpoch` installs it. An epoch-bearing declared descriptor is
+  still pre-seeded.
+
+### Added
+
+- `./edv` exports `ensureFirstEpoch`: the provision-time descriptor install.
+  Create-if-absent through the descriptor-store seam, it mints a fresh random
+  epoch[0], wraps it to the initial recipients, and stamps `epochsMac` (and
+  `epochsSig` when a signer is supplied); a descriptor already carrying epochs
+  -- including the winner's after a lost create/CAS race -- is returned for
+  adoption, never overwritten. `ensureSpaceAndCollection` stays crypto-free
+  (container ensure only); this is the EDV-bearing second step of encrypted
+  collection provisioning.
+
 ## 0.28.1 - 2026-08-09
 
 ### Fixed

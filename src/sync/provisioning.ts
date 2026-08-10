@@ -9,6 +9,12 @@
  * so ANY controller-tier client -- including one that joined a Space some
  * other wallet provisioned -- can re-run it to heal a torn provisioning run.
  * On a fully settled Space it issues only reads.
+ *
+ * This module ensures the CONTAINER only and stays crypto-free: an `'edv'`
+ * collection is declared encrypted here, but its key-epoch roster -- which
+ * every encrypted collection must carry before any read or write routes
+ * (epoch-from-birth) -- is installed by the EDV-bearing second step,
+ * `ensureFirstEpoch` in `@interop/was-client/edv`.
  */
 import type { WasClient } from '../WasClient.js'
 // A direct module import (not the `./edv` subpath entry), so the crypto-free

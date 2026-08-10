@@ -683,7 +683,9 @@ plugs into:
   and back. `createPlaintextDocCipher(...)` is the crypto-free identity
   implementation for a plaintext content-addressed collection;
   `createEdvDocCipher(...)` (from `@interop/was-client/edv`) is the encrypting
-  one, covering single-recipient and multi-recipient (key-epoch) collections.
+  one, built from the collection's key-epoch descriptor (every encrypted
+  collection carries one from birth; install epoch[0] at provision time with
+  `ensureFirstEpoch`).
 - **`contentCid(doc)`** and **`deriveSpaceId(controllerDid)`** derive
   content-addressed ids -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
   unpadded -- so the same logical document (and the same controller) lands on

@@ -196,9 +196,9 @@ export async function resolveCodec(
       // A full `CollectionEncryption` descriptor is itself a valid override
       // (Space.createCollection pre-seeds exactly this). Forward the whole
       // override as the `encryption` descriptor so an epoch-bearing override
-      // resolves the epoch codec -- the provider's `codecFor` selects the epoch
-      // path solely on `encryption?.epochs?.length > 0`, so dropping it here
-      // would force the single-key path and break epoch reads/writes.
+      // resolves the epoch codec -- the provider's `codecFor` routes solely
+      // on the descriptor's epoch roster and refuses an override without one
+      // fail-closed, so dropping it here would break every read and write.
       encryption: override as CollectionEncryption
     })
   }

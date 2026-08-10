@@ -212,14 +212,11 @@ export class WasServerError extends WasError {
 
 /**
  * Thrown on decrypt when a stored envelope names JWE recipient (`kid`) ids
- * that match none of this reader's candidate keys: neither the key-agreement
- * key (single-key collection) nor any key epoch resolved from the Collection
- * Description. It signals that the caller's cached descriptor may be stale and
- * should be re-read before retrying: an epoch rotation emits no change-feed
- * entry, so a codec built from a pre-rotation descriptor meets envelopes
- * stamped with a newer epoch it has never seen. It also fires on a single-key
- * codec that meets an envelope encrypted to a different key-agreement key
- * entirely.
+ * that match no key epoch resolved from the Collection Description. It
+ * signals that the caller's cached descriptor may be stale and should be
+ * re-read before retrying: an epoch rotation emits no change-feed entry, so a
+ * codec built from a pre-rotation descriptor meets envelopes stamped with a
+ * newer epoch it has never seen.
  */
 export class UnknownEpochError extends Error {
   constructor({
@@ -232,9 +229,9 @@ export class UnknownEpochError extends Error {
     super(
       `Cannot decrypt a resource in collection "${collectionId}": its ` +
         `envelope names recipient key id(s) [${kids.join(', ')}] that match ` +
-        'neither the key-agreement key nor any known key epoch. The cached ' +
-        'Collection Description may be stale (an epoch rotation emits no ' +
-        'change-feed entry); re-read it and rebuild the cipher.'
+        'no key epoch this reader resolved. The cached Collection ' +
+        'Description may be stale (an epoch rotation emits no change-feed ' +
+        'entry); re-read it and rebuild the cipher.'
     )
     this.name = 'UnknownEpochError'
   }

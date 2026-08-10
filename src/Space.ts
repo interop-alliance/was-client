@@ -214,9 +214,14 @@ export class Space {
    * @param [desc.name] {string}
    * @param [desc.backend] {BackendReference}
    * @param [desc.encryption] {CollectionEncryption}   declare the collection
-   *   client-side encrypted (e.g. `{ scheme: 'edv' }`). The returned handle is
-   *   pre-seeded with a matching encryption override, so the immediate next
-   *   write encrypts without a descriptor-discovery round-trip.
+   *   client-side encrypted. When the descriptor can route -- for the `'edv'`
+   *   scheme that means it carries its epoch roster -- the returned handle is
+   *   pre-seeded with it as an encryption override, so the immediate next
+   *   write encrypts without a descriptor-discovery round-trip. A bare
+   *   `{ scheme: 'edv' }` declares the collection encrypted but is not
+   *   pre-seeded (the handle uses descriptor discovery instead); reads and
+   *   writes are refused fail-closed until `ensureFirstEpoch` installs the
+   *   epoch roster.
    * @returns {Promise<Collection>}
    */
   async createCollection(
@@ -242,12 +247,22 @@ export class Space {
       capability: this.#capability,
       json: body
     })
-    // Pre-seed the handle with an override matching the just-declared scheme so
-    // the first write encrypts immediately (keys come from the keystore); no
-    // describe() round-trip needed before the descriptor is locally known. A
-    // `CollectionEncryption` descriptor is itself a valid `EncryptionOverride`.
+    // Pre-seed the handle with an override matching the just-declared
+    // descriptor so the first write encrypts immediately (keys come from the
+    // keystore); no describe() round-trip needed before the descriptor is
+    // locally known. A `CollectionEncryption` descriptor is itself a valid
+    // `EncryptionOverride` -- but only one that can actually route: a bare
+    // rosterless `'edv'` declaration is NOT pre-seeded, since an override is
+    // fixed at handle construction and would pin the handle to a permanently
+    // fail-closed codec. Such a handle falls back to descriptor discovery,
+    // which resolves the roster once `ensureFirstEpoch` installs it.
+    const declared = desc.encryption
+    const canRoute =
+      declared !== undefined &&
+      (declared.scheme !== 'edv' ||
+        (declared.epochs !== undefined && declared.epochs.length > 0))
     return this.collection(createdId(response), {
-      encryption: desc.encryption
+      encryption: canRoute ? declared : undefined
     })
   }
 

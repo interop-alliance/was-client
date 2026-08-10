@@ -5,8 +5,10 @@
  * Unit tests for the multi-recipient key-epoch machinery (no network): the
  * descriptor recipient wrap/unwrap round-trip with real local X25519 keys, the
  * unwrap-failure paths (wrong key / null-treated-as-failure), epoch selection
- * and resolution from a descriptor, and the compare-and-swap retry logic of
- * `addRecipient` against a fake collection whose description writes race.
+ * and resolution from a descriptor, the provision-time `ensureFirstEpoch`
+ * install (create-if-absent, adopt-on-race), and the compare-and-swap retry
+ * logic of `addRecipient` against a fake collection whose description writes
+ * race.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -23,6 +25,8 @@ import type {
 } from '../../src/index.js'
 import type { Collection } from '../../src/Collection.js'
 import type { Space } from '../../src/Space.js'
+import { EDV_SCHEME_VERSION } from '../../src/edv/constants.js'
+import type { EncryptionDescriptorStore } from '../../src/edv/descriptorStore.js'
 import {
   mintEpoch,
   wrapEpochSecret,
@@ -30,9 +34,11 @@ import {
   epochKeyIdFor,
   reconstructEpochKeyPair
 } from '../../src/edv/epochCrypto.js'
+import { verifyEpochsMac } from '../../src/edv/epochMac.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
+  ensureFirstEpoch,
   initRecipients,
   removeRecipient
 } from '../../src/edv/recipients.js'
@@ -211,7 +217,7 @@ describe('resolveEpochKeys', () => {
     return { scheme: 'edv', epochs, currentEpoch }
   }
 
-  it('returns null for a single-key descriptor (no epochs)', async () => {
+  it('returns null for a descriptor carrying no epochs', async () => {
     const alice = await makeReader()
     const resolved = await resolveEpochKeys({
       encryption: { scheme: 'edv' },
@@ -605,6 +611,268 @@ describe('initRecipients', () => {
     })
     // The signer saw the canonical payload over the exact descriptor written.
     expect(seen.length).toBe(1)
+    const payloadText = new TextDecoder().decode(seen[0]!)
+    expect(payloadText.startsWith('was-epoch-config-sig/v1.')).toBe(true)
+    expect(payloadText).toContain(descriptor.currentEpoch!)
+  })
+})
+
+describe('ensureFirstEpoch', () => {
+  /**
+   * An in-memory descriptor store standing in for the resource-hosted adapter:
+   * `read()` resolves `null` until a descriptor exists, `create` is the guarded
+   * create-if-absent write, and both write paths are counted so a test can
+   * assert that an adoption wrote nothing at all. `createFails` makes the first
+   * `create` lose the race with a concurrent provisioner, after which `read()`
+   * serves `winner`.
+   *
+   * @param options {object}
+   * @param [options.initial] {CollectionEncryption}   the descriptor `read()`
+   *   starts out serving; absent means the store starts empty
+   * @param [options.createFails] {number}   how many `create` calls reject with
+   *   a 412 before one lands
+   * @param [options.winner] {CollectionEncryption}   the descriptor `read()`
+   *   serves once a `create` has lost the race
+   * @returns {object}   the store plus its call counters and current state
+   */
+  function memoryStore({
+    initial,
+    createFails = 0,
+    winner
+  }: {
+    initial?: CollectionEncryption
+    createFails?: number
+    winner?: CollectionEncryption
+  } = {}): EncryptionDescriptorStore & {
+    state: { descriptor?: CollectionEncryption }
+    creates: number
+    replaces: number
+  } {
+    let createsLeft = createFails
+    const holder = {
+      state: { descriptor: initial },
+      creates: 0,
+      replaces: 0,
+      async read() {
+        return holder.state.descriptor === undefined
+          ? null
+          : { descriptor: holder.state.descriptor, etag: '"v1"' }
+      },
+      async replace(descriptor: CollectionEncryption) {
+        holder.replaces += 1
+        holder.state.descriptor = descriptor
+      },
+      async create(descriptor: CollectionEncryption) {
+        holder.creates += 1
+        if (createsLeft > 0) {
+          createsLeft -= 1
+          // A concurrent provisioner got there first: its descriptor is what
+          // the next read serves.
+          holder.state.descriptor = winner
+          throw new PreconditionFailedError('exists', { status: 412 })
+        }
+        holder.state.descriptor = descriptor
+      }
+    }
+    return holder
+  }
+
+  /**
+   * A fake Collection whose Description hosts an epoch-less `edv` descriptor --
+   * the state the crypto-free `ensureSpaceAndCollection` leaves an encrypted
+   * collection in -- counting its description writes.
+   *
+   * @param initial {CollectionEncryption}
+   * @returns {object}
+   */
+  function fakeCollection(initial: CollectionEncryption) {
+    const state = { encryption: initial, writes: 0 }
+    return {
+      describeWithEtag: async () => ({
+        description: {
+          id: 'c',
+          type: ['Collection'],
+          encryption: state.encryption
+        },
+        etag: '"v1"'
+      }),
+      replaceDescription: async (desc: {
+        encryption?: CollectionEncryption
+      }) => {
+        state.writes += 1
+        state.encryption = desc.encryption!
+        return { description: { id: 'c', type: ['Collection'] }, etag: '"v2"' }
+      },
+      _state: state
+    }
+  }
+
+  /**
+   * Seeds an epoch-bearing descriptor, as a concurrent provisioner's winning
+   * install would leave it.
+   *
+   * @param reader {{ kak: IKeyAgreementKey; publicKeyMultibase: string }}
+   * @returns {Promise<CollectionEncryption>}
+   */
+  async function installedDescriptor(reader: {
+    kak: IKeyAgreementKey
+    publicKeyMultibase: string
+  }): Promise<CollectionEncryption> {
+    const { epochId, secret } = await mintEpoch()
+    return {
+      scheme: 'edv',
+      version: EDV_SCHEME_VERSION,
+      epochs: [
+        {
+          id: epochId,
+          recipients: [
+            await wrapEpochSecret({
+              epochSecret: secret,
+              recipient: {
+                id: reader.kak.id,
+                publicKeyMultibase: reader.publicKeyMultibase
+              }
+            })
+          ]
+        }
+      ],
+      currentEpoch: epochId
+    }
+  }
+
+  it('installs epoch[0] onto an epoch-less collection descriptor', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const fake = fakeCollection({ scheme: 'edv' })
+
+    const { descriptor, installed } = await ensureFirstEpoch({
+      collection: fake as unknown as Collection,
+      recipients: [
+        { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase },
+        { id: bob.kak.id, publicKeyMultibase: bob.publicKeyMultibase }
+      ]
+    })
+
+    expect(installed).toBe(true)
+    expect(fake._state.writes).toBe(1)
+    expect(descriptor.version).toBe(EDV_SCHEME_VERSION)
+    expect(descriptor.epochs).toHaveLength(1)
+    const epoch = descriptor.epochs![0]!
+    expect(descriptor.currentEpoch).toBe(epoch.id)
+    expect(descriptor.epochsMac).toBeDefined()
+    // No signer was supplied, so no detached signature is stamped.
+    expect(descriptor.epochsSig).toBeUndefined()
+
+    // Every recipient's wrap opens to the SAME epoch secret, and that secret
+    // keys the stamped epochsMac.
+    const aliceSecret = await unwrapEpochSecret({
+      entry: epoch.recipients.find(entry => entry.header.kid === alice.kak.id)!,
+      keyAgreementKey: alice.kak
+    })
+    const bobSecret = await unwrapEpochSecret({
+      entry: epoch.recipients.find(entry => entry.header.kid === bob.kak.id)!,
+      keyAgreementKey: bob.kak
+    })
+    expect(aliceSecret).not.toBeNull()
+    expect(Buffer.from(aliceSecret!).equals(Buffer.from(bobSecret!))).toBe(true)
+    expect(
+      await verifyEpochsMac({ descriptor, epochSecret: aliceSecret! })
+    ).toBe(true)
+  })
+
+  it('adopts an existing roster as-is, writing nothing', async () => {
+    const alice = await makeReader()
+    const existing = await installedDescriptor(alice)
+    const store = memoryStore({ initial: existing })
+
+    const { descriptor, installed } = await ensureFirstEpoch({
+      store,
+      recipients: [
+        { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+      ]
+    })
+
+    expect(installed).toBe(false)
+    expect(descriptor).toBe(existing)
+    expect(store.replaces).toBe(0)
+    expect(store.creates).toBe(0)
+  })
+
+  it('creates the descriptor when the store holds none yet', async () => {
+    const alice = await makeReader()
+    const store = memoryStore()
+
+    const { descriptor, installed } = await ensureFirstEpoch({
+      store,
+      recipients: [
+        { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+      ]
+    })
+
+    expect(installed).toBe(true)
+    expect(store.creates).toBe(1)
+    expect(store.replaces).toBe(0)
+    expect(store.state.descriptor).toEqual(descriptor)
+    expect(descriptor.scheme).toBe('edv')
+    expect(descriptor.version).toBe(EDV_SCHEME_VERSION)
+    expect(descriptor.epochs).toHaveLength(1)
+    expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
+  })
+
+  it("adopts the winner's roster after losing the create race", async () => {
+    const alice = await makeReader()
+    const winner = await installedDescriptor(alice)
+    const store = memoryStore({ createFails: 1, winner })
+
+    const { descriptor, installed } = await ensureFirstEpoch({
+      store,
+      recipients: [
+        { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+      ]
+    })
+
+    // The losing create is the only write attempted: the re-read finds the
+    // winner's roster and adopts it rather than overwriting it.
+    expect(installed).toBe(false)
+    expect(descriptor).toBe(winner)
+    expect(store.creates).toBe(1)
+    expect(store.replaces).toBe(0)
+  })
+
+  it('refuses an install with no recipients', async () => {
+    const store = memoryStore()
+    await expect(
+      ensureFirstEpoch({ store, recipients: [] })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(store.creates).toBe(0)
+  })
+
+  it('stamps epochsSig when a signer is supplied', async () => {
+    const alice = await makeReader()
+    const store = memoryStore()
+    const seen: Uint8Array[] = []
+
+    const { descriptor, installed } = await ensureFirstEpoch({
+      store,
+      recipients: [
+        { id: alice.kak.id, publicKeyMultibase: alice.publicKeyMultibase }
+      ],
+      signEpochs: async ({ payload }) => {
+        seen.push(payload)
+        return { v: 1, alg: 'EdDSA', kid: 'signer-kid', sig: 'signature' }
+      }
+    })
+
+    expect(installed).toBe(true)
+    expect(descriptor.epochsMac).toBeDefined()
+    expect(descriptor.epochsSig).toEqual({
+      v: 1,
+      alg: 'EdDSA',
+      kid: 'signer-kid',
+      sig: 'signature'
+    })
+    // The signer saw the canonical payload over the exact descriptor written.
+    expect(seen).toHaveLength(1)
     const payloadText = new TextDecoder().decode(seen[0]!)
     expect(payloadText.startsWith('was-epoch-config-sig/v1.')).toBe(true)
     expect(payloadText).toContain(descriptor.currentEpoch!)

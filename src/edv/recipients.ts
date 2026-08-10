@@ -3,7 +3,8 @@
  */
 /**
  * Recipient and key-epoch management for multi-recipient encrypted Collections:
- * initializing the first epoch, adding a reader (escrow -- history included),
+ * installing the first epoch at provision time (create-if-absent), initializing
+ * the first epoch, adding a reader (escrow -- history included),
  * and removing a reader (the full revoke-and-rotate procedure). Each operation
  * mutates a `CollectionEncryption` descriptor through the descriptor-store seam
  * (see `descriptorStore.ts`) -- the Collection Description's `encryption`
@@ -212,6 +213,124 @@ async function rotateEpoch({
 }
 
 /**
+ * Builds the descriptor state that installs a first epoch: stamps the scheme
+ * version when the descriptor does not already carry one, sets the epoch as
+ * the roster (`epochs: [epoch]` / `currentEpoch`), and authenticates the epoch
+ * configuration with a MAC keyed from the first epoch's secret -- computed
+ * over the exact descriptor being written, since a CAS retry re-reads the
+ * descriptor. Shared by {@link initRecipients} and {@link ensureFirstEpoch} so
+ * the two cannot drift.
+ *
+ * @param options {object}
+ * @param options.descriptor {CollectionEncryption}   the epoch-less descriptor
+ *   being extended
+ * @param options.epoch {CollectionEncryptionEpoch}   the first epoch, already
+ *   wrapped to its recipients
+ * @param options.secret {Uint8Array}   the epoch's 32-byte secret, keying the
+ *   `epochsMac`
+ * @param [options.signEpochs] {EpochsSigner}   signs the epoch configuration,
+ *   stamping `epochsSig` beside `epochsMac`
+ * @returns {Promise<CollectionEncryption>}   the descriptor to write
+ */
+async function withFirstEpoch({
+  descriptor,
+  epoch,
+  secret,
+  signEpochs
+}: {
+  descriptor: CollectionEncryption
+  epoch: CollectionEncryptionEpoch
+  secret: Uint8Array
+  signEpochs?: EpochsSigner
+}): Promise<CollectionEncryption> {
+  const next: CollectionEncryption = {
+    ...descriptor,
+    version: descriptor.version ?? EDV_SCHEME_VERSION,
+    epochs: [epoch],
+    currentEpoch: epoch.id
+  }
+  return stampEpochsAuth({
+    descriptor: next,
+    epochSecret: secret,
+    signEpochs
+  })
+}
+
+/**
+ * Installs a collection's first key epoch at provision time, create-if-absent:
+ * mints a fresh random epoch key, wraps it to each initial recipient, and
+ * writes the epoch roster onto the descriptor through the descriptor-store
+ * seam -- the guarded create (`If-None-Match: *`) on a store whose descriptor
+ * starts absent, or a compare-and-swap onto an existing epoch-less descriptor
+ * (the state `ensureSpaceAndCollection` leaves an `'edv'` collection in; that
+ * ensure stays crypto-free, so this install is the EDV-bearing second step
+ * every encrypted collection's provisioning runs).
+ *
+ * Non-clobbering to convergence: a descriptor that already carries epochs is
+ * returned as-is (`installed: false`) -- in particular, on losing the
+ * create/CAS race to a concurrent provisioner, the winner's descriptor is
+ * re-read and returned for adoption, never overwritten. So any provisioner can
+ * re-run this to heal a torn provisioning run, and exactly one epoch[0] ever
+ * exists.
+ *
+ * @param options {object}
+ * @param [options.collection] {Collection}   the (already declared encrypted)
+ *   collection whose Description hosts the descriptor; exactly one of
+ *   `collection` / `store`
+ * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
+ * @param options.recipients {RecipientPublicKey[]}   the initial readers' public
+ *   key-agreement keys (each `id` is the reader's `kid`)
+ * @param [options.signEpochs] {EpochsSigner}   signs the epoch configuration
+ *   being written, stamping the descriptor's `epochsSig` beside its
+ *   `epochsMac`
+ * @returns {Promise<{ descriptor: CollectionEncryption, installed: boolean }>}
+ *   the collection's epoch-bearing descriptor, and whether this call installed
+ *   its epoch[0] (`false` means an existing roster was adopted)
+ */
+export async function ensureFirstEpoch({
+  collection,
+  store,
+  recipients,
+  signEpochs
+}: {
+  collection?: Collection
+  store?: EncryptionDescriptorStore
+  recipients: RecipientPublicKey[]
+  signEpochs?: EpochsSigner
+}): Promise<{ descriptor: CollectionEncryption; installed: boolean }> {
+  if (recipients.length === 0) {
+    throw new ValidationError(
+      'ensureFirstEpoch needs at least one recipient to wrap the epoch key to.'
+    )
+  }
+  const { epochId, secret } = await mintEpoch()
+  const epoch: CollectionEncryptionEpoch = {
+    id: epochId,
+    recipients: await Promise.all(
+      recipients.map(recipient =>
+        wrapEpochSecret({ epochSecret: secret, recipient })
+      )
+    )
+  }
+  let installed = false
+  const descriptor = await casUpdateDescriptor({
+    store: descriptorStoreFor({ collection, store }),
+    seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
+    mutate: async descriptor => {
+      if (descriptor.epochs && descriptor.epochs.length > 0) {
+        // Another provisioner's install already landed (possibly winning the
+        // create/CAS race against this very call): adopt its roster as-is.
+        installed = false
+        return null
+      }
+      installed = true
+      return withFirstEpoch({ descriptor, epoch, secret, signEpochs })
+    }
+  })
+  return { descriptor, installed }
+}
+
+/**
  * Initializes the first key epoch on a descriptor that has no epochs yet: mints
  * a fresh epoch key, wraps it to each initial recipient, and writes `epochs:
  * [epoch]` / `currentEpoch` back with a compare-and-swap. After this, resources
@@ -283,22 +402,7 @@ export async function initRecipients({
             'reader instead of initRecipients.'
         )
       }
-      // Declaring the first epochs, so stamp the scheme version when the
-      // descriptor does not already carry one, and authenticate the epoch
-      // configuration with a MAC keyed from this first epoch's secret (computed
-      // over the exact descriptor being written, since a CAS retry re-reads the
-      // descriptor).
-      const next: CollectionEncryption = {
-        ...descriptor,
-        version: descriptor.version ?? EDV_SCHEME_VERSION,
-        epochs: [epoch],
-        currentEpoch: epochId
-      }
-      return stampEpochsAuth({
-        descriptor: next,
-        epochSecret: secret,
-        signEpochs
-      })
+      return withFirstEpoch({ descriptor, epoch, secret, signEpochs })
     }
   })
 }

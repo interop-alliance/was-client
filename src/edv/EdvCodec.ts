@@ -127,10 +127,10 @@ const HEADER_DECODER = new TextDecoder()
 
 /**
  * Builds the AEAD-bound `was` protected-header parameter: the scheme version
- * always, the resource id when it is known at encrypt time (absent for a
- * content-derived id, which does not exist until after encryption), and the key
- * epoch on a multi-recipient write. The one shape both the content and the
- * metadata write paths bind.
+ * and key epoch always, and the resource id when it is known at encrypt time
+ * (absent for a content-derived id, which does not exist until after
+ * encryption). The one shape both the content and the metadata write paths
+ * bind.
  *
  * @param options {object}
  * @param options.version {number}   the EDV-over-WAS scheme version
@@ -186,11 +186,10 @@ function isKeyMiss(err: unknown): boolean {
 }
 
 /**
- * Extracts the JWE recipient key ids (`kid`) a stored envelope names. An epoch
- * envelope carries one kid (the epoch key id); a single-recipient envelope
- * carries the key-agreement key id. Returns `[]` for a malformed recipient
- * shape, so routing falls through to letting the cipher surface its own typed
- * decrypt error.
+ * Extracts the JWE recipient key ids (`kid`) a stored envelope names (an epoch
+ * envelope carries one kid: the epoch key id). Returns `[]` for a malformed
+ * recipient shape, so routing falls through to letting the cipher surface its
+ * own typed decrypt error.
  *
  * @param encryptedDoc {IEncryptedDocument}
  * @returns {string[]}
@@ -232,11 +231,11 @@ export class EdvCodec implements ResourceCodec {
   readonly #recipients: IRecipientTemplate[]
   readonly #readKeys: IKeyAgreementKey[]
   /**
-   * The key-epoch id writes stamp (`currentEpoch`); absent on a single-key
-   * collection. Its presence IS the has-epochs signal: a decoded envelope's
-   * `was.epoch` binding is checked exactly when a write epoch exists.
+   * The key-epoch id writes stamp (the descriptor's `currentEpoch`). Every
+   * envelope seals to an epoch key and binds this id as `was.epoch`
+   * (epoch-from-birth: there is no epoch-less encrypted collection).
    */
-  readonly #writeEpoch?: string
+  readonly #writeEpoch: string
   readonly #contentType: string
   readonly #maxBlobBytes: number
   readonly #idDerivation: 'random' | 'content'
@@ -257,19 +256,15 @@ export class EdvCodec implements ResourceCodec {
    * @param options {object}
    * @param options.edv {EdvClientCore}             holds the cipher + key resolver
    * @param options.keyAgreementKey {IKeyAgreementKey}   the key writes encrypt
-   *   under and the default read key. On a single-key collection this is the
-   *   wallet's own key-agreement key; on a multi-recipient (key-epoch)
-   *   collection it is the reconstructed `currentEpoch` key pair.
-   * @param [options.readKeys] {IKeyAgreementKey[]}   the candidate keys a read
-   *   may decrypt with: one per epoch this reader can unwrap, plus the reader's
-   *   own key-agreement key as the last-resort pre-epoch candidate (defaults to
-   *   just `keyAgreementKey`). A read selects the one whose id matches the
-   *   stored envelope's recipient, so a resource written under an older epoch
-   *   -- or before any epoch existed -- still decrypts.
-   * @param [options.writeEpoch] {string}   the key-epoch id to stamp on writes
-   *   (the `currentEpoch`), surfaced as {@link EncodedWrite.epoch}; absent on a
-   *   single-key collection. Its presence also arms the decode-side check of an
-   *   envelope's `was.epoch` binding against the decrypting key's epoch.
+   *   under: the reconstructed `currentEpoch` key pair.
+   * @param options.readKeys {IKeyAgreementKey[]}   the candidate keys a read
+   *   may decrypt with: one per epoch this reader can unwrap. A read selects
+   *   the one whose id matches the stored envelope's recipient, so a resource
+   *   written under an older epoch still decrypts.
+   * @param options.writeEpoch {string}   the key-epoch id to stamp on writes
+   *   (the `currentEpoch`), surfaced as {@link EncodedWrite.epoch} and bound
+   *   into every envelope's `was.epoch`, which the decode side checks against
+   *   the decrypting key's epoch unconditionally.
    * @param options.contentType {string}            stored envelope content type
    * @param options.maxBlobBytes {number}           single-document binary cap
    * @param options.idDerivation {string}           how `add()` mints a document
@@ -292,8 +287,8 @@ export class EdvCodec implements ResourceCodec {
   }: {
     edv: EdvClientCore
     keyAgreementKey: IKeyAgreementKey
-    readKeys?: IKeyAgreementKey[]
-    writeEpoch?: string
+    readKeys: IKeyAgreementKey[]
+    writeEpoch: string
     contentType: string
     maxBlobBytes: number
     idDerivation: 'random' | 'content'
@@ -303,7 +298,7 @@ export class EdvCodec implements ResourceCodec {
     this.#edv = edv
     this.#recipients =
       edv.documentCipher.createDefaultRecipients(keyAgreementKey)
-    this.#readKeys = readKeys ?? [keyAgreementKey]
+    this.#readKeys = readKeys
     this.#writeEpoch = writeEpoch
     this.#contentType = contentType
     this.#maxBlobBytes = maxBlobBytes
@@ -371,9 +366,8 @@ export class EdvCodec implements ResourceCodec {
     // Bind an AEAD-authenticated `was` parameter into the JWE protected header:
     // the scheme version, the resource id when known at encrypt time (omitted
     // for a content-derived id, which does not exist until after encryption),
-    // and the write epoch on a multi-recipient collection. A server that swaps
-    // two envelopes between ids (or replays one under a rolled-back epoch) is
-    // then detected on decrypt.
+    // and the write epoch. A server that swaps two envelopes between ids (or
+    // replays one under a rolled-back epoch) is then detected on decrypt.
     const was = wasParam({
       version: this.#version,
       resource: docId,
@@ -427,9 +421,8 @@ export class EdvCodec implements ResourceCodec {
         ? { ifMatch: readEtag(current ?? null) }
         : { ifNoneMatch: true }),
       // Stamp the key epoch this write encrypted under (the `currentEpoch`), so
-      // the server records it and a reader can pick the epoch key. Absent on a
-      // single-key collection.
-      ...(this.#writeEpoch !== undefined && { epoch: this.#writeEpoch })
+      // the server records it and a reader can pick the epoch key.
+      epoch: this.#writeEpoch
     }
   }
 
@@ -455,7 +448,7 @@ export class EdvCodec implements ResourceCodec {
    * @param doc {unknown}   the stored document read from the server
    * @param [expectedId] {string}   the resource id the read targeted
    * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
-   *   keyId?: string }>}   the decrypted document
+   *   keyId: string }>}   the decrypted document
    */
   async #openEnvelope(
     doc: unknown,
@@ -463,7 +456,7 @@ export class EdvCodec implements ResourceCodec {
   ): Promise<{
     content?: unknown
     meta?: Record<string, unknown>
-    keyId?: string
+    keyId: string
   }> {
     this.#assertEnvelope(doc, 'read')
     const decrypted = await this.#decrypt(doc)
@@ -478,9 +471,8 @@ export class EdvCodec implements ResourceCodec {
   /**
    * Decrypts a stored EDV envelope, selecting which read key to use by matching
    * the envelope's JWE recipient `kid` against this reader's candidate keys
-   * (one per epoch it can unwrap). On a single-key collection there is exactly
-   * one candidate; on a multi-recipient collection a resource written under an
-   * older epoch selects that epoch's key, so history stays readable.
+   * (one per epoch it can unwrap). A resource written under an older epoch
+   * selects that epoch's key, so history stays readable.
    *
    * A stored envelope naming only recipients this reader holds no candidate
    * key for fails fast with {@link UnknownEpochError} -- the signal that the
@@ -496,12 +488,12 @@ export class EdvCodec implements ResourceCodec {
    *
    * @param encryptedDoc {IEncryptedDocument}
    * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
-   *   keyId?: string }>}
+   *   keyId: string }>}
    */
   async #decrypt(encryptedDoc: IEncryptedDocument): Promise<{
     content?: unknown
     meta?: Record<string, unknown>
-    keyId?: string
+    keyId: string
   }> {
     const kids = envelopeRecipientKids(encryptedDoc)
     const kidSet = new Set(kids)
@@ -562,28 +554,28 @@ export class EdvCodec implements ResourceCodec {
    * proves the protected header authentic, so this runs only after a decrypt
    * succeeds. Enforces, in order:
    *
-   * - No `was` parameter at all: a legacy envelope, accepted unchanged (this
-   *   client wrote it before the binding existed, or a foreign EDV writer did).
+   * - No `was` parameter at all: refused -- every envelope binds `was`
+   *   (epoch-from-birth left no legacy era), so its absence means a writer this
+   *   scheme does not admit -- {@link EncryptionError}.
    * - `was.v` greater than this codec's scheme version: a future-scheme envelope
    *   this client does not implement -- {@link EncryptionError}.
    * - `was.resource` present and the expected id known: a mismatch is a server-side
    *   swap of two resources' envelopes -- {@link IntegrityError}.
-   * - `was` present but `resource` absent (a content-derived write) and the expected
+   * - `resource` absent (a content-derived write) and the expected
    *   id known: the envelope's ciphertext must re-derive to the expected id
    *   ({@link EdvDocumentCipher.deriveId}); a mismatch means the envelope was
-   *   copied under a different id -- {@link IntegrityError}. This check is NEVER
-   *   applied to an envelope with no `was` at all (a legacy random-id envelope
-   *   would fail it wrongly).
-   * - On a collection with epochs, `was.epoch` present: it must equal the epoch
-   *   (the `did:key` before the `#`) of the key that actually decrypted -- a
-   *   mismatch is a replay under a different epoch's key -- {@link
-   *   IntegrityError}.
+   *   copied under a different id -- {@link IntegrityError}.
+   * - `was.epoch` missing or not a string: refused like a missing `was` --
+   *   {@link EncryptionError}. Present, it must equal the epoch (the `did:key`
+   *   before the `#`) of the key that actually decrypted -- a mismatch is a
+   *   replay under a different epoch's key -- {@link IntegrityError}. The check
+   *   is unconditional: there is no epoch-less envelope to carve out.
    *
    * @param options {object}
    * @param options.jwe {unknown}   the envelope's JWE (its `protected` header is
    *   parsed for `was`)
    * @param [options.expectedId] {string}   the resource id the read targeted
-   * @param [options.keyId] {string}   the id of the key that decrypted, for the
+   * @param options.keyId {string}   the id of the key that decrypted, for the
    *   epoch check
    * @returns {Promise<void>}
    */
@@ -594,12 +586,16 @@ export class EdvCodec implements ResourceCodec {
   }: {
     jwe: unknown
     expectedId?: string
-    keyId?: string
+    keyId: string
   }): Promise<void> {
     const was = parseWasHeader(jwe)
     if (was === undefined) {
-      // Legacy envelope (no `was`): accept unchanged for back-compat.
-      return
+      throw new EncryptionError(
+        'Cannot decrypt this resource: its envelope carries no `was` binding ' +
+          'in the JWE protected header. Every EDV-over-WAS envelope binds the ' +
+          'scheme version and key epoch at encrypt time; an envelope without ' +
+          'the binding was written by a writer this scheme does not admit.'
+      )
     }
     if (typeof was.v === 'number' && was.v > this.#version) {
       throw new EncryptionError(
@@ -631,20 +627,22 @@ export class EdvCodec implements ResourceCodec {
         )
       }
     }
-    if (
-      this.#writeEpoch !== undefined &&
-      typeof was.epoch === 'string' &&
-      keyId
-    ) {
-      const decryptedEpoch = keyId.split('#')[0]
-      if (decryptedEpoch !== was.epoch) {
-        throw new IntegrityError(
-          `Cannot decrypt this resource: its envelope is bound to key epoch ` +
-            `"${was.epoch}" but was decrypted with a key from epoch ` +
-            `"${decryptedEpoch}". The server replayed it under a different ` +
-            'epoch.'
-        )
-      }
+    if (typeof was.epoch !== 'string') {
+      throw new EncryptionError(
+        'Cannot decrypt this resource: its envelope binds no `was.epoch`. ' +
+          'Every EDV-over-WAS envelope seals to a key epoch and binds its id ' +
+          'at encrypt time; an envelope without the binding was written by a ' +
+          'writer this scheme does not admit.'
+      )
+    }
+    const decryptedEpoch = keyId.split('#')[0]
+    if (decryptedEpoch !== was.epoch) {
+      throw new IntegrityError(
+        `Cannot decrypt this resource: its envelope is bound to key epoch ` +
+          `"${was.epoch}" but was decrypted with a key from epoch ` +
+          `"${decryptedEpoch}". The server replayed it under a different ` +
+          'epoch.'
+      )
     }
   }
 
@@ -673,9 +671,14 @@ export class EdvCodec implements ResourceCodec {
     // Bind the `was` parameter to the RESOURCE id (not the metadata envelope's
     // own random EDV id), so a server-side swap of two resources' metadata is
     // AEAD-detected on decode. The metadata envelope always knows the resource
-    // id at encrypt time, so `resource` is always present here (never content-
-    // derived) and it carries no `epoch`.
-    const was = wasParam({ version: this.#version, resource: resourceId })
+    // id at encrypt time, so `resource` is always present here (never
+    // content-derived). It seals to the current epoch key like every write,
+    // so it binds `was.epoch` like every write.
+    const was = wasParam({
+      version: this.#version,
+      resource: resourceId,
+      epoch: this.#writeEpoch
+    })
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
       recipients: this.#recipients,
@@ -910,8 +913,8 @@ function decodeUtf8(bytes: Uint8Array): string | null {
  * Parses the `was` binding out of a JWE's protected header. The header is
  * base64url (no padding) JSON; a successful decrypt has already proven it
  * authentic, so this parse is trusted. Returns the `was` object, or `undefined`
- * when the header is absent/unparseable or carries no `was` member (a legacy
- * envelope that predates the binding).
+ * when the header is absent/unparseable or carries no `was` member (the caller
+ * refuses such an envelope).
  *
  * @param jwe {unknown}
  * @returns {Record<string, unknown> | undefined}
@@ -1018,6 +1021,21 @@ export function createEdvEncryption({
             `${EDV_SCHEME_VERSION}) does not implement. Upgrade the client.`
         )
       }
+      // One routing rule: the descriptor's epoch roster (epoch-from-birth).
+      // An encrypted descriptor without epochs is refused fail-closed rather
+      // than routed to a direct-to-key cipher -- under this design it can only
+      // mean a descriptor whose provision-time install has not run yet, or a
+      // tampering host that stripped the roster.
+      if (!encryption?.epochs || encryption.epochs.length === 0) {
+        throw new EncryptionError(
+          `Collection ${spaceId}/${collectionId} is declared encrypted but ` +
+            'its descriptor carries no key epochs. Every encrypted ' +
+            "collection's descriptor carries an epoch roster from creation " +
+            '(install epoch[0] with ensureFirstEpoch at provision time); a ' +
+            'descriptor without one is refused rather than encrypted ' +
+            'straight to a key-agreement key.'
+        )
+      }
       // Prefer override-supplied keys; otherwise consult the keystore.
       const resolved =
         (keys as EdvKeys | undefined) ??
@@ -1025,48 +1043,30 @@ export function createEdvEncryption({
       if (!resolved) {
         return null
       }
-      // Single-key collection (no epochs on the descriptor): the wallet's own
-      // key-agreement key encrypts and decrypts directly.
-      let keyAgreementKey = resolved.keyAgreementKey
-      let keyResolver: IKeyResolver = resolved.keyResolver
-      let readKeys: IKeyAgreementKey[] | undefined
-      let writeEpoch: string | undefined
-      // Multi-recipient (key-epoch) collection: resolve the reader's per-epoch
-      // keys from the descriptor -- the `currentEpoch` key pair for writes,
-      // every epoch key it can unwrap for reads -- and drive the cipher with
-      // those. The reader's own key-agreement key never encrypts resources
-      // here, but it stays a last-resort read candidate: envelopes written
-      // before the collection's first epoch are sealed straight to it, and the
-      // permanent pre-epoch tolerance says they decrypt indefinitely (a
-      // content-addressed envelope cannot be re-encrypted in place -- that
-      // would change its id).
-      if (encryption?.epochs && encryption.epochs.length > 0) {
-        const epochKeys = await resolveEpochKeys({
-          encryption,
-          keyAgreementKey: resolved.keyAgreementKey
-        })
-        if (epochKeys) {
-          // Epoch keys are self-describing did:key key-agreement keys, so a
-          // resource's recipient (the epoch public key) resolves through the
-          // standard did:key resolver, independent of the reader's own keystore.
-          keyAgreementKey = epochKeys.writeKey
-          keyResolver = didKeyResolver
-          // Dedupe by id: a user-key-generation epoch's read key carries the
-          // reader's own kid when the reader IS that generation's key.
-          readKeys = epochKeys.readKeys.some(
-            key => key.id === resolved.keyAgreementKey.id
-          )
-            ? epochKeys.readKeys
-            : [...epochKeys.readKeys, resolved.keyAgreementKey]
-          writeEpoch = epochKeys.writeEpoch
-        }
-      }
-      const edv = new EdvClientCore({ keyAgreementKey, keyResolver })
+      // Resolve the reader's per-epoch keys from the descriptor -- the
+      // `currentEpoch` key pair for writes, every epoch key it can unwrap for
+      // reads -- and drive the cipher with those. The reader's own
+      // key-agreement key never encrypts or decrypts resources itself; it
+      // only unwraps epoch keys. Non-null: the epochs guard above already
+      // refused a descriptor without epochs, the one case resolveEpochKeys
+      // resolves null for.
+      const epochKeys = (await resolveEpochKeys({
+        encryption,
+        keyAgreementKey: resolved.keyAgreementKey
+      }))!
+      // Epoch keys are self-describing did:key key-agreement keys, so a
+      // resource's recipient (the epoch public key) resolves through the
+      // standard did:key resolver, independent of the reader's own keystore.
+      const keyAgreementKey = epochKeys.writeKey
+      const edv = new EdvClientCore({
+        keyAgreementKey,
+        keyResolver: didKeyResolver
+      })
       return new EdvCodec({
         edv,
         keyAgreementKey,
-        readKeys,
-        writeEpoch,
+        readKeys: epochKeys.readKeys,
+        writeEpoch: epochKeys.writeEpoch,
         contentType,
         maxBlobBytes,
         idDerivation,

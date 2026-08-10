@@ -5,9 +5,10 @@
  * Unit tests for the key-epoch codec seam on a Collection handle (no network,
  * no real crypto):
  *
- *  - an epoch-bearing per-handle encryption override is forwarded to the
- *    provider's `codecFor` (so it resolves the epoch path, not the single-key
- *    path);
+ *  - an epoch-bearing per-handle encryption override is forwarded whole to the
+ *    provider's `codecFor` (routing is decided solely by the descriptor's
+ *    epoch roster, and a descriptor without one is refused fail-closed, so a
+ *    dropped roster would break every read and write);
  *  - rotating the `encryption` descriptor on a handle (via `replaceDescription`, the
  *    primitive the recipient operations build on) drops the memoized codec, so
  *    the next write on the SAME handle re-resolves under the new epoch rather
@@ -58,7 +59,7 @@ function epochCodec(epoch: string, log: string[]): ResourceCodec {
 }
 
 describe('epoch-bearing encryption override', () => {
-  it('forwards the full descriptor so codecFor takes the epoch path', async () => {
+  it('forwards the full descriptor so codecFor sees the epoch roster', async () => {
     const seen: Array<{
       encryption?: CollectionEncryption
       keys?: unknown
@@ -106,7 +107,7 @@ describe('rotate-then-write on the same handle', () => {
     }
     const encryption: EncryptionProvider = {
       async codecFor({ encryption: enc }) {
-        const epoch = enc?.currentEpoch ?? 'single'
+        const epoch = enc?.currentEpoch ?? 'no-epoch'
         builtEpochs.push(epoch)
         return epochCodec(epoch, encodeLog)
       }

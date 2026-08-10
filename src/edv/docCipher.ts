@@ -12,14 +12,13 @@
  * the same content-derived id -- appear on every replica. The port never touches
  * these keys.
  *
- * A collection may be single-recipient (only the wallet's own key-agreement key
- * reads it) or multi-recipient. Multi-recipient collections carry a
- * `CollectionEncryption` descriptor with key epochs: each epoch wraps one
- * collection key to every reader, writes encrypt under the descriptor's
- * `currentEpoch`, and removing a reader appends a fresh epoch that excludes it.
- * This module is the **read** axis only: it turns a reader's own key-agreement
- * key plus the descriptor into a cipher that encrypts under the current epoch
- * and decrypts any epoch that reader still holds a key for.
+ * Every encrypted collection carries a `CollectionEncryption` descriptor with
+ * key epochs, from birth: each epoch wraps one collection key to every reader,
+ * writes encrypt under the descriptor's `currentEpoch`, and removing a reader
+ * appends a fresh epoch that excludes it. This module is the **read** axis
+ * only: it turns a reader's own key-agreement key plus the descriptor into a
+ * cipher that encrypts under the current epoch and decrypts any epoch that
+ * reader still holds a key for.
  *
  * Rotation is prospective, never retroactive: appending an epoch does not
  * rewrite existing resources, and because resource ids are content-derived they
@@ -109,17 +108,13 @@ function envelopeResponse(envelope: Json): ResponseLike {
  * id updated in place via `sequence` (the mutable head-document model, driven by
  * `encryptUpdate`).
  *
- * With no `encryption` descriptor (or a descriptor with no epochs) the cipher
- * is single-recipient: the key-agreement key encrypts and decrypts directly.
- * With epochs on the descriptor the cipher is multi-recipient: it encrypts
- * every write under the descriptor's `currentEpoch` and decrypts any epoch
- * this reader still holds a key for -- plus, indefinitely, envelopes sealed
- * straight to the reader's own key-agreement key before the collection's
- * first epoch existed (the permanent pre-epoch tolerance: content-addressed
- * envelopes cannot be re-encrypted in place). Either way one codec owns both axes --
- * decrypt routing (matching an envelope's JWE recipient `kid`s against the
- * reader's candidate keys, raising `UnknownEpochError` for an envelope no
- * candidate can route) lives in the codec, not here.
+ * The `encryption` descriptor must carry key epochs (a descriptor without them
+ * is refused fail-closed by the codec): the cipher encrypts every write under
+ * the descriptor's `currentEpoch` and decrypts any epoch this reader still
+ * holds a key for. One codec owns both axes -- decrypt routing (matching an
+ * envelope's JWE recipient `kid`s against the reader's candidate keys, raising
+ * `UnknownEpochError` for an envelope no candidate can route) lives in the
+ * codec, not here.
  *
  * The reader must be a recipient of every epoch on the descriptor (the owner is
  * "recipient zero"). If it is a recipient of none, building the cipher
@@ -131,9 +126,9 @@ function envelopeResponse(envelope: Json): ResponseLike {
  * @param options.keyResolver {IKeyResolver}
  * @param options.collectionId {string}   labels errors; the codec is agnostic
  * @param [options.idDerivation] {'content' | 'random'}   defaults to `'content'`
- * @param [options.encryption] {CollectionEncryption}   the collection's
- *   encryption descriptor; when it carries key epochs, the cipher becomes
- *   multi-recipient
+ * @param options.encryption {CollectionEncryption}   the collection's
+ *   encryption descriptor; must carry the key-epoch roster (every encrypted
+ *   collection has one from birth)
  * @returns {Promise<DocCipher>}
  */
 export async function createEdvDocCipher({
@@ -147,17 +142,16 @@ export async function createEdvDocCipher({
   keyResolver: IKeyResolver
   collectionId: string
   idDerivation?: 'content' | 'random'
-  encryption?: CollectionEncryption
+  encryption: CollectionEncryption
 }): Promise<DocCipher> {
   const provider = createEdvEncryption({
     resolveKeys: async () => null,
     idDerivation
   })
-  // One codec owns both axes. With epochs on the descriptor, `codecFor`
-  // resolves this reader's per-epoch keys: writes go under the descriptor's
+  // One codec owns both axes. `codecFor` resolves this reader's per-epoch
+  // keys from the descriptor: writes go under the descriptor's
   // `currentEpoch`, and reads pick the epoch key matching the envelope's
-  // recipient kid. Without epochs it is the single-recipient cipher keyed
-  // straight to the key-agreement key.
+  // recipient kid. A descriptor without epochs is refused fail-closed there.
   let resolved: Awaited<ReturnType<typeof provider.codecFor>>
   try {
     resolved = await provider.codecFor({

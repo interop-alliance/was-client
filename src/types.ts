@@ -120,8 +120,10 @@ export interface AddResult {
  * descriptor AND skips the descriptor-discovery round-trip:
  *
  * - `{ scheme }` -- treat the collection as encrypted under `scheme`, pulling
- *   keys from the client's keystore. Use right after `createCollection` (before
- *   the descriptor is readable), or to avoid the `describe()` round-trip.
+ *   keys from the client's keystore. For the `edv` scheme, pass a full
+ *   epoch-bearing `CollectionEncryption` descriptor as the override (a bare
+ *   `{ scheme: 'edv' }` is refused fail-closed: routing needs the key-epoch
+ *   roster).
  * - `{ scheme, keys }` -- additionally supply the key material inline (opaque to
  *   core; the encryption provider interprets it per `scheme`) instead of the
  *   keystore.

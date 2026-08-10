@@ -11,6 +11,11 @@
  * the collection (the `encryption` provider returning a codec), not on any
  * backend feature.
  *
+ * Provisioning is the two steps every encrypted collection takes: declare the
+ * collection encrypted, then install its key epoch[0] with `ensureFirstEpoch`
+ * (epoch-from-birth -- a descriptor with no epoch roster is refused
+ * fail-closed, so nothing reads or writes before the install).
+ *
  * Proves: the value round-trips decrypted; what the server stores is an opaque
  * JWE envelope (the raw `getBytes()` escape hatch shows ciphertext, no
  * cleartext); a small blob round-trips; user metadata (`setName`/`setTags`) is
@@ -33,7 +38,11 @@ import {
   EncryptionError
 } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
-import { createEdvEncryption } from '../../src/edv/index.js'
+import {
+  createEdvEncryption,
+  ensureFirstEpoch,
+  ownerRecipient
+} from '../../src/edv/index.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -48,12 +57,17 @@ const describeLive = serverUrl ? describe : describe.skip
  * but whose keystore holds no keys, to prove the fail-closed path -- reading a
  * collection declared encrypted throws rather than returning ciphertext.
  *
- * @returns {Promise<{ encrypted: WasClient, plaintext: WasClient, keyless: WasClient }>}
+ * The keyed client's own key-agreement key comes back too: it is the recipient
+ * the collection's first key epoch is wrapped to at provision time.
+ *
+ * @returns {Promise<{ encrypted: WasClient, plaintext: WasClient,
+ *   keyless: WasClient, kak: IKeyAgreementKey }>}
  */
 async function freshClients(): Promise<{
   encrypted: WasClient
   plaintext: WasClient
   keyless: WasClient
+  kak: IKeyAgreementKey
 }> {
   const keyPair = await Ed25519VerificationKey.generate()
   const did = `did:key:${keyPair.fingerprint()}`
@@ -91,7 +105,8 @@ async function freshClients(): Promise<{
       serverUrl: serverUrl!,
       signer: keyPair.signer(),
       encryption: createEdvEncryption({ resolveKeys: async () => null })
-    })
+    }),
+    kak: kak as IKeyAgreementKey
   }
 }
 
@@ -103,16 +118,28 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
   let collection: Collection
 
   beforeAll(async () => {
-    ;({ encrypted: was, plaintext, keyless } = await freshClients())
+    let kak: IKeyAgreementKey
+    ;({ encrypted: was, plaintext, keyless, kak } = await freshClients())
     space = await was.createSpace({ name: 'EDV Codec Integration' })
-    // Declare the collection encrypted: the descriptor lets any authorized
-    // reader discover it (the returned handle is pre-seeded so the first write
-    // needs no round-trip), and the keystore supplies the keys.
-    collection = await space.createCollection({
+    // Step 1: declare the collection encrypted, so any authorized reader can
+    // discover it from the descriptor.
+    const declared = await space.createCollection({
       id: 'vault',
       name: 'Vault',
       encryption: { scheme: 'edv' }
     })
+    // Step 2: install key epoch[0], wrapped to this client's own key-agreement
+    // key. Every encrypted collection carries an epoch roster from birth, and
+    // reads/writes are refused fail-closed until it is installed.
+    await ensureFirstEpoch({
+      collection: declared,
+      recipients: [ownerRecipient({ keyAgreementKey: kak })]
+    })
+    // A fresh handle (the one the tests drive): the handle returned by
+    // createCollection is pre-seeded with the pre-install `{ scheme: 'edv' }`
+    // override, so discovery -- not that stale override -- must supply the
+    // epoch-bearing descriptor.
+    collection = was.space(space.id).collection('vault')
   })
 
   afterAll(async () => {

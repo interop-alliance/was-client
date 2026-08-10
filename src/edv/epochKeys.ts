@@ -53,8 +53,8 @@ export interface ResolvedEpochKeys {
 
 /**
  * Resolves the reader's epoch keys from a descriptor. Returns `null` when the
- * descriptor declares no epochs (a single-key collection -- the caller keeps
- * its existing single-key path). Throws {@link KeyUnwrapError} when the
+ * descriptor declares no epochs (the epoch codec refuses such a descriptor
+ * fail-closed before calling this). Throws {@link KeyUnwrapError} when the
  * descriptor HAS epochs but this reader can unwrap none of them (it is not a
  * recipient), so an encrypted collection is never silently read/written with
  * the wrong key.
