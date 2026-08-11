@@ -196,7 +196,7 @@ typed signals in `src/errors.ts` let a push loop catch exactly what it can
 handle: `WasSyncConflictError` (412, a subtype of `PreconditionFailedError`)
 triggers re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete, a
 subtype of `NotFoundError`) marks an already-gone target as a settled outcome.
-The port's `putContent` also stamps the `WAS-Key-Epoch` header so the server
+The port's `putContent` also stamps the `Key-Epoch` header so the server
 records which key epoch a body was encrypted under.
 
 Convergent identifiers make replicas agree without coordination (`cid.ts`): a
