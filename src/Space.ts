@@ -54,6 +54,7 @@ import type {
   CollectionsList,
   GrantOptions,
   HandleOptions,
+  IDID,
   IDelegatedZcap,
   IZcap,
   ImportStats,
@@ -222,6 +223,13 @@ export class Space {
    *   pre-seeded (the handle uses descriptor discovery instead); reads and
    *   writes are refused fail-closed until `ensureFirstEpoch` installs the
    *   epoch roster.
+   * @param [desc.generator] {IDID}   DID of the application the collection is
+   *   being provisioned for. Controller-asserted attribution: the server
+   *   persists it without verifying it, and it stays writable afterwards
+   *   (`configure`/`replaceDescription`), so an existing collection can be
+   *   backfilled.
+   * @param [desc.generatorOrigin] {string}   the Web origin the `generator`
+   *   DID was bound to at provisioning time, on the same footing.
    * @returns {Promise<Collection>}
    */
   async createCollection(
@@ -230,6 +238,8 @@ export class Space {
       name?: string
       backend?: BackendReference
       encryption?: CollectionEncryption
+      generator?: IDID
+      generatorOrigin?: string
     } = {}
   ): Promise<Collection> {
     if (desc.id !== undefined) {

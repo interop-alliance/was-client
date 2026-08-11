@@ -41,7 +41,11 @@ export function collectionWritableFields(
   return {
     ...(fields.name !== undefined && { name: fields.name }),
     ...(fields.backend !== undefined && { backend: fields.backend }),
-    ...(fields.encryption !== undefined && { encryption: fields.encryption })
+    ...(fields.encryption !== undefined && { encryption: fields.encryption }),
+    ...(fields.generator !== undefined && { generator: fields.generator }),
+    ...(fields.generatorOrigin !== undefined && {
+      generatorOrigin: fields.generatorOrigin
+    })
   }
 }
 

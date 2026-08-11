@@ -243,6 +243,27 @@ await collection.delete() // deletes the whole collection; idempotent
 To delete a single resource instead of the whole collection, use
 `collection.resource(id).delete()`.
 
+An application that provisions a collection can record who it was provisioned
+for, with the optional `generator` (the application's DID) and `generatorOrigin`
+(the Web origin that DID was bound to) description fields. Both are accepted at
+create time and stay writable afterwards, so an existing collection can be
+backfilled; they are controller assertions the server persists but does not
+verify.
+
+```ts
+await space.createCollection({
+  name: 'App Notes',
+  generator: 'did:key:z6Mk...',
+  generatorOrigin: 'https://app.example'
+})
+
+// Backfill an existing collection (other fields merge forward unchanged).
+await space.collection('notes').configure({
+  generator: 'did:key:z6Mk...',
+  generatorOrigin: 'https://app.example'
+})
+```
+
 ### Resources: JSON and binary
 
 A Resource is a JSON object or binary blob keyed by id within a Collection. Use

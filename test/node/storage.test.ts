@@ -470,6 +470,53 @@ describe('Collection reserved-id guard', () => {
     expect(result.backend).toEqual({ id: 'custom' })
     expect(result.encryption).toEqual({ scheme: 'edv' })
   })
+
+  it('merges the stored generator attribution forward on a rename', async () => {
+    // `generator` / `generatorOrigin` are controller-asserted app attribution;
+    // a rename must not erase them on a replace-semantics server.
+    const current = {
+      id: 'notes',
+      type: ['Collection'],
+      name: 'Notes',
+      generator: 'did:key:zApp',
+      generatorOrigin: 'https://app.example'
+    }
+    const { client, calls } = clientWithRequestSpy({ data: current })
+    const result = await client
+      .space('s')
+      .collection('notes')
+      .configure({ name: 'Renamed' })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toEqual({
+      id: 'notes',
+      name: 'Renamed',
+      generator: 'did:key:zApp',
+      generatorOrigin: 'https://app.example'
+    })
+    expect(result.generator).toBe('did:key:zApp')
+    expect(result.generatorOrigin).toBe('https://app.example')
+  })
+})
+
+describe('space.createCollection() request body', () => {
+  it('POSTs the writable fields, including the generator attribution', async () => {
+    const { client, calls } = clientWithRequestSpy({ data: { id: 'notes' } })
+    const collection = await client.space('s').createCollection({
+      id: 'notes',
+      name: 'Notes',
+      generator: 'did:key:zApp',
+      generatorOrigin: 'https://app.example'
+    })
+    expect(calls[0]?.method).toBe('POST')
+    expect(calls[0]?.url).toBe('https://was.example/space/s/')
+    expect(calls[0]?.json).toEqual({
+      id: 'notes',
+      name: 'Notes',
+      generator: 'did:key:zApp',
+      generatorOrigin: 'https://app.example'
+    })
+    expect(collection.id).toBe('notes')
+  })
 })
 
 describe('Collection.configure() unreadable-description guard', () => {

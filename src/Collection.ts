@@ -233,7 +233,23 @@ export class Collection {
     const name = desc.name ?? current?.name
     const backend = desc.backend ?? current?.backend
     const encryption = desc.encryption ?? current?.encryption
-    const fields = collectionWritableFields({ name, backend, encryption })
+    // The app-attribution fields merge forward on the same terms, so a
+    // `configure({ name })` does not erase a stored `generator`. They are
+    // deliberately NOT part of the unreadable-description guard above: unlike
+    // `backend` and `encryption`, they are freely re-writable attribution
+    // (dropping one is cosmetic, not a data-placement change or an
+    // `encryption-immutable` trip), and admitting them there would let a
+    // `configure({ generator })` sail past the guard and blindly drop the two
+    // fields it exists to protect.
+    const generator = desc.generator ?? current?.generator
+    const generatorOrigin = desc.generatorOrigin ?? current?.generatorOrigin
+    const fields = collectionWritableFields({
+      name,
+      backend,
+      encryption,
+      generator,
+      generatorOrigin
+    })
     await send(this.#context, {
       path: this.#path,
       method: 'PUT',

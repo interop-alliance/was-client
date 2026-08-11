@@ -17,11 +17,11 @@ import type {
   IDelegatedZcap,
   IRootZcap
 } from '@interop/data-integrity-core/zcap'
-import type { ISigner } from '@interop/data-integrity-core'
+import type { IDID, ISigner } from '@interop/data-integrity-core'
 
 import type { ActionInput } from '@interop/storage-core'
 
-export type { IZcap, IDelegatedZcap, IRootZcap, ISigner }
+export type { IZcap, IDelegatedZcap, IRootZcap, IDID, ISigner }
 
 /**
  * Re-export the shared WAS wire model from `@interop/storage-core`. The
@@ -75,6 +75,15 @@ export interface CollectionWritableFields {
   name?: string
   backend?: BackendReference
   encryption?: CollectionEncryption
+  /**
+   * DID of the application the Collection was provisioned for, and the Web
+   * origin that DID was bound to at provisioning time. Both are
+   * controller-asserted attribution (the server persists them but does not
+   * verify them) and both are writable at create AND update, so a wallet can
+   * backfill an existing Collection on reconnect.
+   */
+  generator?: IDID
+  generatorOrigin?: string
 }
 
 /**

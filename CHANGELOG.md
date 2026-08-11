@@ -1,5 +1,24 @@
 # @interop/was-client Changelog
 
+## 0.33.0 - TBD
+
+### Added
+
+- Support for the optional Collection Description app-attribution fields
+  `generator` (the DID of the application the collection was provisioned for)
+  and `generatorOrigin` (the Web origin that DID was bound to at provisioning
+  time). Both are accepted by `space.createCollection()`,
+  `collection.configure()` (which also merges a stored value forward), and
+  `collection.replaceDescription()`, and both stay writable after create so a
+  wallet can backfill an existing collection. They are controller assertions
+  carried verbatim: the client does not validate their shape, the server does.
+- Re-export the `IDID` type from `@interop/data-integrity-core`, the type of
+  `generator`.
+
+### Changed
+
+- Update to latest `@interop/storage-core@0.6.0`.
+
 ## 0.32.1 - 2026-08-10
 
 ### Changed
