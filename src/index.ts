@@ -29,6 +29,7 @@ export {
   EncryptionError,
   KeyUnwrapError,
   IntegrityError,
+  WasSyncAuthError,
   WasSyncConflictError,
   WasSyncNotFoundError,
   WasServerError,

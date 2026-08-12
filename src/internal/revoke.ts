@@ -57,7 +57,7 @@ export function rootCapabilityId(target: string): string {
  * @param options.controller {string}   the invoking client's DID
  * @returns {IRootZcap}
  */
-function rootCapability({
+export function rootCapability({
   target,
   controller
 }: {

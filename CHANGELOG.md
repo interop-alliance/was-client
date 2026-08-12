@@ -1,5 +1,39 @@
 # @interop/was-client Changelog
 
+## 0.34.0 - TBD
+
+### Added
+
+- New `./paths` subpath entry exporting the WAS URL grammar as standalone
+  functions: `spacePath`, `collectionPath`, `collectionItems`,
+  `collectionQuery`, `resourcePath`, `resourceMeta`, `toUrl`, `parseSpacePath`,
+  `parseSpaceTarget` (with the `ParsedSpacePath` type), plus `rootCapabilityId`
+  and `rootCapability` (now exported) for minting a target's `urn:zcap:root:`
+  capability in id or object form.
+- `createWasSyncPort` accepts an optional `capability`, a delegated zcap invoked
+  on every request the port makes -- the `changes` pull, `putContent`,
+  `putMeta`, `deleteContent`, and both reads behind `get`. Omitted, requests
+  invoke the client's own root capability as before.
+- `createWasSyncPort` accepts an optional `mapAuthErrors` (default `false`).
+  When on, `401` / `403` / the `404` a WAS server returns when it masks an
+  authorization failure map to the new `WasSyncAuthError` (a subtype of
+  `AuthRequiredError` carrying the HTTP `status`), so a replica can distinguish
+  an expired or revoked grant from a transient failure. Two paths keep their
+  `404` semantics: `deleteContent` resolves (an idempotent delete) and `get`
+  resolves `null` (absent or tombstoned), as does a missing `/meta` document.
+- `errorMessage(err)` -- normalizes a caught value to a display string; exported
+  from the `/sync` subpath alongside `errorStatus`.
+
+### Changed
+
+- `WasSyncPort.putMeta` takes `custom` as optional: omitting it writes the
+  cleared state (`{}`), which is how a metadata clear replicates. Wire-identical
+  to the previous body for every existing caller.
+- `WasSyncPort.putMeta` returns the new `metaVersion` parsed from the write's
+  `ETag` (`number | undefined`) instead of `void`.
+- `WasSyncPort.deleteContent` returns `number | undefined`: it resolves
+  `undefined` for the idempotent already-absent delete under `mapAuthErrors`.
+
 ## 0.33.0 - 2026-08-11
 
 ### Added

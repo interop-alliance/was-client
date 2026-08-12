@@ -235,3 +235,48 @@ describe('toUrl', () => {
     )
   })
 })
+
+describe('the ./paths subpath barrel', () => {
+  it('re-exports the builders, the inverse grammar, and the root zcap', async () => {
+    const barrel = await import('../../src/paths.js')
+
+    expect(Object.keys(barrel).sort()).toEqual(
+      [
+        'collectionItems',
+        'collectionPath',
+        'collectionQuery',
+        'parseSpacePath',
+        'parseSpaceTarget',
+        'resourceMeta',
+        'resourcePath',
+        'rootCapability',
+        'rootCapabilityId',
+        'spacePath',
+        'toUrl'
+      ].sort()
+    )
+    // Same functions as the internal module, not re-implementations.
+    expect(barrel.resourceMeta('s', 'c', 'r')).toBe(resourceMeta('s', 'c', 'r'))
+    expect(barrel.parseSpacePath('/space/s/c')).toEqual({
+      kind: 'collection',
+      spaceId: 's',
+      collectionId: 'c'
+    })
+  })
+
+  it('mints the root capability id and its object form', async () => {
+    const { rootCapability, rootCapabilityId } =
+      await import('../../src/paths.js')
+    const target = 'http://localhost:3000/space/s/c/r'
+
+    expect(rootCapabilityId(target)).toBe(
+      `urn:zcap:root:${encodeURIComponent(target)}`
+    )
+    expect(rootCapability({ target, controller: 'did:key:zAlice' })).toEqual({
+      '@context': 'https://w3id.org/zcap/v1',
+      id: rootCapabilityId(target),
+      invocationTarget: target,
+      controller: 'did:key:zAlice'
+    })
+  })
+})

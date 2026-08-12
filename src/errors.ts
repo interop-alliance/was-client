@@ -215,6 +215,31 @@ export class WasSyncNotFoundError extends NotFoundError {
 }
 
 /**
+ * The replication-port signal for a request a WAS server refused on
+ * authorization grounds: `401` (no verifiable invocation), `403` (authenticated
+ * but not permitted), or the `404` a server returns when it MASKS an
+ * authorization failure as "not found" so an unauthorized caller cannot probe
+ * which resources exist. Carries the originating HTTP `status` so a caller can
+ * tell the three apart.
+ *
+ * Opt-in: a `WasSyncPort` raises it only when built with `mapAuthErrors: true`
+ * (`@interop/was-client/sync`), because the `404` reading is safe exactly when
+ * the invoked Space and Collection are known to exist -- then a `404` can only
+ * mean the invocation itself was rejected, i.e. the grant expired or was
+ * revoked. A subtype of {@link AuthRequiredError}, so a caller that already
+ * handles 401/403 via `instanceof AuthRequiredError` still catches it.
+ */
+export class WasSyncAuthError extends AuthRequiredError {
+  constructor(status: number, options: WasErrorOptions = {}) {
+    super(`WAS storage access denied (HTTP ${status}).`, {
+      ...options,
+      status
+    })
+    this.name = 'WasSyncAuthError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {
@@ -316,6 +341,19 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
 export function httpStatus(err: unknown): number | undefined {
   const raw = err as { status?: number; response?: { status?: number } }
   return raw?.status ?? raw?.response?.status
+}
+
+/**
+ * Normalizes an unknown caught value into a display string: the `Error`'s
+ * `message` when it is one, else its `String(...)` coercion. The companion to
+ * {@link httpStatus} for the "log or surface what went wrong" half of a catch
+ * block.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {string}
+ */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 /**

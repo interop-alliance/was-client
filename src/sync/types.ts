@@ -108,20 +108,31 @@ export interface WasSyncPort {
    * unchanged. Returns the tombstone's new server `version`. Throws
    * {@link WasSyncConflictError} on `412`, {@link WasSyncNotFoundError} on `404`
    * (already gone -- a settled outcome for a delete).
+   *
+   * Resolves `undefined` instead when the port was built with
+   * `mapAuthErrors: true` and the target was already absent: there the delete
+   * is idempotent, so there is no acked revision to report.
    */
-  deleteContent(options: { id: string; ifMatch?: string }): Promise<number>
+  deleteContent(options: {
+    id: string
+    ifMatch?: string
+  }): Promise<number | undefined>
 
   /**
    * Conditionally writes the user-writable metadata `custom` (`PUT /:id/meta`).
-   * Optional -- present only on a port that syncs metadata. Throws
+   * Optional -- present only on a port that syncs metadata. The write fully
+   * replaces `custom`, so omitting it writes the CLEARED state (the server
+   * clears every property the body leaves out) -- that is how a metadata clear
+   * replicates. Returns the new `metaVersion` (parsed from the write's `ETag`),
+   * or `undefined` when the response carried none. Throws
    * {@link WasSyncConflictError} on `412`.
    */
   putMeta?(options: {
     id: string
-    custom: Json
+    custom?: Json
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<void>
+  }): Promise<number | undefined>
 
   /**
    * Re-reads a single resource's current master state for the 412-conflict

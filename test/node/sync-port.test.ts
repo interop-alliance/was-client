@@ -13,18 +13,23 @@ import { describe, it, expect, vi } from 'vitest'
 
 import { createWasSyncPort } from '../../src/sync/index.js'
 import { formatEtag, parseEtag, errorStatus } from '../../src/sync/index.js'
+import { errorMessage } from '../../src/sync/index.js'
 import {
+  WasSyncAuthError,
   WasSyncConflictError,
   WasSyncNotFoundError,
+  AuthRequiredError,
   PreconditionFailedError,
   NotFoundError
 } from '../../src/index.js'
+import type { IZcap } from '../../src/index.js'
 
 type RequestOptions = {
   path?: string
   method?: string
   json?: object
   headers?: Record<string, string>
+  capability?: unknown
 }
 
 /** An HttpResponse-like value: a parsed `.data` body plus real `Headers`. */
@@ -46,19 +51,30 @@ const COLL = 'private-credentials'
  */
 function makeWas(options: {
   onRequest?: (opts: RequestOptions) => unknown
+  onChanges?: () => unknown
   changesResult?: unknown
 }) {
-  const changes = vi.fn(async () => options.changesResult)
+  // Records the handle options the port passes to `space().collection(...)`, so
+  // the capability-threading test can assert them.
+  const collectionOptions: unknown[] = []
+  const changes = vi.fn(async () =>
+    options.onChanges ? options.onChanges() : options.changesResult
+  )
   const request = vi.fn(async (opts: RequestOptions) => {
     const result = options.onRequest?.(opts)
     return result
   })
   const was = {
     request,
-    space: () => ({ collection: () => ({ changes }) })
+    space: () => ({
+      collection: (_collectionId: string, handleOptions?: unknown) => {
+        collectionOptions.push(handleOptions)
+        return { changes }
+      }
+    })
   }
   // The port only touches `request` and `space().collection().changes()`.
-  return { was: was as never, request, changes }
+  return { was: was as never, request, changes, collectionOptions }
 }
 
 describe('createWasSyncPort helpers', () => {
@@ -308,5 +324,215 @@ describe('createWasSyncPort.get', () => {
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
     expect(await port.get({ id: 'gone' })).toBeNull()
+  })
+})
+
+/**
+ * A stand-in delegated capability. The port never inspects it -- it only has to
+ * arrive verbatim on every request -- so a minimal shape is enough.
+ */
+const CAPABILITY = {
+  id: 'urn:uuid:cap-1',
+  invocationTarget: `https://was.example/space/${SPACE}/${COLL}`
+} as unknown as IZcap
+
+describe('createWasSyncPort capability threading', () => {
+  it('attaches the capability to the changes feed and to every request', async () => {
+    const calls: RequestOptions[] = []
+    const { was, collectionOptions } = makeWas({
+      changesResult: { documents: [], checkpoint: null },
+      onRequest: opts => {
+        calls.push(opts)
+        if (opts.path?.endsWith('/meta') && opts.method === 'GET') {
+          throw httpError(404)
+        }
+        return response({ a: 1 }, { etag: '"1"' })
+      }
+    })
+    const port = createWasSyncPort({
+      was,
+      spaceId: SPACE,
+      collectionId: COLL,
+      capability: CAPABILITY
+    })
+
+    await port.query({ limit: 10 })
+    await port.putContent({ id: 'res-1', data: { a: 1 } })
+    await port.putMeta!({ id: 'res-1', custom: { name: 'Alice' } })
+    await port.deleteContent({ id: 'res-1' })
+    await port.get({ id: 'res-1' })
+
+    // The pull path rides `Collection.changes()`, which honors the handle's
+    // own capability rather than a per-request one.
+    expect(collectionOptions).toEqual([{ capability: CAPABILITY }])
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(call.capability).toBe(CAPABILITY)
+    }
+  })
+
+  it('attaches no capability by default', async () => {
+    const calls: RequestOptions[] = []
+    const { was, collectionOptions } = makeWas({
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null, { etag: '"1"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await port.putContent({ id: 'res-1', data: { a: 1 } })
+
+    expect(collectionOptions).toEqual([{ capability: undefined }])
+    expect(calls[0]!.capability).toBeUndefined()
+  })
+})
+
+describe('createWasSyncPort.putMeta clear + version ack', () => {
+  it('writes {} when custom is omitted (the cleared state)', async () => {
+    const calls: RequestOptions[] = []
+    const { was } = makeWas({
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null, { etag: '"3"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await port.putMeta!({ id: 'res-1' })
+
+    expect(calls[0]!.json).toEqual({})
+    // Wire-identical to the `{ custom: undefined }` body this used to send.
+    expect(JSON.stringify(calls[0]!.json)).toBe(
+      JSON.stringify({ custom: undefined })
+    )
+  })
+
+  it('returns the new metaVersion parsed from the response ETag', async () => {
+    const { was } = makeWas({
+      onRequest: () => response(null, { etag: '"3"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    expect(await port.putMeta!({ id: 'res-1', custom: { a: 1 } })).toBe(3)
+  })
+
+  it('returns undefined when the response carries no ETag', async () => {
+    const { was } = makeWas({ onRequest: () => response(null) })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    expect(
+      await port.putMeta!({ id: 'res-1', custom: { a: 1 } })
+    ).toBeUndefined()
+  })
+})
+
+describe('createWasSyncPort mapAuthErrors', () => {
+  /** Builds a port whose every request (and `changes()`) throws `status`. */
+  function failingPort(status: number, mapAuthErrors: boolean) {
+    const { was } = makeWas({
+      onRequest: () => {
+        throw httpError(status)
+      },
+      onChanges: () => {
+        throw httpError(status)
+      }
+    })
+    return createWasSyncPort({
+      was,
+      spaceId: SPACE,
+      collectionId: COLL,
+      mapAuthErrors
+    })
+  }
+
+  for (const status of [401, 403, 404]) {
+    it(`maps ${status} on query / putContent / putMeta when on`, async () => {
+      const port = failingPort(status, true)
+      for (const attempt of [
+        () => port.query({ limit: 10 }),
+        () => port.putContent({ id: 'res-1', data: { a: 1 } }),
+        () => port.putMeta!({ id: 'res-1', custom: { a: 1 } })
+      ]) {
+        const err = await attempt().catch((caught: unknown) => caught)
+        expect(err).toBeInstanceOf(WasSyncAuthError)
+        expect(err).toBeInstanceOf(AuthRequiredError)
+        expect(err).toMatchObject({ status })
+      }
+    })
+  }
+
+  for (const status of [401, 403]) {
+    it(`maps ${status} on deleteContent when on`, async () => {
+      const port = failingPort(status, true)
+      const err = await port
+        .deleteContent({ id: 'res-1' })
+        .catch((caught: unknown) => caught)
+      expect(err).toBeInstanceOf(WasSyncAuthError)
+      expect(err).toMatchObject({ status })
+    })
+  }
+
+  it('treats a 404 delete as an idempotent success when on', async () => {
+    const port = failingPort(404, true)
+    expect(await port.deleteContent({ id: 'res-1' })).toBeUndefined()
+  })
+
+  it('still maps 412 to WasSyncConflictError when on', async () => {
+    const port = failingPort(412, true)
+    await expect(
+      port.putContent({ id: 'res-1', data: { a: 1 } })
+    ).rejects.toBeInstanceOf(WasSyncConflictError)
+  })
+
+  it('leaves a get 404 as null when on (absent or tombstoned)', async () => {
+    const port = failingPort(404, true)
+    expect(await port.get({ id: 'gone' })).toBeNull()
+  })
+
+  it('leaves a missing /meta benign when on', async () => {
+    const { was } = makeWas({
+      onRequest: opts => {
+        if (opts.path?.endsWith('/meta')) {
+          throw httpError(404)
+        }
+        return response({ a: 1 }, { etag: '"4"' })
+      }
+    })
+    const port = createWasSyncPort({
+      was,
+      spaceId: SPACE,
+      collectionId: COLL,
+      mapAuthErrors: true
+    })
+    expect((await port.get({ id: 'res-1' }))?.version).toBe(4)
+  })
+
+  it('preserves today behavior when off', async () => {
+    // 404 keeps the delete-specific not-found signal ...
+    await expect(
+      failingPort(404, false).deleteContent({ id: 'res-1' })
+    ).rejects.toBeInstanceOf(WasSyncNotFoundError)
+    // ... and 401 / 403 / 404 propagate raw everywhere else.
+    for (const status of [401, 403, 404]) {
+      const port = failingPort(status, false)
+      for (const attempt of [
+        () => port.query({ limit: 10 }),
+        () => port.putContent({ id: 'res-1', data: { a: 1 } }),
+        () => port.putMeta!({ id: 'res-1', custom: { a: 1 } })
+      ]) {
+        const err = await attempt().catch((caught: unknown) => caught)
+        expect(err).not.toBeInstanceOf(WasSyncAuthError)
+        expect(err).toMatchObject({ status })
+      }
+    }
+  })
+})
+
+describe('errorMessage', () => {
+  it('reads an Error message and coerces anything else', () => {
+    expect(errorMessage(new Error('boom'))).toBe('boom')
+    expect(errorMessage('boom')).toBe('boom')
+    expect(errorMessage(undefined)).toBe('undefined')
   })
 })

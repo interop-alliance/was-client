@@ -36,6 +36,12 @@
       "import": "./dist/edv/index.js",
       "default": "./dist/edv/index.js"
     },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "react-native": "./dist/paths.js",
+      "import": "./dist/paths.js",
+      "default": "./dist/paths.js"
+    },
     "./log": {
       "types": "./dist/log/index.d.ts",
       "react-native": "./dist/log/index.js",
