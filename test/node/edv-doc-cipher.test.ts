@@ -294,6 +294,8 @@ describe('UnknownEpochError', () => {
     expect(err.name).toBe('UnknownEpochError')
     expect(err.message).toContain('private-credentials')
     expect(err.message).toContain('did:key:zEpoch#k')
-    expect(err.message).toContain('match no key epoch this reader resolved')
+    expect(err.message).toContain(
+      'not on the Collection Description this reader holds'
+    )
   })
 })

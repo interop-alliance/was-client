@@ -215,36 +215,6 @@ The codec seam is a pure single-write transform, so an oversize `add()`
 currently throws and points callers at the (fully working)
 `EdvClientCore.insert({stream})` / `getStream` path. Ergonomics only.
 
-### WCL-9: key-epochs integration test drift (`UnknownEpochError` vs `KeyUnwrapError`)
-
-- status: todo
-- priority: medium
-- labels: encryption, key-epochs, integration-test
-- acceptance:
-  - [ ] The `test/integration/key-epochs.test.ts` suite is green against a live
-        was-teaching-server >= 0.21.0, with expectations that assert the
-        intended contract (not just whatever currently throws)
-  - [ ] The `KeyUnwrapError` / `UnknownEpochError` JSDoc contract matches the
-        settled behavior
-
-discovered-from: WCL-8 (found during its live verification run, 2026-08-12). The
-"removes a reader: pull dies, new ciphertext is unreadable" test expects
-`KeyUnwrapError` when the removed readerB decodes a post-rotation envelope, but
-gets `UnknownEpochError` -- readerB holds no epoch-2 candidate key, so the
-codec's fail-fast unroutable-envelope path (the stale-descriptor signal) fires
-before any unwrap attempt. Reproduced from a clean HEAD worktree against
-was-teaching-server 0.21.0, so it is not caused by the WCL-8 changes; but the
-suite ran green live on 2026-07-31 (after the fail-fast landed), so the drift's
-origin is unresolved. Note the test hands readerB the _rotated_ descriptor, for
-which `UnknownEpochError` ("your descriptor may be stale") reads semantically
-off -- readerB's descriptor is current, it is simply no longer a recipient; if
-the investigation lands on distinguishing those cases, that is a codec
-error-contract change and this item gains `touches:` entries for it.
-
-The drift reproduced identically on the 2026-08-12 live verification runs for
-WCL-1 Stage B and WCL-10 (same assertion, same errors), confirming it is
-independent of those changes.
-
 ### WCL-11: `indexed` emission on the sync push path
 
 - status: todo

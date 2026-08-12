@@ -275,6 +275,16 @@ export class EdvCodec implements ResourceCodec {
    */
   readonly #collectionId: string
   /**
+   * The id of every epoch the descriptor lists -- held by this reader or not.
+   * Decrypt routing uses it to tell the two unroutable-envelope cases apart:
+   * an envelope kid whose epoch is listed here but matches no candidate key
+   * means this reader is not a recipient of that epoch
+   * ({@link KeyUnwrapError}); a kid whose epoch is not listed at all means the
+   * descriptor this codec was built from has never seen the epoch
+   * ({@link UnknownEpochError} -- the stale-descriptor signal).
+   */
+  readonly #epochIds: ReadonlySet<string>
+  /**
    * The collection's blinded-index key, or `null` where the collection
    * declares none. It blinds attribute names and values both on write (the
    * `indexed` entries an envelope carries) and on query, so equal plaintext
@@ -317,6 +327,9 @@ export class EdvCodec implements ResourceCodec {
    * @param options.collectionId {string}   the Collection this codec reads and
    *   writes: bound into the Collection metadata envelope's `was.collection`
    *   (and checked on read), and it labels decrypt-routing errors
+   * @param options.epochIds {string[]}   the id of every epoch the descriptor
+   *   lists (held by this reader or not); decrypt routing checks it to tell a
+   *   not-a-recipient envelope apart from a stale-descriptor one
    * @param [options.hmac] {BlindingKey}   the collection's blinded-index key,
    *   where it declares one
    */
@@ -330,6 +343,7 @@ export class EdvCodec implements ResourceCodec {
     idDerivation,
     version,
     collectionId,
+    epochIds,
     hmac
   }: {
     edv: EdvClientCore
@@ -341,6 +355,7 @@ export class EdvCodec implements ResourceCodec {
     idDerivation: 'random' | 'content'
     version?: number
     collectionId: string
+    epochIds: string[]
     hmac?: BlindingKey | null
   }) {
     this.#edv = edv
@@ -353,6 +368,7 @@ export class EdvCodec implements ResourceCodec {
     this.#idDerivation = idDerivation
     this.#version = version ?? EDV_SCHEME_VERSION
     this.#collectionId = collectionId
+    this.#epochIds = new Set(epochIds)
     this.#blindingKey = hmac ?? null
     if (this.#blindingKey !== null) {
       this.#indexing = {
@@ -646,12 +662,18 @@ export class EdvCodec implements ResourceCodec {
    * selects that epoch's key, so history stays readable.
    *
    * A stored envelope naming only recipients this reader holds no candidate
-   * key for fails fast with {@link UnknownEpochError} -- the signal that the
-   * cached Collection Description may be stale (an epoch rotation emits no
+   * key for fails fast, and which error it raises depends on whether the
+   * descriptor lists the named epoch. An epoch the descriptor lists but wraps
+   * only to other recipients raises {@link KeyUnwrapError}: this reader is
+   * not a recipient of that epoch (it never was, or it was removed and the
+   * epoch rotated), so re-reading the descriptor cannot help. That is the
+   * read axis only; it says nothing about whether the server will still
+   * serve (pull) the ciphertext. An epoch the descriptor does not list at
+   * all raises {@link UnknownEpochError} -- the signal that the cached
+   * Collection Description may be stale (an epoch rotation emits no
    * change-feed entry) and the codec must be rebuilt from a re-read
-   * descriptor. A candidate whose entry then fails to unwrap surfaces
-   * {@link KeyUnwrapError} -- the **read** axis only; it says nothing about
-   * whether the server will still serve (pull) the ciphertext.
+   * descriptor. A candidate whose entry then fails to unwrap also surfaces
+   * {@link KeyUnwrapError}.
    *
    * Also returns the `id` of the key that actually decrypted the envelope (its
    * JWE recipient `kid`), so {@link _verifyBinding} can check a `was.epoch`
@@ -670,14 +692,32 @@ export class EdvCodec implements ResourceCodec {
     const kidSet = new Set(kids)
     // Prefer the read key whose id names a recipient of this envelope; for a
     // well-formed envelope the exact match always hits. A non-empty recipient
-    // set that matches NO candidate is unroutable: the envelope was encrypted
-    // under an epoch (or key) this codec's descriptor knows nothing about, so
-    // fail fast with the stale-descriptor signal rather than burning ECDH
-    // attempts that cannot succeed. The `rest` fallback below is then reached
-    // only for a malformed envelope naming no recipient kid at all, letting a
-    // candidate surface the cipher's own typed decrypt error.
+    // set that matches NO candidate is unroutable, so fail fast rather than
+    // burning ECDH attempts that cannot succeed. Which failure it is depends
+    // on whether the descriptor lists the named epoch: an epoch key's kid is
+    // `<epoch did:key>#<fingerprint>`, so the portion before the fragment
+    // names the epoch. Listed but wrapped only to others: this reader is not
+    // a recipient of that epoch (the membership signal, KeyUnwrapError). Not
+    // listed at all: the descriptor has never seen the epoch (the
+    // stale-descriptor signal, UnknownEpochError). The `rest` fallback below
+    // is then reached only for a malformed envelope naming no recipient kid
+    // at all, letting a candidate surface the cipher's own typed decrypt
+    // error.
     const preferred = this.#readKeys.filter(key => kidSet.has(key.id))
     if (preferred.length === 0 && kids.length > 0) {
+      const listed = kids.some(kid =>
+        this.#epochIds.has(kid.split('#')[0] ?? kid)
+      )
+      if (listed) {
+        throw new KeyUnwrapError(
+          'Cannot decrypt this resource: it was encrypted under a key epoch ' +
+            'this reader holds no key for. The epoch is on the Collection ' +
+            'Description, but none of its recipient entries name this reader ' +
+            '(it was never a recipient of that epoch, or it was removed and ' +
+            'the epoch rotated). This is the read axis only -- the server ' +
+            'may still serve the ciphertext (a separate zcap decision).'
+        )
+      }
       throw new UnknownEpochError({ collectionId: this.#collectionId, kids })
     }
     const rest = this.#readKeys.filter(key => !kidSet.has(key.id))
@@ -1360,7 +1400,11 @@ export function createEdvEncryption({
         maxBlobBytes,
         idDerivation,
         version: descriptorVersion ?? EDV_SCHEME_VERSION,
-        collectionId
+        collectionId,
+        // Every epoch the descriptor lists, recipient of it or not, so
+        // decrypt routing can tell "not a recipient of this epoch" apart
+        // from "descriptor has never seen this epoch".
+        epochIds: encryption.epochs.map(epoch => epoch.id)
       })
     }
   }

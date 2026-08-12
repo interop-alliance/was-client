@@ -41,12 +41,14 @@ import { createEdvEncryption } from './EdvCodec.js'
 import type { RecipientPublicKey } from './recipients.js'
 
 // `isEncryptedEnvelope` and the `DocCipher` interface live in the crypto-free
-// `../sync` module, and `UnknownEpochError` (thrown by the codec's decrypt
-// routing) in the errors module; re-exported here so an encrypted-collection
-// consumer that imports this subpath gets all three without a second import.
+// `../sync` module, and the decrypt-routing signals (`UnknownEpochError` for a
+// stale descriptor, `KeyUnwrapError` for a reader that is not a recipient of
+// the envelope's epoch) in the errors module; re-exported here so an
+// encrypted-collection consumer that imports this subpath gets them without a
+// second import.
 export { isEncryptedEnvelope } from '../sync/envelope.js'
 export type { DocCipher } from '../sync/types.js'
-export { UnknownEpochError } from '../errors.js'
+export { KeyUnwrapError, UnknownEpochError } from '../errors.js'
 
 /**
  * A wallet's own key-agreement key as a `RecipientPublicKey` -- the "recipient
@@ -109,8 +111,9 @@ function envelopeResponse(envelope: Json): ResponseLike {
  * the descriptor's `currentEpoch` and decrypts any epoch this reader still
  * holds a key for. One codec owns both axes -- decrypt routing (matching an
  * envelope's JWE recipient `kid`s against the reader's candidate keys, raising
- * `UnknownEpochError` for an envelope no candidate can route) lives in the
- * codec, not here.
+ * `UnknownEpochError` for an envelope stamped with an epoch the descriptor
+ * does not list, and `KeyUnwrapError` for one whose listed epoch this reader
+ * is not a recipient of) lives in the codec, not here.
  *
  * The reader must be a recipient of every epoch on the descriptor (the owner is
  * "recipient zero"). If it is a recipient of none, building the cipher
@@ -239,8 +242,9 @@ export async function createEdvDocCipher({
 
     async decrypt({ envelope }: { envelope: Json }) {
       // Routing by the envelope's JWE recipient kids -- including the
-      // stale-descriptor `UnknownEpochError` for an envelope no candidate key
-      // routes -- is owned by the codec's decrypt.
+      // stale-descriptor `UnknownEpochError` (epoch not on the descriptor)
+      // and the membership `KeyUnwrapError` (listed epoch this reader is not
+      // a recipient of) -- is owned by the codec's decrypt.
       return (await codec.decode(envelopeResponse(envelope))) as Json
     }
   }

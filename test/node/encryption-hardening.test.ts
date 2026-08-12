@@ -513,7 +513,8 @@ describe('was binding: per-envelope epoch label', () => {
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random',
-      collectionId: 'c'
+      collectionId: 'c',
+      epochIds: [realEpoch]
     })
     return { codec, realEpoch, writeEpoch }
   }

@@ -842,6 +842,94 @@ describe('EdvCodec: decrypt failure discrimination', () => {
     expect(failure).not.toBeInstanceOf(IntegrityError)
   })
 
+  it('throws KeyUnwrapError (not UnknownEpochError) for a listed epoch this reader is not a recipient of', async () => {
+    // A removed reader's view: the shared descriptor lists epoch 2 (so it is
+    // not stale), but only readerA is a recipient of it. readerB, handed a
+    // post-rotation envelope, must get the membership signal (KeyUnwrapError:
+    // re-reading the descriptor cannot help), not the stale-descriptor one.
+    const readerA = await makeKeys()
+    const readerB = await makeKeys()
+    const epoch1 = await mintEpoch()
+    const epoch2 = await mintEpoch()
+    const encryption: CollectionEncryption = {
+      scheme: 'edv',
+      epochs: [
+        {
+          id: epoch1.epochId,
+          recipients: [
+            await wrapEpochSecret({
+              epochSecret: epoch1.secret,
+              recipient: {
+                id: readerA.kak.id,
+                publicKeyMultibase: readerA.publicKeyMultibase
+              }
+            }),
+            await wrapEpochSecret({
+              epochSecret: epoch1.secret,
+              recipient: {
+                id: readerB.kak.id,
+                publicKeyMultibase: readerB.publicKeyMultibase
+              }
+            })
+          ]
+        },
+        {
+          id: epoch2.epochId,
+          recipients: [
+            await wrapEpochSecret({
+              epochSecret: epoch2.secret,
+              recipient: {
+                id: readerA.kak.id,
+                publicKeyMultibase: readerA.publicKeyMultibase
+              }
+            })
+          ]
+        }
+      ],
+      currentEpoch: epoch2.epochId
+    }
+    const codecOf = async (
+      reader: Awaited<ReturnType<typeof makeKeys>>,
+      descriptor: CollectionEncryption
+    ) => {
+      const provider = createEdvEncryption({
+        resolveKeys: async () => ({
+          keyAgreementKey: reader.kak,
+          keyResolver: reader.keyResolver
+        })
+      })
+      return (await provider.codecFor({
+        spaceId: 's',
+        collectionId: 'c',
+        scheme: 'edv',
+        encryption: descriptor
+      }))!
+    }
+    // readerA writes under epoch 2 (the currentEpoch).
+    const writer = await codecOf(readerA, encryption)
+    const encoded = await writer.encode({ data: { secret: 'post-rotation' } })
+    // readerB decodes with the SAME (current) descriptor.
+    const reader = await codecOf(readerB, encryption)
+    const failure = await reader
+      .decode(responseFrom(encoded.body))
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(KeyUnwrapError)
+    expect(failure).not.toBeInstanceOf(UnknownEpochError)
+    // ...while an epoch-1 envelope (written before the rotation, via a
+    // pre-rotation descriptor) still decodes: rotation never claws back what
+    // readerB could already read.
+    const preRotation: CollectionEncryption = {
+      ...encryption,
+      epochs: [encryption.epochs![0]],
+      currentEpoch: epoch1.epochId
+    }
+    const earlyWriter = await codecOf(readerA, preRotation)
+    const early = await earlyWriter.encode({ data: { secret: 'pre-rotation' } })
+    await expect(reader.decode(responseFrom(early.body))).resolves.toEqual({
+      secret: 'pre-rotation'
+    })
+  })
+
   it('treats a candidate throwing KeyUnwrapError as a key miss and tries the next key', async () => {
     // A lazy epoch key whose recipient entry is corrupt raises KeyUnwrapError
     // from its own deriveSecret when a decrypt first forces the unwrap. That
@@ -872,7 +960,8 @@ describe('EdvCodec: decrypt failure discrimination', () => {
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random',
-      collectionId: 'c'
+      collectionId: 'c',
+      epochIds: [epochId]
     })
     const encoded = await codec.encode({ data: { secret: 'still readable' } })
     await expect(codec.decode(responseFrom(encoded.body))).resolves.toEqual({

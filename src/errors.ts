@@ -146,11 +146,15 @@ export class EncryptionError extends WasError {
 }
 
 /**
- * A fail-closed key-epoch error: a reader could not unwrap any epoch key it
- * needs to decrypt a resource on a multi-recipient encrypted Collection -- none
- * of the descriptor's `recipients` entries yielded a key for this reader's
- * key-agreement key (it was never a recipient, or has been removed and the
- * epoch rotated). A subtype of {@link EncryptionError}, so existing
+ * A fail-closed key-epoch error: a reader holds no key for an epoch it needs
+ * on a multi-recipient encrypted Collection. Raised on two paths. Building a
+ * codec raises it when none of the descriptor's `recipients` entries yield a
+ * key for this reader's key-agreement key (it is a recipient of no epoch at
+ * all). Decrypt routing raises it when a stored envelope's epoch IS on the
+ * descriptor but wraps to no key this reader holds (it was never a recipient
+ * of that epoch, or has been removed and the epoch rotated) -- the descriptor
+ * is current, so re-reading it cannot help; contrast {@link UnknownEpochError},
+ * where it can. A subtype of {@link EncryptionError}, so existing
  * `catch (EncryptionError)` fail-closed handling still catches it.
  *
  * This is the **read** axis only. It says nothing about **pull**: the reader may
@@ -248,11 +252,17 @@ export class WasServerError extends WasError {
 
 /**
  * Thrown on decrypt when a stored envelope names JWE recipient (`kid`) ids
- * that match no key epoch resolved from the Collection Description. It
- * signals that the caller's cached descriptor may be stale and should be
- * re-read before retrying: an epoch rotation emits no change-feed entry, so a
- * codec built from a pre-rotation descriptor meets envelopes stamped with a
- * newer epoch it has never seen.
+ * whose epochs the Collection Description does not list at all. It signals
+ * that the caller's cached descriptor may be stale and should be re-read
+ * before retrying: an epoch rotation emits no change-feed entry, so a codec
+ * built from a pre-rotation descriptor meets envelopes stamped with a newer
+ * epoch it has never seen.
+ *
+ * Distinct from {@link KeyUnwrapError}: when the descriptor DOES list the
+ * envelope's epoch but this reader holds no key for it (it was never a
+ * recipient of that epoch, or it was removed and the epoch rotated), decrypt
+ * raises `KeyUnwrapError` instead -- the descriptor is current and re-reading
+ * it cannot help.
  */
 export class UnknownEpochError extends Error {
   constructor({
@@ -264,10 +274,10 @@ export class UnknownEpochError extends Error {
   }) {
     super(
       `Cannot decrypt a resource in collection "${collectionId}": its ` +
-        `envelope names recipient key id(s) [${kids.join(', ')}] that match ` +
-        'no key epoch this reader resolved. The cached Collection ' +
-        'Description may be stale (an epoch rotation emits no change-feed ' +
-        'entry); re-read it and rebuild the cipher.'
+        `envelope names recipient key id(s) [${kids.join(', ')}] whose key ` +
+        'epoch is not on the Collection Description this reader holds. The ' +
+        'cached descriptor may be stale (an epoch rotation emits no ' +
+        'change-feed entry); re-read it and rebuild the cipher.'
     )
     this.name = 'UnknownEpochError'
   }

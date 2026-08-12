@@ -1,5 +1,28 @@
 # @interop/was-client Changelog
 
+## 0.35.1 - TBD
+
+### Added
+
+- The `/sync` subpath additionally re-exports `KeyUnwrapError` and
+  `EncryptionError`, so a crypto-free sync consumer can classify the membership
+  signal without importing the `/edv` entry.
+
+### Changed
+
+- Decrypt routing now tells the two unroutable-envelope cases apart. An envelope
+  stamped with an epoch the Collection Description does not list still throws
+  `UnknownEpochError` (the stale-descriptor signal: re-read the descriptor and
+  rebuild the cipher). An envelope whose epoch the descriptor lists but wraps to
+  no key this reader holds (it was never a recipient of that epoch, or it was
+  removed and the epoch rotated) now throws `KeyUnwrapError` instead, since a
+  descriptor refresh cannot help there. Previously both cases threw
+  `UnknownEpochError` (since 0.27.1). Note `KeyUnwrapError` is a subtype of
+  `EncryptionError`, so `catch (EncryptionError)` fail-closed handling now also
+  catches this case, which `UnknownEpochError` (a plain `Error`) escaped.
+  `EdvCodec`'s constructor takes the new required `epochIds` option (every epoch
+  id the descriptor lists); `createEdvEncryption`'s `codecFor` supplies it.
+
 ## 0.35.0 - 2026-08-12
 
 ### Added

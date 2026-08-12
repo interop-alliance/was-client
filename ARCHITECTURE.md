@@ -250,10 +250,15 @@ advancing the envelope `sequence`. Decrypt routing is owned by the EDV codec
 itself (one codec per collection, for the handle and sync paths alike): it
 matches the envelope's JWE recipient `kid`s against the reader's candidate keys
 -- the per-epoch keys resolved from the descriptor, or the key-agreement key on
-a single-key collection -- and an envelope naming only recipients no candidate
-matches throws `UnknownEpochError`, the signal that the cached Collection
-description is stale (epoch rotation emits no change-feed entry) and the codec
-must be rebuilt from a re-read descriptor.
+a single-key collection. An envelope naming only recipients no candidate matches
+fails fast, and which error it raises depends on whether the descriptor lists
+the named epoch. An epoch the descriptor does not list at all throws
+`UnknownEpochError`, the signal that the cached Collection description is stale
+(epoch rotation emits no change-feed entry) and the codec must be rebuilt from a
+re-read descriptor. An epoch the descriptor lists but wraps only to other
+recipients throws `KeyUnwrapError`: the descriptor is current and this reader is
+simply not a recipient of that epoch (it never was, or it was removed and the
+epoch rotated), so a refresh cannot help.
 
 `ensureSpaceAndCollection` (`provisioning.ts`) is the idempotent setup step:
 upsert the Space, configure the collection (declaring the `{ scheme: 'edv' }`

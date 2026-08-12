@@ -317,7 +317,10 @@ describeLive('multi-recipient key epochs (live server)', () => {
     expect(await asBRevoked.get(doc1Id)).toBeNull()
 
     // (b) Read axis, prospective: handed the post-rotation ciphertext, readerB
-    // cannot decrypt it (it holds no epoch-2 key).
+    // cannot decrypt it (it holds no epoch-2 key). Its descriptor is the
+    // current, rotated one -- epoch 2 is listed on it, readerB is just not a
+    // recipient -- so this is the membership signal (KeyUnwrapError), not the
+    // stale-descriptor UnknownEpochError.
     const doc3Envelope = await rawEnvelope(doc3.id)
     await expect(
       decodeWith(readerB, rotated, doc3Envelope)

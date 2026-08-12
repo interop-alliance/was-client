@@ -18,10 +18,14 @@
  * The 412 conflict / 404 not-found port signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), and the opt-in revoked-access signal
  * (`WasSyncAuthError`, raised only under `mapAuthErrors`), live in the client's
- * typed error hierarchy and are re-exported here for convenience -- as is the
- * stale-descriptor decrypt
- * signal (`UnknownEpochError`), so a crypto-free sync consumer can
- * `instanceof`-match it without importing the `/edv` entry that throws it.
+ * typed error hierarchy and are re-exported here for convenience -- as are the
+ * two decrypt-routing signals, so a crypto-free sync consumer can
+ * `instanceof`-match them without importing the `/edv` entry that throws them:
+ * the stale-descriptor signal (`UnknownEpochError`: the envelope's epoch is not
+ * on the descriptor at all, so re-read it and rebuild the cipher) and the
+ * membership signal (`KeyUnwrapError`: the epoch is on the descriptor but this
+ * reader holds no key for it, so a refresh cannot help). `EncryptionError`, the
+ * fail-closed umbrella `KeyUnwrapError` falls under, rides along.
  */
 export {
   createWasSyncPort,
@@ -36,6 +40,8 @@ export { isEncryptedEnvelope } from './envelope.js'
 export { createPlaintextDocCipher } from './plaintextCipher.js'
 export { ensureSpaceAndCollection } from './provisioning.js'
 export {
+  EncryptionError,
+  KeyUnwrapError,
   UnknownEpochError,
   WasSyncAuthError,
   WasSyncConflictError,

@@ -108,3 +108,75 @@ the AEAD, so no server or wire-type impact. Must land before WCL-1 resumes
 persisting real index-schema envelopes, so schema envelopes are minted with the
 final binding; blast radius of the break is otherwise nil (the slot is days
 old).
+
+### WCL-9: key-epochs integration test drift (`UnknownEpochError` vs `KeyUnwrapError`)
+
+- status: done
+- done: 2026-08-12
+- priority: medium
+- labels: encryption, key-epochs, integration-test
+- touches:
+  - freewallet -- resolved: the decrypt-failure classification gained a third
+    bucket -- a row failing with `KeyUnwrapError` is skipped, warned about
+    honestly ("not a recipient of its key epoch"), and left uncached, but never
+    joins the purgeable `undecryptableRowIds` bucket that feeds
+    `purgeUndecryptableCredentials` (which deletes locally and, in remote-direct
+    mode, server-side); `decryptEnvelope` never spends the one-shot descriptor
+    refresh on it (a refresh cannot help). Unit coverage proves the row survives
+    a purge in both backends. Dead code against the published was-client until
+    the release carrying this item's split
+  - was-react -- resolved (doc-only, behavior verified unaffected):
+    `sharedCollectionReader`'s catch JSDoc and ARCHITECTURE.md now describe a
+    mid-session revoke surfacing directly as `KeyUnwrapError` with no refresh
+    spent; the refresh guards test for `UnknownEpochError` specifically and
+    rethrow everything else, so no code change
+  - wallet-core -- resolved (doc-only, behavior verified unaffected): the
+    self-refreshing cipher's module JSDoc describes the split; its guard and the
+    create-loss re-mint keep working (a lost epoch[0] is absent from the adopted
+    descriptor by construction, so it still raises `UnknownEpochError`).
+    Re-exporting `KeyUnwrapError` through wallet-core's `/sync` surface awaits
+    the next published was-client, whose `/sync` subpath now carries it
+- acceptance:
+  - [x] The `test/integration/key-epochs.test.ts` suite is green against a live
+        was-teaching-server >= 0.21.0, with expectations that assert the
+        intended contract (not just whatever currently throws)
+  - [x] The `KeyUnwrapError` / `UnknownEpochError` JSDoc contract matches the
+        settled behavior
+
+discovered-from: WCL-8 (found during its live verification run, 2026-08-12). The
+"removes a reader: pull dies, new ciphertext is unreadable" test expects
+`KeyUnwrapError` when the removed readerB decodes a post-rotation envelope, but
+gets `UnknownEpochError` -- readerB holds no epoch-2 candidate key, so the
+codec's fail-fast unroutable-envelope path (the stale-descriptor signal) fires
+before any unwrap attempt. Reproduced from a clean HEAD worktree against
+was-teaching-server 0.21.0, so it is not caused by the WCL-8 changes; but the
+suite ran green live on 2026-07-31 (after the fail-fast landed), so the drift's
+origin is unresolved. Note the test hands readerB the _rotated_ descriptor, for
+which `UnknownEpochError` ("your descriptor may be stale") reads semantically
+off -- readerB's descriptor is current, it is simply no longer a recipient; if
+the investigation lands on distinguishing those cases, that is a codec
+error-contract change and this item gains `touches:` entries for it.
+
+The drift reproduced identically on the 2026-08-12 live verification runs for
+WCL-1 Stage B and WCL-10 (same assertion, same errors), confirming it is
+independent of those changes.
+
+Resolution (2026-08-12). Git archaeology settled the "origin unresolved" note:
+the assertion has been byte-identical since 2026-07-11, and the 2026-07-31 green
+run was genuine -- the codec-level fail-fast only landed 2026-08-06 (shipped in
+0.27.1) and threw `UnknownEpochError` for every unroutable envelope without
+updating this test. (The "after the fail-fast landed" clause above conflated it
+with the sync DocCipher routing signal from 2026-07-22, which this test never
+exercises: it calls `codec.decode()` directly.) The investigation did land on
+distinguishing the cases. Decrypt routing now raises `KeyUnwrapError` when the
+envelope's epoch is on the descriptor but wraps to no key this reader holds
+(readerB's case: its descriptor is current, it is simply not a recipient), and
+reserves `UnknownEpochError` for an epoch the descriptor does not list
+(genuinely stale; a re-read can help). `EdvCodec` gained the required `epochIds`
+option to carry the descriptor's full epoch roster; the `/sync` subpath
+re-exports `KeyUnwrapError` / `EncryptionError` so crypto-free consumers can
+classify the membership signal; node coverage pins both halves of the split and
+the integration suite ran green against a live was-teaching-server 0.21.0. A
+downstream-consumer survey found no unbounded refresh loops anywhere (every
+guard is one-shot and rethrows non-`UnknownEpoch` errors); the one real hazard
+-- freewallet's purgeable bucket -- is fixed per its `touches:` entry.
