@@ -155,7 +155,7 @@ function clientWithRouter({
  * in a fake `{ jwe }` envelope and `decodeMeta` unwraps it, mirroring how a real
  * encrypting codec keeps `name`/`tags` off the wire.
  */
-function fakeCodec(log: string[]): ResourceCodec {
+function fakeCodec(log: string[], epoch?: string): ResourceCodec {
   return {
     async encode({ id, data }): Promise<EncodedWrite> {
       log.push(`encode:${id ?? 'mint'}`)
@@ -169,12 +169,17 @@ function fakeCodec(log: string[]): ResourceCodec {
       log.push('decode')
       return { decrypted: true }
     },
-    async encodeMeta({ custom }): Promise<{ custom: object }> {
+    async encodeMeta({ custom, id }): Promise<{ custom: object }> {
       log.push('encodeMeta')
-      return { custom: { jwe: custom } }
+      log.push(`encodeMeta:id=${id ?? 'none'}`)
+      return {
+        custom: { jwe: custom },
+        ...(epoch !== undefined && { epoch })
+      }
     },
-    async decodeMeta({ custom }): Promise<ResourceMetadataCustom> {
+    async decodeMeta({ custom }, expectedId): Promise<ResourceMetadataCustom> {
       log.push('decodeMeta')
+      log.push(`decodeMeta:id=${expectedId ?? 'none'}`)
       return ((custom as { jwe?: unknown })?.jwe ??
         {}) as ResourceMetadataCustom
     }
@@ -709,6 +714,86 @@ describe('codec seam: encrypted metadata round-trips through the codec', () => {
       .resource('r')
       .setMeta({ custom: { name: 'ok' } })
     const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({ custom: { name: 'ok' } })
+  })
+})
+
+describe('codec seam: Collection-level metadata routes through the codec', () => {
+  it('setMeta encrypts custom via the codec (no plaintext name/tags on the wire)', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    const { client, calls } = clientWithRouter({ encryption })
+    await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .setMeta({ custom: { name: 'x', tags: { a: 'b' } } })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.url).toBe('https://was.example/space/s/c/meta')
+    expect(write?.json).toEqual({
+      custom: { jwe: { name: 'x', tags: { a: 'b' } } }
+    })
+    // The Collection metadata slot belongs to no resource, so the codec is
+    // called with no id.
+    expect(log).toContain('encodeMeta:id=none')
+  })
+
+  it('meta decrypts the stored custom envelope back to plaintext', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    const { client } = clientWithRouter({
+      encryption,
+      readData: {
+        createdBy: 'did:example:alice',
+        custom: { jwe: { name: 'decoded' } }
+      }
+    })
+    const meta = await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .meta()
+    expect(meta?.custom).toEqual({ name: 'decoded' })
+    expect(log).toContain('decodeMeta:id=none')
+  })
+
+  it('carries the codec epoch as a top-level body member on the PUT', async () => {
+    // A Collection metadata write stamps its key epoch in the BODY (the
+    // `Key-Epoch` header channel is for content writes), and an omitted member
+    // clears the server's stored stamp.
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log, 'did:key:zEpoch1')
+      }
+    }
+    const { client, calls } = clientWithRouter({ encryption })
+    await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .setMeta({ custom: { name: 'x' } })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({
+      custom: { jwe: { name: 'x' } },
+      epoch: 'did:key:zEpoch1'
+    })
+    expect(write?.headers?.['key-epoch']).toBeUndefined()
+  })
+
+  it('setMeta still works on a plaintext (no-provider) collection', async () => {
+    const { client, calls } = clientWithRouter()
+    await client
+      .space('s')
+      .collection('c')
+      .setMeta({ custom: { name: 'ok' } })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.url).toBe('https://was.example/space/s/c/meta')
     expect(write?.json).toEqual({ custom: { name: 'ok' } })
   })
 })

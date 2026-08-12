@@ -315,6 +315,125 @@ describe('resource.setMeta()', () => {
   })
 })
 
+describe('collection.meta()', () => {
+  it('GETs the collection meta endpoint and returns the metadata object', async () => {
+    const meta = {
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-02T00:00:00Z',
+      createdBy: 'did:example:alice',
+      custom: { name: 'Notes' }
+    }
+    const { client, calls } = clientWithRequestSpy({ data: meta })
+    const result = await client.space('s').collection('c').meta()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual(meta)
+  })
+
+  it('reports custom as {} when the server omitted it (no metadata written)', async () => {
+    // The server omits `custom` entirely while it is empty, so the decode side
+    // must normalize the absent member rather than surfacing `undefined`.
+    const { client } = clientWithRequestSpy({
+      data: { createdBy: 'did:example:alice' }
+    })
+    const result = await client.space('s').collection('c').meta()
+    expect(result?.custom).toEqual({})
+  })
+
+  it('returns null when the collection is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').collection('c').meta()).toBeNull()
+  })
+
+  it('throws a WasServerError on a 200 with no JSON body (not a raw TypeError)', async () => {
+    const { client } = clientWithRequestSpy({ data: undefined })
+    await expect(client.space('s').collection('c').meta()).rejects.toThrow(
+      WasServerError
+    )
+  })
+
+  it('carries the metaVersion etag when the backend versions metadata', async () => {
+    const { client } = clientWithRequestSpy({
+      data: { custom: { name: 'Notes' } },
+      etag: '"3"'
+    })
+    const result = await client.space('s').collection('c').meta()
+    expect(result?.etag).toBe('"3"')
+  })
+})
+
+describe('collection.setMeta()', () => {
+  it('PUTs the custom object to the collection meta endpoint', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client
+      .space('s')
+      .collection('c')
+      .setMeta({ custom: { name: 'Notes', tags: { project: 'demo' } } })
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta')
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.json).toEqual({
+      custom: { name: 'Notes', tags: { project: 'demo' } }
+    })
+    // The identity codec surfaces no key epoch, so the body carries no `epoch`
+    // member -- which is what tells the server to clear any stored stamp.
+    expect(calls[0]?.json).not.toHaveProperty('epoch')
+  })
+
+  it('clears the custom object when called with no argument', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client.space('s').collection('c').setMeta()
+    expect(calls[0]?.json).toEqual({ custom: {} })
+  })
+
+  it('sends If-Match when pinned to a prior etag', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client
+      .space('s')
+      .collection('c')
+      .setMeta({ custom: { name: 'Notes' } }, { ifMatch: '"2"' })
+    expect(calls[0]?.headers?.['if-match']).toBe('"2"')
+  })
+})
+
+describe('collection.setName() / setTags()', () => {
+  it('setName() preserves existing tags (read-modify-write)', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: { custom: { name: 'Old', tags: { project: 'demo' } } }
+    })
+    await client.space('s').collection('c').setName('New')
+    // First call is the GET (meta), second is the PUT.
+    expect(calls[1]?.method).toBe('PUT')
+    expect(calls[1]?.json).toEqual({
+      custom: { name: 'New', tags: { project: 'demo' } }
+    })
+  })
+
+  it('setTags() preserves the existing name (read-modify-write)', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: { custom: { name: 'Keep', tags: { project: 'demo' } } }
+    })
+    await client.space('s').collection('c').setTags({ status: 'final' })
+    expect(calls[1]?.json).toEqual({
+      custom: { name: 'Keep', tags: { status: 'final' } }
+    })
+  })
+
+  it('setName() pins the write to the meta etag (lost-update guard)', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: { custom: { name: 'Old' } },
+      etag: '"meta-v1"'
+    })
+    await client.space('s').collection('c').setName('New')
+    expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
+  })
+
+  it('setName() omits If-Match when the backend returned no etag', async () => {
+    const { client, calls } = clientWithRequestSpy({ data: { custom: {} } })
+    await client.space('s').collection('c').setName('New')
+    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
+  })
+})
+
 describe('resource.setName() / setTags()', () => {
   it('setName() preserves existing tags (read-modify-write)', async () => {
     const { client, calls } = clientWithRequestSpy({
@@ -800,7 +919,16 @@ describe('Resource reserved-id guard (path-collision safety)', () => {
     // synchronously, before any request, for every reserved segment that
     // collides with a collection-level path.
     const { client, calls } = clientWithRequestSpy()
-    for (const reserved of ['policy', 'backend', 'quota', 'linkset', 'query']) {
+    for (const reserved of [
+      'policy',
+      'backend',
+      'quota',
+      'linkset',
+      'query',
+      // `meta` joined the registry with the Collection metadata endpoint:
+      // `resource('meta')` would target `/space/s/c/meta`.
+      'meta'
+    ]) {
       expect(() =>
         client.space('s').collection('c').resource(reserved)
       ).toThrow(ValidationError)

@@ -20,6 +20,7 @@
   - [Revoking a capability](#revoking-a-capability)
   - [Public sharing and access-control policies](#public-sharing-and-access-control-policies)
   - [Resource metadata](#resource-metadata)
+  - [Collection metadata](#collection-metadata)
   - [Conditional writes (optimistic concurrency)](#conditional-writes-optimistic-concurrency)
   - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
   - [Registering a Bring-Your-Own-Storage backend](#registering-a-bring-your-own-storage-backend)
@@ -243,6 +244,11 @@ await collection.delete() // deletes the whole collection; idempotent
 To delete a single resource instead of the whole collection, use
 `collection.resource(id).delete()`.
 
+The Description's `name` is server-visible plaintext. An encrypted collection
+leaves it unpopulated by convention and carries its name and tags on the
+[Collection metadata](#collection-metadata) surface instead, where they are
+encrypted.
+
 An application that provisions a collection can record who it was provisioned
 for, with the optional `generator` (the application's DID) and `generatorOrigin`
 (the Web origin that DID was bound to) description fields. Both are accepted at
@@ -462,6 +468,39 @@ await resource.setTags({ status: 'verified' }) // keeps existing name
 The `custom.name` is the same value surfaced as a resource's `name` in
 collection listings; updating one updates the other.
 
+### Collection metadata
+
+A Collection has the same metadata surface at its own reserved `/meta` path:
+server-managed properties (`createdAt` / `updatedAt` / `createdBy`) plus a
+user-writable `custom` object (`name` and `tags`). A server without the endpoint
+surfaces its 501 as `NotImplementedError`.
+
+```ts
+const meta = await collection.meta() // CollectionMetadata | null (null on a miss)
+
+// setMeta() is a full replacement of `custom`; omitted properties are cleared.
+await collection.setMeta({ custom: { name: 'Vault', tags: { app: 'wallet' } } })
+
+// setName() / setTags() are read-modify-write sugar that preserve the other.
+await collection.setName('Renamed vault') // keeps existing tags
+await collection.setTags({ app: 'wallet' }) // keeps existing name
+
+// Conditional metadata write, against a `conditional-writes` backend.
+await collection.setMeta({ custom: { name: 'Vault' } }, { ifMatch: meta?.etag })
+// ...or write only if no metadata is set yet:
+await collection.setMeta({ custom: { name: 'Vault' } }, { ifNoneMatch: true })
+```
+
+A failed precondition throws `PreconditionFailedError` (412). This `/meta` ETag
+(`metaVersion`) is versioned independently of the Collection Description's ETag
+and of every Resource's versions: writing one never bumps the other.
+
+On an encrypted collection `custom` is encrypted into an envelope before it is
+sent, so `name` / `tags` are never stored as server-visible plaintext, and
+`meta()` decrypts them back for a keyed reader. This is the encrypted
+collection's name/tags surface: by convention the plaintext Description `name`
+is left unpopulated there.
+
 ### Conditional writes (optimistic concurrency)
 
 Against a backend that advertises the `conditional-writes` feature (see below),
@@ -678,6 +717,11 @@ scope for now):
   encrypted into an envelope before it is sent, so the server never sees the
   plaintext, and `meta()` decrypts it back for a keyed reader. The `/meta`
   endpoint has its own ETag (`metaVersion`), independent of the content ETag.
+  The same pair at Collection level (`collection.setName()` / `setTags()` /
+  `setMeta()` / `meta()`) is where an encrypted collection carries its own name
+  and tags, since the Description's plaintext `name` is left unpopulated; the
+  collection-level envelope binds no resource id, and a resource-bound envelope
+  served into that slot is refused.
 - **Binary.** A small `Blob`/`Uint8Array` is encrypted as a single document;
   larger binaries are rejected until chunked encrypted blobs land.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches

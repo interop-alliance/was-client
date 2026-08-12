@@ -168,13 +168,19 @@ export interface ResourceCodec {
    * @param [input.id] {string}   the resource id the metadata belongs to. An
    *   encrypting codec binds it into the metadata envelope's AEAD-authenticated
    *   protected header (so a server-side swap of two resources' metadata is
-   *   detected on decode); the identity codec ignores it.
-   * @returns {Promise<{ custom: object }>}   the value to store under `custom`
+   *   detected on decode); the identity codec ignores it. Absent for a
+   *   Collection-level metadata write, which belongs to no resource.
+   * @returns {Promise<{ custom: object; epoch?: string }>}   the value to store
+   *   under `custom`, plus -- for an encrypting codec -- `epoch`, the key-epoch
+   *   id the metadata envelope sealed under. A Collection-level `/meta` write
+   *   forwards it as the PUT body's top-level `epoch` stamp (the server clears
+   *   the stamp when it is omitted, so it must be sent on every encrypted
+   *   Collection metadata write). Absent for a plaintext/identity codec.
    */
   encodeMeta(input: {
     custom: ResourceMetadataCustom
     id?: string
-  }): Promise<{ custom: object }>
+  }): Promise<{ custom: object; epoch?: string }>
 
   /**
    * Inverts {@link encodeMeta}: transforms the stored `custom` value read from

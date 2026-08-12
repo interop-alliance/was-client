@@ -35,12 +35,18 @@ import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { Collection } from '../Collection.js'
 import type { Space } from '../Space.js'
 import { EDV_SCHEME_VERSION } from './constants.js'
-import { PreconditionFailedError, ValidationError } from '../errors.js'
+import {
+  EncryptionError,
+  PreconditionFailedError,
+  ValidationError
+} from '../errors.js'
 import { collectionDescriptorStore } from './descriptorStore.js'
 import type { EncryptionDescriptorStore } from './descriptorStore.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionEpoch,
+  CollectionEncryptionHmac,
+  EncryptionWithHmac,
   IDelegatedZcap
 } from '../types.js'
 import {
@@ -50,6 +56,7 @@ import {
   wrapEpochSecret
 } from './epochCrypto.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
+import { mintHmacKey } from './hmacKey.js'
 
 export type { RecipientPublicKey } from './epochCrypto.js'
 
@@ -184,21 +191,153 @@ async function rotateEpoch({
  *   being extended
  * @param options.epoch {CollectionEncryptionEpoch}   the first epoch, already
  *   wrapped to its recipients
- * @returns {CollectionEncryption}   the descriptor to write
+ * @param [options.hmac] {CollectionEncryptionHmac}   the blinded-index key to
+ *   install alongside the first epoch (provisioning-time only); a descriptor
+ *   that already carries one keeps it
+ * @returns {EncryptionWithHmac}   the descriptor to write
  */
 function withFirstEpoch({
   descriptor,
-  epoch
+  epoch,
+  hmac
 }: {
-  descriptor: CollectionEncryption
+  descriptor: EncryptionWithHmac
   epoch: CollectionEncryptionEpoch
-}): CollectionEncryption {
+  hmac?: CollectionEncryptionHmac
+}): EncryptionWithHmac {
+  const installedHmac = descriptor.hmac ?? hmac
   return {
     ...descriptor,
     version: descriptor.version ?? EDV_SCHEME_VERSION,
     epochs: [epoch],
-    currentEpoch: epoch.id
+    currentEpoch: epoch.id,
+    ...(installedHmac !== undefined && { hmac: installedHmac })
   }
+}
+
+/**
+ * Mints the collection's blinded-index HMAC key and wraps its secret to each
+ * initial recipient, building the descriptor's `hmac` member. The wrap is the
+ * epoch wrap verbatim ({@link wrapEpochSecret}): one wrap shape for every
+ * secret a recipient receives.
+ *
+ * @param options {object}
+ * @param options.recipients {RecipientPublicKey[]}   the initial readers'
+ *   public key-agreement keys
+ * @returns {Promise<CollectionEncryptionHmac>}
+ */
+async function mintHmacRoster({
+  recipients
+}: {
+  recipients: RecipientPublicKey[]
+}): Promise<CollectionEncryptionHmac> {
+  const { id, type, secret } = await mintHmacKey()
+  return {
+    id,
+    type,
+    recipients: await Promise.all(
+      recipients.map(recipient =>
+        wrapEpochSecret({ epochSecret: secret, recipient })
+      )
+    )
+  }
+}
+
+/**
+ * Escrows a recipient into the descriptor's blinded-index key: the caller
+ * unwraps the HMAC secret with its own key-agreement key and re-wraps it to the
+ * incoming reader, exactly as {@link escrowIntoEpochs} does per epoch. Returns
+ * `null` when nothing changes -- the descriptor carries no `hmac`, or the
+ * recipient already has an entry (idempotent).
+ *
+ * @param options {object}
+ * @param [options.hmac] {CollectionEncryptionHmac}   the descriptor's key
+ * @param options.recipient {RecipientPublicKey}   the reader being escrowed
+ * @param options.owner {object}   the caller's own key material
+ * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps the HMAC
+ *   secret for re-wrapping
+ * @param options.operation {string}   the calling operation's name, as the
+ *   error messages name it
+ * @param options.reader {string}   how those messages name the incoming reader
+ * @returns {Promise<CollectionEncryptionHmac | null>}
+ */
+async function escrowIntoHmac({
+  hmac,
+  recipient,
+  owner,
+  operation,
+  reader
+}: {
+  hmac?: CollectionEncryptionHmac
+  recipient: RecipientPublicKey
+  owner: { keyAgreementKey: IKeyAgreementKey }
+  operation: string
+  reader: string
+}): Promise<CollectionEncryptionHmac | null> {
+  if (!hmac) {
+    return null
+  }
+  if (hmac.recipients.some(entry => entry.header.kid === recipient.id)) {
+    return null
+  }
+  const ownEntry = hmac.recipients.find(
+    entry => entry.header.kid === owner.keyAgreementKey.id
+  )
+  if (!ownEntry) {
+    throw new ValidationError(
+      `Cannot ${operation}: the caller is not a recipient of this ` +
+        "collection's blinded-index key, so it cannot escrow that key to the " +
+        `${reader} reader.`
+    )
+  }
+  const secret = await unwrapEpochSecret({
+    entry: ownEntry,
+    keyAgreementKey: owner.keyAgreementKey
+  })
+  if (!secret) {
+    throw new ValidationError(
+      `Cannot ${operation}: unwrapping the blinded-index key with the ` +
+        "caller's key-agreement key failed."
+    )
+  }
+  return {
+    ...hmac,
+    recipients: [
+      ...hmac.recipients,
+      await wrapEpochSecret({ epochSecret: secret, recipient })
+    ]
+  }
+}
+
+/**
+ * Drops the departing kid(s) from the descriptor's blinded-index key roster.
+ * Housekeeping only: the key itself never rotates (blinded tokens must compare
+ * across the collection's whole history), so a removed recipient keeps the
+ * blinding key it already holds -- an accepted revocation asymmetry. Returns
+ * `null` when nothing changes (no `hmac`, or no entry for those kids).
+ *
+ * @param options {object}
+ * @param [options.hmac] {CollectionEncryptionHmac}   the descriptor's key
+ * @param options.retiring {string[]}   the departing recipients' kids
+ * @returns {CollectionEncryptionHmac | null}
+ */
+function withoutHmacRecipients({
+  hmac,
+  retiring
+}: {
+  hmac?: CollectionEncryptionHmac
+  retiring: string[]
+}): CollectionEncryptionHmac | null {
+  if (!hmac) {
+    return null
+  }
+  const remaining = hmac.recipients.filter(
+    entry => !retiring.includes(entry.header.kid)
+  )
+  if (remaining.length === hmac.recipients.length) {
+    return null
+  }
+  return { ...hmac, recipients: remaining }
 }
 
 /**
@@ -265,6 +404,13 @@ async function mintFirstEpoch({
  * @param [options.store] {EncryptionDescriptorStore}   an explicit descriptor store
  * @param options.recipients {RecipientPublicKey[]}   the initial readers' public
  *   key-agreement keys (each `id` is the reader's `kid`)
+ * @param [options.blindedIndex] {boolean}   install the collection's
+ *   blinded-index HMAC key alongside epoch[0], wrapped to the same initial
+ *   recipients (default `false`). Greenfield only: the key is installed at
+ *   provisioning or never -- asking for it on a descriptor that already carries
+ *   an epoch roster without one throws {@link EncryptionError}, while a
+ *   descriptor that already carries one is adopted as-is (so a torn
+ *   provisioning run still heals by re-running this with the same option).
  * @returns {Promise<{ descriptor: CollectionEncryption, installed: boolean }>}
  *   the collection's epoch-bearing descriptor, and whether this call installed
  *   its epoch[0] (`false` means an existing roster was adopted)
@@ -272,11 +418,13 @@ async function mintFirstEpoch({
 export async function ensureFirstEpoch({
   collection,
   store,
-  recipients
+  recipients,
+  blindedIndex = false
 }: {
   collection?: Collection
   store?: EncryptionDescriptorStore
   recipients: RecipientPublicKey[]
+  blindedIndex?: boolean
 }): Promise<{ descriptor: CollectionEncryption; installed: boolean }> {
   if (recipients.length === 0) {
     throw new ValidationError(
@@ -285,21 +433,39 @@ export async function ensureFirstEpoch({
   }
   let installed = false
   // Staged on the first attempt that finds no roster to adopt, and reused by
-  // any later attempt, so a CAS retry does not mint a second epoch key.
-  let staged: Promise<CollectionEncryptionEpoch> | null = null
+  // any later attempt, so a CAS retry does not mint a second epoch key (nor a
+  // second blinded-index key).
+  let staged: Promise<{
+    epoch: CollectionEncryptionEpoch
+    hmac?: CollectionEncryptionHmac
+  }> | null = null
   const descriptor = await casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
     mutate: async descriptor => {
-      if (descriptor.epochs && descriptor.epochs.length > 0) {
+      const current: EncryptionWithHmac = descriptor
+      if (current.epochs && current.epochs.length > 0) {
         // Another provisioner's install already landed (possibly winning the
         // create/CAS race against this very call): adopt its roster as-is.
         installed = false
+        if (blindedIndex && current.hmac === undefined) {
+          throw new EncryptionError(
+            'Cannot install a blinded-index key on this collection: it ' +
+              'already carries a key epoch roster without one. The key is ' +
+              'installed at collection provisioning or never (blinded tokens ' +
+              "must compare across the collection's whole history), so an " +
+              'indexable collection is a property fixed at birth.'
+          )
+        }
         return null
       }
       installed = true
-      staged ??= mintFirstEpoch({ recipients })
-      return withFirstEpoch({ descriptor, epoch: await staged })
+      staged ??= (async () => ({
+        epoch: await mintFirstEpoch({ recipients }),
+        ...(blindedIndex && { hmac: await mintHmacRoster({ recipients }) })
+      }))()
+      const { epoch, hmac } = await staged
+      return withFirstEpoch({ descriptor: current, epoch, hmac })
     }
   })
   return { descriptor, installed }
@@ -379,8 +545,10 @@ export async function initRecipients({
  * included. No rotation happens -- **adds are cheap, removals rotate.**
  *
  * The caller must itself be a recipient of every epoch (its `owner` key unwraps
- * each epoch key, which is then re-wrapped to the new reader). Written back with
- * a compare-and-swap, retried on a concurrent change.
+ * each epoch key, which is then re-wrapped to the new reader). Where the
+ * descriptor also carries a blinded-index HMAC key, the new reader receives
+ * that key the same way, in the same write. Written back with a
+ * compare-and-swap, retried on a concurrent change.
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the collection whose Description
@@ -406,7 +574,8 @@ export async function addRecipient({
   return casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     mutate: async descriptor => {
-      const epochs = descriptor.epochs
+      const current: EncryptionWithHmac = descriptor
+      const epochs = current.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
           'Cannot addRecipient: this collection has no key epochs. Call ' +
@@ -420,7 +589,21 @@ export async function addRecipient({
         operation: 'addRecipient',
         reader: 'new'
       })
-      return { ...descriptor, epochs: nextEpochs }
+      // The blinded-index key rides the same compare-and-swap write as the
+      // epoch escrow -- never a second write. `null` means unchanged (no key,
+      // or this recipient already has an entry).
+      const nextHmac = await escrowIntoHmac({
+        hmac: current.hmac,
+        recipient,
+        owner,
+        operation: 'addRecipient',
+        reader: 'new'
+      })
+      return {
+        ...current,
+        epochs: nextEpochs,
+        ...(nextHmac !== null && { hmac: nextHmac })
+      }
     }
   })
 }
@@ -454,6 +637,11 @@ export async function addRecipient({
  * Important: this does not re-encrypt existing resources, so the removed
  * reader keeps every earlier epoch's key and can still decrypt any pre-rotation
  * resource whose ciphertext it gets. Neither half alone removes a reader.
+ *
+ * Where the descriptor carries a blinded-index HMAC key, the removed reader's
+ * wrap entry is dropped from it in the same write -- housekeeping only. That
+ * key never rotates (blinded tokens must compare across the collection's whole
+ * history), so the removed reader keeps the blinding key it already holds.
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the collection whose Description
@@ -510,12 +698,22 @@ export async function removeRecipient({
   const rotatedDescriptor = await casUpdateDescriptor({
     store: descriptorStore,
     mutate: async descriptor => {
-      const epochs = descriptor.epochs
+      const current: EncryptionWithHmac = descriptor
+      const epochs = current.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
           'Cannot removeRecipient: this collection has no key epochs.'
         )
       }
+      // Housekeeping on the blinded-index roster, in the same write as the
+      // rotation: drop the leaver's wrap entry. The key itself does NOT rotate
+      // (blinded tokens must compare across the collection's whole history),
+      // so the removed recipient keeps the blinding key it already holds -- an
+      // accepted revocation asymmetry.
+      const nextHmac = withoutHmacRecipients({
+        hmac: current.hmac,
+        retiring: [recipientId]
+      })
       // Remaining recipients: the CURRENT epoch's recipients (the authoritative
       // roster by construction), minus the removed reader. Deliberately NOT the
       // union across all epochs -- a reader dropped in an earlier rotation is
@@ -533,7 +731,9 @@ export async function removeRecipient({
       if (
         !currentEpoch.recipients.some(entry => entry.header.kid === recipientId)
       ) {
-        return null
+        // Still write when only the blinded-index roster needs the leaver
+        // dropped (e.g. a prior attempt rotated but its pull step failed).
+        return nextHmac === null ? null : { ...current, hmac: nextHmac }
       }
       const remaining = new Set<string>()
       for (const entry of currentEpoch.recipients) {
@@ -565,9 +765,10 @@ export async function removeRecipient({
         )
       }
       return {
-        ...descriptor,
+        ...current,
         epochs: [...epochs, newEpoch],
-        currentEpoch: epochId
+        currentEpoch: epochId,
+        ...(nextHmac !== null && { hmac: nextHmac })
       }
     }
   })
@@ -604,6 +805,10 @@ export async function removeRecipient({
  *
  * The rotation ceiling is unchanged: nothing is re-encrypted, so a retired
  * key still opens every pre-rotation epoch it was a recipient of.
+ *
+ * A blinded-index HMAC key on the descriptor follows the same shape in the same
+ * write: the incoming recipient gains a wrap entry, the retiring kid(s) lose
+ * theirs, and the key itself never rotates.
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the collection whose Description
@@ -667,12 +872,28 @@ export async function replaceRecipient({
   const rotatedDescriptor = await casUpdateDescriptor({
     store: descriptorStore,
     mutate: async descriptor => {
-      const epochs = descriptor.epochs
+      const current: EncryptionWithHmac = descriptor
+      const epochs = current.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
           'Cannot replaceRecipient: this collection has no key epochs.'
         )
       }
+      // The blinded-index roster mirrors the epoch semantics in the same
+      // write: the successor gains a wrap entry, the retiring kid(s) lose
+      // theirs. The key itself never rotates.
+      const escrowedHmac = await escrowIntoHmac({
+        hmac: current.hmac,
+        recipient,
+        owner,
+        operation: 'replaceRecipient',
+        reader: 'incoming'
+      })
+      const nextHmac =
+        withoutHmacRecipients({
+          hmac: escrowedHmac ?? current.hmac,
+          retiring
+        }) ?? escrowedHmac
       // Escrow the incoming recipient into every epoch it is missing from
       // (addRecipient's escrow, so the whole replacement is one write).
       const { epochs: escrowed, changed: escrowChanged } =
@@ -692,7 +913,14 @@ export async function replaceRecipient({
         retiring.includes(entry.header.kid)
       )
       if (!rotating) {
-        return escrowChanged ? { ...descriptor, epochs: escrowed } : null
+        if (!escrowChanged && nextHmac === null) {
+          return null
+        }
+        return {
+          ...current,
+          ...(escrowChanged && { epochs: escrowed }),
+          ...(nextHmac !== null && { hmac: nextHmac })
+        }
       }
       const remaining = new Set<string>()
       for (const entry of currentEpoch.recipients) {
@@ -712,9 +940,10 @@ export async function replaceRecipient({
           kid === recipient.id ? recipient : resolveRecipientKey(kid)
       })
       return {
-        ...descriptor,
+        ...current,
         epochs: [...escrowed, newEpoch],
-        currentEpoch: epochId
+        currentEpoch: epochId,
+        ...(nextHmac !== null && { hmac: nextHmac })
       }
     }
   })

@@ -470,17 +470,30 @@ describe('addRecipient compare-and-swap retry', () => {
   })
 })
 
-describe('rotation preserves the blinded-index hmac reference', () => {
-  it('addRecipient and removeRecipient keep an unrelated descriptor field (e.g. hmac)', async () => {
+describe('rotation preserves the blinded-index hmac key', () => {
+  it('addRecipient and removeRecipient keep the hmac key identity', async () => {
     const alice = await makeReader()
     const bob = await makeReader()
     const seed = await mintEpoch()
-    // A descriptor carrying a blinded-index `hmac` reference (an opaque extra
-    // field the recipient ops must not disturb -- the hmac deliberately does
-    // NOT rotate with the epoch).
+    const hmacSecret = crypto.getRandomValues(new Uint8Array(32))
+    // A descriptor carrying a blinded-index key: the recipient ops edit only
+    // its wrap roster -- the key itself deliberately does NOT rotate with the
+    // epoch.
     const descriptor = {
       scheme: 'edv',
-      hmac: { id: 'urn:hmac:demo', type: 'Sha256HmacKey2019' },
+      hmac: {
+        id: 'urn:hmac:demo',
+        type: 'Sha256HmacKey2019',
+        recipients: [
+          await wrapEpochSecret({
+            epochSecret: hmacSecret,
+            recipient: {
+              id: alice.kak.id,
+              publicKeyMultibase: alice.publicKeyMultibase
+            }
+          })
+        ]
+      },
       epochs: [
         {
           id: seed.epochId,
@@ -521,10 +534,8 @@ describe('rotation preserves the blinded-index hmac reference', () => {
       recipient: { id: bob.kak.id, publicKeyMultibase: bob.publicKeyMultibase },
       owner: { keyAgreementKey: alice.kak }
     })
-    expect((afterAdd as unknown as { hmac?: unknown }).hmac).toEqual({
-      id: 'urn:hmac:demo',
-      type: 'Sha256HmacKey2019'
-    })
+    const addedHmac = (afterAdd as unknown as { hmac: { id: string } }).hmac
+    expect(addedHmac.id).toBe('urn:hmac:demo')
 
     const fakeSpace = { revoke: async () => undefined }
     const afterRemove = await removeRecipient({
@@ -533,12 +544,18 @@ describe('rotation preserves the blinded-index hmac reference', () => {
       recipientId: bob.kak.id,
       revoke: []
     })
-    // The epoch rotated (a new currentEpoch), but the hmac is unchanged.
+    // The epoch rotated (a new currentEpoch), but the hmac key is unchanged --
+    // only bob's wrap entry is dropped from its roster.
     expect(afterRemove.currentEpoch).not.toBe(seed.epochId)
-    expect((afterRemove as unknown as { hmac?: unknown }).hmac).toEqual({
-      id: 'urn:hmac:demo',
-      type: 'Sha256HmacKey2019'
-    })
+    const removedHmac = (
+      afterRemove as unknown as {
+        hmac: { id: string; recipients: CollectionEncryptionRecipient[] }
+      }
+    ).hmac
+    expect(removedHmac.id).toBe('urn:hmac:demo')
+    expect(removedHmac.recipients.map(entry => entry.header.kid)).toEqual([
+      alice.kak.id
+    ])
   })
 })
 

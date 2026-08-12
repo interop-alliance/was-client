@@ -1,5 +1,44 @@
 # @interop/was-client Changelog
 
+## 0.35.0 - TBD
+
+### Added
+
+- Collection-level metadata, mirroring the Resource `/meta` pair:
+  `collection.meta()` (reads `CollectionMetadata`, `null` on a miss),
+  `collection.setMeta({ custom }, { ifMatch, ifNoneMatch })` (a full replacement
+  of `custom`; `PreconditionFailedError` on a failed precondition), and the
+  read-then-CAS sugar `collection.setName(name)` / `collection.setTags(tags)`,
+  each preserving the other property and pinned to the metadata's own etag. The
+  Collection `/meta` ETag (`metaVersion`) is independent of the Collection
+  Description's ETag and of every Resource's versions.
+
+  Requires the Collection's server to implement the Collection metadata endpoint
+  (a server without it answers `501`, surfaced as `NotImplementedError`);
+  implemented by was-teaching-server 0.21.0.
+
+  On an encrypted Collection the user-writable `custom` (`name` / `tags`) rides
+  the codec's `encodeMeta` / `decodeMeta` envelope exactly as at Resource level,
+  so the server never sees plaintext `name` / `tags`. The collection-level
+  envelope binds the scheme version and key epoch but no resource id, and the
+  decode side rejects a resource-bound envelope served into the collection slot.
+  `setMeta` sends the sealing epoch as the PUT body's top-level `epoch` stamp; a
+  plaintext collection sends none.
+
+- `collectionMeta(spaceId, collectionId)` path builder, exported from the
+  `./paths` subpath.
+- Re-export the `CollectionMetadata` type from `@interop/storage-core`.
+- `ResourceCodec.encodeMeta`'s result gained an optional `epoch` member -- the
+  key-epoch id the metadata envelope sealed under. Absent for the identity
+  codec.
+
+### Changed
+
+- Update to latest `@interop/storage-core@0.8.0`.
+- `meta` is now a reserved Resource id: `collection.resource('meta')` throws,
+  since `/space/{spaceId}/{collectionId}/meta` is the Collection metadata
+  endpoint.
+
 ## 0.34.0 - 2026-08-11
 
 ### Added

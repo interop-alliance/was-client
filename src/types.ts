@@ -48,6 +48,7 @@ export type {
   CollectionResourcesList,
   ResourceMetadata,
   ResourceMetadataCustom,
+  CollectionMetadata,
   ImportStats,
   BackendReference,
   BackendDescriptor,
@@ -64,6 +65,32 @@ import type {
   BackendReference,
   CollectionEncryption
 } from '@interop/storage-core'
+
+/**
+ * The Collection's blinded-index HMAC key, as it appears on the `encryption`
+ * descriptor: the key `id` (the value an envelope's `indexed[].hmac.id` and a
+ * blinded query's `index` name), its `type` (`'Sha256HmacKey2019'`), and the
+ * 32-byte HMAC secret wrapped once per recipient -- the same JWE `recipients`
+ * entry shape and `ECDH-ES+A256KW` wrap the epoch secrets use, so a recipient
+ * receives the blinding key exactly the way it receives epoch keys.
+ *
+ * The key is installed at Collection provisioning or never, and never rotates:
+ * blinded tokens must compare across the Collection's whole history. Removing a
+ * recipient drops its wrap entry as housekeeping only -- the key is unchanged,
+ * so a removed recipient keeps it (a documented revocation asymmetry).
+ *
+ * A named alias for the descriptor's own `hmac` member, so the blinding-key
+ * code can refer to the shape by name.
+ */
+export type CollectionEncryptionHmac = NonNullable<CollectionEncryption['hmac']>
+
+/**
+ * A `CollectionEncryption` descriptor known to carry the blinded-index `hmac`
+ * member. `CollectionEncryption` declares `hmac` natively, so this is now an
+ * alias; the name is kept because the blinding-key code reads better naming the
+ * member it works with.
+ */
+export type EncryptionWithHmac = CollectionEncryption
 
 /**
  * The client-writable fields of a Collection Description -- the shape shared

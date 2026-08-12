@@ -14,10 +14,12 @@ import {
   collectionBackend,
   collectionQuota,
   collectionQuery,
+  collectionMeta,
   resourcePath,
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
+import { WasServerError } from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
@@ -56,6 +58,7 @@ import type {
   BackendDescriptor,
   BackendUsage,
   CollectionDescription,
+  CollectionMetadata,
   CollectionWritableFields,
   EncryptionOverride,
   GrantOptions,
@@ -67,6 +70,7 @@ import type {
   LinkSet,
   PolicyDocument,
   CollectionResourcesList,
+  ResourceMetadataCustom,
   ResourceSummary
 } from './types.js'
 
@@ -368,6 +372,184 @@ export class Collection {
       capability: this.#capability,
       idempotent: true
     })
+  }
+
+  get #metaPath(): string {
+    return collectionMeta(this.spaceId, this.id)
+  }
+
+  /**
+   * Reads the Collection's metadata object (server-managed timestamps,
+   * `createdBy` and the encrypted-`custom` key `epoch`, plus the user-writable
+   * `custom` object). Returns `null` if the collection is missing or not
+   * visible to you (404 conflation caveat). A server without Collection
+   * metadata support surfaces its 501 as `NotImplementedError`.
+   *
+   * On an encrypted collection the stored `custom` is an opaque envelope; this
+   * decodes it (decrypts, via the codec) so a caller always sees plaintext
+   * `{ name, tags }`. A collection with no user metadata reports `custom` as
+   * `{}`.
+   *
+   * Against a backend with the `conditional-writes` feature the result also
+   * carries the metadata's current `etag` (the `/meta` `metaVersion`
+   * validator) -- pass it as `setMeta(meta, { ifMatch })` for a
+   * lost-update-safe metadata update. That validator is independent of the
+   * Collection Description's ETag ({@link describeWithEtag}) and of every
+   * Resource's versions: writing one never bumps the other.
+   *
+   * @returns {Promise<(CollectionMetadata & { etag?: string }) | null>}
+   */
+  async meta(): Promise<(CollectionMetadata & { etag?: string }) | null> {
+    // Overlapped like `Resource.meta()`: the metadata GET does not depend on
+    // the codec (only its `custom` decode below does), the codec is awaited
+    // first for error precedence, and the no-op handler keeps an abandoned read
+    // from becoming an unhandled rejection.
+    const codecPromise = this.#codec()
+    const responsePromise = send(this.#context, {
+      path: this.#metaPath,
+      method: 'GET',
+      capability: this.#capability,
+      read: true
+    })
+    responsePromise.catch(() => {})
+    const codec = await codecPromise
+    const response = await responsePromise
+    if (response === null) {
+      return null
+    }
+    if (response.data === undefined) {
+      // A 200 whose body `@interop/http-client` did not pre-parse into `.data`
+      // (a non-JSON content-type, or an empty/204 body): a metadata document
+      // always carries its server-managed fields as JSON, so an absent `.data`
+      // is a malformed response. Fail with a typed error rather than
+      // dereferencing `metadata.custom` off `undefined` as a raw `TypeError`.
+      // (Kept distinct from the `null` return, which means the collection is
+      // missing or not visible -- not that the server answered malformed.)
+      throw new WasServerError(
+        `Metadata response for collection "${this.id}" carried no JSON body ` +
+          `(content-type ` +
+          `"${response.headers.get('content-type') ?? 'unknown'}").`
+      )
+    }
+    const metadata = response.data as CollectionMetadata
+    // Decode the user-writable `custom` (decrypting it on an encrypted
+    // collection) so callers uniformly see plaintext `{ name, tags }`. No
+    // resource id is passed: this slot belongs to the collection itself, and
+    // the encrypting codec refuses a resource-bound envelope served here.
+    const custom = await codec.decodeMeta({ custom: metadata.custom })
+    const decoded = { ...metadata, custom }
+    const etag = readEtag(response)
+    return etag !== undefined ? { ...decoded, etag } : decoded
+  }
+
+  /**
+   * Replaces the Collection's user-writable metadata (`custom`). This is a full
+   * replacement: any property omitted from `custom` is cleared, and an omitted
+   * `custom` clears them all. Does not create the collection -- a `PUT` to the
+   * metadata of a nonexistent collection throws `NotFoundError`. Servers
+   * without Collection metadata support surface their 501 as
+   * `NotImplementedError`.
+   *
+   * On an encrypted collection `custom` is encrypted into an opaque envelope by
+   * the codec before it is sent, so `name` / `tags` are never stored as
+   * server-visible plaintext -- transparently, the same call works on plaintext
+   * and encrypted collections alike.
+   *
+   * Conditional metadata writes (the backend's `conditional-writes` feature):
+   * pass `ifMatch` (the `etag` from a prior `meta()`) for an
+   * update-if-unchanged, or `ifNoneMatch: true` for a
+   * write-only-if-no-metadata. A failed precondition throws
+   * `PreconditionFailedError` (412). The `/meta` ETag (`metaVersion`) is
+   * independent of the Collection Description's ETag. Returns the new `etag`.
+   *
+   * @param meta {object}
+   * @param [meta.custom] {ResourceMetadataCustom}   the user-writable properties
+   * @param options {object}
+   * @param [options.ifMatch] {string}       update only if the `/meta` ETag matches
+   * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
+   * @returns {Promise<{ etag?: string }>}   the metadata's new ETag
+   */
+  async setMeta(
+    meta: { custom?: ResourceMetadataCustom } = {},
+    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+  ): Promise<{ etag?: string }> {
+    const codec = await this.#codec()
+    const { custom, epoch } = await codec.encodeMeta({
+      custom: meta.custom ?? {}
+    })
+    const response = await send(this.#context, {
+      path: this.#metaPath,
+      method: 'PUT',
+      capability: this.#capability,
+      // The key epoch travels in the body here, not in the `Key-Epoch` header:
+      // the header channel stamps a Resource's *content* write, while the
+      // Collection metadata stamp describes the `custom` envelope itself and is
+      // a top-level member of this PUT body. The server clears the stored stamp
+      // when the member is omitted -- which is exactly right on a plaintext
+      // collection, whose codec surfaces no epoch.
+      json: epoch !== undefined ? { custom, epoch } : { custom },
+      headers: writeHeaders({
+        precondition: {
+          ifMatch: options.ifMatch,
+          ifNoneMatch: options.ifNoneMatch
+        }
+      })
+    })
+    return { etag: readEtag(response) }
+  }
+
+  /**
+   * The shared read-then-CAS body of {@link setName} / {@link setTags}: reads
+   * the current metadata, merges `patch` over its `custom`, and writes it back
+   * pinned to the read's `etag` (when the backend supports
+   * `conditional-writes`), so a concurrent metadata write surfaces as
+   * `PreconditionFailedError` instead of being silently erased by the
+   * full-replacement write.
+   *
+   * @param patch {ResourceMetadataCustom}   the properties to merge over the
+   *   current `custom`
+   * @returns {Promise<void>}
+   */
+  async #patchCustom(patch: ResourceMetadataCustom): Promise<void> {
+    const current = await this.meta()
+    await this.setMeta(
+      { custom: { ...current?.custom, ...patch } },
+      { ifMatch: current?.etag }
+    )
+  }
+
+  /**
+   * Sets the Collection's metadata-level human-readable `name`, preserving any
+   * existing `tags`. Convenience over `setMeta()`. The write is pinned to the
+   * `etag` the `meta()` read returned (when the backend supports
+   * `conditional-writes`), so a concurrent metadata write surfaces as
+   * `PreconditionFailedError` instead of being silently erased by this
+   * full-replacement write.
+   *
+   * On an encrypted collection this is the collection's client-encrypted name
+   * surface: the codec seals it into the `custom` envelope, and by convention
+   * the plaintext Description `name` is left unpopulated. On a plaintext
+   * collection the two are separate labels -- space-level listings surface the
+   * Description's `name` (set via `configure({ name })`), while this one is
+   * metadata-level.
+   *
+   * @param name {string}
+   * @returns {Promise<void>}
+   */
+  async setName(name: string): Promise<void> {
+    return this.#patchCustom({ name })
+  }
+
+  /**
+   * Sets the Collection's `tags`, preserving any existing `name`. Convenience
+   * over `setMeta()`. Pinned to the `meta()` read's `etag` like
+   * {@link setName}.
+   *
+   * @param tags {Record<string, string>}
+   * @returns {Promise<void>}
+   */
+  async setTags(tags: Record<string, string>): Promise<void> {
+    return this.#patchCustom({ tags })
   }
 
   /**

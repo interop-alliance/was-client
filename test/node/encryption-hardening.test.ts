@@ -402,6 +402,31 @@ describe('was binding: metadata envelope', () => {
       codec.decodeMeta({ custom }, 'zResourceB')
     ).rejects.toBeInstanceOf(IntegrityError)
   })
+
+  it('fails with IntegrityError when a resource envelope is served in the Collection slot', async () => {
+    const { codec } = await makeCodec()
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'For A' },
+      id: 'zResourceA'
+    })
+    // A `decodeMeta` with no expected id IS the Collection metadata slot (a
+    // Resource read always passes its id). A resource-bound envelope served
+    // there is a swap, whatever the resource id, so it is refused outright.
+    await expect(codec.decodeMeta({ custom })).rejects.toBeInstanceOf(
+      IntegrityError
+    )
+  })
+
+  it('fails with IntegrityError when the Collection envelope is served for a resource', async () => {
+    const { codec } = await makeCodec()
+    // A Collection metadata envelope binds no `was.resource`, so a read that
+    // expects a resource id falls into the content-derived branch and
+    // re-derives an id from the ciphertext -- which cannot match.
+    const { custom } = await codec.encodeMeta({ custom: { name: 'Shared' } })
+    await expect(
+      codec.decodeMeta({ custom }, 'zResourceA')
+    ).rejects.toBeInstanceOf(IntegrityError)
+  })
 })
 
 describe('was binding: per-envelope epoch label', () => {

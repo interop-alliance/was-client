@@ -48,39 +48,62 @@ increments (the `WasTransport` EDV mapping and the `ResourceCodec` /
 binding, chunked encrypted blobs end-to-end (transport binding plus the
 `caad: 1` per-chunk AAD hardening and JWE-sealed chunk counts), all three
 Cryptomator-comparison hardening items (the `was` protected-header binding, the
-`epochsMac` authenticated epoch configuration, and the scheme version), and the
-marker-store seam for the recipient primitives (the `MarkerStore` port with the
-Collection Description and plain-JSON-Resource adapters, the parameterized pull
-axis, the `resolveRecipientKey` skip contract, and `Resource.getWithEtag`;
-scoped by freewallet's FW-58, shipped in client 0.21.0; since renamed the
-encryption-descriptor store seam -- `EncryptionDescriptorStore` -- in 0.23.0)
-have shipped -- see the CHANGELOG. The spec-side write-ups for the hardening
-items are tracked as Reverse gaps in the server repo's ROADMAP.
+`epochsMac` authenticated epoch configuration -- since retired stack-wide in
+0.32.0, its coverage being a strict subset of log-chain verification -- and the
+scheme version), and the marker-store seam for the recipient primitives (the
+`MarkerStore` port with the Collection Description and plain-JSON-Resource
+adapters, the parameterized pull axis, the `resolveRecipientKey` skip contract,
+and `Resource.getWithEtag`; scoped by freewallet's FW-58, shipped in client
+0.21.0; since renamed the encryption-descriptor store seam --
+`EncryptionDescriptorStore` -- in 0.23.0) have shipped -- see the CHANGELOG. The
+spec-side write-ups for the hardening items are tracked as Reverse gaps in the
+server repo's ROADMAP.
 
 ### WCL-1: Content search for the codec path
 
-- status: todo
+- status: in-progress
 - priority: medium
 - labels: encryption, codec, query
 - touches:
   - encrypted-collections-spec -- the descriptor/epoch format gains index-key
     (HMAC) distribution: recipients must receive the blinding key the same way
-    they receive epoch keys, and the new member(s) must be covered by
-    `epochsMac`; plus a section specifying the `indexed` entries codec
-    envelopes carry
-  - wallet-attached-storage-spec -- expected unaffected (the `blinded-index`
-    query profile is already in the Query Profile Registry; document shape is
-    WAS-EC territory) -- verify and waive or update
-  - was-teaching-server -- server code expected unchanged (its
-    `blinded-index-query` already matches `indexed` entries for the
-    `EdvClientCore` path); conformance tests must gain codec-path coverage,
-    and its ROADMAP Reverse-gap cross-links updated
+    they receive epoch keys (on a log-governed descriptor the entry proof covers
+    the new member(s) automatically); plus a section specifying the `indexed`
+    entries codec envelopes carry; plus index-schema persistence (which
+    attributes are indexed, `unique`/compound flags), stored encrypted so a
+    later-added recipient can discover what is queryable (see prose). Two
+    decisions recorded 2026-08-12 (with FW-130) that the spec text must reflect:
+    the HMAC key is installed at collection provisioning or never (greenfield
+    only -- no mid-life key addition, so an indexable collection is a property
+    fixed at birth), and the key does not rotate on recipient removal (blinded
+    tokens must compare across the collection's history); the resulting
+    revocation asymmetry -- a removed recipient keeps the blinding key and can
+    confirm guessed attribute values if the server colludes -- needs Security
+    Considerations text
+  - wallet-attached-storage-spec -- the `blinded-index` query profile is already
+    in the Query Profile Registry and document shape is WAS-EC territory, but
+    the persisted index schema now needs the Collection-level `/meta` endpoints,
+    tracked as WASS-9 in that repo's `_spec/ROADMAP.md`
+  - was-teaching-server -- its `blinded-index-query` already matches `indexed`
+    entries for the `EdvClientCore` path, but the schema home needs the
+    Collection-level `/meta` endpoints (WAS-55 in its ROADMAP.md); conformance
+    tests must gain codec-path coverage, and its ROADMAP Reverse-gap cross-links
+    updated
   - freewallet -- the keystore (`wasRemoteStore` `resolveKeys`) must mint,
     custody, and distribute the HMAC key alongside the key-agreement key, and
-    provisioning (`ensureFirstEpoch`) must install it; needs its own FW-N item
-  - "@interop/edv-client" -- blinding already implemented (`IndexHelper`,
-    `hmac` params); verify a concrete HMAC key class (`id`/`sign`/`verify`) is
-    exported for consumers, or export one upstream (do not hand-roll here)
+    provisioning (`ensureFirstEpoch`) must install it; tracked as FW-130 in the
+    freewallet roadmap
+  - was-react -- `wasRemoteStore.queryCollectionByEquality` and
+    `entityStore.query` fail closed on non-public collections ("blinded-index
+    query path is not yet supported"); the encrypted path should be added (or
+    the guard/JSDoc updated), its `createEdvEncryption({ resolveKeys })` seam
+    must carry the new `hmac` key (a parallel module to freewallet's same-named
+    keystore, not covered by that entry), and `declareCollectionIndexes`
+    (plaintext, public-only) does not cover the encrypted persisted-schema
+    model; tracked as WR-31 in the was-react roadmap
+  - "@interop/edv-client" -- blinding already implemented (`IndexHelper`, `hmac`
+    params); verify a concrete HMAC key class (`id`/`sign`/`verify`) is exported
+    for consumers, or export one upstream (do not hand-roll here)
   - was-client ARCHITECTURE.md -- the codec seam is documented as a pure
     single-write transform; emitting `indexed` entries and binding `find()`
     changes that contract description
@@ -91,11 +114,54 @@ items are tracked as Reverse gaps in the server repo's ROADMAP.
         matching what `EdvClientCore` documents carry
   - [ ] `collection.find()` sugar binds the `blinded-index` profile for
         codec-stored documents
+  - [ ] The index schema (indexed attribute names, `unique`/compound flags) is
+        persisted encrypted with the collection and discoverable by any
+        recipient; declaring an index reconciles against the persisted schema
+        instead of being app-local in-memory state
 
 `WasTransport.find` binds the `blinded-index` profile, so `EdvClientCore` users
 get content search -- but `createEdvEncryption` builds its cipher with no HMAC,
 so codec-stored documents carry no blinded `indexed` entries and are not
 findable. A separate, larger design.
+
+Progress (2026-08-12): the key-distribution half is implemented (uncommitted):
+the descriptor's `hmac` member (mirrored locally as `EncryptionWithHmac` until
+the storage-core 0.7.0 bump), `src/edv/hmacKey.ts` (mint / rebuild-from-secret /
+`resolveHmacKey`), `ensureFirstEpoch({ blindedIndex })` provisioning-or-never
+install, hmac roster edits riding the same CAS write in `addRecipient` /
+`removeRecipient` / `replaceRecipient`, `EdvKeys.hmac` override, and the codec
+resolving and exposing `blindingKey` (also handed to `EdvClientCore`). The
+remaining halves -- schema persistence, `indexed` emission at the two encrypt
+seams, `declareIndex`, and `find()` -- are **paused**: the persisted schema's
+home is the Collection-level `/meta` envelope. The client half (WCL-8) and the
+server half (WAS-55, shipped in was-teaching-server 0.21.0) have since landed,
+so that envelope now exists; only the spec text (WASS-9) remains outstanding.
+
+Design point (recorded 2026-08-12): the index schema must be persisted and
+discoverable, not app-local. `@interop/edv-client` keeps the schema as in-memory
+state (`ensureIndex` populates a `Map` the app re-declares every run); that
+fails the access-grant flow -- an app granted access to an existing collection
+later must be able to learn which attributes are queryable without out-of-band
+coordination, and stored `indexed` entries cannot teach it (their attribute
+names are blinded). The schema is itself sensitive (attribute names reveal the
+data model), so it cannot ride the Collection Description in plaintext; the home
+is the collection's encrypted metadata envelope -- any epoch recipient can
+already decrypt it, and its `metaVersion` ETag gives concurrent schema edits
+conditional-write semantics. That envelope now exists at Collection level: the
+client (WCL-8) and server (WAS-55) halves have landed, leaving WCL-1 waiting
+only on the spec text (WASS-9). The considered-and-rejected alternative
+(2026-08-12) was persisting the schema as an ordinary encrypted Resource under a
+blind-derived id (`HMAC(indexKey, 'index-schema')` in the EDV id layout):
+discoverable by any key holder with no endpoint work, but the magic-id document
+pollutes listings, change feeds, and sync replicas, counts against quota, and
+can be destroyed by bulk deletes. Consequences of the persisted schema: the
+`ensureIndex`-equivalent becomes a read-reconcile-write against the persisted
+schema rather than a local declaration; and discovery must not promise complete
+coverage -- an attribute added after documents were written has no tokens on
+those documents until they are rewritten (the backfill is a re-blind sweep, the
+same cost class as an HMAC key rotation), so the persisted schema should record
+enough (e.g. a per-attribute addition marker) for a querier to know matches may
+be partial.
 
 ### WCL-2: `Collection.add(bigBlob)` auto-routing
 
@@ -105,8 +171,8 @@ findable. A separate, larger design.
 - touches:
   - was-client ARCHITECTURE.md -- the request lifecycle and "The codec seam"
     sections describe `encode` as a pure single-request transform with the
-    chunked path as a separate `EdvClientCore`-driven escape; auto-routing
-    moves that decision into the write path and changes both descriptions
+    chunked path as a separate `EdvClientCore`-driven escape; auto-routing moves
+    that decision into the write path and changes both descriptions
   - was-client README.md -- the encrypted-collections section documents the
     oversize `add()` as rejected with guidance toward the stream path; a
     previously-throwing call starts succeeding
@@ -115,8 +181,8 @@ findable. A separate, larger design.
     reach what it needs through the export map, else export upstream
   - encrypted-collections-spec -- expected unaffected (the chunked profile,
     `caad: 1` AAD, and sealed chunk counts are already specified; auto-routing
-    is client ergonomics producing already-specified wire traffic) -- verify
-    and waive
+    is client ergonomics producing already-specified wire traffic) -- verify and
+    waive
   - was-teaching-server -- expected unaffected (the server sees identical
     `chunked-streams` traffic either way); verify and waive
 - acceptance:
@@ -126,6 +192,73 @@ findable. A separate, larger design.
 The codec seam is a pure single-write transform, so an oversize `add()`
 currently throws and points callers at the (fully working)
 `EdvClientCore.insert({stream})` / `getStream` path. Ergonomics only.
+
+### WCL-9: key-epochs integration test drift (`UnknownEpochError` vs `KeyUnwrapError`)
+
+- status: todo
+- priority: medium
+- labels: encryption, key-epochs, integration-test
+- acceptance:
+  - [ ] Determined which side drifted: the codec's error contract (is the
+        fail-fast `UnknownEpochError` in fact the right signal for a pulled
+        reader decoding post-rotation ciphertext under the current descriptor?),
+        the test's expectation, or a behavior change in was-teaching-server
+        0.21.0
+  - [ ] The `test/integration/key-epochs.test.ts` suite is green against a live
+        was-teaching-server >= 0.21.0, with expectations that assert the
+        intended contract (not just whatever currently throws)
+  - [ ] The `KeyUnwrapError` / `UnknownEpochError` JSDoc contract matches the
+        settled behavior
+
+discovered-from: WCL-8 (found during its live verification run, 2026-08-12). The
+"removes a reader: pull dies, new ciphertext is unreadable" test expects
+`KeyUnwrapError` when the removed readerB decodes a post-rotation envelope, but
+gets `UnknownEpochError` -- readerB holds no epoch-2 candidate key, so the
+codec's fail-fast unroutable-envelope path (the stale-descriptor signal) fires
+before any unwrap attempt. Reproduced from a clean HEAD worktree against
+was-teaching-server 0.21.0, so it is not caused by the WCL-8 changes; but the
+suite ran green live on 2026-07-31 (after the fail-fast landed), so the drift's
+origin is unresolved. Note the test hands readerB the _rotated_ descriptor, for
+which `UnknownEpochError` ("your descriptor may be stale") reads semantically
+off -- readerB's descriptor is current, it is simply no longer a recipient; if
+the investigation lands on distinguishing those cases, that is a codec
+error-contract change and this item gains `touches:` entries for it.
+
+---
+
+## Collection-level metadata
+
+### WCL-8: `Collection.meta()` / `Collection.setMeta()`
+
+- status: in-progress (client side completed)
+- priority: medium
+- labels: api, metadata, encryption
+- touches:
+  - wallet-attached-storage-spec -- the endpoints must be specified first;
+    tracked as WASS-9 in that repo's ROADMAP (open; the spec text is being
+    written in parallel)
+  - was-teaching-server -- resolved: WAS-55 shipped in was-teaching-server
+    0.21.0, with conformance coverage in `@interop/was-conformance-suite` 0.5.0
+  - was-client ARCHITECTURE.md + README.md -- resolved: the new handle surface
+    is documented in both
+- acceptance:
+  - [x] `Collection.meta()` / `Collection.setMeta()` mirroring the Resource
+        pair: full-replacement `custom` writes, an independent `metaVersion`
+        ETag, `PreconditionFailedError` on a stale `ifMatch`, and the
+        read-then-CAS patch sugar where it mirrors naturally
+  - [x] On an encrypted collection, `custom` rides the codec's
+        `encodeMeta`/`decodeMeta` envelope, exactly as at Resource level
+  - [x] Node tests (stubbed transport) + integration tests against
+        was-teaching-server (run green against a live 0.21.0 server)
+
+discovered-from: WCL-1 (decision recorded 2026-08-12). The persisted
+blinded-index schema needs a discoverable, conditionally-writable, encrypted
+collection-level home; the Resource `/meta` model already provides the shape,
+and mirroring it at Collection level also gives encrypted collections a
+client-encrypted name/tags surface (today `name` rides the Collection
+Description in plaintext, which encrypted collections refuse to populate). WCL-1
+consumes this surface for its index schema and stays blocked on it (with WASS-9
+/ WAS-55) for everything past key distribution.
 
 ---
 
@@ -244,17 +377,17 @@ why it is deferred past the first encrypted increment.
     syncedDocSchema, types + tests) is one of the two diverged driver copies;
     replaced by the extracted package, with `stores/syncController.ts`
     re-pointed at it
-  - was-react -- `src/sync/` is the other diverged copy, and it has grown
-    pieces the freewallet copy lacks (feed-master port, LWW conflict handler,
-    DocCipher wiring); the extraction must decide which of those move into the
-    package and which stay was-react-side
-  - was-client -- expected code-unaffected (the `./sync` subpath already
-    carries the port and primitives the driver consumes); README gains a
-    pointer to the new package
-  - wallet-core -- expected code-unaffected (its `sync/` engine is the
-    non-RxDB path and deliberately excludes the RxDB adapter); its
-    ARCHITECTURE.md references to "freewallet's RxDB driver/adapter" get
-    re-pointed at the extracted package
+  - was-react -- `src/sync/` is the other diverged copy, and it has grown pieces
+    the freewallet copy lacks (feed-master port, LWW conflict handler, DocCipher
+    wiring); the extraction must decide which of those move into the package and
+    which stay was-react-side
+  - was-client -- expected code-unaffected (the `./sync` subpath already carries
+    the port and primitives the driver consumes); README gains a pointer to the
+    new package
+  - wallet-core -- expected code-unaffected (its `sync/` engine is the non-RxDB
+    path and deliberately excludes the RxDB adapter); its ARCHITECTURE.md
+    references to "freewallet's RxDB driver/adapter" get re-pointed at the
+    extracted package
   - wallet-attached-storage-spec -- unaffected (the wire contract is already
     normative: Query Profile Registry appendix + Conditional Requests)
 
@@ -265,8 +398,8 @@ moved into the client itself as the `@interop/was-client/sync` subpath (0.19.0:
 freewallet's hand-rolled `was.request()` changes query is gone -- its
 `stores/syncController.ts` calls `createWasSyncPort` directly. `createdBy` is
 threaded into the local RxDB document (freewallet `syncedDocSchema` bumped to
-`version: 1` with a migration strategy; `epoch` followed at `version: 2`). And
-a framework-agnostic pull/push engine was extracted into `@interop/wallet-core`
+`version: 1` with a migration strategy; `epoch` followed at `version: 2`). And a
+framework-agnostic pull/push engine was extracted into `@interop/wallet-core`
 (`src/sync/`: `SyncEngine` with injected port/store/cipher seams, consumed by
 dcw), which deliberately does not include an RxDB adapter.
 

@@ -28,6 +28,11 @@
  * Description by default, or any `EncryptionDescriptorStore` -- e.g.
  * `resourceDescriptorStore` for a descriptor hosted as a plain JSON Resource.
  *
+ * A collection provisioned with `ensureFirstEpoch({ blindedIndex: true })` also
+ * carries a blinded-index HMAC key, distributed to recipients exactly like an
+ * epoch key (see `hmacKey.ts`). It is installed at provisioning or never, and
+ * never rotates.
+ *
  * `x25519RecipientFromDidKey` is the one rule for turning a grantee named only
  * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a
  * recipient key is always derived from an identifier both sides already hold
@@ -62,6 +67,13 @@ export {
 } from './epochCrypto.js'
 export { resolveEpochKeys } from './epochKeys.js'
 export type { ResolvedEpochKeys } from './epochKeys.js'
+export {
+  HMAC_KEY_TYPE,
+  mintHmacKey,
+  hmacKeyFromSecret,
+  resolveHmacKey
+} from './hmacKey.js'
+export type { BlindingKey } from './hmacKey.js'
 export {
   createEdvDocCipher,
   ownerRecipient,

@@ -184,6 +184,14 @@ describe('parseSpacePath', () => {
     expect(parseSpacePath('/space/s/c/backend')).toMatchObject({
       kind: 'sub-resource'
     })
+    // `meta` joined the registry with the Collection metadata endpoint, so
+    // `/space/s/c/meta` classifies as a collection-level sub-endpoint rather
+    // than a resource named `meta`.
+    expect(parseSpacePath('/space/s/c/meta')).toEqual({
+      kind: 'sub-resource',
+      spaceId: 's',
+      segments: ['c', 'meta']
+    })
   })
 
   it('classifies 5-segment resource sub-endpoints as sub-resources', () => {
@@ -243,6 +251,7 @@ describe('the ./paths subpath barrel', () => {
     expect(Object.keys(barrel).sort()).toEqual(
       [
         'collectionItems',
+        'collectionMeta',
         'collectionPath',
         'collectionQuery',
         'parseSpacePath',
@@ -257,6 +266,7 @@ describe('the ./paths subpath barrel', () => {
     )
     // Same functions as the internal module, not re-implementations.
     expect(barrel.resourceMeta('s', 'c', 'r')).toBe(resourceMeta('s', 'c', 'r'))
+    expect(barrel.collectionMeta('s', 'c')).toBe('/space/s/c/meta')
     expect(barrel.parseSpacePath('/space/s/c')).toEqual({
       kind: 'collection',
       spaceId: 's',

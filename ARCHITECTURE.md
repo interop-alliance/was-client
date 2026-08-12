@@ -96,9 +96,9 @@ Reads mirror this: signed GET, then `codec.decode(response, expectedId)`.
 ### The 404-vs-null convention
 
 WAS masks unauthorized as 404, so a 404 means "missing OR not visible to you".
-Read-shaped methods (`get`, `list`, `describe`, `meta`, policy reads) resolve
-that to `null`; write-shaped calls throw `NotFoundError`. This ambiguity drives
-the fail-closed rules below.
+Read-shaped methods (`get`, `list`, `describe`, `Resource.meta`,
+`Collection.meta`, policy reads) resolve that to `null`; write-shaped calls
+throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
 
 ## The codec seam
 
@@ -107,7 +107,11 @@ the fail-closed rules below.
   `conditionalWrites` flag) and `EncryptionProvider` (one method, `codecFor`,
   which is **keys-only**: it supplies key material but never decides whether a
   collection is encrypted -- the Collection description's `encryption`
-  descriptor does).
+  descriptor does). `encodeMeta`/`decodeMeta` serve both metadata levels: the
+  Resource `/meta` pair passes the resource `id` to bind, the Collection `/meta`
+  pair passes none. `encodeMeta` also surfaces the `epoch` its envelope sealed
+  under, which `Collection.setMeta` forwards as the PUT body's top-level stamp
+  (a plaintext codec surfaces none, and the server then clears the stamp).
 - `src/internal/codec.ts` -- the identity codec and the resolver policy.
 - `src/edv/EdvCodec.ts` -- the encrypting implementation and the
   `createEdvEncryption` factory.
@@ -150,7 +154,11 @@ it in a plaintext collection).
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
-decode (`IntegrityError` on envelope swap or epoch rollback).
+decode (`IntegrityError` on envelope swap or epoch rollback). The Collection
+`/meta` envelope belongs to no resource, so it binds the scheme version and
+epoch only; the decode side refuses a resource-bound envelope served into that
+slot, which is the server-swap check the missing `was.resource` would otherwise
+lose.
 
 ## The sync layer
 
@@ -233,6 +241,11 @@ No locks; safety is optimistic (ETag/CAS) throughout
 
 - The server's per-resource version is the ETag; writes send `If-Match` /
   `If-None-Match: *`; 412 maps to `PreconditionFailedError`.
+- Each metadata slot has its own validator: the Resource `/meta` and Collection
+  `/meta` `metaVersion` ETags are independent of each other, of the Collection
+  Description's ETag, and of every content version, so `Collection.setMeta` and
+  the read-then-CAS `setName`/`setTags` sugar pin against the metadata's own
+  etag.
 - The EDV codec sets `conditionalWrites = true`, making the sequence check
   enforced automatically: updates pin `If-Match` to the pre-read ETag, fresh
   inserts guard with `If-None-Match: *`.

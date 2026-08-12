@@ -15,6 +15,7 @@
  * fail-closed (no-epochs) paths.
  */
 import { describe, it, expect } from 'vitest'
+import { base64urlnopad } from '@scure/base'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { EdvClientCore, EdvDocumentCipher } from '@interop/edv-client'
 import type {
@@ -223,6 +224,20 @@ function responseFrom(body?: Uint8Array | Blob): HttpResponse {
       return envelope
     }
   } as unknown as HttpResponse
+}
+
+/**
+ * Parses the `was` binding out of an envelope object's JWE protected header.
+ *
+ * @param envelope {unknown}
+ * @returns {Record<string, unknown> | undefined}
+ */
+function wasOf(envelope: unknown): Record<string, unknown> | undefined {
+  const { jwe } = envelope as { jwe: { protected: string } }
+  const decoded = JSON.parse(
+    new TextDecoder().decode(base64urlnopad.decode(jwe.protected))
+  )
+  return decoded.was
 }
 
 describe('EdvCodec: JSON round trip', () => {
@@ -991,5 +1006,39 @@ describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
     await expect(
       codec.decodeMeta({ custom: { name: 'plaintext' } })
     ).rejects.toThrow(EncryptionError)
+  })
+
+  it('encodeMeta with an id binds `was.resource` and reports the write epoch', async () => {
+    const { codec, epochId } = await makeFixture()
+    const { custom, epoch } = await codec.encodeMeta({
+      custom: { name: 'Secret' },
+      id: 'zResourceId'
+    })
+    expect(wasOf(custom)).toEqual({
+      v: 1,
+      resource: 'zResourceId',
+      epoch: epochId
+    })
+    expect(epoch).toBe(epochId)
+  })
+
+  it('encodeMeta without an id binds no `was.resource` (the Collection slot)', async () => {
+    const { codec, epochId } = await makeFixture()
+    const { custom, epoch } = await codec.encodeMeta({
+      custom: { name: 'Collection Label' }
+    })
+    // A Collection's metadata belongs to no resource, so the envelope binds the
+    // scheme version and the epoch only.
+    expect(wasOf(custom)).toEqual({ v: 1, epoch: epochId })
+    // The epoch is surfaced so the Collection `/meta` PUT can stamp it in the
+    // body (an omitted body member clears the server's stored stamp).
+    expect(epoch).toBe(epochId)
+  })
+
+  it('round-trips Collection-level custom without an expected id', async () => {
+    const codec = await makeCodec()
+    const original = { name: 'Collection Label', tags: { a: 'b' } }
+    const { custom } = await codec.encodeMeta({ custom: original })
+    expect(await codec.decodeMeta({ custom })).toEqual(original)
   })
 })

@@ -226,6 +226,15 @@ export function collectionQuota(spaceId: string, collectionId: string): string {
 }
 
 /**
+ * `/space/:spaceId/:collectionId/meta` -- the Collection metadata object
+ * (server-managed timestamps / `createdBy` / `epoch` plus the user-writable
+ * `custom` object). Versioned independently of the Collection Description.
+ */
+export function collectionMeta(spaceId: string, collectionId: string): string {
+  return `${collectionPath(spaceId, collectionId)}/meta`
+}
+
+/**
  * `/space/:spaceId/:collectionId/query` -- the collection-level query endpoint,
  * whose body's `profile` selects the query (e.g. `changes`, `blinded-index`).
  */

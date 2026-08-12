@@ -20,8 +20,10 @@
  * JWE envelope (the raw `getBytes()` escape hatch shows ciphertext, no
  * cleartext); a small blob round-trips; user metadata (`setName`/`setTags`) is
  * likewise encrypted -- round-tripping decrypted for a keyed reader but opaque
- * at rest -- with its own `/meta` ETag; and the stricter contract holds
- * (human-readable `put()` ids are rejected on an encrypted collection).
+ * at rest -- with its own `/meta` ETag; the same holds for the Collection's own
+ * metadata (`collection.setName`/`setTags`), whose key epoch is stamped in the
+ * `/meta` body; and the stricter contract holds (human-readable `put()` ids are
+ * rejected on an encrypted collection).
  *
  * Requires a running server: set `TEST_SERVER_URL`. The suite skips when it is
  * unset, so a bare `pnpm test:integration` (no server) is not a failure.
@@ -307,6 +309,37 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     ).rejects.toBeInstanceOf(PreconditionFailedError)
     expect((await resource.meta())?.custom).toEqual({ name: 'v2' })
   })
+
+  it('encrypts Collection-level setName/setTags: decrypted round-trip, opaque at rest', async () => {
+    await collection.setName('My Secret Collection')
+    await collection.setTags({ project: 'demo' })
+
+    const meta = await collection.meta()
+    expect(meta?.custom).toEqual({
+      name: 'My Secret Collection',
+      tags: { project: 'demo' }
+    })
+    expect(meta?.etag).toBeTruthy()
+
+    // A plaintext client (same authorization, no keys) sees the opaque
+    // envelope the server stored, never the cleartext name.
+    const rawMeta = await plaintext.space(space.id).collection('vault').meta()
+    expect((rawMeta?.custom as { jwe?: unknown }).jwe).toBeTruthy()
+    expect(JSON.stringify(rawMeta?.custom)).not.toContain(
+      'My Secret Collection'
+    )
+  })
+
+  it("stamps the writing codec's key epoch as the /meta body's top-level epoch", async () => {
+    await collection.setMeta({ custom: { name: 'epoch-stamped' } })
+    // The Collection metadata epoch travels in the PUT body (not the
+    // `Key-Epoch` header), so the server echoes it as a top-level GET member.
+    const description = await collection.describe()
+    const currentEpoch = description?.encryption?.currentEpoch
+    expect(currentEpoch).toBeTruthy()
+    const rawMeta = await plaintext.space(space.id).collection('vault').meta()
+    expect(rawMeta?.epoch).toBe(currentEpoch)
+  })
 })
 
 describeLive('plaintext conditional writes (live server)', () => {
@@ -395,6 +428,61 @@ describeLive('plaintext conditional writes (live server)', () => {
       collection.put('create-once', { v: 2 }, { ifNoneMatch: true })
     ).rejects.toBeInstanceOf(PreconditionFailedError)
     expect(await collection.get('create-once')).toEqual({ v: 1 })
+  })
+
+  it('collection meta() / setMeta() round-trips and advances its own etag', async () => {
+    // Before any metadata write the server answers 200 with no ETag.
+    const before = await collection.meta()
+    expect(before?.custom).toEqual({})
+    expect(before?.etag).toBeUndefined()
+
+    const first = await collection.setMeta({
+      custom: { name: 'Docs Label', tags: { project: 'demo' } }
+    })
+    expect(first.etag).toBeTruthy()
+    const read = await collection.meta()
+    expect(read?.custom).toEqual({
+      name: 'Docs Label',
+      tags: { project: 'demo' }
+    })
+    expect(read?.etag).toBe(first.etag)
+
+    const second = await collection.setMeta({ custom: { name: 'Renamed' } })
+    expect(second.etag).not.toBe(first.etag)
+    // Full replacement: the omitted `tags` are cleared, not merged forward.
+    expect((await collection.meta())?.custom).toEqual({ name: 'Renamed' })
+  })
+
+  it('collection setMeta: a stale ifMatch on /meta is rejected (412)', async () => {
+    const first = await collection.setMeta({ custom: { name: 'cv1' } })
+    await collection.setMeta(
+      { custom: { name: 'cv2' } },
+      { ifMatch: first.etag }
+    )
+    await expect(
+      collection.setMeta({ custom: { name: 'cv3' } }, { ifMatch: first.etag })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
+    expect((await collection.meta())?.custom).toEqual({ name: 'cv2' })
+  })
+
+  it('the collection /meta ETag is independent of the description ETag', async () => {
+    const beforeDescription = await collection.describeWithEtag()
+    const metaWrite = await collection.setMeta({
+      custom: { name: 'independent' }
+    })
+    // A metadata write leaves `descriptionVersion` untouched...
+    const afterDescription = await collection.describeWithEtag()
+    expect(afterDescription?.etag).toBe(beforeDescription?.etag)
+
+    // ...and a description write leaves `metaVersion` untouched.
+    await collection.replaceDescription(
+      { name: 'Docs (renamed)' },
+      { ifMatch: afterDescription?.etag }
+    )
+    expect((await collection.meta())?.etag).toBe(metaWrite.etag)
+    expect((await collection.describeWithEtag())?.etag).not.toBe(
+      afterDescription?.etag
+    )
   })
 
   it('delete honors ifMatch: stale 412s, current succeeds', async () => {

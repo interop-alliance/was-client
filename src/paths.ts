@@ -28,6 +28,7 @@ export {
   spacePath,
   collectionPath,
   collectionItems,
+  collectionMeta,
   collectionQuery,
   resourcePath,
   resourceMeta,
