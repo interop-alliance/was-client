@@ -53,6 +53,32 @@ extension even though source files are `.ts` — e.g.
 `import { Example } from '../../src/index.js'`. TypeScript's
 `moduleResolution: Bundler` resolves these to the `.ts` source at compile time.
 
+## Roadmap & Task Conventions
+
+Roadmap tracking lives in [ROADMAP.md](./ROADMAP.md): narrative context plus
+structured `### WCL-N` work items, following the item structure shared with the
+freewallet, was-teaching-server, was-react, and isomorphic-lib-template
+roadmaps. Never create a parallel task list elsewhere. The full item schema
+lives in that file's "Item format" header (the generic schema is canonical in
+isomorphic-lib-template's AGENTS.md under "Roadmap & Task Conventions"); the
+rules that apply when working an item:
+
+- Item ids are permanent and never reused; a new item takes the next unused
+  number regardless of section.
+- Statuses are edited in place; acceptance checkboxes are ticked as they are
+  met.
+- **Completing an item includes archiving it**: in the same pass that marks it
+  `done`, move it verbatim (number, title, field block, prose, with its `done`
+  date) from ROADMAP.md to [archived-roadmap.md](./archived-roadmap.md),
+  append-only at the bottom. A `done` item left in ROADMAP.md is an unfinished
+  task. CHANGELOG.md remains the record of what landed; do not rewrite or
+  summarize items on the way into the archive.
+- An item carrying a `touches:` field may not flip to `done` while any entry in
+  it is unresolved -- an unresolved entry is unfinished work of the item itself,
+  not a follow-up.
+- Work discovered mid-implementation gets its own WCL-N item immediately, noting
+  `discovered-from: WCL-N` in its prose.
+
 ## Conventions
 
 Code style, refactoring, JSDoc, comment, and error-handling conventions live in
