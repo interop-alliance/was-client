@@ -116,10 +116,31 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
 - `src/edv/EdvCodec.ts` -- the encrypting implementation and the
   `createEdvEncryption` factory.
 
+`encode` is a pure single-request transform, with one qualification: a codec
+that indexes what it stores carries per-collection state -- the persisted index
+schema -- which the resolver loads onto it before handing it over. That is the
+optional `indexing` capability (`applySchema` / `schema` / `buildQuery`, all
+EDV-type-free), present only for an encrypted collection whose descriptor
+declares a blinding key. Consequences worth knowing:
+
+- Resolving such a codec costs one extra read (the Collection `/meta` slot,
+  whose encrypted `custom` holds the schema under `indexSchema`); a collection
+  without a blinding key pays nothing.
+- The schema is as fresh as the handle. `declareIndex` updates the persisted
+  copy and this handle's codec together, and `CodecHolder.reset()` re-reads it.
+- Writes emit blinded `indexed` entries alongside the JWE once the schema
+  declares an attribute. The metadata seam (`encodeMeta`) stays deliberately
+  un-blinded: that envelope is the WAS `/meta` value, a different slot the
+  search endpoint never reads.
+- `Collection.find()` blinds through the same capability and posts the
+  `blinded-index` profile to the collection `/query` endpoint (the way
+  `changes()` posts its own), then decodes each returned envelope back through
+  `decode`.
+
 What the server sees for an encrypted collection: opaque JWE envelopes for
-content and for the name/tags metadata, opaque EDV resource ids, and the
-plaintext descriptor scaffolding (`scheme`, `version`, epoch ids, `sequence`,
-blinded index entries, ETags).
+content and for the name/tags metadata, opaque EDV resource ids, blinded index
+tokens and blinded query terms, and the plaintext descriptor scaffolding
+(`scheme`, `version`, epoch ids, blinding-key id, `sequence`, ETags).
 
 ## The EDV layer
 
@@ -155,10 +176,15 @@ it in a plaintext collection).
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
 decode (`IntegrityError` on envelope swap or epoch rollback). The Collection
-`/meta` envelope belongs to no resource, so it binds the scheme version and
-epoch only; the decode side refuses a resource-bound envelope served into that
-slot, which is the server-swap check the missing `was.resource` would otherwise
-lose.
+`/meta` envelope belongs to no resource, so instead of a resource id it binds
+the collection id (`was.collection`, no Space scoping). Each slot is thereby
+declared positively by the member set of its envelope: `resource` marks a
+resource slot, `collection` the Collection `/meta` slot, and a content-derived
+envelope binds neither. The decode side enforces that both ways -- a
+resource-bound (or unmarked) envelope served into the `/meta` slot is refused,
+as is a collection-bound envelope served into a resource's slot, and a
+`was.collection` naming a different collection is refused as one Collection's
+metadata served as another's.
 
 ## The sync layer
 
@@ -246,6 +272,9 @@ No locks; safety is optimistic (ETag/CAS) throughout
   Description's ETag, and of every content version, so `Collection.setMeta` and
   the read-then-CAS `setName`/`setTags` sugar pin against the metadata's own
   etag.
+- `declareIndex` reconciles against the persisted index schema with the same
+  metadata ETag: read, merge, conditional write, bounded retry on 412, so two
+  clients declaring different attributes at once do not erase each other.
 - The EDV codec sets `conditionalWrites = true`, making the sequence check
   enforced automatically: updates pin `If-Match` to the pre-read ETag, fresh
   inserts guard with `If-None-Match: *`.

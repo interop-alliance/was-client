@@ -128,14 +128,30 @@ async function makeEpochDescriptor(reader: {
  * codec still routes to a read key but whose `was` binding the codec did not
  * write.
  *
+ * Also hands back a `siblingCodec` that reads the SAME epoch material under a
+ * different collection id, so a test can serve one collection's envelope to
+ * another collection's codec without the read failing as a mere key miss.
+ *
  * @param [options] {object}
  * @param [options.idDerivation] {string}
+ * @param [options.collectionId] {string}   the collection this codec is built
+ *   for (default `'c'`)
  * @returns {Promise<{ codec: ResourceCodec; epoch: string;
- *   keyPair: IKeyAgreementKey }>}
+ *   keyPair: IKeyAgreementKey;
+ *   siblingCodec: (collectionId: string) => Promise<ResourceCodec> }>}
  */
 async function makeCodec(
-  options: { idDerivation?: 'random' | 'content' } = {}
-): Promise<{ codec: ResourceCodec; epoch: string; keyPair: IKeyAgreementKey }> {
+  options: {
+    idDerivation?: 'random' | 'content'
+    collectionId?: string
+  } = {}
+): Promise<{
+  codec: ResourceCodec
+  epoch: string
+  keyPair: IKeyAgreementKey
+  siblingCodec: (collectionId: string) => Promise<ResourceCodec>
+}> {
+  const { collectionId = 'c', ...providerOptions } = options
   const { kak, keyResolver, publicKeyMultibase } = await makeKeys()
   const { encryption, epoch, secret } = await makeEpochDescriptor({
     id: kak.id,
@@ -143,21 +159,25 @@ async function makeCodec(
   })
   const provider = createEdvEncryption({
     resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
-    ...options
+    ...providerOptions
   })
-  const codec = await provider.codecFor({
-    spaceId: 's',
-    collectionId: 'c',
-    scheme: 'edv',
-    encryption
-  })
-  if (!codec) {
-    throw new Error('expected a codec')
+  const codecFor = async (forCollection: string): Promise<ResourceCodec> => {
+    const built = await provider.codecFor({
+      spaceId: 's',
+      collectionId: forCollection,
+      scheme: 'edv',
+      encryption
+    })
+    if (!built) {
+      throw new Error('expected a codec')
+    }
+    return built
   }
   return {
-    codec,
+    codec: await codecFor(collectionId),
     epoch,
-    keyPair: reconstructEpochKeyPair({ epochId: epoch, secret })
+    keyPair: reconstructEpochKeyPair({ epochId: epoch, secret }),
+    siblingCodec: codecFor
   }
 }
 
@@ -419,13 +439,47 @@ describe('was binding: metadata envelope', () => {
 
   it('fails with IntegrityError when the Collection envelope is served for a resource', async () => {
     const { codec } = await makeCodec()
-    // A Collection metadata envelope binds no `was.resource`, so a read that
-    // expects a resource id falls into the content-derived branch and
-    // re-derives an id from the ciphertext -- which cannot match.
+    // A Collection metadata envelope binds `was.collection`, which a resource's
+    // slot never carries: it is refused there before any id comparison.
     const { custom } = await codec.encodeMeta({ custom: { name: 'Shared' } })
     await expect(
       codec.decodeMeta({ custom }, 'zResourceA')
     ).rejects.toBeInstanceOf(IntegrityError)
+  })
+
+  it('binds the collection id into the Collection metadata envelope and round-trips', async () => {
+    const { codec, epoch } = await makeCodec()
+    const { custom } = await codec.encodeMeta({ custom: { name: 'Shared' } })
+    expect(wasOf(custom)).toEqual({ v: 1, collection: 'c', epoch })
+    await expect(codec.decodeMeta({ custom })).resolves.toEqual({
+      name: 'Shared'
+    })
+  })
+
+  it('fails with IntegrityError when a content envelope is served in the Collection slot', async () => {
+    const { codec, keyPair, epoch } = await makeCodec()
+    // A content-derived content envelope binds neither slot marker, so the
+    // Collection metadata slot cannot accept it: absence of `was.collection`
+    // means the envelope was written for some other slot entirely.
+    const custom = JSON.parse(
+      new TextDecoder().decode(
+        await craftEnvelope({ keyPair, was: { v: 1, epoch } })
+      )
+    )
+    await expect(codec.decodeMeta({ custom })).rejects.toBeInstanceOf(
+      IntegrityError
+    )
+  })
+
+  it("fails with IntegrityError when one Collection's metadata is served as another's", async () => {
+    const { codec, siblingCodec } = await makeCodec()
+    const { custom } = await codec.encodeMeta({ custom: { name: 'For C' } })
+    // The same reader, the same epoch keys, a different collection: the read
+    // decrypts fine and is caught by the binding, not by a key miss.
+    const other = await siblingCodec('other-collection')
+    await expect(other.decodeMeta({ custom })).rejects.toBeInstanceOf(
+      IntegrityError
+    )
   })
 })
 
@@ -458,7 +512,8 @@ describe('was binding: per-envelope epoch label', () => {
       writeEpoch,
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
-      idDerivation: 'random'
+      idDerivation: 'random',
+      collectionId: 'c'
     })
     return { codec, realEpoch, writeEpoch }
   }

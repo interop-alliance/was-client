@@ -871,7 +871,8 @@ describe('EdvCodec: decrypt failure discrimination', () => {
       writeEpoch: epochId,
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
-      idDerivation: 'random'
+      idDerivation: 'random',
+      collectionId: 'c'
     })
     const encoded = await codec.encode({ data: { secret: 'still readable' } })
     await expect(codec.decode(responseFrom(encoded.body))).resolves.toEqual({
@@ -1022,14 +1023,15 @@ describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
     expect(epoch).toBe(epochId)
   })
 
-  it('encodeMeta without an id binds no `was.resource` (the Collection slot)', async () => {
+  it('encodeMeta without an id binds `was.collection`, not `was.resource`', async () => {
     const { codec, epochId } = await makeFixture()
     const { custom, epoch } = await codec.encodeMeta({
       custom: { name: 'Collection Label' }
     })
-    // A Collection's metadata belongs to no resource, so the envelope binds the
-    // scheme version and the epoch only.
-    expect(wasOf(custom)).toEqual({ v: 1, epoch: epochId })
+    // A Collection's metadata belongs to no resource, so instead of a resource
+    // id the envelope binds the collection it was written for -- which is what
+    // declares the slot positively.
+    expect(wasOf(custom)).toEqual({ v: 1, collection: 'c', epoch: epochId })
     // The epoch is surfaced so the Collection `/meta` PUT can stamp it in the
     // body (an omitted body member clears the server's stored stamp).
     expect(epoch).toBe(epochId)

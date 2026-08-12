@@ -19,7 +19,11 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { WasServerError } from './errors.js'
+import {
+  PreconditionFailedError,
+  ValidationError,
+  WasServerError
+} from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
@@ -49,8 +53,24 @@ import {
   isPublicPolicy,
   setPublicPolicy
 } from './internal/policy.js'
-import { createdResource, dataOrNull } from './internal/content.js'
-import type { ResourceCodec } from './codec.js'
+import {
+  createdResource,
+  dataOrNull,
+  storedResponse
+} from './internal/content.js'
+import {
+  INDEX_SCHEMA_PROPERTY,
+  attributeKey,
+  normalizeAttribute,
+  readIndexSchema
+} from './internal/indexSchema.js'
+import type { CustomWithIndexSchema } from './internal/indexSchema.js'
+import type {
+  CodecIndexing,
+  IndexDeclaration,
+  IndexSchema,
+  ResourceCodec
+} from './codec.js'
 import { Resource } from './Resource.js'
 import type { ChangesCheckpoint, ChangesPage } from '@interop/storage-core'
 import type {
@@ -61,6 +81,7 @@ import type {
   CollectionMetadata,
   CollectionWritableFields,
   EncryptionOverride,
+  FindPage,
   GrantOptions,
   HandleOptions,
   IDelegatedZcap,
@@ -550,6 +571,239 @@ export class Collection {
    */
   async setTags(tags: Record<string, string>): Promise<void> {
     return this.#patchCustom({ tags })
+  }
+
+  /**
+   * The codec's search capability, or a typed refusal when this collection is
+   * not searchable this way -- a plaintext collection (whose contents the
+   * server can index itself) or an encrypted collection provisioned without a
+   * blinded-index key (which is installed at provisioning or never, since
+   * retro-fitting one would leave every already-written document unindexed).
+   *
+   * @param operation {string}   what the caller was trying to do, for the message
+   * @returns {Promise<CodecIndexing>}
+   */
+  async #indexing(operation: string): Promise<CodecIndexing> {
+    const codec = await this.#codec()
+    if (!codec.indexing) {
+      throw new ValidationError(
+        `Cannot ${operation} on collection "${this.id}": it carries no ` +
+          'client-side search index. Only an encrypted collection provisioned ' +
+          'with a blinded-index key is searchable this way (install it at ' +
+          'creation with ensureFirstEpoch({ blindedIndex: true }) -- it cannot ' +
+          'be added later). A plaintext collection is queried server-side ' +
+          'instead.'
+      )
+    }
+    return codec.indexing
+  }
+
+  /**
+   * Reads the Collection's persisted index schema: which attributes its
+   * documents are searchable by, whether each index is unique, and the schema
+   * revision each was added in. Any recipient that can decrypt the collection
+   * can read it, which is the point of persisting it -- an app granted access
+   * to an existing collection learns what is queryable with no out-of-band
+   * coordination (the stored index tokens cannot teach it, being blinded).
+   *
+   * `addedIn` is the partial-coverage marker: documents written before an
+   * attribute was declared carry no token for it, so they do not match a search
+   * on it until they are rewritten.
+   *
+   * @returns {Promise<IndexDeclaration[]>}
+   */
+  async indexes(): Promise<IndexDeclaration[]> {
+    const indexing = await this.#indexing('read the index schema')
+    return indexing.schema().indexes
+  }
+
+  /**
+   * Declares an attribute searchable, persisting it in the Collection's
+   * encrypted index schema and installing it on this handle's codec.
+   * Idempotent: re-declaring an attribute already in the schema on the same
+   * terms is a no-op write.
+   *
+   * Declarations are collection state, not app state: they are stored inside
+   * the encrypted `/meta` envelope, so every recipient discovers them (see
+   * {@link indexes}). Concurrent declarations from two clients are reconciled
+   * with a compare-and-swap against the metadata's own `metaVersion` ETag and a
+   * bounded retry, so neither is silently erased.
+   *
+   * A declaration is prospective: documents already written carry no token for
+   * the new attribute and do not match a search on it until they are rewritten
+   * (the backfill is a re-encrypt sweep of the collection).
+   *
+   * Pass an array of attribute names for a compound index. A compound index can
+   * be searched by a leading prefix of its attributes; `unique` is enforced
+   * only when a document carries the whole combination.
+   *
+   * @param options {object}
+   * @param options.attribute {string | string[]}   a dotted attribute path
+   *   rooted at `content` or `meta` (e.g. `content.type`), or an array of them
+   *   for a compound index
+   * @param [options.unique] {boolean}   reject a second document that carries
+   *   the same value (the server answers a colliding write with `409`)
+   * @returns {Promise<IndexSchema>}   the schema now in force
+   */
+  async declareIndex({
+    attribute,
+    unique
+  }: {
+    attribute: string | string[]
+    unique?: boolean
+  }): Promise<IndexSchema> {
+    const indexing = await this.#indexing('declare an index')
+    const declared = normalizeAttribute(attribute)
+    const key = attributeKey(declared)
+    // Read, reconcile, conditionally write. A 412 means another client wrote
+    // the metadata between the read and the write, so re-read and re-apply
+    // rather than clobbering its declaration with ours.
+    const maxAttempts = 4
+    for (let attempt = 1; ; attempt++) {
+      const current = await this.meta()
+      const custom = (current?.custom ?? {}) as CustomWithIndexSchema
+      const schema = readIndexSchema(custom)
+      const existing = schema.indexes.find(
+        entry => attributeKey(entry.attribute) === key
+      )
+      if (existing) {
+        if ((existing.unique === true) !== (unique === true)) {
+          throw new ValidationError(
+            `Cannot declare index "${key}" as ` +
+              `${unique === true ? 'unique' : 'non-unique'}: this collection ` +
+              `already declares it as ` +
+              `${existing.unique === true ? 'unique' : 'non-unique'}. An ` +
+              'index cannot change uniqueness in place -- already-stored ' +
+              'documents were indexed under the old terms.'
+          )
+        }
+        indexing.applySchema(schema)
+        return schema
+      }
+      const revision = schema.revision + 1
+      const next: IndexSchema = {
+        revision,
+        indexes: [
+          ...schema.indexes,
+          {
+            attribute: declared,
+            ...(unique === true && { unique: true as const }),
+            addedIn: revision
+          }
+        ]
+      }
+      try {
+        await this.setMeta(
+          {
+            // The schema shares the `custom` object with the user's own
+            // `name` / `tags`, which are carried forward untouched.
+            custom: {
+              ...custom,
+              [INDEX_SCHEMA_PROPERTY]: next
+            } as ResourceMetadataCustom
+          },
+          { ifMatch: current?.etag }
+        )
+      } catch (err) {
+        if (err instanceof PreconditionFailedError && attempt < maxAttempts) {
+          continue
+        }
+        throw err
+      }
+      indexing.applySchema(next)
+      return next
+    }
+  }
+
+  /**
+   * Searches the collection's encrypted documents by indexed attribute. The
+   * terms are blinded client-side before they are sent, so the server matches
+   * opaque tokens and learns neither the attribute names nor the values; the
+   * documents it returns are decrypted here, exactly as `get()` decrypts one.
+   *
+   * Give either `equals` (attribute/value pairs a document must match -- an
+   * array of objects is an OR of alternatives) or `has` (attribute names a
+   * document must carry), not both. Every attribute named must already be in
+   * the collection's schema ({@link declareIndex}); an undeclared one is
+   * refused with `ValidationError` rather than silently matching nothing.
+   *
+   * Pass `count: true` for just the number of matches. Otherwise the result is
+   * one page: `limit` caps its size (the server clamps its own maximum), and a
+   * `hasMore` page carries the `cursor` to pass back for the next one.
+   *
+   * Requires the collection's backend to advertise the `blinded-index-query`
+   * feature; a backend without it answers `501` (`NotImplementedError`).
+   *
+   * @param options {object}
+   * @param [options.equals] {object | object[]}   attribute/value pairs to match
+   * @param [options.has] {string | string[]}   attribute names to require
+   * @param [options.count] {boolean}   return `{ count }` instead of documents
+   * @param [options.limit] {number}   maximum documents in the page
+   * @param [options.cursor] {string}   continue from a previous page
+   * @returns {Promise<FindPage | { count: number }>}
+   */
+  async find(options: {
+    equals?: Record<string, unknown> | Array<Record<string, unknown>>
+    has?: string | string[]
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<FindPage | { count: number }> {
+    const { equals, has, count, limit, cursor } = options
+    const indexing = await this.#indexing('search')
+    const codec = await this.#codec()
+    const query = await indexing.buildQuery({ equals, has })
+    const response = await send(this.#context, {
+      path: collectionQuery(this.spaceId, this.id),
+      method: 'POST',
+      capability: this.#capability,
+      // The profile is bound here the way `changes()` binds its own: same
+      // endpoint, no client-side feature probe -- a backend that does not
+      // implement the profile answers 501, which is a clearer signal than a
+      // guess made from the backend descriptor.
+      json: {
+        profile: 'blinded-index',
+        ...query,
+        ...(count === true && { count: true }),
+        ...(limit !== undefined && { limit }),
+        ...(cursor !== undefined && { cursor })
+      }
+    })
+    const result = dataOrNull<{
+      documents?: unknown[]
+      hasMore?: boolean
+      cursor?: string
+      count?: number
+    }>(response)
+    if (result === null) {
+      throw new WasServerError(
+        `Search response for collection "${this.id}" carried no JSON body.`
+      )
+    }
+    if (count === true) {
+      return { count: typeof result.count === 'number' ? result.count : 0 }
+    }
+    const documents = Array.isArray(result.documents) ? result.documents : []
+    const items: FindPage['items'] = []
+    for (const envelope of documents) {
+      // Restrict-mode ids make the stored document's own id the WAS resource
+      // id, so it is also the id the codec verifies the envelope's
+      // AEAD-authenticated binding against -- a server that returns one
+      // document under another's id is caught here, not trusted.
+      const id = (envelope as { id?: unknown }).id
+      if (typeof id !== 'string') {
+        throw new WasServerError(
+          `Search response for collection "${this.id}" returned a document ` +
+            'with no id.'
+        )
+      }
+      items.push({ id, data: await codec.decode(storedResponse(envelope), id) })
+    }
+    return {
+      items,
+      hasMore: result.hasMore === true,
+      ...(result.cursor !== undefined && { cursor: result.cursor })
+    }
   }
 
   /**

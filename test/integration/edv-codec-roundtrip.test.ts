@@ -25,6 +25,11 @@
  * `/meta` body; and the stricter contract holds (human-readable `put()` ids are
  * rejected on an encrypted collection).
  *
+ * A second suite plays the tampering server against the metadata slots, moving
+ * a stored envelope between slots with a plaintext client (which writes what it
+ * is handed, verbatim) and proving the keyed reader refuses each swap on the
+ * envelope's AEAD-bound slot marker rather than decoding it.
+ *
  * Requires a running server: set `TEST_SERVER_URL`. The suite skips when it is
  * unset, so a bare `pnpm test:integration` (no server) is not a failure.
  */
@@ -37,9 +42,14 @@ import {
   WasClient,
   ValidationError,
   PreconditionFailedError,
-  EncryptionError
+  EncryptionError,
+  IntegrityError
 } from '../../src/index.js'
-import type { Space, Collection } from '../../src/index.js'
+import type {
+  Space,
+  Collection,
+  ResourceMetadataCustom
+} from '../../src/index.js'
 import {
   createEdvEncryption,
   ensureFirstEpoch,
@@ -48,6 +58,19 @@ import {
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
+
+/**
+ * Retypes a stored `custom` value read back off the wire so it can be written
+ * to another slot through the plaintext client's `setMeta`, whose signature
+ * describes the plaintext `{ name, tags }` shape rather than the ciphertext
+ * envelope a tampering server would move between slots.
+ *
+ * @param custom {unknown}
+ * @returns {ResourceMetadataCustom}
+ */
+function asStoredCustom(custom: unknown): ResourceMetadataCustom {
+  return custom as ResourceMetadataCustom
+}
 
 /**
  * Builds two WAS clients over the SAME signer: one with an `encryption` provider
@@ -339,6 +362,89 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
     expect(currentEpoch).toBeTruthy()
     const rawMeta = await plaintext.space(space.id).collection('vault').meta()
     expect(rawMeta?.epoch).toBe(currentEpoch)
+  })
+})
+
+describeLive('metadata slot bindings against a tampering server (live)', () => {
+  let was: WasClient
+  let plaintext: WasClient
+  let space: Space
+  let collection: Collection
+  let twin: Collection
+
+  beforeAll(async () => {
+    let kak: IKeyAgreementKey
+    ;({ encrypted: was, plaintext, kak } = await freshClients())
+    space = await was.createSpace({ name: 'EDV Metadata Bindings' })
+    const declared = await space.createCollection({
+      id: 'vault',
+      name: 'Vault',
+      encryption: { scheme: 'edv' }
+    })
+    await ensureFirstEpoch({
+      collection: declared,
+      recipients: [ownerRecipient({ keyAgreementKey: kak })]
+    })
+    collection = was.space(space.id).collection('vault')
+    // A second encrypted collection carrying the SAME epoch roster (the same
+    // reader, the same epoch secret), so a cross-collection swap of metadata
+    // envelopes is caught by the `was.collection` binding rather than by a key
+    // miss -- keys alone cannot separate two collections a client can read.
+    const description = await collection.describe()
+    const twinDeclared = await space.createCollection({
+      id: 'vault-twin',
+      name: 'Vault Twin'
+    })
+    await twinDeclared.replaceDescription({
+      name: 'Vault Twin',
+      encryption: description!.encryption
+    })
+    twin = was.space(space.id).collection('vault-twin')
+  })
+
+  afterAll(async () => {
+    try {
+      await space.delete()
+    } catch {
+      /* best-effort cleanup */
+    }
+  })
+
+  it("refuses a resource's metadata envelope served in the Collection slot", async () => {
+    const { id } = await collection.add({ a: 1 })
+    await collection.resource(id).setName('Resource Label')
+    const raw = plaintext.space(space.id).collection('vault')
+    const stored = (await raw.resource(id).meta())?.custom
+    // The tampering server: the resource's envelope now sits in the
+    // Collection's own `/meta` slot, which belongs to no resource.
+    await raw.setMeta({ custom: asStoredCustom(stored) })
+    await expect(collection.meta()).rejects.toBeInstanceOf(IntegrityError)
+  })
+
+  it("refuses the Collection's metadata envelope served in a resource slot", async () => {
+    // `setMeta` (a full replacement) rather than `setName`: a sibling test may
+    // have left a foreign envelope in this slot, and `setName` would read it.
+    await collection.setMeta({ custom: { name: 'Collection Label' } })
+    const { id } = await collection.add({ b: 2 })
+    const raw = plaintext.space(space.id).collection('vault')
+    const stored = (await raw.meta())?.custom
+    await raw.resource(id).setMeta({ custom: asStoredCustom(stored) })
+    await expect(collection.resource(id).meta()).rejects.toBeInstanceOf(
+      IntegrityError
+    )
+  })
+
+  it("refuses one Collection's metadata envelope served as another's", async () => {
+    await collection.setMeta({ custom: { name: 'Only For Vault' } })
+    const stored = (await plaintext.space(space.id).collection('vault').meta())
+      ?.custom
+    await plaintext
+      .space(space.id)
+      .collection('vault-twin')
+      .setMeta({ custom: asStoredCustom(stored) })
+    // The twin's reader holds the very same epoch key, so the envelope
+    // decrypts; only the `was.collection` binding separates the two.
+    await expect(twin.meta()).rejects.toBeInstanceOf(IntegrityError)
   })
 })
 

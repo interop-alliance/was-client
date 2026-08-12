@@ -20,10 +20,10 @@
   On an encrypted Collection the user-writable `custom` (`name` / `tags`) rides
   the codec's `encodeMeta` / `decodeMeta` envelope exactly as at Resource level,
   so the server never sees plaintext `name` / `tags`. The collection-level
-  envelope binds the scheme version and key epoch but no resource id, and the
-  decode side rejects a resource-bound envelope served into the collection slot.
-  `setMeta` sends the sealing epoch as the PUT body's top-level `epoch` stamp; a
-  plaintext collection sends none.
+  envelope binds the scheme version, the key epoch, and the collection id
+  (`was.collection`) in place of a resource id. `setMeta` sends the sealing
+  epoch as the PUT body's top-level `epoch` stamp; a plaintext collection sends
+  none.
 
 - `collectionMeta(spaceId, collectionId)` path builder, exported from the
   `./paths` subpath.
@@ -32,12 +32,63 @@
   key-epoch id the metadata envelope sealed under. Absent for the identity
   codec.
 
+- Blinded-index key distribution for encrypted Collections: the `encryption`
+  descriptor gained an `hmac` member (key `id`, `type`, and the 32-byte secret
+  wrapped once per recipient with the same `ECDH-ES+A256KW` wrap the epoch
+  secrets use). `ensureFirstEpoch({ blindedIndex: true })` mints and installs it
+  alongside epoch[0] -- at provisioning or never, since blinded tokens must
+  compare across the Collection's whole history -- and `addRecipient` /
+  `removeRecipient` / `replaceRecipient` carry the roster edit in the same
+  conditional descriptor write. New `src/edv/hmacKey.ts` exports `mintHmacKey`,
+  `hmacKeyFromSecret`, `resolveHmacKey`, `HMAC_KEY_TYPE` and the `BlindingKey`
+  type; `EdvKeys` gained an optional `hmac` override for a keystore that
+  custodies the key itself. A removed recipient keeps the key (it never
+  rotates), a documented revocation asymmetry.
+
+- Content search for encrypted Collections:
+
+  - `collection.declareIndex({ attribute, unique })` declares an attribute
+    searchable. The declaration is persisted in the Collection's encrypted
+    metadata envelope (under `custom.indexSchema`), so every recipient discovers
+    it rather than re-declaring it per app; concurrent declarations reconcile
+    against the `/meta` ETag with a bounded retry. Redeclaring an attribute with
+    different uniqueness throws `ValidationError`.
+  - `collection.indexes()` reads that schema (attribute, `unique`, and the
+    `addedIn` revision -- declarations are prospective, so documents written
+    earlier are unindexed until rewritten).
+  - `collection.find({ equals | has, count, limit, cursor })` blinds the terms
+    client-side, posts the `blinded-index` profile to the Collection `/query`
+    endpoint, and decrypts the returned envelopes -- resolving to
+    `{ items, hasMore, cursor? }` (the new `FindPage` type) or `{ count }`.
+    Searching an attribute the schema does not declare throws `ValidationError`
+    instead of silently matching nothing.
+  - Codec-path writes now emit blinded `indexed` entries alongside the JWE once
+    the schema declares an attribute, matching what `EdvClientCore` documents
+    carry. The metadata envelope stays un-blinded.
+  - `ResourceCodec` gained an optional `indexing` capability (`applySchema` /
+    `schema` / `buildQuery`, with the `CodecIndexing`, `IndexSchema`,
+    `IndexDeclaration` and `BlindedQuery` types). The identity codec does not
+    implement it, so `declareIndex` / `find` on a plaintext Collection throw.
+    Resolving a codec for a Collection whose descriptor declares a blinding key
+    now reads the Collection `/meta` slot once to load the schema.
+
 ### Changed
 
 - Update to latest `@interop/storage-core@0.8.0`.
 - `meta` is now a reserved Resource id: `collection.resource('meta')` throws,
   since `/space/{spaceId}/{collectionId}/meta` is the Collection metadata
   endpoint.
+- Breaking, encrypted Collection metadata: the collection-level `custom`
+  envelope now binds the collection id as `was.collection`, and the decode side
+  requires it -- a `/meta` envelope with no `was.collection`, or one naming a
+  different collection, is refused with `IntegrityError`, as is a
+  collection-bound envelope served in a Resource's slot (checked before any
+  resource-id comparison). Collection metadata written by the earlier surface,
+  whose envelope bound only the scheme version and key epoch, is refused by this
+  verification and must be rewritten.
+- `EdvCodec`'s constructor takes `collectionId` as a required option (it is the
+  value bound into `was.collection`); `createEdvEncryption`'s `codecFor` already
+  supplied it.
 
 ## 0.34.0 - 2026-08-11
 

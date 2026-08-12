@@ -40,7 +40,11 @@ export type {
   ResourceCodec,
   EncryptionProvider,
   EncodedWrite,
-  ResponseLike
+  ResponseLike,
+  BlindedQuery,
+  CodecIndexing,
+  IndexDeclaration,
+  IndexSchema
 } from './codec.js'
 
 export type {
@@ -69,6 +73,7 @@ export type {
   ResourceMetadataCustom,
   CollectionMetadata,
   AddResult,
+  FindPage,
   ImportStats,
   PolicyDocument,
   LinkSet,

@@ -56,8 +56,10 @@
  *   plaintext `name`/`tags`. A reader with the keys decrypts it back
  *   transparently via `meta()`. The Collection-level `/meta` surface
  *   (`Collection.meta()` / `setMeta()`) runs through the same pair, with no
- *   resource id to bind: its envelope binds `was.v` and `was.epoch` only, and
- *   the decode side refuses a resource-bound envelope served into that slot.
+ *   resource id to bind: its envelope binds the collection id
+ *   (`was.collection`) instead, and the decode side refuses both a
+ *   resource-bound envelope served into that slot and a collection-bound one
+ *   served into a resource's.
  */
 import { base64, base64urlnopad } from '@scure/base'
 import { EdvClientCore, assertDocId } from '@interop/edv-client'
@@ -68,11 +70,18 @@ import type {
   IRecipientTemplate
 } from '@interop/data-integrity-core'
 import type {
+  BlindedQuery,
+  CodecIndexing,
   EncodedWrite,
   EncryptionProvider,
+  IndexSchema,
   ResourceCodec,
   ResponseLike
 } from '../codec.js'
+import {
+  EMPTY_INDEX_SCHEMA,
+  assertQueryAttributes
+} from '../internal/indexSchema.js'
 import {
   EncryptionError,
   IntegrityError,
@@ -132,29 +141,36 @@ const HEADER_DECODER = new TextDecoder()
 
 /**
  * Builds the AEAD-bound `was` protected-header parameter: the scheme version
- * and key epoch always, and the resource id when it is known at encrypt time
- * (absent for a content-derived id, which does not exist until after
- * encryption). The one shape both the content and the metadata write paths
- * bind.
+ * and key epoch always, and then exactly one slot marker -- the resource id
+ * when it is known at encrypt time (absent for a content-derived id, which
+ * does not exist until after encryption), or the collection id for the
+ * Collection metadata envelope, which belongs to no resource. The one shape
+ * both the content and the metadata write paths bind.
  *
  * @param options {object}
  * @param options.version {number}   the EDV-over-WAS scheme version
  * @param [options.resource] {string}   the resource id the envelope is bound to
+ * @param [options.collection] {string}   the collection id the envelope is
+ *   bound to (the Collection metadata slot only, never alongside `resource`)
  * @param [options.epoch] {string}   the key epoch the write encrypts under
- * @returns {{ v: number, resource?: string, epoch?: string }}
+ * @returns {{ v: number, resource?: string, collection?: string,
+ *   epoch?: string }}
  */
 function wasParam({
   version,
   resource,
+  collection,
   epoch
 }: {
   version: number
   resource?: string
+  collection?: string
   epoch?: string
-}): { v: number; resource?: string; epoch?: string } {
+}): { v: number; resource?: string; collection?: string; epoch?: string } {
   return {
     v: version,
     ...(resource !== undefined && { resource }),
+    ...(collection !== undefined && { collection }),
     ...(epoch !== undefined && { epoch })
   }
 }
@@ -252,17 +268,31 @@ export class EdvCodec implements ResourceCodec {
    */
   readonly #version: number
   /**
-   * Labels decrypt-routing errors ({@link UnknownEpochError}); the codec is
-   * otherwise collection-agnostic.
+   * The id of the Collection this codec was built for. It is bound into the
+   * Collection metadata envelope's `was.collection` on write and required to
+   * match on read, and it labels decrypt-routing errors
+   * ({@link UnknownEpochError}).
    */
   readonly #collectionId: string
   /**
    * The collection's blinded-index key, or `null` where the collection
-   * declares none. Blinding is not wired into the encrypt seams yet (emitting
-   * `indexed` entries waits on the persisted index schema); the codec resolves
-   * and holds the key so the search path can use it.
+   * declares none. It blinds attribute names and values both on write (the
+   * `indexed` entries an envelope carries) and on query, so equal plaintext
+   * yields equal tokens and the server can match without learning either.
    */
   readonly #blindingKey: BlindingKey | null
+  /**
+   * The collection's persisted index schema, as last applied through
+   * {@link indexing}. Empty until the schema is loaded (at codec resolution) or
+   * a `declareIndex` installs one -- and while it is empty the write seam emits
+   * no `indexed` entries, since there is nothing declared to index.
+   */
+  #schema: IndexSchema = EMPTY_INDEX_SCHEMA
+  /**
+   * The scheme-agnostic search capability handed to the handle layer, present
+   * exactly when this collection declares a blinding key.
+   */
+  readonly #indexing?: CodecIndexing
 
   /**
    * @param options {object}
@@ -284,7 +314,9 @@ export class EdvCodec implements ResourceCodec {
    *   JWE ciphertext, content-addressed)
    * @param [options.version] {number}   the EDV-over-WAS scheme version to bind
    *   into each envelope's `was.v` (defaults to {@link EDV_SCHEME_VERSION})
-   * @param [options.collectionId] {string}   labels decrypt-routing errors
+   * @param options.collectionId {string}   the Collection this codec reads and
+   *   writes: bound into the Collection metadata envelope's `was.collection`
+   *   (and checked on read), and it labels decrypt-routing errors
    * @param [options.hmac] {BlindingKey}   the collection's blinded-index key,
    *   where it declares one
    */
@@ -308,7 +340,7 @@ export class EdvCodec implements ResourceCodec {
     maxBlobBytes: number
     idDerivation: 'random' | 'content'
     version?: number
-    collectionId?: string
+    collectionId: string
     hmac?: BlindingKey | null
   }) {
     this.#edv = edv
@@ -320,8 +352,18 @@ export class EdvCodec implements ResourceCodec {
     this.#maxBlobBytes = maxBlobBytes
     this.#idDerivation = idDerivation
     this.#version = version ?? EDV_SCHEME_VERSION
-    this.#collectionId = collectionId ?? '(unknown)'
+    this.#collectionId = collectionId
     this.#blindingKey = hmac ?? null
+    if (this.#blindingKey !== null) {
+      this.#indexing = {
+        applySchema: (schema: IndexSchema): void => this.#applySchema(schema),
+        schema: (): IndexSchema => this.#schema,
+        buildQuery: (input: {
+          equals?: Record<string, unknown> | Array<Record<string, unknown>>
+          has?: string | string[]
+        }): Promise<BlindedQuery> => this.#buildQuery(input)
+      }
+    }
   }
 
   /**
@@ -331,6 +373,78 @@ export class EdvCodec implements ResourceCodec {
    */
   get blindingKey(): BlindingKey | null {
     return this.#blindingKey
+  }
+
+  /**
+   * @inheritdoc
+   */
+  get indexing(): CodecIndexing | undefined {
+    return this.#indexing
+  }
+
+  /**
+   * Installs the persisted schema: records it, then registers each declared
+   * attribute with the EDV core, whose index helper is what actually blinds
+   * attributes on write and builds query terms. Registration is idempotent, so
+   * re-applying the same schema (or a superset of it) is safe.
+   *
+   * @param schema {IndexSchema}
+   * @returns {void}
+   */
+  #applySchema(schema: IndexSchema): void {
+    this.#schema = schema
+    for (const entry of schema.indexes) {
+      this.#edv.ensureIndex({
+        attribute: entry.attribute,
+        unique: entry.unique === true
+      })
+    }
+  }
+
+  /**
+   * Blinds a caller's search terms with the collection's blinding key. Refuses
+   * an attribute the persisted schema does not declare (see
+   * `assertQueryAttributes`), and refuses a query that blinded to no terms at
+   * all -- the residual footgun the name check cannot see, e.g. a compound
+   * index queried by something other than a leading prefix of its members.
+   *
+   * @param input {object}
+   * @param [input.equals] {object | object[]}
+   * @param [input.has] {string | string[]}
+   * @returns {Promise<BlindedQuery>}
+   */
+  async #buildQuery({
+    equals,
+    has
+  }: {
+    equals?: Record<string, unknown> | Array<Record<string, unknown>>
+    has?: string | string[]
+  }): Promise<BlindedQuery> {
+    const hmac = this.#blindingKey
+    if (hmac === null) {
+      throw new EncryptionError(
+        `Collection ${this.#collectionId} declares no blinded-index key, so ` +
+          'its contents cannot be searched.'
+      )
+    }
+    assertQueryAttributes({ schema: this.#schema, equals, has })
+    const query = (await this.#edv.indexHelper.buildQuery({
+      hmac,
+      equals,
+      has
+    })) as BlindedQuery
+    const termless =
+      (query.equals?.every(term => Object.keys(term).length === 0) ?? false) ||
+      query.has?.length === 0
+    if (termless) {
+      throw new ValidationError(
+        'This search blinded to no index terms, so it would match nothing. ' +
+          'A compound index can only be queried by a leading prefix of its ' +
+          "attributes; check the collection's declared indexes with " +
+          'indexes().'
+      )
+    }
+    return query
   }
 
   /**
@@ -411,7 +525,11 @@ export class EdvCodec implements ResourceCodec {
       },
       recipients: this.#recipients,
       keyResolver: this.#edv.keyResolver,
-      hmac: undefined,
+      // Blind the declared attributes into the envelope's cleartext `indexed`
+      // entries, so the server can match a search without decrypting anything.
+      // Absent a blinding key or a declared attribute there is nothing to
+      // index, and passing no hmac carries any prior entries through verbatim.
+      hmac: this.#writeBlindingKey(),
       update: priorDoc !== null,
       additionalProtectedParams: { was }
     })
@@ -453,6 +571,21 @@ export class EdvCodec implements ResourceCodec {
   }
 
   /**
+   * The blinding key a content write should index with: the collection's key
+   * once the applied schema declares at least one attribute, else `undefined`
+   * (the cipher then computes no `indexed` entries and passes any already
+   * stored on the prior envelope through unchanged).
+   *
+   * @returns {BlindingKey | undefined}
+   */
+  #writeBlindingKey(): BlindingKey | undefined {
+    if (this.#blindingKey === null || this.#schema.indexes.length === 0) {
+      return undefined
+    }
+    return this.#blindingKey
+  }
+
+  /**
    * @inheritdoc
    */
   async decode(
@@ -474,20 +607,22 @@ export class EdvCodec implements ResourceCodec {
    * @param options {object}
    * @param options.doc {unknown}   the stored document read from the server
    * @param [options.expectedId] {string}   the resource id the read targeted
-   * @param [options.forbidResourceBinding] {boolean}   refuse an envelope bound
-   *   to a resource id (see {@link _verifyBinding}); set only by the
-   *   Collection-level metadata read, whose slot belongs to no resource
+   * @param [options.collectionSlot] {boolean}   the read addressed the
+   *   Collection metadata slot, which belongs to no resource: an envelope bound
+   *   to a resource id is refused there, and one bound to this Collection's id
+   *   is required (see {@link _verifyBinding}). Set only by the
+   *   Collection-level metadata read
    * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
    *   keyId: string }>}   the decrypted document
    */
   async #openEnvelope({
     doc,
     expectedId,
-    forbidResourceBinding
+    collectionSlot
   }: {
     doc: unknown
     expectedId?: string
-    forbidResourceBinding?: boolean
+    collectionSlot?: boolean
   }): Promise<{
     content?: unknown
     meta?: Record<string, unknown>
@@ -498,7 +633,7 @@ export class EdvCodec implements ResourceCodec {
     await this.#verifyBinding({
       jwe: doc.jwe,
       expectedId,
-      forbidResourceBinding,
+      collectionSlot,
       keyId: decrypted.keyId
     })
     return decrypted
@@ -597,16 +732,34 @@ export class EdvCodec implements ResourceCodec {
    *   envelope stamps its scheme version) -- {@link EncryptionError}. Greater
    *   than this codec's scheme version: a future-scheme envelope this client
    *   does not implement -- {@link EncryptionError}.
+   * Then the slot markers, which declare positively which of the profile's
+   * slots the envelope was written for -- `was.resource` a resource slot,
+   * `was.collection` the Collection metadata slot, neither a content-derived
+   * content envelope. A read of the Collection metadata slot
+   * (`collectionSlot`) enforces:
+   *
+   * - `was.resource` present: refused outright -- a resource's envelope was
+   *   served in the Collection's metadata slot, which belongs to no resource --
+   *   {@link IntegrityError}.
+   * - `was.collection` missing or not a string: refused -- the envelope belongs
+   *   to some other slot, notably a content-derived content envelope, whose
+   *   member set is otherwise identical -- {@link IntegrityError}.
+   * - `was.collection` not this codec's collection id: one Collection's
+   *   metadata served as another's -- {@link IntegrityError}.
+   *
+   * A read of a resource slot (content or resource metadata) enforces:
+   *
+   * - `was.collection` present: refused before any id comparison -- the
+   *   Collection's metadata envelope was served in a resource slot --
+   *   {@link IntegrityError}.
    * - `was.resource` present and the expected id known: a mismatch is a server-side
    *   swap of two resources' envelopes -- {@link IntegrityError}.
-   * - `was.resource` present and `forbidResourceBinding` set (the
-   *   Collection-level metadata slot, which belongs to no resource): refused
-   *   outright -- a resource's metadata envelope was served in the Collection's
-   *   metadata slot -- {@link IntegrityError}.
    * - `resource` absent (a content-derived write) and the expected
    *   id known: the envelope's ciphertext must re-derive to the expected id
    *   ({@link EdvDocumentCipher.deriveId}); a mismatch means the envelope was
    *   copied under a different id -- {@link IntegrityError}.
+   *
+   * Finally, unconditionally:
    * - `was.epoch` missing or not a string: refused like a missing `was` --
    *   {@link EncryptionError}. Present, it must equal the epoch (the `did:key`
    *   before the `#`) of the key that actually decrypted -- a mismatch is a
@@ -617,8 +770,8 @@ export class EdvCodec implements ResourceCodec {
    * @param options.jwe {unknown}   the envelope's JWE (its `protected` header is
    *   parsed for `was`)
    * @param [options.expectedId] {string}   the resource id the read targeted
-   * @param [options.forbidResourceBinding] {boolean}   refuse any envelope that
-   *   binds a `was.resource`, whatever its value
+   * @param [options.collectionSlot] {boolean}   the read addressed the
+   *   Collection metadata slot
    * @param options.keyId {string}   the id of the key that decrypted, for the
    *   epoch check
    * @returns {Promise<void>}
@@ -626,12 +779,12 @@ export class EdvCodec implements ResourceCodec {
   async #verifyBinding({
     jwe,
     expectedId,
-    forbidResourceBinding,
+    collectionSlot,
     keyId
   }: {
     jwe: unknown
     expectedId?: string
-    forbidResourceBinding?: boolean
+    collectionSlot?: boolean
     keyId: string
   }): Promise<void> {
     const was = parseWasHeader(jwe)
@@ -658,8 +811,8 @@ export class EdvCodec implements ResourceCodec {
           `${this.#version}) does not implement. Upgrade the client.`
       )
     }
-    if (typeof was.resource === 'string') {
-      if (forbidResourceBinding) {
+    if (collectionSlot) {
+      if (typeof was.resource === 'string') {
         throw new IntegrityError(
           `Cannot decrypt this Collection's metadata: the stored envelope is ` +
             `bound to resource "${was.resource}", but the Collection metadata ` +
@@ -667,26 +820,56 @@ export class EdvCodec implements ResourceCodec {
             "metadata envelope into the Collection's metadata slot."
         )
       }
-      if (expectedId !== undefined && was.resource !== expectedId) {
+      if (typeof was.collection !== 'string') {
         throw new IntegrityError(
-          `Cannot decrypt this resource: the stored envelope is bound to a ` +
-            `different resource id ("${was.resource}") than the one requested ` +
-            `("${expectedId}"). The server swapped two resources' envelopes.`
+          `Cannot decrypt this Collection's metadata: the stored envelope ` +
+            'binds no `was.collection`, so it was written for some other slot ' +
+            '(a content envelope, whose binding is otherwise identical). The ' +
+            "server served a foreign envelope in the Collection's metadata slot."
         )
       }
-    } else if (expectedId !== undefined) {
-      // Content-derived write (no `resource`): the id is a function of the
-      // ciphertext, so re-derive and compare.
-      const { documentCipher } = this.#edv
-      const derived = await documentCipher.deriveId({
-        jwe: jwe as Parameters<typeof documentCipher.deriveId>[0]['jwe']
-      })
-      if (derived !== expectedId) {
+      if (was.collection !== this.#collectionId) {
         throw new IntegrityError(
-          `Cannot decrypt this resource: its content-derived id ("${derived}") ` +
-            `does not match the requested id ("${expectedId}"). The server ` +
-            'served this envelope under an id it was not written for.'
+          `Cannot decrypt this Collection's metadata: the stored envelope is ` +
+            `bound to collection "${was.collection}", not to the requested ` +
+            `collection ("${this.#collectionId}"). The server served one ` +
+            "Collection's metadata as another's."
         )
+      }
+    } else {
+      // A resource slot (content or resource metadata). The Collection's own
+      // metadata envelope has no business here, whatever id it names, so it is
+      // refused before any resource-id comparison.
+      if (was.collection !== undefined) {
+        throw new IntegrityError(
+          `Cannot decrypt this resource: the stored envelope is bound to ` +
+            `collection "${String(was.collection)}", but a resource's slot ` +
+            'belongs to no collection binding. The server served the ' +
+            "Collection's own metadata envelope in a resource's slot."
+        )
+      }
+      if (typeof was.resource === 'string') {
+        if (expectedId !== undefined && was.resource !== expectedId) {
+          throw new IntegrityError(
+            `Cannot decrypt this resource: the stored envelope is bound to a ` +
+              `different resource id ("${was.resource}") than the one requested ` +
+              `("${expectedId}"). The server swapped two resources' envelopes.`
+          )
+        }
+      } else if (expectedId !== undefined) {
+        // Content-derived write (no `resource`): the id is a function of the
+        // ciphertext, so re-derive and compare.
+        const { documentCipher } = this.#edv
+        const derived = await documentCipher.deriveId({
+          jwe: jwe as Parameters<typeof documentCipher.deriveId>[0]['jwe']
+        })
+        if (derived !== expectedId) {
+          throw new IntegrityError(
+            `Cannot decrypt this resource: its content-derived id ("${derived}") ` +
+              `does not match the requested id ("${expectedId}"). The server ` +
+              'served this envelope under an id it was not written for.'
+          )
+        }
       }
     }
     if (typeof was.epoch !== 'string') {
@@ -734,18 +917,30 @@ export class EdvCodec implements ResourceCodec {
     // own random EDV id), so a server-side swap of two resources' metadata is
     // AEAD-detected on decode. A Resource-level write always knows that id at
     // encrypt time (it is never content-derived here); a Collection-level write
-    // has no resource to bind, so `wasParam` omits `resource` and the envelope
-    // binds `was.v` + `was.epoch` only. It seals to the current epoch key like
-    // every write, so it binds `was.epoch` like every write.
+    // has no resource to bind and binds this collection's id instead, so its
+    // slot is declared positively -- a content envelope (which binds neither
+    // marker) served in the Collection metadata slot is then detected too. It
+    // seals to the current epoch key like every write, so it binds `was.epoch`
+    // like every write.
     const was = wasParam({
       version: this.#version,
-      resource: resourceId,
+      ...(resourceId === undefined
+        ? { collection: this.#collectionId }
+        : { resource: resourceId }),
       epoch: this.#writeEpoch
     })
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
       recipients: this.#recipients,
       keyResolver: this.#edv.keyResolver,
+      // Deliberately un-blinded, even on a searchable collection: this envelope
+      // is the WAS `/meta` value, not part of the resource's content document,
+      // and it is stored in a different slot the search endpoint never reads.
+      // The `meta.*` attribute paths a declared index may name address the
+      // *content document's* own `meta` (the content type and inline-encoding
+      // discriminator), which is a different object entirely -- so blinding
+      // here would emit entries that can never match a query and would leak the
+      // shape of the metadata into a slot with no index at all.
       hmac: undefined,
       additionalProtectedParams: { was }
     })
@@ -765,7 +960,8 @@ export class EdvCodec implements ResourceCodec {
    *
    * An omitted `expectedId` means the Collection-level metadata slot (a
    * Resource metadata read always passes its resource id), so an envelope bound
-   * to a resource is refused there as a server-side swap.
+   * to a resource is refused there as a server-side swap, and one that does not
+   * bind this Collection's own id is refused as an envelope of some other slot.
    */
   async decodeMeta(
     {
@@ -781,7 +977,7 @@ export class EdvCodec implements ResourceCodec {
     const decrypted = await this.#openEnvelope({
       doc: custom,
       expectedId,
-      forbidResourceBinding: expectedId === undefined
+      collectionSlot: expectedId === undefined
     })
     return (decrypted.content ?? {}) as ResourceMetadataCustom
   }

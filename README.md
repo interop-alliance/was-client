@@ -727,6 +727,74 @@ scope for now):
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
   do not (they return the stored representation).
 
+#### Searching an encrypted collection
+
+An encrypted collection can be searched by attribute without the server ever
+learning the attribute names or their values: the client blinds both into HMAC
+tokens (equal plaintext blinds to equal tokens, and nothing else), stores them
+alongside the ciphertext, and blinds the query the same way. The server compares
+opaque strings.
+
+The blinding key is installed with the collection's first key epoch or never --
+retro-fitting one would leave every already-written document unindexed -- so ask
+for it at provisioning time:
+
+```ts
+await ensureFirstEpoch({
+  collection: declared,
+  recipients: [ownerRecipient({ keyAgreementKey })],
+  blindedIndex: true // searchable: a property fixed at birth
+})
+```
+
+Then declare what is searchable and search it:
+
+```ts
+const vault = was.space(spaceId).collection('vault')
+await vault.declareIndex({ attribute: 'content.type' })
+
+await vault.add({ type: 'note', title: 'alpha' })
+
+const page = await vault.find({ equals: { 'content.type': 'note' } })
+// { items: [{ id, data: { type: 'note', title: 'alpha' } }], hasMore: false }
+
+const { count } = await vault.find({
+  equals: { 'content.type': 'note' },
+  count: true
+})
+```
+
+Attribute names are dotted paths rooted at `content` or `meta` (the document's
+own `meta`, which carries the content type and encoding -- not the WAS `/meta`
+name/tags, which live in a separate envelope and are deliberately not indexed).
+Pass an array of names for a compound index, searchable by a leading prefix of
+its attributes; `unique: true` makes the server answer a colliding write with
+`409`. Give `find()` either `equals` (an array of objects is an OR of
+alternatives) or `has` (attribute names a document must carry); page with
+`limit` and the returned `cursor`.
+
+Two properties are worth planning around:
+
+- **Declarations are collection state, not app state.** The schema is persisted
+  inside the collection's encrypted metadata envelope, so any recipient
+  discovers it -- read it with `collection.indexes()`. That is what lets an app
+  granted access to an existing collection learn what is queryable; the stored
+  tokens cannot teach it, being blinded. Concurrent declarations reconcile
+  through the metadata ETag rather than overwriting each other.
+- **Declarations are prospective.** A document written before an attribute was
+  declared carries no token for it and does not match until it is rewritten
+  (each entry's `addedIn` revision records when it became searchable). Searching
+  an attribute the schema does not declare throws `ValidationError` rather than
+  silently matching nothing.
+
+Requires the collection's backend to advertise `blinded-index-query`; a backend
+without it answers `501` (`NotImplementedError`). `find()` / `declareIndex()` on
+a plaintext collection throw -- there is no client-side index there.
+
+Note that `collection.setMeta({ custom })` replaces the whole `custom` object,
+schema included; the `setName()` / `setTags()` sugar merges instead and leaves
+it intact.
+
 ### Cross-replica sync
 
 The opt-in `@interop/was-client/sync` subpath supplies everything a wallet needs

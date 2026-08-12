@@ -350,6 +350,25 @@ export async function readJsonData(response: ResponseLike): Promise<unknown> {
 }
 
 /**
+ * Presents an already-in-hand stored body to the codec seam as the
+ * {@link ResponseLike} the seam is typed against. Used wherever a body arrives
+ * outside the ordinary GET path -- a local replica's envelope, or one of the
+ * documents a search returned inline -- so those callers need no fake response
+ * object. The headers stub resolves an ETag lookup to "no validator", which is
+ * accurate: such a body carries no version of its own.
+ *
+ * @param body {unknown}   the stored body
+ * @returns {ResponseLike}
+ */
+export function storedResponse(body: unknown): ResponseLike {
+  return {
+    data: body,
+    json: async () => body,
+    headers: { get: () => null }
+  }
+}
+
+/**
  * Parses a resource GET response: returns the parsed object when the stored
  * content-type is JSON, otherwise a `Blob` whose `.type` carries the
  * content-type. A `null` response (404) passes through as `null`.

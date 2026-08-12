@@ -23,9 +23,13 @@ import type { EncodedWrite, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { prepareBody, parseResource } from './content.js'
 import { describeCollection, unreadableDescriptionError } from './describe.js'
-import { EncryptionError } from '../errors.js'
+import { readIndexSchema } from './indexSchema.js'
+import { collectionMeta } from './paths.js'
+import { send } from './request.js'
+import { EncryptionError, NotImplementedError } from '../errors.js'
 import type {
   CollectionEncryption,
+  CollectionMetadata,
   EncryptionOverride,
   IZcap,
   Json,
@@ -193,6 +197,7 @@ export async function resolveCodec(
       collectionId,
       scheme: override.scheme,
       keys: override.keys,
+      capability,
       // A full `CollectionEncryption` descriptor is itself a valid override
       // (Space.createCollection pre-seeds exactly this). Forward the whole
       // override as the `encryption` descriptor so an epoch-bearing override
@@ -239,7 +244,8 @@ export async function resolveCodec(
     spaceId,
     collectionId,
     scheme: description.encryption.scheme,
-    encryption: description.encryption
+    encryption: description.encryption,
+    capability
   })
 }
 
@@ -255,6 +261,8 @@ export async function resolveCodec(
  * @param options.collectionId {string}
  * @param options.scheme {string}
  * @param [options.keys] {unknown}   override-supplied key material
+ * @param [options.capability] {IZcap}   the handle's bound capability, used for
+ *   the index-schema read
  * @returns {Promise<ResourceCodec>}
  */
 async function buildEncryptingCodec(
@@ -264,13 +272,15 @@ async function buildEncryptingCodec(
     collectionId,
     scheme,
     encryption,
-    keys
+    keys,
+    capability
   }: {
     spaceId: string
     collectionId: string
     scheme: string
     encryption?: CollectionEncryption
     keys?: unknown
+    capability?: IZcap
   }
 ): Promise<ResourceCodec> {
   const where = `${spaceId}/${collectionId}`
@@ -295,5 +305,72 @@ async function buildEncryptingCodec(
         'your keystore (resolveKeys) or a per-handle encryption override.'
     )
   }
+  await loadIndexSchema(context, { spaceId, collectionId, capability, codec })
   return codec
+}
+
+/**
+ * Loads the collection's persisted index schema onto a freshly-built codec, so
+ * writes through it emit index tokens for the declared attributes and searches
+ * can be built for them. A no-op for a codec with no search capability -- which
+ * is every codec on a collection whose descriptor declares no blinding key, so
+ * an ordinary encrypted collection pays no round-trip here.
+ *
+ * The schema is discovered rather than declared per app: it is the reason
+ * declarations are persisted at all, so a reader that did not create the
+ * collection can learn what is searchable. It is read once per codec
+ * resolution, which means it is as fresh as the handle -- a `declareIndex` on
+ * this handle updates it in place, and the codec is re-resolved (and the schema
+ * re-read) whenever `CodecHolder.reset()` fires.
+ *
+ * A server with no Collection metadata surface, and a collection whose metadata
+ * is not visible to this capability, both leave the schema empty rather than
+ * failing the resolution: neither says the collection is broken, and every
+ * search on an undeclared attribute still fails loudly at `find()`.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.capability] {IZcap}
+ * @param options.codec {ResourceCodec}   the codec to install the schema on
+ * @returns {Promise<void>}
+ */
+async function loadIndexSchema(
+  context: ClientContext,
+  {
+    spaceId,
+    collectionId,
+    capability,
+    codec
+  }: {
+    spaceId: string
+    collectionId: string
+    capability?: IZcap
+    codec: ResourceCodec
+  }
+): Promise<void> {
+  const { indexing } = codec
+  if (!indexing) {
+    return
+  }
+  let response
+  try {
+    response = await send(context, {
+      path: collectionMeta(spaceId, collectionId),
+      method: 'GET',
+      capability,
+      read: true
+    })
+  } catch (err) {
+    if (err instanceof NotImplementedError) {
+      return
+    }
+    throw err
+  }
+  if (response === null || response.data === undefined) {
+    return
+  }
+  const { custom } = response.data as CollectionMetadata
+  indexing.applySchema(readIndexSchema(await codec.decodeMeta({ custom })))
 }

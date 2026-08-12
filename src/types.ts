@@ -149,6 +149,19 @@ export interface AddResult {
 }
 
 /**
+ * One page of `collection.find()` results: the matching resources, decoded
+ * (decrypted) the way `get()` decodes them, plus the means to ask for more.
+ * `cursor` is present exactly when `hasMore` is `true`; pass it back as
+ * `find({ ..., cursor })` to continue. It is an opaque server token, not an
+ * offset.
+ */
+export interface FindPage {
+  items: Array<{ id: string; data: Json | Blob }>
+  hasMore: boolean
+  cursor?: string
+}
+
+/**
  * A per-handle client-side encryption override -- the escape hatch / bootstrap
  * path that takes precedence over the Collection's declared `encryption`
  * descriptor AND skips the descriptor-discovery round-trip:

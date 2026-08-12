@@ -104,11 +104,106 @@ export interface EncodedWrite {
 }
 
 /**
+ * One entry of a collection's persisted index schema: an attribute path (or an
+ * array of them, for a compound index), whether the index is unique, and the
+ * schema revision it was added in.
+ *
+ * `addedIn` is the partial-coverage marker: a document written before the
+ * attribute was declared carries no token for it, so a querier comparing
+ * `addedIn` against how long the collection has existed knows matches may be
+ * incomplete until those documents are rewritten.
+ */
+export interface IndexDeclaration {
+  attribute: string | string[]
+  unique?: true
+  addedIn: number
+}
+
+/**
+ * The collection's persisted index schema: which attributes are searchable, and
+ * a monotonic `revision` bumped by each declaration. It is stored inside the
+ * collection's encrypted metadata envelope, so any recipient can discover what
+ * is queryable without out-of-band coordination (the attribute names are
+ * themselves sensitive -- they describe the data model -- so they never travel
+ * as server-visible plaintext).
+ */
+export interface IndexSchema {
+  revision: number
+  indexes: IndexDeclaration[]
+}
+
+/**
+ * A built search query in the form the server evaluates: an index key id plus
+ * blinded terms. The client blinds attribute names and values before they leave
+ * it, so the server matches opaque strings and learns neither.
+ */
+export interface BlindedQuery {
+  index: string
+  equals?: Array<Record<string, string>>
+  has?: string[]
+  count?: boolean
+  limit?: number
+  cursor?: string
+}
+
+/**
+ * The optional search capability of a codec that indexes what it stores. It is
+ * deliberately scheme-agnostic -- no EDV type appears in it -- so the handle
+ * layer can drive declaration and search without knowing how blinding works.
+ * The identity (plaintext) codec does not implement it, which is how the handle
+ * layer detects that a collection is not searchable this way.
+ */
+export interface CodecIndexing {
+  /**
+   * Installs the collection's persisted schema on this codec, so subsequent
+   * writes emit index tokens for the declared attributes and queries can be
+   * built for them. Called at codec-resolution time with the stored schema, and
+   * again by `declareIndex` after it persists a new one.
+   *
+   * @param schema {IndexSchema}
+   * @returns {void}
+   */
+  applySchema(schema: IndexSchema): void
+
+  /**
+   * The schema currently installed on this codec (the empty schema before one
+   * is applied).
+   *
+   * @returns {IndexSchema}
+   */
+  schema(): IndexSchema
+
+  /**
+   * Blinds a caller's search terms into the query the server evaluates.
+   * Attributes absent from the installed schema are refused rather than
+   * silently blinded into a term-less query that matches nothing.
+   *
+   * @param input {object}
+   * @param [input.equals] {object | object[]}   attribute/value pairs to match
+   * @param [input.has] {string | string[]}   attribute names a document must have
+   * @returns {Promise<BlindedQuery>}
+   */
+  buildQuery(input: {
+    equals?: Record<string, unknown> | Array<Record<string, unknown>>
+    has?: string | string[]
+  }): Promise<BlindedQuery>
+}
+
+/**
  * A pluggable encode/decode transform bound to a single collection handle.
  * Implementations must be stateless with respect to a given call (a resolved
  * codec is reused across every read/write on the handle).
  */
 export interface ResourceCodec {
+  /**
+   * The codec's search capability, when it indexes what it stores (the EDV
+   * codec on a collection whose descriptor declares a blinded-index key).
+   * Absent for the identity codec and for an encrypted collection provisioned
+   * without an index key, so `Collection.declareIndex()` / `find()` refuse
+   * rather than pretend.
+   */
+  readonly indexing?: CodecIndexing
+
   /**
    * Whether this codec drives optimistic-concurrency (conditional) writes. When
    * `true`, the write path pre-reads the current stored resource and passes it
@@ -169,7 +264,8 @@ export interface ResourceCodec {
    *   encrypting codec binds it into the metadata envelope's AEAD-authenticated
    *   protected header (so a server-side swap of two resources' metadata is
    *   detected on decode); the identity codec ignores it. Absent for a
-   *   Collection-level metadata write, which belongs to no resource.
+   *   Collection-level metadata write, which belongs to no resource -- an
+   *   encrypting codec then binds its own collection id instead.
    * @returns {Promise<{ custom: object; epoch?: string }>}   the value to store
    *   under `custom`, plus -- for an encrypting codec -- `epoch`, the key-epoch
    *   id the metadata envelope sealed under. A Collection-level `/meta` write
@@ -192,7 +288,9 @@ export interface ResourceCodec {
    * @param [stored.custom] {unknown}   the stored `custom` value from `/meta`
    * @param [expectedId] {string}   the resource id the metadata belongs to. An
    *   encrypting codec verifies the envelope's AEAD-authenticated binding
-   *   against it; the identity codec ignores it.
+   *   against it; the identity codec ignores it. Omitted for a Collection-level
+   *   read, where an encrypting codec instead requires the envelope to be bound
+   *   to that collection.
    * @returns {Promise<ResourceMetadataCustom>}
    */
   decodeMeta(

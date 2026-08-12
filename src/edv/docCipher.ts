@@ -33,6 +33,7 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 import type { ResponseLike } from '../codec.js'
+import { storedResponse } from '../internal/content.js'
 import { KeyUnwrapError } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
@@ -81,20 +82,15 @@ export function ownerRecipient({
 }
 
 /**
- * Presents a locally-held envelope to the codec seam as the {@link
- * ResponseLike} the seam is typed against. A replica's envelope never came
- * from HTTP: the pre-parsed body, the `json()` fallback, and a headers stub
- * (so an ETag lookup resolves to "no validator") are the whole surface.
+ * Presents a locally-held envelope to the codec seam as the `ResponseLike` the
+ * seam is typed against. A replica's envelope never came from HTTP, so the
+ * shared stored-body adapter is the whole surface it needs.
  *
  * @param envelope {Json}   the stored envelope
  * @returns {ResponseLike}
  */
 function envelopeResponse(envelope: Json): ResponseLike {
-  return {
-    data: envelope,
-    json: async () => envelope,
-    headers: { get: () => null }
-  }
+  return storedResponse(envelope)
 }
 
 /**
