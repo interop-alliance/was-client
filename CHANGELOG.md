@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.38.0 - TBD
+
+### Changed
+
+- **BREAKING**: Renamed the resource-log format identifier, following
+  `@interop/storage-core` 0.9.0: the constant re-exported from the `/log`
+  subpath is now `RESOURCE_LOG_METHOD` (was `WAS_RESOURCE_LOG_METHOD`), and its
+  value is now `resource-log:0.1` (was `was-resource-log:0.1`). Existing logs
+  carry the old `method` value in their genesis parameters.
+- `@interop/storage-core` `^0.9.0`.
+
 ## 0.37.0 - 2026-08-13
 
 ### Added

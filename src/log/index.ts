@@ -27,7 +27,7 @@ export {
 } from './logStore.js'
 export type { ResourceLogStore } from './logStore.js'
 export { LogNotConfirmedError } from '../errors.js'
-export { WAS_RESOURCE_LOG_METHOD } from '@interop/storage-core'
+export { RESOURCE_LOG_METHOD } from '@interop/storage-core'
 export type {
   ResourceLogEntry,
   ResourceLogEntryProof,

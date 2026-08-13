@@ -405,3 +405,188 @@ on `blob.size` and the chunked branch streams via `blob.stream()`. F10:
 `deleteDocument`; the codec's request wiretap is gone. Regression tests cover
 the F1 envelope swap, the F2 forged cleartext `stream`, and the F3 cleanup
 paths.
+
+### WCL-11: `indexed` emission on the sync push path
+
+- status: done
+- done: 2026-08-13
+- priority: medium
+- labels: encryption, sync, query
+- touches:
+  - freewallet -- its sync wiring builds the cipher via `createEdvDocCipher`; if
+    that function gains a schema input (or a refresh hook), the wiring must
+    supply it; verify and update. Verified 2026-08-12: the wiring change is
+    FW-133 (its item text now records the shipped API); it lands once was-client
+    0.36.0 is published to npm (freewallet consumes the registry). Resolved:
+    FW-133 shipped and archived 2026-08-13.
+  - was-react -- same: its `src/sync/` DocCipher wiring is the other
+    `createEdvDocCipher` consumer; verify and update. Verified 2026-08-12: the
+    wiring change is WR-32 (item text updated likewise); also blocked on the
+    0.36.0 npm publish. Resolved: WR-32 shipped in was-react 0.18.0 and is
+    archived.
+- acceptance:
+  - [x] Envelopes written through the sync push path for a collection with a
+        declared index schema carry `indexed` entries token-identical to
+        direct-write envelopes for the same content
+  - [x] A document pushed via sync is returned by `collection.find()` on the
+        indexed attributes
+
+discovered-from: WCL-1 (found while landing Stage B, 2026-08-12).
+`createEdvDocCipher` builds its codec directly via the provider's `codecFor`,
+bypassing `internal/codec.ts`'s schema load, and `indexed` emission is gated on
+an applied schema -- so envelopes written through the sync push path carry no
+`indexed` entries and are invisible to blinded-index queries. The envelope
+passthrough itself is fine (`readEncoded` forwards the codec's envelope
+verbatim, so `indexed` would survive once emitted); the gap is purely that the
+sync cipher never learns the schema. Design question to settle: the sync replica
+may write offline, so the schema likely arrives as a caller-supplied input on
+`createEdvDocCipher` (the wallet already holds the descriptor and meta locally)
+rather than a live Collection `/meta` read at cipher build; a schema declared
+after the cipher was built also needs a staleness story consistent with the
+handle-lifetime memoization on the direct path.
+
+Progress (2026-08-12): the client half shipped. The design question resolved as
+caller-supplied: `createEdvDocCipher` gained an optional `meta` input (the
+collection's stored `/meta` value; its encrypted `custom` envelope is decoded
+with `decodeMeta` and the `custom.indexSchema` it carries installed through the
+codec's `indexing` capability -- the same routine `internal/codec.ts` runs at
+codec resolution) and now returns `EdvDocCipher`, whose `applyMeta({ custom })`
+is the staleness story: the consumer re-invokes it whenever its replica's copy
+of the collection metadata changes (both known consumers rebuild or refresh
+ciphers on descriptor changes only, so a meta-only change needs this hook, not
+their epoch-gated rebuild). The input is optional and its absence changes
+nothing, keeping offline/local-only replicas (which hold no meta) working; a
+supplied value that cannot be decoded fails loudly, and the metadata envelope's
+`was.collection` AEAD binding means `collectionId` must now be documented as the
+real WAS collection id (both consumers already pass it). Unit coverage rides
+`test/node/edv-doc-cipher.test.ts` (token-identical emission against the
+direct-path codec); live coverage is the sync-push case in
+`test/integration/blinded-find.test.ts`, verified against a locally-run teaching
+server. Remaining: the two `touches:` wiring updates (FW-133 / WR-32), blocked
+on the 0.36.0 npm publish -- both since shipped (see touches), closing the item
+2026-08-13.
+
+### WCL-1: Content search for the codec path
+
+- status: done 2026-08-13
+- priority: medium
+- labels: encryption, codec, query
+- touches:
+  - encrypted-collections-spec -- resolved: ECS-2 shipped (archived 2026-08-12
+    in the ECS roadmap), covering everything this entry called for: the
+    descriptor's OPTIONAL `hmac` member with epoch-style recipient wraps, the
+    installed-at-provisioning-or-never and no-rotation rules as normative text,
+    the stored-envelope `indexed` entries, index-schema persistence under
+    `custom.indexSchema` (with the per-attribute addition marker recording
+    that matches may be partial), and Security Considerations for the
+    revocation asymmetry and the schema's own sensitivity
+  - wallet-attached-storage-spec -- resolved: the `blinded-index` query profile
+    was already in the Query Profile Registry, and the schema's home, the
+    Collection-level `/meta` endpoints, shipped as WASS-9 (archived in that
+    repo's `_spec` roadmap)
+  - was-teaching-server -- resolved: the schema home (Collection-level `/meta`,
+    WAS-55) shipped in 0.21.0, and WAS-56 (archived 2026-08-12) closed the rest:
+    the `blinded-index-api` conformance suite gained a codec-path group (equals
+    round-trip, has + count, unique 409 conflict; conformance-suite 0.6.0,
+    pending publish) and the Reverse-gaps preamble now cross-links the served
+    blinded-index envelope semantics to ECS-2
+  - freewallet -- resolved: FW-130 (mint, custody, and distribute the HMAC key;
+    `ensureFirstEpoch` install) shipped 2026-08-12 and is archived; its residue
+    (the wallet's sync doc-cipher writes do not load the index schema) is
+    FW-133, riding upstream WCL-11, not this item
+  - was-react -- resolved: WR-31 shipped in was-react 0.15.0 (2026-08-12,
+    alongside was-client 0.35.0); its residue (sync-path writes emit no
+    `indexed` entries) is WR-32, riding upstream WCL-11, not this item
+  - "@interop/edv-client" -- resolved: no upstream export was needed; the
+    concrete HMAC key class is `SHA256HMACKey` from
+    `@interop/data-integrity-core` (used by `src/edv/hmacKey.ts`), and the
+    codec's `BlindingKey` contract is structural, so edv-client's `IHMAC`
+    implementations also satisfy it
+  - was-client ARCHITECTURE.md -- resolved: the codec section now documents the
+    optional `indexing` capability (`applySchema` / `schema` / `buildQuery`),
+    blinded `indexed` emission on writes, and the `find()` binding
+- acceptance:
+  - [x] `createEdvEncryption`'s key set gains an `hmac` key, so the codec's
+        cipher can blind attributes
+  - [x] Codec-path writes emit blinded `indexed` entries alongside the JWE,
+        matching what `EdvClientCore` documents carry
+  - [x] `collection.find()` sugar binds the `blinded-index` profile for
+        codec-stored documents
+  - [x] The index schema (indexed attribute names, `unique`/compound flags) is
+        persisted encrypted with the collection and discoverable by any
+        recipient; declaring an index reconciles against the persisted schema
+        instead of being app-local in-memory state
+
+`WasTransport.find` binds the `blinded-index` profile, so `EdvClientCore` users
+had content search from the start -- but `createEdvEncryption` built its cipher
+with no HMAC, so codec-stored documents carried no blinded `indexed` entries and
+were not findable. Closing that gap was a separate, larger design (below), now
+implemented client-side.
+
+Progress (2026-08-12): the key-distribution half shipped first -- the
+descriptor's `hmac` member (mirrored locally as `EncryptionWithHmac` until the
+storage-core 0.7.0 bump), `src/edv/hmacKey.ts` (mint / rebuild-from-secret /
+`resolveHmacKey`), `ensureFirstEpoch({ blindedIndex })` provisioning-or-never
+install, hmac roster edits riding the same CAS write in `addRecipient` /
+`removeRecipient` / `replaceRecipient`, `EdvKeys.hmac` override, and the codec
+resolving and exposing `blindingKey` (also handed to `EdvClientCore`). It was
+**paused** on the persisted schema's home, the Collection-level `/meta`
+envelope, which has since shipped on all three sides (client WCL-8, server
+WAS-55 in was-teaching-server 0.21.0, spec WASS-9).
+
+Progress (2026-08-12, second pass): the remaining halves are implemented, so all
+four acceptance criteria are met. The schema lives under `custom.indexSchema` in
+the Collection's encrypted `/meta` envelope
+(`{ revision, indexes: [{ attribute, unique?, addedIn }] }`), written through
+the read-reconcile-`setMeta({ ifMatch })` loop with a bounded retry and loaded
+onto the codec at codec-resolution time for a descriptor that carries `hmac`.
+`ResourceCodec` gained an EDV-type-free `indexing` capability (`applySchema` /
+`schema` / `buildQuery`) so the handle layer stays codec-agnostic; the content
+encrypt seam passes the blinding key once an attribute is declared, while
+`encodeMeta` stays deliberately un-blinded (that envelope is not part of the EDV
+content document). `Collection.indexes()`, `declareIndex()` and `find()` are the
+public surface, with a client-side guard that refuses a query naming an
+undeclared attribute (the underlying index helper would otherwise build a
+term-less query that matches nothing). Unit coverage is
+`test/node/blinded-index.test.ts`; live coverage is
+`test/integration/blinded-find.test.ts`.
+
+Touches sweep (2026-08-12): freewallet FW-130 and was-react WR-31 both shipped
+(each leaving a sync-path residue item -- FW-133 and WR-32 -- that rides
+upstream WCL-11, not this item), the edv-client question resolved via
+`SHA256HMACKey` from `@interop/data-integrity-core`, ARCHITECTURE.md is updated,
+and the storage-core widening cleanup landed (0.8.0; `EncryptionWithHmac` is now
+a plain alias of `CollectionEncryption`). The item stayed `in-progress` on one
+remaining `touches:` entry: the encrypted-collections spec text (hmac
+distribution, `indexed` envelope entries, index-schema persistence, Security
+Considerations), filed as ECS-2 in the ECS roadmap. The was-teaching-server half
+(WAS-56: codec-path conformance coverage plus the Reverse-gap cross-link) was
+archived 2026-08-12. WCL-10 (the `was.collection` binding decided as ECS-1)
+landed alongside it on 2026-08-12, so the persisted schema envelopes are minted
+with the final binding shape. ECS-2 shipped and was archived 2026-08-12,
+resolving the last `touches:` entry and closing the item 2026-08-13.
+
+Design point (recorded 2026-08-12): the index schema must be persisted and
+discoverable, not app-local. `@interop/edv-client` keeps the schema as in-memory
+state (`ensureIndex` populates a `Map` the app re-declares every run); that
+fails the access-grant flow -- an app granted access to an existing collection
+later must be able to learn which attributes are queryable without out-of-band
+coordination, and stored `indexed` entries cannot teach it (their attribute
+names are blinded). The schema is itself sensitive (attribute names reveal the
+data model), so it cannot ride the Collection Description in plaintext; the home
+is the collection's encrypted metadata envelope -- any epoch recipient can
+already decrypt it, and its `metaVersion` ETag gives concurrent schema edits
+conditional-write semantics. That envelope now exists at Collection level (WCL-8
+/ WAS-55 / WASS-9, all shipped). The considered-and-rejected alternative
+(2026-08-12) was persisting the schema as an ordinary encrypted Resource under a
+blind-derived id (`HMAC(indexKey, 'index-schema')` in the EDV id layout):
+discoverable by any key holder with no endpoint work, but the magic-id document
+pollutes listings, change feeds, and sync replicas, counts against quota, and
+can be destroyed by bulk deletes. Consequences of the persisted schema: the
+`ensureIndex`-equivalent becomes a read-reconcile-write against the persisted
+schema rather than a local declaration; and discovery must not promise complete
+coverage -- an attribute added after documents were written has no tokens on
+those documents until they are rewritten (the backfill is a re-blind sweep, the
+same cost class as an HMAC key rotation), so the persisted schema should record
+enough (e.g. a per-attribute addition marker) for a querier to know matches may
+be partial.
