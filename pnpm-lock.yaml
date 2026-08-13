@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@interop/data-integrity-core':
-        specifier: ^8.4.0
-        version: 8.4.0
+        specifier: ^8.5.0
+        version: 8.5.0
       '@interop/ed25519-signature':
         specifier: ^7.1.4
         version: 7.1.4(@interop/jsonld-signatures@11.8.4)
@@ -176,6 +176,10 @@ packages:
 
   '@interop/data-integrity-core@8.4.0':
     resolution: {integrity: sha512-j7Y9BthxKWdPx6d3q96jHnDJXj08BWE++JeWJ0jhqJJbdvCMPgenU2g/MUrlZqe3TtF52ULlYJFYRoWwTDVGdg==}
+    engines: {node: '>=24.0'}
+
+  '@interop/data-integrity-core@8.5.0':
+    resolution: {integrity: sha512-PUyyasGGzfJqfpFAljixhNcrk9hyx97oRlQsjU3QOpmW4LslL9Ym0QB4gEXIrJrLyDtXA6BS3sQltMs2bhdUGw==}
     engines: {node: '>=24.0'}
 
   '@interop/data-integrity-proof@3.4.3':
@@ -1271,16 +1275,18 @@ snapshots:
 
   '@interop/data-integrity-core@8.4.0': {}
 
+  '@interop/data-integrity-core@8.5.0': {}
+
   '@interop/data-integrity-proof@3.4.3':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/jsonld-signatures': 11.8.4
       '@noble/hashes': 2.3.0
       '@scure/base': 2.3.0
 
   '@interop/ecdsa-multikey@2.3.3':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@scure/base': 2.3.0
 
   '@interop/ecdsa-signature@2.0.5(@interop/jsonld-signatures@11.8.4)':
@@ -1294,7 +1300,7 @@ snapshots:
 
   '@interop/ed25519-signature@7.1.4(@interop/jsonld-signatures@11.8.4)':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/data-integrity-proof': 3.4.3
       '@interop/ed25519-verification-key': 8.0.3
       '@interop/jsonld': 9.0.3
@@ -1308,14 +1314,14 @@ snapshots:
 
   '@interop/ed25519-verification-key@8.0.3':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@noble/ed25519': 3.1.0
       '@noble/hashes': 2.3.0
       '@scure/base': 2.3.0
 
   '@interop/edv-client@17.8.0':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/http-client': 1.0.5
       '@interop/http-signature-zcap-invoke': 6.2.4
       '@interop/lru-memoize': 4.0.3
@@ -1329,7 +1335,7 @@ snapshots:
 
   '@interop/ezcap@7.4.1':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/data-integrity-proof': 3.4.3
       '@interop/ecdsa-signature': 2.0.5(@interop/jsonld-signatures@11.8.4)
       '@interop/http-client': 1.0.5
@@ -1350,7 +1356,7 @@ snapshots:
 
   '@interop/http-signature-zcap-invoke@6.2.4':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-header': 5.0.2
       pako: 2.2.0
@@ -1379,7 +1385,7 @@ snapshots:
 
   '@interop/minimal-cipher@7.8.1':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/ecdsa-multikey': 2.3.3
       '@noble/ciphers': 2.3.0
       '@noble/curves': 2.3.0
@@ -1389,18 +1395,18 @@ snapshots:
 
   '@interop/storage-core@0.9.0':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
 
   '@interop/x25519-key-agreement-key@5.2.1':
     dependencies:
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@noble/curves': 2.3.0
       '@scure/base': 2.3.0
 
   '@interop/zcap@11.0.5':
     dependencies:
       '@digitalbazaar/zcap-context': 2.0.1
-      '@interop/data-integrity-core': 8.4.0
+      '@interop/data-integrity-core': 8.5.0
       '@interop/jsonld-signatures': 11.8.4
 
   '@jridgewell/resolve-uri@3.1.2': {}

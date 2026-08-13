@@ -9,7 +9,7 @@
  * carry it (`addRecipient` / `removeRecipient` / `replaceRecipient`), and the
  * codec's blinding-key resolution.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { SHA256HMACKey } from '@interop/data-integrity-core'
 import type {
@@ -180,6 +180,22 @@ describe('blinded-index key wrap/unwrap round-trip', () => {
       true
     )
     expect(await direct.verify({ data, signature: fromDescriptor })).toBe(true)
+  })
+
+  it('rebuilds the key with a raw-format import only (the minimal-shim contract)', async () => {
+    // React Native (Hermes) consumers run under a crypto.subtle shim that
+    // implements only raw-format HMAC importKey + sign; a 'jwk' import here
+    // would fail on device even though Node's full WebCrypto accepts it.
+    const importKey = vi.spyOn(crypto.subtle, 'importKey')
+    try {
+      const { id, secret } = await mintHmacKey()
+      await hmacKeyFromSecret({ id, secret })
+      const formats = importKey.mock.calls.map(call => call[0])
+      expect(formats).toContain('raw')
+      expect(formats).not.toContain('jwk')
+    } finally {
+      importKey.mockRestore()
+    }
   })
 
   it('resolves null when the descriptor declares no blinded index', async () => {

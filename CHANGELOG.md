@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.38.2 - TBD
+
+### Fixed
+
+- `hmacKeyFromSecret` (and so `resolveHmacKey`) rebuilds the blinded-index key
+  from its raw secret bytes (`SHA256HMACKey.fromSecret`, a WebCrypto
+  `raw`-format import) instead of synthesizing an `oct` JWK, fixing envelope
+  decrypt on React Native's Hermes, where a minimal `crypto.subtle` shim
+  supports only raw-format HMAC imports.
+- `@interop/data-integrity-core` `^8.5.0`.
+
 ## 0.38.1 - 2026-08-13
 
 ### Fixed

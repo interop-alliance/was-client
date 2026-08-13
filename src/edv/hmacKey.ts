@@ -26,7 +26,6 @@
  * revocation asymmetry (it can confirm guessed attribute values if the server
  * colludes).
  */
-import { base64urlnopad } from '@scure/base'
 import { SHA256HMACKey } from '@interop/data-integrity-core'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import { EncryptionError } from '../errors.js'
@@ -73,8 +72,10 @@ export async function mintHmacKey(): Promise<{
 
 /**
  * Rebuilds the concrete HMAC key from its raw secret -- what a reader does once
- * it has unwrapped the secret from its descriptor entry. The secret is imported
- * as a standard `oct` JWK, the serialization {@link SHA256HMACKey.from} accepts.
+ * it has unwrapped the secret from its descriptor entry. Imports the secret
+ * bytes directly ({@link SHA256HMACKey.fromSecret}, a WebCrypto `raw`-format
+ * import), so a minimal `crypto.subtle` shim without JWK support suffices on
+ * runtimes that lack WebCrypto (e.g. React Native's Hermes).
  *
  * @param options {object}
  * @param options.id {string}           the key id (`indexed[].hmac.id`)
@@ -88,15 +89,7 @@ export async function hmacKeyFromSecret({
   id: string
   secret: Uint8Array
 }): Promise<SHA256HMACKey> {
-  return SHA256HMACKey.from({
-    id,
-    type: HMAC_KEY_TYPE,
-    secretKeyJwk: {
-      kty: 'oct',
-      k: base64urlnopad.encode(secret),
-      alg: 'HS256'
-    }
-  })
+  return SHA256HMACKey.fromSecret({ id, secret })
 }
 
 /**
