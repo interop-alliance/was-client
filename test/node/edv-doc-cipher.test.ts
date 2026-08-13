@@ -26,11 +26,14 @@ import type {
 import { EncryptionError, ValidationError } from '../../src/index.js'
 import {
   createEdvDocCipher,
+  createEdvEncryption,
   ownerRecipient,
   UnknownEpochError,
   isEncryptedEnvelope
 } from '../../src/edv/index.js'
 import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
+import { mintHmacKey } from '../../src/edv/hmacKey.js'
+import type { SingleWriteCodec } from '../helpers/codec.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionRecipient
@@ -283,6 +286,230 @@ describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
     await expect(
       cipher.encrypt({ data: oversize as unknown as Json })
     ).rejects.toBeInstanceOf(ValidationError)
+  })
+})
+
+/**
+ * A reader plus a descriptor that also carries a blinded-index HMAC key -- the
+ * searchable-collection fixture the schema-install tests are built from. The
+ * blinding key is distributed exactly like an epoch key, so the same wrap
+ * builds it.
+ *
+ * @returns {Promise<{ keyAgreementKey: IKeyAgreementKey;
+ *   keyResolver: IKeyResolver; encryption: CollectionEncryption }>}
+ */
+async function makeIndexableReader(): Promise<{
+  keyAgreementKey: IKeyAgreementKey
+  keyResolver: IKeyResolver
+  encryption: CollectionEncryption
+}> {
+  const keys = await makeKeys()
+  const epochs = await epochDescriptorFor([keys.keyAgreementKey])
+  const hmac = await mintHmacKey()
+  return {
+    ...keys,
+    encryption: {
+      ...epochs,
+      hmac: {
+        id: hmac.id,
+        type: hmac.type,
+        recipients: [
+          await wrapEpochSecret({
+            epochSecret: hmac.secret,
+            recipient: ownerRecipient({ keyAgreementKey: keys.keyAgreementKey })
+          })
+        ]
+      }
+    }
+  }
+}
+
+/**
+ * The direct (Collection-handle) codec for the same collection, built straight
+ * through the public provider. The sync cipher must emit the very tokens this
+ * one does.
+ *
+ * @param options {object}
+ * @param options.collectionId {string}
+ * @param options.encryption {CollectionEncryption}
+ * @param options.keys {object}   the reader's key material
+ * @returns {Promise<SingleWriteCodec>}
+ */
+async function directCodecFor({
+  collectionId,
+  encryption,
+  keys
+}: {
+  collectionId: string
+  encryption: CollectionEncryption
+  keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
+}): Promise<SingleWriteCodec> {
+  const provider = createEdvEncryption({ resolveKeys: async () => keys })
+  const codec = await provider.codecFor({
+    spaceId: 's',
+    collectionId,
+    scheme: 'edv',
+    encryption
+  })
+  if (!codec) {
+    throw new Error('expected a codec')
+  }
+  return codec as SingleWriteCodec
+}
+
+/** One entry of an envelope's blinded index list. */
+interface IndexedEntry {
+  hmac: { id: string }
+  attributes: Array<{ name: string; value: string }>
+}
+
+/**
+ * The blinded index entries of a stored envelope.
+ *
+ * @param envelope {Json}
+ * @returns {IndexedEntry[]}
+ */
+function indexedOf(envelope: Json): IndexedEntry[] {
+  return (envelope as { indexed?: IndexedEntry[] }).indexed ?? []
+}
+
+const SCHEMA = {
+  revision: 1,
+  indexes: [{ attribute: 'content.type', addedIn: 1 }]
+}
+
+describe('createEdvDocCipher (blinded index schema)', () => {
+  it('emits the same tokens a direct-path write does', async () => {
+    const { encryption, ...keys } = await makeIndexableReader()
+    // The direct path: apply the schema, persist it in the collection metadata
+    // envelope (no id -- a Collection-level write, bound to `was.collection`),
+    // and capture the tokens an ordinary write stores.
+    const direct = await directCodecFor({
+      collectionId: 'c',
+      encryption,
+      keys
+    })
+    direct.indexing!.applySchema(SCHEMA)
+    const { custom } = await direct.encodeMeta({
+      custom: { indexSchema: SCHEMA }
+    })
+    const encoded = await direct.encode({ data: { type: 'note' } })
+    const expected = indexedOf(
+      JSON.parse(new TextDecoder().decode(encoded.body as Uint8Array)) as Json
+    )
+
+    // The sync path: the same schema, discovered from the same metadata.
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption,
+      meta: { custom }
+    })
+    const { envelope } = await cipher.encrypt({ data: { type: 'note' } })
+    const indexed = indexedOf(envelope)
+    expect(indexed).toHaveLength(1)
+    expect(indexed[0]!.hmac.id).toBe(encryption.hmac!.id)
+    expect(indexed[0]!.attributes).toEqual(expected[0]!.attributes)
+    // Blinded, so neither the attribute nor the value is in the clear.
+    expect(JSON.stringify(indexed)).not.toContain('content.type')
+    expect(JSON.stringify(indexed)).not.toContain('note')
+  })
+
+  it('emits no index entries when no metadata is supplied', async () => {
+    // Backward compatible: an offline replica that holds no collection
+    // metadata writes exactly what it wrote before.
+    const { encryption, ...keys } = await makeIndexableReader()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption
+    })
+    const { envelope } = await cipher.encrypt({ data: { type: 'note' } })
+    expect(indexedOf(envelope)).toEqual([])
+  })
+
+  it('installs the schema after the fact via applyMeta', async () => {
+    const { encryption, ...keys } = await makeIndexableReader()
+    const direct = await directCodecFor({ collectionId: 'c', encryption, keys })
+    const { custom } = await direct.encodeMeta({
+      custom: { indexSchema: SCHEMA }
+    })
+
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption
+    })
+    const before = await cipher.encrypt({ data: { type: 'note' } })
+    expect(indexedOf(before.envelope)).toEqual([])
+
+    // The mid-session declaration case: the replica's copy of the collection
+    // metadata changed, so the cipher re-reads the schema from it.
+    const schema = await cipher.applyMeta({ custom })
+    expect(schema.revision).toBe(1)
+    expect(schema.indexes).toHaveLength(1)
+    const after = await cipher.encrypt({ data: { type: 'note' } })
+    expect(indexedOf(after.envelope)).toHaveLength(1)
+  })
+
+  it('indexes the mutable encryptUpdate path too', async () => {
+    const { encryption, ...keys } = await makeIndexableReader()
+    const direct = await directCodecFor({ collectionId: 'c', encryption, keys })
+    const { custom } = await direct.encodeMeta({
+      custom: { indexSchema: SCHEMA }
+    })
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      idDerivation: 'random',
+      encryption,
+      meta: { custom }
+    })
+
+    const first = await cipher.encrypt({ data: { type: 'note' } })
+    const updated = await cipher.encryptUpdate!({
+      id: first.id,
+      data: { type: 'task' },
+      current: first.envelope
+    })
+    expect(indexedOf(updated.envelope)).toHaveLength(1)
+  })
+
+  it('is a no-op on a collection with no blinded-index key', async () => {
+    // No `hmac` on the descriptor means no search capability at all, so a
+    // caller may call applyMeta unconditionally.
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'private-credentials',
+      encryption
+    })
+    await expect(cipher.applyMeta({ custom: undefined })).resolves.toEqual({
+      revision: 0,
+      indexes: []
+    })
+    const { envelope } = await cipher.encrypt({ data: DOC })
+    expect(await cipher.decrypt({ envelope })).toEqual(DOC)
+  })
+
+  it('refuses a metadata envelope bound to another collection', async () => {
+    const { encryption, ...keys } = await makeIndexableReader()
+    const foreign = await directCodecFor({
+      collectionId: 'other',
+      encryption,
+      keys
+    })
+    const { custom } = await foreign.encodeMeta({
+      custom: { indexSchema: SCHEMA }
+    })
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption
+    })
+    await expect(cipher.applyMeta({ custom })).rejects.toThrow(
+      /bound to collection "other"/
+    )
   })
 })
 

@@ -829,7 +829,10 @@ plugs into:
   `createEdvDocCipher(...)` (from `@interop/was-client/edv`) is the encrypting
   one, built from the collection's key-epoch descriptor (every encrypted
   collection carries one from birth; install epoch[0] at provision time with
-  `ensureFirstEpoch`).
+  `ensureFirstEpoch`). On a searchable collection, also hand it the stored
+  Collection `/meta` value (the `meta` input, or `applyMeta` when the replica's
+  copy changes) so pushed documents carry blinded index entries and stay visible
+  to `find()`.
 - **`contentCid(doc)`** and **`deriveSpaceId(controllerDid)`** derive
   content-addressed ids -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
   unpadded -- so the same logical document (and the same controller) lands on
@@ -887,7 +890,11 @@ do {
 The subpath is crypto-free: importing it never pulls the `./edv` dependency
 graph. To sync an encrypted collection, keep the same port and swap in
 `createEdvDocCipher` -- the change feed and the port ship the envelope bytes
-unchanged either way, so the server never sees plaintext.
+unchanged either way, so the server never sees plaintext. If the collection
+carries a blinded-index key, pass the cipher the stored `/meta` value
+(`meta: { custom }`) so its writes emit the same blinded index tokens a
+Collection-handle write does; a cipher built without it writes documents
+`find()` cannot see until they are rewritten.
 
 ### Resource logs (co-managed key resources)
 

@@ -270,20 +270,24 @@ this.
 
 ### WCL-11: `indexed` emission on the sync push path
 
-- status: todo
+- status: in-progress
 - priority: medium
 - labels: encryption, sync, query
 - touches:
   - freewallet -- its sync wiring builds the cipher via `createEdvDocCipher`; if
     that function gains a schema input (or a refresh hook), the wiring must
-    supply it; verify and update
+    supply it; verify and update. Verified 2026-08-12: the wiring change is
+    FW-133 (its item text now records the shipped API); it lands once was-client
+    0.36.0 is published to npm (freewallet consumes the registry).
   - was-react -- same: its `src/sync/` DocCipher wiring is the other
-    `createEdvDocCipher` consumer; verify and update
+    `createEdvDocCipher` consumer; verify and update. Verified 2026-08-12: the
+    wiring change is WR-32 (item text updated likewise); also blocked on the
+    0.36.0 npm publish.
 - acceptance:
-  - [ ] Envelopes written through the sync push path for a collection with a
+  - [x] Envelopes written through the sync push path for a collection with a
         declared index schema carry `indexed` entries token-identical to
         direct-write envelopes for the same content
-  - [ ] A document pushed via sync is returned by `collection.find()` on the
+  - [x] A document pushed via sync is returned by `collection.find()` on the
         indexed attributes
 
 discovered-from: WCL-1 (found while landing Stage B, 2026-08-12).
@@ -300,6 +304,26 @@ rather than a live Collection `/meta` read at cipher build; a schema declared
 after the cipher was built also needs a staleness story consistent with the
 handle-lifetime memoization on the direct path.
 
+Progress (2026-08-12): the client half shipped. The design question resolved as
+caller-supplied: `createEdvDocCipher` gained an optional `meta` input (the
+collection's stored `/meta` value; its encrypted `custom` envelope is decoded
+with `decodeMeta` and the `custom.indexSchema` it carries installed through the
+codec's `indexing` capability -- the same routine `internal/codec.ts` runs at
+codec resolution) and now returns `EdvDocCipher`, whose `applyMeta({ custom })`
+is the staleness story: the consumer re-invokes it whenever its replica's copy
+of the collection metadata changes (both known consumers rebuild or refresh
+ciphers on descriptor changes only, so a meta-only change needs this hook, not
+their epoch-gated rebuild). The input is optional and its absence changes
+nothing, keeping offline/local-only replicas (which hold no meta) working; a
+supplied value that cannot be decoded fails loudly, and the metadata envelope's
+`was.collection` AEAD binding means `collectionId` must now be documented as the
+real WAS collection id (both consumers already pass it). Unit coverage rides
+`test/node/edv-doc-cipher.test.ts` (token-identical emission against the
+direct-path codec); live coverage is the sync-push case in
+`test/integration/blinded-find.test.ts`, verified against a locally-run teaching
+server. Remaining: the two `touches:` wiring updates (FW-133 / WR-32), blocked
+on the 0.36.0 npm publish.
+
 ### WCL-4: Live Google Drive backend round-trip
 
 - status: draft (blocked externally)
@@ -313,6 +337,76 @@ adapter + OAuth exchange does the registration API (shipped in client 0.8.0)
 carry real `connection` material and `status` advance past `registered` to
 `connected`. Until then, a round-trip test of the `connected` / `expired`
 connection states stays server-blocked.
+
+### WCL-17: Resource-log chain verifier + log-governed descriptor reads
+
+- status: todo
+- priority: medium
+- labels: encryption, log, integrity
+- touches:
+  - was-client: a new verifier module over the existing `/log` transport
+    (`src/log/logStore.ts` is deliberately transport-only -- parse,
+    read-with-etag, CAS append, guarded genesis create -- with chain
+    verification explicitly left "to the consuming verifier"); the
+    encryption-descriptor read path (`EncryptionDescriptorStore` /
+    `src/edv/descriptorStore.ts`) learns the log-governed case
+  - storage-core: unaffected (`resourceLog.ts` wire types and
+    `CollectionEncryption.type`/`history` shipped; the verifier consumes them
+    as-is) -- verify and waive
+  - wallet-core: hosts the shipped verifier today (`src/resourceLog/`,
+    `descriptors/logSource.ts`, `keys/rosterLogStore.ts`); the decision box
+    settles whether it moves down here or stays put
+  - app-connect-spec / encrypted-collections-spec: profile of record (ECS-3
+    settles which spec hosts it); no text change expected -- verify
+  - freewallet / dcw: consumers -- FW-134 and DCW-43 build the producing half on
+    this verifier
+- acceptance:
+  - [ ] Decision recorded first: wallet-core already ships a complete verifier
+        (`src/resourceLog/` -- verify, append, pin, seal) that both wallets run
+        for the user key roster log. Settle whether this item moves that
+        implementation down into was-client (wallet-core then consuming it from
+        here) or leaves it in wallet-core and scopes this item to the descriptor
+        read path only -- the never-reimplement rule forbids a second parallel
+        verifier
+  - [ ] Chain verification ships at the layer that decision picks: SCID
+        recomputation over the genesis; per-entry hash and `versionId` checks;
+        `eddsa-jcs-2022` entry-proof verification under the
+        external-authorization rule, against a caller-supplied resolved
+        controller document (a resolver port -- was-client stays free of
+        DID-method machinery); terminal-entry recognition (verify a frozen log,
+        refuse to extend one); format dispatch on `resource-log:0.1` (WASS-22
+        spelling) confirmed against the genesis `parameters.method`, a
+        `history.method` mismatch being a refusal
+  - [ ] The chain-head pin: a persistent `{ scid, method, head }` pin behind a
+        caller-supplied store port; a served log behind the pin is a continuity
+        break, never silently accepted
+  - [ ] The log-governed descriptor read path: a descriptor carrying `history`
+        is accepted only after fetching the log at `history.resource`, verifying
+        the chain, and checking the point-state projection JCS-equals the
+        verified head's `state` after stripping `history` (`type` carried on
+        both sides makes the comparison land)
+  - [ ] A descriptor without `history` keeps today's behavior exactly (point
+        state, epoch pin, unknown-epoch refresh); no new failure mode for
+        non-log collections
+  - [ ] Negative-path tests: forged entry proof, truncated log (rollback behind
+        the pin), forked log under the same SCID, projection mismatch against
+        the head, `method` mismatch, extending past a terminal entry
+
+The consuming half the `/log` transport has been waiting for -- scoped to
+collection encryption descriptors, because the stack is not greenfield:
+wallet-core's `resourceLog` module already verifies, appends, pins, and seals,
+both wallets run it for the user key roster log, its
+`logGovernedDescriptorSource` already checks `state.type` against
+`WasEpochConfiguration`, and its verifier already enforces the history-reserved
+rule. What exists nowhere is a producer or consumer for collection descriptors:
+no code stamps `history` onto a point-state descriptor or follows one (the
+members shipped as storage-core types and as WAS-EC normative text via WASS-14).
+Sequence: the verifier is self-contained against hand-built logs (the existing
+`test/node/resource-log.test.ts` fixtures grow into the negative-path suite);
+FW-134 / DCW-43 then produce real logs against it. Spec-side prerequisites
+WASS-22 (identifier spelling) and ECS-3 (profile home) are editorial for this
+item -- the profile's normative content is already stable in the App Connect
+spec text.
 
 ---
 

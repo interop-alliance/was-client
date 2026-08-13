@@ -21,17 +21,22 @@
  * `pnpm test:integration` (no server) is not a failure.
  */
 import { describe, it, beforeAll, afterAll, expect } from 'vitest'
-import type { IKeyAgreementKey } from '@interop/data-integrity-core'
+import type {
+  IKeyAgreementKey,
+  IKeyResolver
+} from '@interop/data-integrity-core'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { WasClient, ValidationError } from '../../src/index.js'
 import type { Collection, FindPage, Space } from '../../src/index.js'
 import {
+  createEdvDocCipher,
   createEdvEncryption,
   ensureFirstEpoch,
   ownerRecipient
 } from '../../src/edv/index.js'
+import { createWasSyncPort } from '../../src/sync/index.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -42,12 +47,13 @@ const describeLive = serverUrl ? describe : describe.skip
  * its blinding key) will be wrapped to.
  *
  * @returns {Promise<{ encrypted: WasClient, plaintext: WasClient,
- *   kak: IKeyAgreementKey }>}
+ *   kak: IKeyAgreementKey, keyResolver: IKeyResolver }>}
  */
 async function freshClients(): Promise<{
   encrypted: WasClient
   plaintext: WasClient
   kak: IKeyAgreementKey
+  keyResolver: IKeyResolver
 }> {
   const keyPair = await Ed25519VerificationKey.generate()
   const did = `did:key:${keyPair.fingerprint()}`
@@ -81,7 +87,8 @@ async function freshClients(): Promise<{
       serverUrl: serverUrl!,
       signer: keyPair.signer()
     }),
-    kak: kak as IKeyAgreementKey
+    kak: kak as IKeyAgreementKey,
+    keyResolver: keyResolver as unknown as IKeyResolver
   }
 }
 
@@ -91,10 +98,11 @@ describeLive('blinded content search on an encrypted collection', () => {
   let space: Space
   let collection: Collection
   let beforeDeclarationId: string
+  let kak: IKeyAgreementKey
+  let keyResolver: IKeyResolver
 
   beforeAll(async () => {
-    let kak: IKeyAgreementKey
-    ;({ encrypted: was, plaintext, kak } = await freshClients())
+    ;({ encrypted: was, plaintext, kak, keyResolver } = await freshClients())
     space = await was.createSpace({ name: 'Blinded Find Integration' })
     const declared = await space.createCollection({
       id: 'vault',
@@ -190,5 +198,39 @@ describeLive('blinded content search on an encrypted collection', () => {
     await expect(
       collection.find({ equals: { 'content.title': 'alpha' } })
     ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  // Runs last on purpose: it adds another `content.type: note` document, which
+  // would change the counts the earlier tests assert.
+  it('finds a document pushed through the sync path', async () => {
+    // What a replica holds: the collection's descriptor and its stored `/meta`
+    // (whose `custom` is the opaque metadata envelope -- the plaintext client
+    // passes it through raw).
+    const description = await was.space(space.id).collection('vault').describe()
+    const stored = await plaintext.space(space.id).collection('vault').meta()
+    const cipher = await createEdvDocCipher({
+      keyAgreementKey: kak,
+      keyResolver,
+      collectionId: 'vault',
+      encryption: description!.encryption!,
+      meta: { custom: stored?.custom }
+    })
+
+    // The sync push: the port ships the envelope verbatim, no codec involved.
+    const { id, envelope, epoch } = await cipher.encrypt({
+      data: { type: 'note', title: 'pushed-by-sync' }
+    })
+    const port = createWasSyncPort({
+      was,
+      spaceId: space.id,
+      collectionId: 'vault'
+    })
+    await port.putContent({ id, data: envelope, ifNoneMatch: true, epoch })
+
+    const page = (await collection.find({
+      equals: { 'content.type': 'note' }
+    })) as FindPage
+    const pushed = page.items.find(item => item.id === id)
+    expect(pushed?.data).toEqual({ type: 'note', title: 'pushed-by-sync' })
   })
 })

@@ -150,6 +150,10 @@ descriptor declares a blinding key. Consequences worth knowing:
   without a blinding key pays nothing.
 - The schema is as fresh as the handle. `declareIndex` updates the persisted
   copy and this handle's codec together, and `CodecHolder.reset()` re-reads it.
+  The sync `DocCipher` has no request layer, so there the schema is
+  caller-supplied instead: `createEdvDocCipher` decodes the same stored `/meta`
+  value from its `meta` input (or a later `applyMeta` call) and installs it
+  through the same `indexing` capability.
 - Writes emit blinded `indexed` entries alongside the JWE once the schema
   declares an attribute. The metadata seam (`encodeMeta`) stays deliberately
   un-blinded: that envelope is the WAS `/meta` value, a different slot the
@@ -243,7 +247,11 @@ plugs into:
   `createPlaintextDocCipher` is the crypto-free identity implementation for a
   plaintext content-addressed collection; `createEdvDocCipher`
   (`src/edv/docCipher.ts`, on the `./edv` subpath) is the encrypting one,
-  wrapping the same EDV codec the handles use but pointed at a local replica.
+  wrapping the same EDV codec the handles use but pointed at a local replica. On
+  a collection with a blinded-index key, the caller hands it the stored
+  Collection `/meta` value (the `meta` build input, or `applyMeta` on the
+  returned cipher when the replica's copy changes mid-session), so pushed
+  envelopes carry the same blinded `indexed` entries as handle writes.
 
 The port's defining property: **it moves stored bodies verbatim and never
 touches keys**. Writes and single-resource reads ride the raw signed

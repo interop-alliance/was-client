@@ -80,4 +80,4 @@ export {
   UnknownEpochError,
   isEncryptedEnvelope
 } from './docCipher.js'
-export type { DocCipher } from './docCipher.js'
+export type { DocCipher, EdvDocCipher } from './docCipher.js'

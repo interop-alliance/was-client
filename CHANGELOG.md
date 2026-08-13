@@ -21,6 +21,16 @@
 - `WasTransport` accepts an already-memoized `features` probe and per-write
   `documentHeaders`, so a caller can share a handle's backend probe and stamp
   `Key-Epoch` on document writes.
+- Sync-path writes can now emit blinded `indexed` entries: `createEdvDocCipher`
+  accepts an optional `meta` input (the collection's stored `/meta` value; its
+  encrypted `custom` envelope holds the persisted index schema) and returns an
+  `EdvDocCipher` with an `applyMeta({ custom })` method that installs a schema
+  declared mid-session. With the schema installed, envelopes pushed through the
+  sync port carry the same blinded index tokens as Collection-handle writes, so
+  `collection.find()` sees them. Without it, behavior is unchanged (no `indexed`
+  entries). Note `collectionId` must be the collection's real WAS id: the
+  metadata envelope is AEAD-bound to it, and `applyMeta` refuses an envelope
+  bound elsewhere.
 
 ### Changed
 

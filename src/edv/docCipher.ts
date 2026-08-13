@@ -24,6 +24,12 @@
  * rewrite existing resources, and because resource ids are content-derived they
  * stay stable across a rotation.
  *
+ * On a collection whose descriptor also declares a blinded-index key, the
+ * cipher can install the collection's persisted index schema (`applyMeta`, or
+ * the `meta` build input), so envelopes written here carry the same blinded
+ * `indexed` entries as a write through a Collection handle -- which is what
+ * makes a pushed document findable by `collection.find()`.
+ *
  * Runtime note (React Native): this exercises the cipher's AES-KW (with a
  * pure-JS Hermes fallback) and `TextDecoder`; both must be present on the
  * device.
@@ -32,9 +38,10 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type { CodecWrite, ResponseLike } from '../codec.js'
+import type { CodecWrite, IndexSchema, ResponseLike } from '../codec.js'
 import { isChunkedWrite } from '../codec.js'
 import { storedResponse } from '../internal/content.js'
+import { EMPTY_INDEX_SCHEMA, readIndexSchema } from '../internal/indexSchema.js'
 import { KeyUnwrapError, ValidationError } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
@@ -85,6 +92,34 @@ export function ownerRecipient({
 }
 
 /**
+ * A {@link DocCipher} for an encrypted collection, plus the blinded-index
+ * schema install the sync path needs.
+ */
+export interface EdvDocCipher extends DocCipher {
+  /**
+   * Installs the collection's persisted index schema, read out of the stored
+   * `/meta` value, onto this cipher -- so subsequent writes emit blinded
+   * `indexed` entries and a document pushed through the sync path is findable
+   * by `collection.find()`. Call it again whenever the replica's copy of the
+   * collection metadata changes (an index declared mid-session, say): it is the
+   * sync-path analogue of the direct path re-reading the schema whenever a
+   * handle's codec is re-resolved.
+   *
+   * On a collection whose descriptor declares no blinded-index key this is a
+   * no-op resolving the empty schema, so a caller may invoke it
+   * unconditionally.
+   *
+   * @param options {object}
+   * @param [options.custom] {unknown}   the stored `custom` value from the
+   *   collection's `/meta` (an opaque envelope on an encrypted collection)
+   * @returns {Promise<IndexSchema>}   the installed schema (the empty schema
+   *   when the collection declares no blinded-index key, or the metadata
+   *   carries no schema)
+   */
+  applyMeta(options: { custom?: unknown }): Promise<IndexSchema>
+}
+
+/**
  * Presents a locally-held envelope to the codec seam as the `ResponseLike` the
  * seam is typed against. A replica's envelope never came from HTTP, so the
  * shared stored-body adapter is the whole surface it needs.
@@ -124,26 +159,40 @@ function envelopeResponse(envelope: Json): ResponseLike {
  * @param options {object}
  * @param options.keyAgreementKey {IKeyAgreementKey}
  * @param options.keyResolver {IKeyResolver}
- * @param options.collectionId {string}   labels errors; the codec is agnostic
+ * @param options.collectionId {string}   the collection's WAS id. It must be
+ *   the real id, not a label: the collection's metadata envelope is
+ *   AEAD-bound to it (`was.collection`), so `applyMeta` refuses an envelope
+ *   bound elsewhere.
  * @param [options.idDerivation] {'content' | 'random'}   defaults to `'content'`
  * @param options.encryption {CollectionEncryption}   the collection's
  *   encryption descriptor; must carry the key-epoch roster (every encrypted
  *   collection has one from birth)
- * @returns {Promise<DocCipher>}
+ * @param [options.meta] {object}   the collection's stored `/meta` value as the
+ *   replica holds it; on an encrypted collection its `custom` is the opaque
+ *   encrypted metadata envelope, decrypted here with the collection keys. When
+ *   supplied and the descriptor declares a blinded-index `hmac` key, the
+ *   persisted index schema is installed so writes emit blinded `indexed`
+ *   entries matching direct-path writes. Without it (or without an `hmac`)
+ *   writes emit no `indexed` entries, and are invisible to `collection.find()`
+ *   until rewritten -- an offline replica that holds no metadata works exactly
+ *   as before.
+ * @returns {Promise<EdvDocCipher>}
  */
 export async function createEdvDocCipher({
   keyAgreementKey,
   keyResolver,
   collectionId,
   idDerivation = 'content',
-  encryption
+  encryption,
+  meta
 }: {
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
   collectionId: string
   idDerivation?: 'content' | 'random'
   encryption: CollectionEncryption
-}): Promise<DocCipher> {
+  meta?: { custom?: unknown }
+}): Promise<EdvDocCipher> {
   const provider = createEdvEncryption({
     resolveKeys: async () => null,
     idDerivation
@@ -222,7 +271,31 @@ export async function createEdvDocCipher({
     }
   }
 
+  // Decodes the collection's stored metadata and installs the index schema it
+  // carries. A codec with no search capability (no blinding key on the
+  // descriptor) has nothing to install, so it never decrypts anything. A
+  // decode failure -- garbage, an envelope bound to another collection, an
+  // epoch this reader cannot unwrap -- propagates: a caller-supplied metadata
+  // value that cannot be read is a wiring bug, and must be loud.
+  const applyMeta = async (stored: {
+    custom?: unknown
+  }): Promise<IndexSchema> => {
+    const { indexing } = codec
+    if (!indexing) {
+      return EMPTY_INDEX_SCHEMA
+    }
+    const schema = readIndexSchema(await codec.decodeMeta(stored))
+    indexing.applySchema(schema)
+    return schema
+  }
+
+  if (meta !== undefined) {
+    await applyMeta(meta)
+  }
+
   return {
+    applyMeta,
+
     async encrypt({ data }: { data: Json }) {
       // `encode` with no caller id is the add() path: encrypt, then either
       // derive and stamp the content-hash id (`'content'`) or use the minted
