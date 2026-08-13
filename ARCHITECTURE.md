@@ -74,7 +74,8 @@ Taking `resource.put(data)` as the canonical path:
    `context.encryption.codecFor(...)`.
 2. **Encode** (`codec.encode`): identity codec is byte-exact pass-through; the
    EDV codec seals content into a JWE envelope and attaches its own write
-   precondition.
+   precondition. A codec may instead answer with a `ChunkedWrite` plan -- a
+   payload that cannot be one request -- which only the insert path runs.
 3. **Conditional-write orchestration** (`internal/write.ts`, `upsertResource`):
    conditional codecs trigger a pre-read of the current document (to advance the
    EDV `sequence`); plaintext writes use the caller's explicit
@@ -90,8 +91,10 @@ Taking `resource.put(data)` as the canonical path:
    `application/problem+json` type URI (from `@interop/storage-core`'s
    `ProblemTypes`), falling back to HTTP status.
 
-Reads mirror this: signed GET, then `codec.decode(response, expectedId)`.
-`getText`/`getBytes` deliberately bypass the codec (they never decrypt).
+Reads mirror this: signed GET, then
+`codec.decode(response, expectedId, context)`, where `context` is the same
+signed-request escape hatch a chunked write runs on. `getText`/`getBytes`
+deliberately bypass the codec (they never decrypt).
 
 ### The 404-vs-null convention
 
@@ -116,12 +119,31 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
 - `src/edv/EdvCodec.ts` -- the encrypting implementation and the
   `createEdvEncryption` factory.
 
-`encode` is a pure single-request transform, with one qualification: a codec
-that indexes what it stores carries per-collection state -- the persisted index
-schema -- which the resolver loads onto it before handing it over. That is the
-optional `indexing` capability (`applySchema` / `schema` / `buildQuery`, all
-EDV-type-free), present only for an encrypted collection whose descriptor
-declares a blinding key. Consequences worth knowing:
+`encode` is a single-request transform in the ordinary case, with two
+qualifications.
+
+The first is the escape hatch for a payload one request cannot carry. `encode`
+returns either an `EncodedWrite` or a `ChunkedWrite` plan (`isChunkedWrite`
+discriminates them). A plan carries the resource id it will write to and an
+`execute` method; `insertResource` runs it over a `CodecRequestContext` -- the
+handle's signed `request` primitive plus its memoized feature probe -- instead
+of sending one request. That `request` goes through the same mapped `send` path
+core uses, so a codec-driven write fails with the typed `WasError` subclasses
+the calling method documents (the raw `HttpResponse` still comes back, and the
+typed errors carry the HTTP `status`, so a status-dispatching driver such as
+`WasTransport` is unaffected). `upsertResource` refuses a plan, so auto-routing
+is an `add()` affordance only; the refusal message is scheme-agnostic and
+appends the plan's own `guidance` string, since only the codec knows which
+low-level API drives that write directly. `decode` takes the same context, so a
+codec whose stored form spans several resources can read the remainder; a caller
+with no request layer (the sync `DocCipher`) omits it, and such a document then
+fails loudly rather than decoding to a stub.
+
+The second: a codec that indexes what it stores carries per-collection state --
+the persisted index schema -- which the resolver loads onto it before handing it
+over. That is the optional `indexing` capability (`applySchema` / `schema` /
+`buildQuery`, all EDV-type-free), present only for an encrypted collection whose
+descriptor declares a blinding key. Consequences worth knowing:
 
 - Resolving such a codec costs one extra read (the Collection `/meta` slot,
   whose encrypted `custom` holds the schema under `indexSchema`); a collection
@@ -149,11 +171,29 @@ Two integration levels share `src/edv/`:
 - **`EdvCodec`** (pass-through encryption): plugs into the codec seam so the
   normal `Collection`/`Resource` API transparently encrypts. Ids are minted by
   the codec (`random`, or `content`-derived for immutable content-addressed
-  documents).
+  documents). A binary `add()` over `maxBlobBytes` is routed to the chunked
+  path: the codec returns a plan that drives
+  `EdvClientCore.insert({ doc, stream, transport })` over a `WasTransport` of
+  its own, built from the write context. Routing is decided on the payload's
+  size alone and the payload is passed on as a stream, so an over-threshold blob
+  is never buffered whole by the codec. Reads reverse it through `getStream`,
+  trusting only AEAD-authenticated inputs sealed in the JWE payload: the
+  `meta.encoding` discriminator that says the document is chunked, the chunk
+  count, and the bound resource id the chunks are addressed by (never the
+  envelope's cleartext `id`). `maxBlobBytes` is therefore a routing threshold,
+  not a cap. The write is two-phase, so a failure partway would orphan an
+  undecryptable document stub: the plan best-effort deletes it and rethrows with
+  the original failure as `cause`. Content-addressed collections are the
+  exception: a chunked write stores the document twice, so no single ciphertext
+  derives its id, and the write is refused.
 - **`WasTransport`** (EDV-native): an `@interop/edv-client` `Transport` that
   maps EDV document operations onto WAS resource CRUD ("vault per collection",
   EDV doc id is the WAS resource id), including blinded-index `find` and chunked
-  streams, gated on server features.
+  streams, gated on server features. The EDV core owns the write sequence and
+  discards the responses, so the transport surfaces the outcome of its last
+  document write (`lastDocumentWrite`: the id and the server's `ETag`) and
+  offers a non-EDV `deleteDocument` -- the two things a driver needs to report a
+  write's validator and to undo a half-finished one.
 
 Multi-recipient sharing uses **key epochs** (`epochCrypto`/`epochKeys`/
 `recipients`): an epoch is a fresh X25519 key whose secret is wrapped to each
@@ -292,11 +332,18 @@ No locks; safety is optimistic (ETag/CAS) throughout
 `internal/features.ts` probes the Collection's backend descriptor once for its
 advertised `features` tokens (`conditional-writes`, `blinded-index-query`,
 `chunked-streams`, `changes-query`). Definitive absence (404/405/501) is cached
-as "no features"; transient failures are not cached. Every gate **falls
-closed**: without `conditional-writes`, an EDV insert against a masked 404 is
-refused rather than risking a silent clobber; `WasTransport` degrades insert to
-non-atomic HEAD-then-PUT and throws `NotSupportedError` for query/chunk
-operations.
+as "no features"; transient failures are not cached. The two roads to "no
+features" stay distinguishable (`FeatureProbe.descriptorAbsent()`): a descriptor
+that was read and lists none, versus one that could not be read at all (no such
+endpoint, a deleted collection, or a capability that cannot read it). A gate
+consults it so its error names the right cause instead of calling a capable
+server incapable. Every gate **falls closed**: without `conditional-writes`, an
+EDV insert against a masked 404 is refused rather than risking a silent clobber;
+`WasTransport` degrades insert to non-atomic HEAD-then-PUT and throws
+`NotSupportedError` for query/chunk operations. The codec's own chunked-blob
+routing checks `chunked-streams` before its first write (and before a read
+fetches chunks), so an unsupported server never ends up holding a document stub
+with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
 
 ## Invariants worth knowing before you change things
 

@@ -32,9 +32,10 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type { ResponseLike } from '../codec.js'
+import type { CodecWrite, ResponseLike } from '../codec.js'
+import { isChunkedWrite } from '../codec.js'
 import { storedResponse } from '../internal/content.js'
-import { KeyUnwrapError } from '../errors.js'
+import { KeyUnwrapError, ValidationError } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
 import { createEdvEncryption } from './EdvCodec.js'
@@ -182,12 +183,24 @@ export async function createEdvDocCipher({
 
   // Parses the codec's `EncodedWrite` (id + envelope body bytes) to the stored
   // `{ id, envelope, epoch? }` shape. Shared by the create and update paths.
-  const readEncoded = (encoded: {
-    id?: string
-    body?: Uint8Array | Blob
-    envelope?: unknown
-    epoch?: string
-  }): { id: string; envelope: Json; epoch?: string } => {
+  const readEncoded = (
+    write: CodecWrite
+  ): { id: string; envelope: Json; epoch?: string } => {
+    // A payload over the codec's single-document threshold answers with a
+    // multi-request plan (a document plus chunk resources on a live server),
+    // which has no one envelope to hand a replica. This seam is
+    // envelope-in/envelope-out, so it refuses the payload instead.
+    if (isChunkedWrite(write)) {
+      throw new ValidationError(
+        `Cannot encrypt this value for collection "${collectionId}": the ` +
+          'binary payload exceeds the single-document threshold, so it can ' +
+          'only be stored as a document plus chunk resources -- a ' +
+          'multi-request server write with no single envelope, which this ' +
+          'local-replica cipher does not support. Store a large blob through ' +
+          'a Collection handle, or split it before encrypting.'
+      )
+    }
+    const encoded = write
     if (
       typeof encoded.id !== 'string' ||
       !(encoded.body instanceof Uint8Array)

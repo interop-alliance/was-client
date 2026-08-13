@@ -79,34 +79,34 @@ server repo's ROADMAP.
     tokens must compare across the collection's history); the resulting
     revocation asymmetry -- a removed recipient keeps the blinding key and can
     confirm guessed attribute values if the server colludes -- needs Security
-    Considerations text
-  - wallet-attached-storage-spec -- the `blinded-index` query profile is already
-    in the Query Profile Registry and document shape is WAS-EC territory, but
-    the persisted index schema now needs the Collection-level `/meta` endpoints,
-    tracked as WASS-9 in that repo's `_spec/ROADMAP.md`
-  - was-teaching-server -- its `blinded-index-query` already matches `indexed`
-    entries for the `EdvClientCore` path, but the schema home needs the
-    Collection-level `/meta` endpoints (WAS-55 in its ROADMAP.md); conformance
-    tests must gain codec-path coverage, and its ROADMAP Reverse-gap cross-links
-    updated
-  - freewallet -- the keystore (`wasRemoteStore` `resolveKeys`) must mint,
-    custody, and distribute the HMAC key alongside the key-agreement key, and
-    provisioning (`ensureFirstEpoch`) must install it; tracked as FW-130 in the
-    freewallet roadmap
-  - was-react -- `wasRemoteStore.queryCollectionByEquality` and
-    `entityStore.query` fail closed on non-public collections ("blinded-index
-    query path is not yet supported"); the encrypted path should be added (or
-    the guard/JSDoc updated), its `createEdvEncryption({ resolveKeys })` seam
-    must carry the new `hmac` key (a parallel module to freewallet's same-named
-    keystore, not covered by that entry), and `declareCollectionIndexes`
-    (plaintext, public-only) does not cover the encrypted persisted-schema
-    model; tracked as WR-31 in the was-react roadmap
-  - "@interop/edv-client" -- blinding already implemented (`IndexHelper`, `hmac`
-    params); verify a concrete HMAC key class (`id`/`sign`/`verify`) is exported
-    for consumers, or export one upstream (do not hand-roll here)
-  - was-client ARCHITECTURE.md -- the codec seam is documented as a pure
-    single-write transform; emitting `indexed` entries and binding `find()`
-    changes that contract description
+    Considerations text. Still open as of 2026-08-12: spec.md's stored-envelope
+    section mentions `indexed` as optional but specifies none of the above;
+    tracked as ECS-2 in the ECS `_spec` roadmap
+  - wallet-attached-storage-spec -- resolved: the `blinded-index` query profile
+    was already in the Query Profile Registry, and the schema's home, the
+    Collection-level `/meta` endpoints, shipped as WASS-9 (archived in that
+    repo's `_spec` roadmap)
+  - was-teaching-server -- resolved: the schema home (Collection-level `/meta`,
+    WAS-55) shipped in 0.21.0, and WAS-56 (archived 2026-08-12) closed the rest:
+    the `blinded-index-api` conformance suite gained a codec-path group (equals
+    round-trip, has + count, unique 409 conflict; conformance-suite 0.6.0,
+    pending publish) and the Reverse-gaps preamble now cross-links the served
+    blinded-index envelope semantics to ECS-2
+  - freewallet -- resolved: FW-130 (mint, custody, and distribute the HMAC key;
+    `ensureFirstEpoch` install) shipped 2026-08-12 and is archived; its residue
+    (the wallet's sync doc-cipher writes do not load the index schema) is
+    FW-133, riding upstream WCL-11, not this item
+  - was-react -- resolved: WR-31 shipped in was-react 0.15.0 (2026-08-12,
+    alongside was-client 0.35.0); its residue (sync-path writes emit no
+    `indexed` entries) is WR-32, riding upstream WCL-11, not this item
+  - "@interop/edv-client" -- resolved: no upstream export was needed; the
+    concrete HMAC key class is `SHA256HMACKey` from
+    `@interop/data-integrity-core` (used by `src/edv/hmacKey.ts`), and the
+    codec's `BlindingKey` contract is structural, so edv-client's `IHMAC`
+    implementations also satisfy it
+  - was-client ARCHITECTURE.md -- resolved: the codec section now documents the
+    optional `indexing` capability (`applySchema` / `schema` / `buildQuery`),
+    blinded `indexed` emission on writes, and the `find()` binding
 - acceptance:
   - [x] `createEdvEncryption`'s key set gains an `hmac` key, so the codec's
         cipher can blind attributes
@@ -153,12 +153,19 @@ term-less query that matches nothing). Unit coverage is
 `test/node/blinded-index.test.ts`; live coverage is
 `test/integration/blinded-find.test.ts`.
 
-The item stays `in-progress`: the cross-repo `touches:` entries (the
-encrypted-collections spec text, the WAS spec's schema-home note, the server's
-codec-path conformance tests, freewallet FW-130, was-react WR-31, and the
-storage-core widening cleanup) are still unresolved. WCL-10 (the
-`was.collection` binding decided as ECS-1) landed alongside it on 2026-08-12, so
-the persisted schema envelopes are minted with the final binding shape.
+Touches sweep (2026-08-12): freewallet FW-130 and was-react WR-31 both shipped
+(each leaving a sync-path residue item -- FW-133 and WR-32 -- that rides
+upstream WCL-11, not this item), the edv-client question resolved via
+`SHA256HMACKey` from `@interop/data-integrity-core`, ARCHITECTURE.md is updated,
+and the storage-core widening cleanup landed (0.8.0; `EncryptionWithHmac` is now
+a plain alias of `CollectionEncryption`). The item stays `in-progress` on one
+remaining `touches:` entry: the encrypted-collections spec text (hmac
+distribution, `indexed` envelope entries, index-schema persistence, Security
+Considerations), filed as ECS-2 in the ECS roadmap. The was-teaching-server half
+(WAS-56: codec-path conformance coverage plus the Reverse-gap cross-link) was
+archived 2026-08-12. WCL-10 (the `was.collection` binding decided as ECS-1)
+landed alongside it on 2026-08-12, so the persisted schema envelopes are minted
+with the final binding shape.
 
 Design point (recorded 2026-08-12): the index schema must be persisted and
 discoverable, not app-local. `@interop/edv-client` keeps the schema as in-memory
@@ -185,35 +192,81 @@ same cost class as an HMAC key rotation), so the persisted schema should record
 enough (e.g. a per-attribute addition marker) for a querier to know matches may
 be partial.
 
-### WCL-2: `Collection.add(bigBlob)` auto-routing
+### WCL-12: Chunked-stream auto-routing for `put()` (oversize update)
 
 - status: todo
 - priority: low
 - labels: encryption, streams, ergonomics
-- touches:
-  - was-client ARCHITECTURE.md -- the request lifecycle and "The codec seam"
-    sections describe `encode` as a pure single-request transform with the
-    chunked path as a separate `EdvClientCore`-driven escape; auto-routing moves
-    that decision into the write path and changes both descriptions
-  - was-client README.md -- the encrypted-collections section documents the
-    oversize `add()` as rejected with guidance toward the stream path; a
-    previously-throwing call starts succeeding
-  - "@interop/edv-client" -- expected unaffected (`insert({ stream })` /
-    `getStream` already carry the whole chunked path); verify the codec can
-    reach what it needs through the export map, else export upstream
-  - encrypted-collections-spec -- expected unaffected (the chunked profile,
-    `caad: 1` AAD, and sealed chunk counts are already specified; auto-routing
-    is client ergonomics producing already-specified wire traffic) -- verify and
-    waive
-  - was-teaching-server -- expected unaffected (the server sees identical
-    `chunked-streams` traffic either way); verify and waive
 - acceptance:
-  - [ ] An oversize `add()` on an encrypted collection routes onto the
-        chunked-stream path automatically instead of throwing
+  - [ ] An oversize binary `put()` on an encrypted collection replaces the
+        existing document via the chunked-stream path instead of throwing
+  - [ ] Chunks orphaned by a shrinking rewrite (or by an update that leaves the
+        chunked profile) are cleaned up or provably unreachable
 
-The codec seam is a pure single-write transform, so an oversize `add()`
-currently throws and points callers at the (fully working)
-`EdvClientCore.insert({stream})` / `getStream` path. Ergonomics only.
+discovered-from: WCL-2. `add()` auto-routes but `put(id, bigBlob)` still refuses
+with the chunked-path guidance. An update is not a symmetric case: it must
+reconcile an existing document's chunks with the new stream
+(`EdvClientCore.update({ doc, stream })`) and deal with orphaned chunk resources
+when the new stream is shorter, so it is a real feature rather than a follow-up
+detail.
+
+### WCL-13: Streaming `add()` (accept a `ReadableStream`)
+
+- status: todo
+- priority: low
+- labels: streams, ergonomics
+- acceptance:
+  - [ ] `collection.add(stream)` (or an explicit stream option) writes a chunked
+        document without buffering the whole payload in memory
+
+discovered-from: WCL-2. The routed write takes bytes already in memory (`Blob` /
+`Uint8Array`); the underlying `EdvClientCore.insert({ stream })` path is already
+streaming, so the gap is only the public `add()` surface and the read-side
+counterpart (a streaming `get` variant) for callers that cannot buffer.
+
+### WCL-14: Upstream: `_updateStream` overrides caller hmac suppression
+
+- status: todo
+- priority: low
+- labels: encryption, upstream
+- touches:
+  - "@interop/edv-client" -- `EdvClientCore._updateStream` re-updates the
+    document with `hmac = this.hmac` regardless of what the caller passed to
+    `insert`, so a caller cannot suppress indexing on the second write of a
+    chunked insert
+- acceptance:
+  - [ ] A chunked insert whose caller passed no hmac (or a suppressed one)
+        produces a final document whose `indexed` entries reflect the caller's
+        choice
+
+discovered-from: WCL-2. Harmless today -- routed blobs declare no indexable
+attributes, so the extra hmac application emits nothing meaningful -- but it
+means the WAS codec cannot fully control `indexed` emission on the chunked path
+without this upstream fix.
+
+### WCL-16: Sync read path cannot decode chunked documents
+
+- status: todo
+- priority: medium
+- labels: encryption, streams, sync
+- acceptance:
+  - [ ] A chunked envelope arriving through a sync pull either decodes
+        (context-carrying DocCipher) or is skipped/marked gracefully with a
+        defined recovery story, instead of throwing per-envelope and wedging the
+        pull pipeline
+
+discovered-from: WCL-2 (review finding, 2026-08-12). `add()` can now mint
+documents the package's own sync decrypt path structurally cannot read:
+`docCipher.decrypt` calls `codec.decode` with no `CodecRequestContext`, so a
+chunked envelope reaching a synced collection throws `EncryptionError`
+per-envelope during pull, with no skip affordance in `src/sync/`. The fail-loud
+behavior is deliberate and documented in ARCHITECTURE.md, but one routed blob
+can wedge a downstream pull pipeline (freewallet, was-react). Design question:
+either `createEdvDocCipher` gains an optional requester/context so sync replicas
+can reassemble, or the sync layer gains a graceful-skip contract for
+stream-profile envelopes (surface them as opaque and let the app fetch via a
+live handle). Related: WCL-11 is the push-side sibling (schema emission), not
+this.
 
 ### WCL-11: `indexed` emission on the sync push path
 
@@ -392,18 +445,3 @@ RxDB-specific driver (wire-doc to RxDB mapping, pull/push handlers,
 diverged copies -- freewallet `src/lib/sync/` and was-react `src/sync/`. That
 dedup is the only live residue of this item, and the second copy is also its
 strongest argument.
-
-### WCL-7: Relocating `setName` / `setTags` into the JWE
-
-- status: draft (parking record)
-- priority: low
-- labels: someday, encryption, metadata
-- acceptance: none yet -- deferred only because apps can carry name/tags inside
-  the encrypted content today
-
-Increment 2 _forbids_ `setName` / `setTags` on encrypted collections (they write
-server-visible plaintext custom metadata -- a leak). Reversal is cheap
-code-wise: the resolved `ResourceCodec` carries an `allowsServerMetadata` flag
-(flip it true) plus an optional `encode/decodeMetadata` hook the edv codec
-implements to fold the values into the encrypted document. Additive, no public
-API break (a previously-throwing call starts succeeding).

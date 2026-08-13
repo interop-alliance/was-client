@@ -14,9 +14,10 @@ import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { collectionCodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
+import type { FeatureProbe } from './internal/features.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import { ENCODER } from './internal/content.js'
-import { upsertResource } from './internal/write.js'
+import { codecRequestContext, upsertResource } from './internal/write.js'
 import {
   readPolicy,
   writePolicy,
@@ -24,7 +25,7 @@ import {
   isPublicPolicy,
   setPublicPolicy
 } from './internal/policy.js'
-import type { ResourceCodec } from './codec.js'
+import type { CodecRequestContext, ResourceCodec } from './codec.js'
 import type {
   EncryptionOverride,
   IZcap,
@@ -78,12 +79,12 @@ export class Resource {
    */
   readonly #codec: () => Promise<ResourceCodec>
   /**
-   * Resolves the backend's advertised feature tokens: the parent collection's
-   * shared probe when this handle came from `collection.resource(id)`,
-   * otherwise one built (and memoized) for this handle. Consulted by the
-   * conditional-codec write path (see `upsertResource`).
+   * The backend-feature probe: the parent collection's shared one when this
+   * handle came from `collection.resource(id)`, otherwise one built (and
+   * memoized) for this handle. Consulted by the conditional-codec write path
+   * (see `upsertResource`).
    */
-  readonly #features: () => Promise<string[]>
+  readonly #features: FeatureProbe
 
   /**
    * @param options {object}
@@ -96,8 +97,8 @@ export class Resource {
    *   codec, so a resource handle obtained via `collection.resource(id)` does
    *   not repeat the backend() round-trip. A standalone resource resolves its
    *   own.
-   * @param [options.features] {function}   resolver sharing the parent
-   *   collection's backend-feature probe. A standalone resource probes its own.
+   * @param [options.features] {FeatureProbe}   the parent collection's shared
+   *   backend-feature probe. A standalone resource probes its own.
    * @param [options.encryption] {EncryptionOverride}   per-handle encryption
    *   override for a standalone resource (ignored when `codec` is supplied --
    *   the shared parent codec wins)
@@ -118,7 +119,7 @@ export class Resource {
     resourceId: string
     capability?: IZcap
     codec?: () => Promise<ResourceCodec>
-    features?: () => Promise<string[]>
+    features?: FeatureProbe
     encryption?: EncryptionOverride
   }) {
     // Guard the id against the Reserved Path Segment Registry up front, so a
@@ -146,20 +147,31 @@ export class Resource {
       })
       this.#codec = () => holder.get()
     }
-    if (features) {
-      this.#features = features
-    } else {
-      const probe = collectionBackendFeatures(context, {
+    this.#features =
+      features ??
+      collectionBackendFeatures(context, {
         spaceId,
         collectionId,
         capability
       })
-      this.#features = () => probe.get()
-    }
   }
 
   get #path(): string {
     return resourcePath(this.spaceId, this.collectionId, this.id)
+  }
+
+  /**
+   * The signed-request context handed to a codec that drives its own I/O (the
+   * EDV codec reading a chunked blob back), bound to this handle's capability
+   * and sharing its feature probe.
+   *
+   * @returns {CodecRequestContext}
+   */
+  #codecContext(): CodecRequestContext {
+    return codecRequestContext(this.#context, {
+      features: this.#features,
+      capability: this.#capability
+    })
   }
 
   /**
@@ -197,7 +209,9 @@ export class Resource {
     responsePromise.catch(() => {})
     const codec = await codecPromise
     const response = await responsePromise
-    return response === null ? null : codec.decode(response, this.id)
+    return response === null
+      ? null
+      : codec.decode(response, this.id, this.#codecContext())
   }
 
   /**
@@ -224,7 +238,7 @@ export class Resource {
     if (response === null) {
       return null
     }
-    const data = await codec.decode(response, this.id)
+    const data = await codec.decode(response, this.id, this.#codecContext())
     const etag = readEtag(response)
     return etag !== undefined ? { data, etag } : { data }
   }

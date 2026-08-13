@@ -45,7 +45,7 @@ import {
   unreadableDescriptionError
 } from './internal/describe.js'
 import { readEtag, writeHeaders } from './internal/conditional.js'
-import { insertResource } from './internal/write.js'
+import { codecRequestContext, insertResource } from './internal/write.js'
 import {
   readPolicy,
   writePolicy,
@@ -67,6 +67,7 @@ import {
 import type { CustomWithIndexSchema } from './internal/indexSchema.js'
 import type {
   CodecIndexing,
+  CodecRequestContext,
   IndexDeclaration,
   IndexSchema,
   ResourceCodec
@@ -170,6 +171,20 @@ export class Collection {
 
   get #policyPath(): string {
     return collectionPolicy(this.spaceId, this.id)
+  }
+
+  /**
+   * The signed-request context handed to a codec that drives its own I/O (the
+   * EDV codec reading a chunked blob back), bound to this handle's capability
+   * and sharing its memoized feature probe.
+   *
+   * @returns {CodecRequestContext}
+   */
+  #codecContext(): CodecRequestContext {
+    return codecRequestContext(this.#context, {
+      features: this.#features,
+      capability: this.#capability
+    })
   }
 
   /**
@@ -797,7 +812,14 @@ export class Collection {
             'with no id.'
         )
       }
-      items.push({ id, data: await codec.decode(storedResponse(envelope), id) })
+      items.push({
+        id,
+        data: await codec.decode(
+          storedResponse(envelope),
+          id,
+          this.#codecContext()
+        )
+      })
     }
     return {
       items,
@@ -826,7 +848,7 @@ export class Collection {
       capability: options.capability ?? this.#capability,
       // Share this collection's memoized feature probe so per-resource handles
       // do not each repeat the backend-descriptor round-trip.
-      features: () => this.#features.get(),
+      features: this.#features,
       // A per-resource encryption override resolves its own codec (honoring the
       // override); without one, share this collection's resolved codec so the
       // resource handle does not repeat the descriptor-discovery round-trip.
@@ -843,6 +865,11 @@ export class Collection {
    * binary for `Blob`/`Uint8Array`. Throws `NotFoundError` if the collection
    * does not exist (WAS does not auto-create parents).
    *
+   * On an encrypted collection a binary payload above the codec's
+   * single-document threshold is auto-routed to the chunked-stream path, which
+   * needs the backend's `chunked-streams` feature (`NotSupportedError` without
+   * it, raised before anything is written).
+   *
    * @param data {ResourceData}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
@@ -854,14 +881,28 @@ export class Collection {
   ): Promise<AddResult> {
     const codec = await this.#codec()
     const itemsPath = this.#itemsPath
-    const { encoded, path, response } = await insertResource(this.#context, {
+    const outcome = await insertResource(this.#context, {
       itemsPath,
       pathForId: mintedId => resourcePath(this.spaceId, this.id, mintedId),
       codec,
       data,
+      features: this.#features,
       contentType: options.contentType,
       capability: this.#capability
     })
+
+    // A codec's multi-request plan wrote to an id it minted itself, and
+    // reported back whatever validator its last write surfaced.
+    if (outcome.chunked === true) {
+      return {
+        id: outcome.id,
+        url: toUrl({ serverUrl: this.#context.serverUrl, path: outcome.path }),
+        contentType: outcome.contentType,
+        etag: outcome.etag
+      }
+    }
+
+    const { encoded, path, response } = outcome
     const etag = readEtag(response)
 
     // A codec that mints its own id (e.g. the encrypting codec's EDV id) was

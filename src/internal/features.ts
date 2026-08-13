@@ -30,6 +30,54 @@ import type { IZcap } from '../types.js'
 const DESCRIPTOR_ABSENT_STATUSES = new Set([404, 405, 501])
 
 /**
+ * The read side of a backend-feature probe, so a consumer can be handed an
+ * already-memoized probe instead of building its own (and repeating the
+ * descriptor round trip). {@link BackendFeatures} is the implementation;
+ * {@link featureProbeFrom} adapts a bare "resolve the feature tokens" thunk --
+ * the shape a handle shares with its children -- to the same interface.
+ */
+export interface FeatureProbe {
+  get(): Promise<string[]>
+  has(feature: string): Promise<boolean>
+  /**
+   * Whether the probe's answer came from a backend descriptor that could not be
+   * read at all (`404` / `405` / `501`) rather than from one that was read and
+   * advertises a feature set. Both answer "no features", but only the second is
+   * evidence about the server's capabilities: the first also covers a deleted
+   * collection and a capability that cannot read the descriptor (WAS masks
+   * unauthorized reads as 404). An affordance gate consults it so its error
+   * names the right cause.
+   *
+   * @returns {Promise<boolean>}
+   */
+  descriptorAbsent(): Promise<boolean>
+}
+
+/**
+ * Adapts a resolve-the-feature-tokens thunk (a handle's shared, memoized probe)
+ * to the {@link FeatureProbe} interface, so a consumer that only needs to ask
+ * `has(...)` can be driven by someone else's memo.
+ *
+ * @param get {function}   resolves the backend's advertised feature tokens
+ * @param [descriptorAbsent] {function}   resolves whether the descriptor was
+ *   unreadable; a bare thunk carries no such signal, so it defaults to `false`
+ *   ("a descriptor was read, and it advertises these tokens")
+ * @returns {FeatureProbe}
+ */
+export function featureProbeFrom(
+  get: () => Promise<string[]>,
+  descriptorAbsent: () => Promise<boolean> = async () => false
+): FeatureProbe {
+  return {
+    get,
+    async has(feature: string): Promise<boolean> {
+      return (await get()).includes(feature)
+    },
+    descriptorAbsent
+  }
+}
+
+/**
  * A memoizing probe of one collection backend's advertised feature tokens.
  * Memoized once it produces a definitive answer: a successful read (including
  * one that lists no features) and a definitive "endpoint absent"
@@ -43,8 +91,15 @@ const DESCRIPTOR_ABSENT_STATUSES = new Set([404, 405, 501])
  * degrading against a server that may well be capable. (A single transient
  * failure must not poison the probe for its lifetime.)
  */
-export class BackendFeatures {
+export class BackendFeatures implements FeatureProbe {
   #promise?: Promise<string[]>
+  /**
+   * Set when the probe's definitive answer was "the descriptor could not be
+   * read" rather than "the descriptor lists these features", so a gate can tell
+   * a server that lacks an affordance from one whose descriptor is absent (or
+   * whose collection is gone, or unreadable with this capability).
+   */
+  #descriptorAbsent = false
   readonly #readDescriptor: () => Promise<unknown>
 
   /**
@@ -78,6 +133,18 @@ export class BackendFeatures {
   }
 
   /**
+   * Whether the (definitive) answer came from an unreadable backend descriptor
+   * rather than from one that was read. Awaits the probe, so it reports the
+   * same answer `get()` resolved.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async descriptorAbsent(): Promise<boolean> {
+    await this.get()
+    return this.#descriptorAbsent
+  }
+
+  /**
    * Reads and parses the backend descriptor once. On a definitive answer
    * (success, or a `404` / `405` / `501` that means the endpoint is
    * legitimately absent) resolves the feature list, which `get` then caches.
@@ -99,6 +166,7 @@ export class BackendFeatures {
     } catch (err) {
       const status = httpStatus(err)
       if (status !== undefined && DESCRIPTOR_ABSENT_STATUSES.has(status)) {
+        this.#descriptorAbsent = true
         return []
       }
       // Transient/ambiguous: do not cache this failure -- drop the memo so the

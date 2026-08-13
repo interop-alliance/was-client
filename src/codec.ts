@@ -30,9 +30,12 @@
  *   but the keystore holds no keys, core fails closed (throws) rather than
  *   silently writing plaintext.
  */
+import type { HttpResponse } from '@interop/http-client'
+import type { FeatureProbe } from './internal/features.js'
 import type {
   CollectionEncryption,
   Json,
+  RequestInput,
   ResourceData,
   ResourceMetadataCustom
 } from './types.js'
@@ -101,6 +104,85 @@ export interface EncodedWrite {
   ifNoneMatch?: boolean
   envelope?: unknown
   epoch?: string
+}
+
+/**
+ * The signed-request escape hatch core hands a codec that needs to drive its
+ * own multi-request I/O, plus the collection's shared backend-feature probe.
+ * Bound to one collection handle and its capability, so a codec never sees the
+ * zcap machinery.
+ *
+ * `request` returns the raw `HttpResponse` (the `was.request()` surface
+ * `WasTransport` consumes) but throws the client's typed `WasError` subclasses,
+ * the same mapping every core request goes through -- a codec-driven write is
+ * still a write of the caller's `add()`, so its failures must be the errors
+ * `add()` documents. The typed errors carry the HTTP `status`, so a consumer
+ * that dispatches on status (`WasTransport`) is unaffected.
+ *
+ * `features` is the handle's memoized probe, so a codec's affordance gate costs
+ * no extra round trip -- and can tell "the backend advertises no such feature"
+ * from "the backend descriptor could not be read at all".
+ */
+export interface CodecRequestContext {
+  request(input: RequestInput): Promise<HttpResponse>
+  features: FeatureProbe
+}
+
+/**
+ * The escape hatch from the single-request `EncodedWrite`: a plan for a write
+ * that cannot be expressed as one request, returned by {@link
+ * ResourceCodec.encode} instead of an `EncodedWrite`. The EDV codec returns one
+ * for a binary payload above its single-document threshold, where the stored
+ * form is a document envelope plus a series of chunk resources.
+ *
+ * `chunked` is the discriminant, and `id` is the resource id the plan will
+ * write to (known before `execute` runs, so a caller can report it without
+ * waiting). `execute` performs the whole write over the supplied context and
+ * resolves what the caller needs to shape its result. Only the insert path
+ * (`Collection.add`) drives a plan; the write-by-id path refuses one.
+ */
+export interface ChunkedWrite {
+  chunked: true
+  id: string
+  /**
+   * The plaintext content type of the resource, reported as the created
+   * resource's type (there is no single stored body whose type to report).
+   */
+  resourceContentType?: string
+  /**
+   * Scheme-specific guidance the core write path appends to the generic error
+   * it throws when it refuses the plan (a write by id, where auto-routing does
+   * not apply). Only the codec knows why its payload needs several requests and
+   * which low-level API drives that write directly, so the wording is supplied
+   * here rather than hardcoded in the scheme-agnostic core.
+   */
+  guidance?: string
+  /**
+   * Runs the multi-request write.
+   *
+   * @param context {CodecRequestContext}
+   * @returns {Promise<{ id: string; etag?: string }>}   the created resource id
+   *   and, when the last write surfaced one, its `ETag` validator
+   */
+  execute(context: CodecRequestContext): Promise<{ id: string; etag?: string }>
+}
+
+/**
+ * What {@link ResourceCodec.encode} produces: the ordinary single-request
+ * encoding, or a {@link ChunkedWrite} plan for a payload that needs more than
+ * one request.
+ */
+export type CodecWrite = EncodedWrite | ChunkedWrite
+
+/**
+ * Whether an `encode` result is a multi-request {@link ChunkedWrite} plan
+ * rather than a single-request {@link EncodedWrite}.
+ *
+ * @param write {CodecWrite}
+ * @returns {boolean}
+ */
+export function isChunkedWrite(write: CodecWrite): write is ChunkedWrite {
+  return (write as ChunkedWrite).chunked === true
 }
 
 /**
@@ -227,14 +309,17 @@ export interface ResourceCodec {
    * @param [input.current] {ResponseLike | null}     the current stored response
    *   (or `null` if absent), supplied only when {@link conditionalWrites} is
    *   set, so the codec can derive the next `sequence` and the `If-Match` ETag.
-   * @returns {Promise<EncodedWrite>}
+   * @returns {Promise<CodecWrite>}   the single-request encoding, or -- for a
+   *   payload the codec cannot store in one request -- a {@link ChunkedWrite}
+   *   plan the insert path executes. Only `add()` drives a plan; a write by id
+   *   refuses one.
    */
   encode(input: {
     id?: string
     data: ResourceData
     contentType?: string
     current?: ResponseLike | null
-  }): Promise<EncodedWrite>
+  }): Promise<CodecWrite>
 
   /**
    * Transforms a stored (non-null) read response back into a caller value: a
@@ -247,9 +332,19 @@ export interface ResourceCodec {
    *   binding against it (a server-side swap of two envelopes is then detected);
    *   the identity codec ignores it. Optional and backward compatible -- a
    *   caller that does not know the id (or the plaintext codec) omits it.
+   * @param [context] {CodecRequestContext}   the signed-request escape hatch,
+   *   passed by every handle read. A codec whose stored form can span several
+   *   resources (the EDV codec's chunked blobs) reads the remainder through it;
+   *   the identity codec ignores it. A caller with no request layer (the sync
+   *   `DocCipher`, reading a local replica) omits it, and a codec that then
+   *   meets a multi-resource document throws rather than return a stub.
    * @returns {Promise<Json | Blob>}
    */
-  decode(response: ResponseLike, expectedId?: string): Promise<Json | Blob>
+  decode(
+    response: ResponseLike,
+    expectedId?: string,
+    context?: CodecRequestContext
+  ): Promise<Json | Blob>
 
   /**
    * Transforms a caller's user-writable metadata (`custom`) into the value to

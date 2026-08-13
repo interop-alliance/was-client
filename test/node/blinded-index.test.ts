@@ -25,9 +25,9 @@ import type { HttpResponse } from '@interop/http-client'
 import { WasClient, ValidationError } from '../../src/index.js'
 import type {
   CollectionDescription,
-  CollectionEncryption,
-  ResourceCodec
+  CollectionEncryption
 } from '../../src/index.js'
+import type { SingleWriteCodec } from '../helpers/codec.js'
 import { identityCodec } from '../../src/internal/codec.js'
 import { createEdvEncryption } from '../../src/edv/index.js'
 import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
@@ -93,7 +93,7 @@ async function makeIndexableCollection(): Promise<{
  * @param options {object}
  * @param options.encryption {CollectionEncryption}
  * @param options.keys {object}
- * @returns {Promise<ResourceCodec>}
+ * @returns {Promise<SingleWriteCodec>}
  */
 async function makeCodec({
   encryption,
@@ -101,7 +101,7 @@ async function makeCodec({
 }: {
   encryption: CollectionEncryption
   keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
-}): Promise<ResourceCodec> {
+}): Promise<SingleWriteCodec> {
   const provider = createEdvEncryption({ resolveKeys: async () => keys })
   const codec = await provider.codecFor({
     spaceId: 's',
@@ -112,7 +112,7 @@ async function makeCodec({
   if (!codec) {
     throw new Error('expected a codec')
   }
-  return codec
+  return codec as SingleWriteCodec
 }
 
 /**

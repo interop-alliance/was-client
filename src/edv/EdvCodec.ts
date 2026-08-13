@@ -36,9 +36,13 @@
  * - **Inline non-JSON as a single JWE.** A `Blob`/`Uint8Array` under the size cap
  *   is encrypted as one document -- stored as a legible UTF-8 string for a
  *   text-family type (else base64) -- with the plaintext content type and the
- *   encoding carried in the document `meta`. An oversized one is
- *   rejected (large chunked encrypted blobs need the server's `chunked-streams`
- *   affordance).
+ *   encoding carried in the document `meta`. A blob over `maxBlobBytes` is
+ *   auto-routed by `add()` to the chunked-stream path instead: `encode` returns
+ *   a multi-request plan the write path executes, storing one document plus its
+ *   chunk resources over a `WasTransport` of the codec's own. That needs the
+ *   backend's `chunked-streams` affordance, checked before the first write.
+ *   Reads reassemble transparently, so `get()` returns the same `Blob` either
+ *   way.
  * - **Enforced sequence (conditional writes).** The codec sets
  *   `conditionalWrites`, so the write path pre-reads the current envelope and
  *   hands it to `encode`: an update advances `sequence` from its prior value and
@@ -64,6 +68,7 @@
 import { base64, base64urlnopad } from '@scure/base'
 import { EdvClientCore, assertDocId } from '@interop/edv-client'
 import type {
+  IEDVDocument,
   IEncryptedDocument,
   IKeyAgreementKey,
   IKeyResolver,
@@ -71,8 +76,10 @@ import type {
 } from '@interop/data-integrity-core'
 import type {
   BlindedQuery,
+  ChunkedWrite,
   CodecIndexing,
-  EncodedWrite,
+  CodecRequestContext,
+  CodecWrite,
   EncryptionProvider,
   IndexSchema,
   ResourceCodec,
@@ -86,10 +93,12 @@ import {
   EncryptionError,
   IntegrityError,
   KeyUnwrapError,
+  NotSupportedError,
   UnknownEpochError,
   ValidationError
 } from '../errors.js'
-import { readEtag } from '../internal/conditional.js'
+import { readEtag, writeHeaders } from '../internal/conditional.js'
+import { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
 import { resolveEpochKeys } from './epochKeys.js'
 import { didKeyResolver } from './epochCrypto.js'
@@ -109,16 +118,27 @@ import {
 } from './constants.js'
 
 /**
- * Default ceiling for a single-document (unchunked) encrypted binary or text
- * write, measured in raw (pre-base64) bytes. Past this a `Blob`/`Uint8Array`
- * is rejected with guidance toward the chunked-stream path. 512 KiB: the
- * envelope is stored as a JSON-family content type routed through the server's
- * in-memory JSON body parser (a ~1 MiB cap), and a binary payload inflates
- * ~33% inside the document (base64) and again ~33% in the JWE ciphertext
- * (base64url) -- ~1.78x total, so 512 KiB raw stays safely under the cap.
- * Raise `maxBlobBytes` against a server with a larger JSON body limit.
+ * Default threshold above which an encrypted binary write is routed to the
+ * chunked-stream path instead of being sealed into one document, measured in
+ * raw (pre-base64) bytes. It is a routing threshold, not a hard cap: `add()`
+ * carries a larger blob as a document plus chunk resources, which needs the
+ * backend's `chunked-streams` feature. 512 KiB: a single-document envelope is
+ * stored as a JSON-family content type routed through the server's in-memory
+ * JSON body parser (a ~1 MiB cap), and a binary payload inflates ~33% inside
+ * the document (base64) and again ~33% in the JWE ciphertext (base64url) --
+ * ~1.78x total, so 512 KiB raw stays safely under the cap. Raise
+ * `maxBlobBytes` against a server with a larger JSON body limit.
  */
 const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
+
+/**
+ * The `meta.encoding` discriminator a chunked binary document carries: its
+ * bytes live in the document's chunk resources, not in `content`. It is sealed
+ * inside the JWE payload (the cipher encrypts `meta` alongside `content`), so
+ * it is the AEAD-authenticated signal the read side routes on, and it keeps the
+ * decrypted document self-describing alongside `'utf-8'` and `'base64'`.
+ */
+const CHUNKED_ENCODING = 'chunked'
 
 /**
  * A shared strict UTF-8 decoder used to test whether a non-JSON payload is
@@ -258,7 +278,20 @@ export class EdvCodec implements ResourceCodec {
    */
   readonly #writeEpoch: string
   readonly #contentType: string
+  /**
+   * The size, in raw bytes, above which a binary write is routed to the
+   * chunked-stream path instead of being sealed into one document. A routing
+   * threshold, not a hard cap.
+   */
   readonly #maxBlobBytes: number
+  /**
+   * The size of each encrypted chunk a routed write emits, or `undefined` to
+   * take the EDV core's default (1 MiB). One chunk is one upload, so it has to
+   * stay under the backend's `maxUploadBytes`; nothing here can check that (the
+   * feature probe answers affordance tokens, not the backend's constraints), so
+   * a chunk over the limit surfaces as the server's 413.
+   */
+  readonly #chunkSize?: number
   readonly #idDerivation: 'random' | 'content'
   /**
    * The EDV-over-WAS scheme version this codec binds into every envelope's
@@ -267,6 +300,12 @@ export class EdvCodec implements ResourceCodec {
    * stamped with a greater version.
    */
   readonly #version: number
+  /**
+   * The id of the Space holding this codec's Collection. Needed only by the
+   * chunked-stream path, which addresses the document and its chunks through a
+   * `WasTransport` of its own.
+   */
+  readonly #spaceId: string
   /**
    * The id of the Collection this codec was built for. It is bound into the
    * Collection metadata envelope's `was.collection` on write and required to
@@ -318,12 +357,20 @@ export class EdvCodec implements ResourceCodec {
    *   into every envelope's `was.epoch`, which the decode side checks against
    *   the decrypting key's epoch unconditionally.
    * @param options.contentType {string}            stored envelope content type
-   * @param options.maxBlobBytes {number}           single-document binary cap
+   * @param options.maxBlobBytes {number}   the size above which a binary write
+   *   is routed to the chunked-stream path instead of one document
+   * @param [options.chunkSize] {number}   the size of each encrypted chunk a
+   *   routed write emits (defaults to the EDV core's 1 MiB). One chunk is one
+   *   upload, so it must stay under the backend's `maxUploadBytes`; that
+   *   constraint is not advertised through the feature probe, so it is the
+   *   caller's to respect (see `createEdvEncryption`)
    * @param options.idDerivation {string}           how `add()` mints a document
    *   id: `'random'` (classic `generateId()`) or `'content'` (derived from the
    *   JWE ciphertext, content-addressed)
    * @param [options.version] {number}   the EDV-over-WAS scheme version to bind
    *   into each envelope's `was.v` (defaults to {@link EDV_SCHEME_VERSION})
+   * @param options.spaceId {string}   the Space holding the Collection, for the
+   *   chunked-stream path's own transport
    * @param options.collectionId {string}   the Collection this codec reads and
    *   writes: bound into the Collection metadata envelope's `was.collection`
    *   (and checked on read), and it labels decrypt-routing errors
@@ -340,8 +387,10 @@ export class EdvCodec implements ResourceCodec {
     writeEpoch,
     contentType,
     maxBlobBytes,
+    chunkSize,
     idDerivation,
     version,
+    spaceId,
     collectionId,
     epochIds,
     hmac
@@ -352,8 +401,10 @@ export class EdvCodec implements ResourceCodec {
     writeEpoch: string
     contentType: string
     maxBlobBytes: number
+    chunkSize?: number
     idDerivation: 'random' | 'content'
     version?: number
+    spaceId: string
     collectionId: string
     epochIds: string[]
     hmac?: BlindingKey | null
@@ -365,8 +416,10 @@ export class EdvCodec implements ResourceCodec {
     this.#writeEpoch = writeEpoch
     this.#contentType = contentType
     this.#maxBlobBytes = maxBlobBytes
+    this.#chunkSize = chunkSize
     this.#idDerivation = idDerivation
     this.#version = version ?? EDV_SCHEME_VERSION
+    this.#spaceId = spaceId
     this.#collectionId = collectionId
     this.#epochIds = new Set(epochIds)
     this.#blindingKey = hmac ?? null
@@ -476,7 +529,7 @@ export class EdvCodec implements ResourceCodec {
     data: ResourceData
     contentType?: string
     current?: ResponseLike | null
-  }): Promise<EncodedWrite> {
+  }): Promise<CodecWrite> {
     if (id !== undefined && !current) {
       try {
         // A full multibase decode + multihash length check (the same assertion
@@ -504,7 +557,27 @@ export class EdvCodec implements ResourceCodec {
       (this.#idDerivation === 'content'
         ? undefined
         : ((await this.#edv.generateId()) as string))
-    const { content, meta } = await this.#toDocument(data, contentType, docId)
+    const parts = await this.#toDocument(data, contentType, docId)
+    if (parts.kind === 'chunked') {
+      if (docId === undefined) {
+        throw new ValidationError(
+          `Encrypted binary write of ${parts.size} bytes exceeds the ` +
+            `single-document threshold of ${this.#maxBlobBytes} bytes, so it ` +
+            'must be stored as a document plus chunk resources -- which a ' +
+            "content-addressed collection (idDerivation: 'content') cannot " +
+            'do: the document is written twice (once to reserve it, once to ' +
+            'record the chunk count), so no single ciphertext derives its id. ' +
+            'Store large blobs in a random-id collection, or keep the payload ' +
+            'under the threshold.'
+        )
+      }
+      return this.#chunkedWrite({
+        id: docId,
+        stream: parts.stream,
+        meta: parts.meta
+      })
+    }
+    const { content, meta } = parts
 
     // When the write path pre-read a current envelope, advance `sequence` from
     // its prior value (`encrypt({ update: true })` increments it) and pin the
@@ -587,6 +660,206 @@ export class EdvCodec implements ResourceCodec {
   }
 
   /**
+   * Builds the `WasTransport` the chunked-stream paths drive, over the signed
+   * requester core supplied and this codec's own Space/Collection. The
+   * handle's memoized feature probe is passed straight through, so the
+   * transport's own affordance gates cost no extra descriptor read.
+   *
+   * @param context {CodecRequestContext}
+   * @param [documentHeaders] {Record<string, string>}   extra headers for
+   *   document writes (the `Key-Epoch` stamp the codec seam applies)
+   * @returns {WasTransport}
+   */
+  #transportFor(
+    context: CodecRequestContext,
+    documentHeaders?: Record<string, string>
+  ): WasTransport {
+    return new WasTransport({
+      was: { request: input => context.request(input) },
+      spaceId: this.#spaceId,
+      collectionId: this.#collectionId,
+      contentType: this.#contentType,
+      features: context.features,
+      ...(documentHeaders !== undefined && { documentHeaders })
+    })
+  }
+
+  /**
+   * Refuses the operation unless the collection's backend advertises the
+   * `chunked-streams` affordance. Checked before the first write, so an
+   * unsupported server never ends up holding a document stub with no chunks.
+   *
+   * @param context {CodecRequestContext}
+   * @param what {string}   the operation, for the message
+   * @returns {Promise<void>}
+   */
+  async #assertChunkedStreams(
+    context: CodecRequestContext,
+    what: string
+  ): Promise<void> {
+    if (await context.features.has('chunked-streams')) {
+      return
+    }
+    // "No features" has two causes, and only one of them is about the server's
+    // capabilities: a descriptor that was read and lists no `chunked-streams`,
+    // versus a descriptor that could not be read at all (no backend descriptor
+    // endpoint, a deleted collection, or a capability that cannot read it --
+    // WAS masks unauthorized reads as 404). Name the one that applies, so a
+    // capable server whose collection is gone does not look incapable.
+    if (await context.features.descriptorAbsent()) {
+      throw new NotSupportedError(
+        `${what} needs the collection's backend to advertise the ` +
+          `'chunked-streams' feature, but the backend descriptor could not be ` +
+          'read at all: the collection may not exist, or this capability may ' +
+          'not be able to read its descriptor. Confirm the collection and the ' +
+          'capability, then retry.'
+      )
+    }
+    throw new NotSupportedError(
+      `${what} needs the collection's backend to advertise the ` +
+        `'chunked-streams' feature, which it does not. Store the blob in a ` +
+        'collection on a backend that supports chunked streams, or keep the ' +
+        `payload under the ${this.#maxBlobBytes}-byte single-document ` +
+        "threshold (raise it with the provider's `maxBlobBytes` where the " +
+        'server accepts a larger body).'
+    )
+  }
+
+  /**
+   * The plan for a binary payload over the single-document threshold: one EDV
+   * document plus its chunk resources, written by `EdvClientCore.insert({ doc,
+   * stream, transport })` over a transport built from the write context. The
+   * document id is minted before the plan is returned, so the caller can report
+   * it without waiting for the write.
+   *
+   * The `was` binding, the recipients and the write epoch are exactly the
+   * single-document path's, and `additionalProtectedParams` carries the binding
+   * into both the document envelope and every chunk's AAD. `content` stays
+   * empty: the bytes are the chunks, and `meta` records the plaintext content
+   * type plus the chunked encoding discriminator so a read reconstructs the
+   * same `Blob` a small binary read returns. `meta` is sealed inside the JWE
+   * payload, so that discriminator is what the read side routes on: a server
+   * cannot mint it, and cannot suppress it to hide the chunks either.
+   *
+   * The write is two-phase (`EdvClientCore.insert` writes the document, then
+   * streams the chunks), so a failure partway leaves a document stub whose
+   * sealed stream state is still `{ pending: true }` -- undecryptable, listed,
+   * and never re-used, since a retry mints a fresh id. The plan therefore
+   * compensates: if the document was written and the write then failed, it
+   * best-effort deletes the stub before rethrowing.
+   *
+   * @param options {object}
+   * @param options.id {string}                        the minted document id
+   * @param options.stream {ReadableStream<Uint8Array>}   the payload, as the
+   *   stream the EDV core re-chunks (never buffered whole by this codec)
+   * @param options.meta {Record<string, unknown>}     the document meta to seal
+   * @returns {ChunkedWrite}
+   */
+  #chunkedWrite({
+    id,
+    stream,
+    meta
+  }: {
+    id: string
+    stream: ReadableStream<Uint8Array>
+    meta: Record<string, unknown>
+  }): ChunkedWrite {
+    const was = wasParam({
+      version: this.#version,
+      resource: id,
+      epoch: this.#writeEpoch
+    })
+    return {
+      chunked: true,
+      id,
+      resourceContentType: meta.contentType as string,
+      // What the scheme-agnostic write path appends when it refuses this plan
+      // for a write by id: only this codec knows why the payload needs several
+      // requests, and which low-level API writes one directly.
+      guidance:
+        'This payload is too large for a single encrypted document, so it is ' +
+        'stored as a document plus chunk resources. Drive the write yourself ' +
+        'with `EdvClientCore.update({ doc, stream, transport })` over a ' +
+        '`WasTransport`, against a server whose backend advertises the ' +
+        "'chunked-streams' feature.",
+      execute: async (context: CodecRequestContext) => {
+        await this.#assertChunkedStreams(context, 'Writing a large blob')
+        // The EDV core owns the write and swallows the responses, so the
+        // transport reports the document write it made: whether one landed at
+        // all (the cleanup decision below) and the validator the server acked
+        // it with.
+        const transport = this.#transportFor(
+          context,
+          writeHeaders({ epoch: this.#writeEpoch })
+        )
+        try {
+          await this.#edv.insert({
+            doc: { id, content: {}, meta },
+            stream,
+            ...(this.#chunkSize !== undefined && {
+              chunkSize: this.#chunkSize
+            }),
+            recipients: this.#recipients,
+            keyResolver: this.#edv.keyResolver,
+            hmac: this.#writeBlindingKey(),
+            additionalProtectedParams: { was },
+            transport
+          })
+        } catch (err) {
+          throw await this.#chunkedWriteFailed({ err, id, transport })
+        }
+        const etag = transport.lastDocumentWrite?.etag
+        return { id, ...(etag !== undefined && { etag }) }
+      }
+    }
+  }
+
+  /**
+   * Compensates a failed chunked write and builds the error to rethrow. The
+   * document stub is deleted only when the transport reports it actually wrote
+   * one: a write that failed before that (the id is freshly minted, so this is
+   * a server or network failure, not a collision) must not delete a resource
+   * this write never created. The delete is best effort -- it is a cleanup, and
+   * its own failure must not mask the failure that caused it -- so its outcome
+   * only shapes the message.
+   *
+   * @param options {object}
+   * @param options.err {unknown}   the failure from the chunked write
+   * @param options.id {string}     the document id the write minted
+   * @param options.transport {WasTransport}   the transport the write ran on
+   * @returns {Promise<Error>}   the error to throw, carrying `err` as its cause
+   */
+  async #chunkedWriteFailed({
+    err,
+    id,
+    transport
+  }: {
+    err: unknown
+    id: string
+    transport: WasTransport
+  }): Promise<Error> {
+    if (transport.lastDocumentWrite === undefined) {
+      return err instanceof Error ? err : new Error(String(err))
+    }
+    let removed = true
+    try {
+      await transport.deleteDocument({ id })
+    } catch {
+      removed = false
+    }
+    return new EncryptionError(
+      `The chunked encrypted write of resource "${id}" failed partway: its ` +
+        'document was written but its chunks were not, so the stored ' +
+        'document cannot be read. ' +
+        (removed
+          ? 'The incomplete document was deleted; retry the write.'
+          : 'The incomplete document could NOT be deleted and is still ' +
+            'stored; delete it and retry the write.'),
+      { cause: err }
+    )
+  }
+
+  /**
    * The blinding key a content write should index with: the collection's key
    * once the applied schema declares at least one attribute, else `undefined`
    * (the cipher then computes no `indexed` entries and passes any already
@@ -606,11 +879,110 @@ export class EdvCodec implements ResourceCodec {
    */
   async decode(
     response: ResponseLike,
-    expectedId?: string
+    expectedId?: string,
+    context?: CodecRequestContext
   ): Promise<Json | Blob> {
     const stored = await readJsonData(response)
     const decrypted = await this.#openEnvelope({ doc: stored, expectedId })
+    // A chunked document's bytes live in its chunk resources. Both routing
+    // inputs are AEAD-authenticated, never the cleartext copies on the
+    // envelope: the `meta.encoding` discriminator sealed in the JWE payload
+    // decides that this IS a chunked document (a server cannot bolt a
+    // cleartext `stream` onto an ordinary document to mask its sealed
+    // content), and the sealed `stream.chunks` count then says how many chunks
+    // to fetch (a server cannot lower it to truncate the read). A sealed
+    // discriminator with no sealed count is an interrupted write, whose state
+    // is still `{ pending: true }`: it fails loudly rather than decoding to an
+    // empty document.
+    if (decrypted.meta?.encoding === CHUNKED_ENCODING) {
+      return this.#readChunked({
+        // Address the chunk resources by the AEAD-bound `was.resource` id, not
+        // by the envelope's cleartext `id`: a server that serves document A's
+        // authentic envelope with the cleartext id swapped to B would
+        // otherwise have the read fetch (and cleanly decrypt) B's chunks,
+        // exactly the envelope swap the `was.resource` binding exists to
+        // detect.
+        id: decrypted.resourceId,
+        chunks: (decrypted.stream as { chunks?: unknown } | undefined)?.chunks,
+        meta: decrypted.meta,
+        keyId: decrypted.keyId,
+        context
+      })
+    }
     return this.#fromDocument(decrypted.content, decrypted.meta)
+  }
+
+  /**
+   * Reassembles a chunked binary document: drives `EdvClientCore.getStream`
+   * over a transport built from the read context, buffers the decrypt stream,
+   * and returns the same `Blob` a small binary read returns.
+   *
+   * Only AEAD-authenticated inputs are trusted -- the sealed chunk count and
+   * the `was.resource` id the envelope is bound to, never the envelope's
+   * cleartext `id` -- and the decrypt uses the very key that opened the
+   * document envelope, so a chunk sealed to some other epoch fails to
+   * authenticate rather than being accepted.
+   *
+   * @param options {object}
+   * @param [options.id] {string}   the AEAD-bound resource id (= WAS resource
+   *   id, the parent of the chunk resources)
+   * @param options.chunks {unknown}   the sealed chunk count
+   * @param [options.meta] {Record<string, unknown>}   the decrypted meta
+   * @param options.keyId {string}   the id of the key that decrypted the
+   *   document envelope
+   * @param [options.context] {CodecRequestContext}   the signed-request context
+   * @returns {Promise<Blob>}
+   */
+  async #readChunked({
+    id,
+    chunks,
+    meta,
+    keyId,
+    context
+  }: {
+    id?: string
+    chunks: unknown
+    meta?: Record<string, unknown>
+    keyId: string
+    context?: CodecRequestContext
+  }): Promise<Blob> {
+    if (typeof chunks !== 'number') {
+      throw new EncryptionError(
+        'Cannot read this resource: it is a chunked encrypted blob whose ' +
+          'sealed stream state records no chunk count, so the write that ' +
+          'created it never completed. Re-upload the blob.'
+      )
+    }
+    if (context === undefined) {
+      throw new EncryptionError(
+        'Cannot read this resource: it is a chunked encrypted blob, whose ' +
+          'bytes live in separate chunk resources, and this caller supplied no ' +
+          'request context to fetch them with. Read it through a Resource or ' +
+          'Collection handle (`resource.get()`), which supplies one.'
+      )
+    }
+    if (id === undefined) {
+      throw new EncryptionError(
+        'Cannot read this resource: the stored chunked document binds no ' +
+          '`was.resource` id, so its chunk resources cannot be addressed. ' +
+          "Only the envelope's AEAD-bound id may address them -- the cleartext " +
+          'id on the envelope is server-controlled and could point the read at ' +
+          "another document's chunks."
+      )
+    }
+    await this.#assertChunkedStreams(context, 'Reading a large blob')
+    const keyAgreementKey = this.#readKeys.find(key => key.id === keyId)
+    const stream = (await this.#edv.getStream({
+      doc: { id, stream: { chunks } } as IEDVDocument,
+      keyAgreementKey,
+      transport: this.#transportFor(context)
+    })) as ReadableStream<Uint8Array>
+    const contentType =
+      typeof meta?.contentType === 'string' ? meta.contentType : undefined
+    return streamToBlob({
+      stream,
+      ...(contentType !== undefined && { type: contentType })
+    })
   }
 
   /**
@@ -628,8 +1000,9 @@ export class EdvCodec implements ResourceCodec {
    *   to a resource id is refused there, and one bound to this Collection's id
    *   is required (see {@link _verifyBinding}). Set only by the
    *   Collection-level metadata read
-   * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
-   *   keyId: string }>}   the decrypted document
+   * @returns {Promise<object>}   the decrypted document (`content`, `meta`, the
+   *   AEAD-authenticated `stream` state where one was sealed, `keyId`, and the
+   *   AEAD-bound `resourceId` the envelope declares, where it binds one)
    */
   async #openEnvelope({
     doc,
@@ -642,17 +1015,19 @@ export class EdvCodec implements ResourceCodec {
   }): Promise<{
     content?: unknown
     meta?: Record<string, unknown>
+    stream?: unknown
     keyId: string
+    resourceId?: string
   }> {
     this.#assertEnvelope(doc, 'read')
     const decrypted = await this.#decrypt(doc)
-    await this.#verifyBinding({
+    const resourceId = await this.#verifyBinding({
       jwe: doc.jwe,
       expectedId,
       collectionSlot,
       keyId: decrypted.keyId
     })
-    return decrypted
+    return { ...decrypted, ...(resourceId !== undefined && { resourceId }) }
   }
 
   /**
@@ -680,12 +1055,12 @@ export class EdvCodec implements ResourceCodec {
    * binding against the epoch of the decrypting key.
    *
    * @param encryptedDoc {IEncryptedDocument}
-   * @returns {Promise<{ content?: unknown; meta?: Record<string, unknown>;
-   *   keyId: string }>}
+   * @returns {Promise<object>}   the decrypted document plus `keyId`
    */
   async #decrypt(encryptedDoc: IEncryptedDocument): Promise<{
     content?: unknown
     meta?: Record<string, unknown>
+    stream?: unknown
     keyId: string
   }> {
     const kids = envelopeRecipientKids(encryptedDoc)
@@ -814,7 +1189,13 @@ export class EdvCodec implements ResourceCodec {
    *   Collection metadata slot
    * @param options.keyId {string}   the id of the key that decrypted, for the
    *   epoch check
-   * @returns {Promise<void>}
+   * @returns {Promise<string | undefined>}   the verified `was.resource` id the
+   *   envelope binds, or `undefined` where it binds none (a content-derived
+   *   content envelope, or the Collection metadata slot). It is the only
+   *   trustworthy resource id on a stored document -- the envelope's top-level
+   *   `id` is cleartext and server-controlled -- so a read that addresses
+   *   anything under the document's path (the chunked-stream path) must use
+   *   this one.
    */
   async #verifyBinding({
     jwe,
@@ -826,7 +1207,7 @@ export class EdvCodec implements ResourceCodec {
     expectedId?: string
     collectionSlot?: boolean
     keyId: string
-  }): Promise<void> {
+  }): Promise<string | undefined> {
     const was = parseWasHeader(jwe)
     if (was === undefined) {
       throw new EncryptionError(
@@ -929,6 +1310,7 @@ export class EdvCodec implements ResourceCodec {
           'epoch.'
       )
     }
+    return typeof was.resource === 'string' ? was.resource : undefined
   }
 
   /**
@@ -1085,6 +1467,13 @@ export class EdvCodec implements ResourceCodec {
    * 3. Binary (any other `Blob`/`Uint8Array`) to `content = { bytes: base64 }`,
    *   `meta = { contentType, encoding: 'base64' }`.
    *
+   * A binary payload over {@link #maxBlobBytes} is not an inline document at
+   * all: it answers `kind: 'chunked'`, carrying a byte stream (plus its size,
+   * for messages) and the `meta` the chunked-stream path seals, and the caller
+   * routes the write there. The routing decision is made on the payload's size
+   * alone, so a `Blob` over the threshold is never buffered here: it is handed
+   * on as `blob.stream()`, and the EDV core re-chunks it as it reads.
+   *
    * A bare primitive is rejected (mirroring the plaintext `prepareBody`
    * contract). The binary/text detection and content-type precedence are the
    * shared `resolvePayload` rules, so the plaintext and encrypted write paths
@@ -1093,35 +1482,53 @@ export class EdvCodec implements ResourceCodec {
    * @param data {ResourceData}
    * @param [contentType] {string}   caller-supplied content type
    * @param [id] {string}            resource id, for the extension guess
-   * @returns {Promise<{ content: Record<string, unknown>; meta:
-   *   Record<string, unknown> }>}
+   * @returns {Promise<object>}   the inline document `{ content, meta }`, or
+   *   the `{ stream, size, meta }` of a payload to route to the chunked-stream
+   *   path
    */
   async #toDocument(
     data: ResourceData,
     contentType?: string,
     id?: string
-  ): Promise<{
-    content: Record<string, unknown>
-    meta: Record<string, unknown>
-  }> {
+  ): Promise<
+    | {
+        kind: 'inline'
+        content: Record<string, unknown>
+        meta: Record<string, unknown>
+      }
+    | {
+        kind: 'chunked'
+        stream: ReadableStream<Uint8Array>
+        size: number
+        meta: Record<string, unknown>
+      }
+  > {
     const payload = resolvePayload({ data, contentType, id })
 
     if (payload.kind === 'binary') {
+      const resolvedType = payload.contentType
+      // Route on the size alone (`Blob.size` is synchronous), so an
+      // over-threshold blob is never read into memory here just to measure it.
+      const size = isBlob(payload.data)
+        ? payload.data.size
+        : payload.data.length
+      if (size > this.#maxBlobBytes) {
+        // Too large for one document: route it to the chunked-stream path,
+        // where the bytes live in the document's own chunk resources. Hand it
+        // over as a stream -- a `Blob` streams itself, and bytes already in
+        // hand become a one-value stream the same way -- so the payload is not
+        // held twice while the EDV core re-chunks it.
+        return {
+          kind: 'chunked',
+          stream: bytesToStream(payload.data),
+          size,
+          meta: { contentType: resolvedType, encoding: CHUNKED_ENCODING }
+        }
+      }
+      // Under the threshold the bytes are sealed inline, so buffer them now.
       const bytes = isBlob(payload.data)
         ? new Uint8Array(await payload.data.arrayBuffer())
         : payload.data
-      const resolvedType = payload.contentType
-      if (bytes.length > this.#maxBlobBytes) {
-        throw new ValidationError(
-          `Encrypted binary write of ${bytes.length} bytes exceeds the ` +
-            `single-document limit of ${this.#maxBlobBytes} bytes. The codec ` +
-            'seam is a single-request transform and cannot chunk. To store a ' +
-            'blob this large, write it through the chunked-stream path -- ' +
-            '`EdvClientCore.insert({ doc, stream, transport })` with a ' +
-            '`WasTransport`, read back with `getStream` -- against a server ' +
-            "whose backend advertises the 'chunked-streams' feature."
-        )
-      }
       // Text-family AND valid UTF-8 to store as a legible string. The UTF-8 gate
       // guarantees the bytes survive the string round-trip exactly; anything
       // else falls through to base64, which is always byte-safe.
@@ -1129,12 +1536,14 @@ export class EdvCodec implements ResourceCodec {
         const text = decodeUtf8(bytes)
         if (text !== null) {
           return {
+            kind: 'inline',
             content: { text },
             meta: { contentType: resolvedType, encoding: 'utf-8' }
           }
         }
       }
       return {
+        kind: 'inline',
         content: { bytes: base64.encode(bytes) },
         meta: { contentType: resolvedType, encoding: 'base64' }
       }
@@ -1145,6 +1554,7 @@ export class EdvCodec implements ResourceCodec {
       // an absent `meta.encoding` as JSON). EDV models `content` as an object
       // record; a JSON array is also a valid encrypted value here, so widen it.
       return {
+        kind: 'inline',
         content: data as Record<string, unknown>,
         meta: { contentType: contentType ?? 'application/json' }
       }
@@ -1202,6 +1612,51 @@ export class EdvCodec implements ResourceCodec {
     }
     return content as Json
   }
+}
+
+/**
+ * Presents a binary payload as the `ReadableStream`
+ * `EdvClientCore.insert({ stream })` consumes. A `Blob` streams itself; bytes
+ * already in hand are wrapped in a `Blob` and stream the same way. The encrypt
+ * stream re-chunks whatever it is fed at its own `chunkSize`, so the shape of
+ * the source stream does not affect the stored chunks.
+ *
+ * @param data {Blob | Uint8Array}
+ * @returns {ReadableStream<Uint8Array>}
+ */
+function bytesToStream(data: Blob | Uint8Array): ReadableStream<Uint8Array> {
+  const blob = isBlob(data) ? data : new Blob([data as BlobPart])
+  return blob.stream() as ReadableStream<Uint8Array>
+}
+
+/**
+ * Drains a byte stream into one `Blob` of the given type. `Blob` does the
+ * concatenation: its parts are the chunks the stream yielded, in order.
+ *
+ * @param options {object}
+ * @param options.stream {ReadableStream<Uint8Array>}
+ * @param [options.type] {string}   the blob's content type
+ * @returns {Promise<Blob>}
+ */
+async function streamToBlob({
+  stream,
+  type
+}: {
+  stream: ReadableStream<Uint8Array>
+  type?: string
+}): Promise<Blob> {
+  const reader = stream.getReader()
+  const parts: BlobPart[] = []
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) {
+      break
+    }
+    if (value !== undefined) {
+      parts.push(value as BlobPart)
+    }
+  }
+  return new Blob(parts, type !== undefined ? { type } : undefined)
 }
 
 /**
@@ -1292,10 +1747,19 @@ export interface EdvKeys {
  *   defaults to `application/json`. Pass `JOSE_CONTENT_TYPE`
  *   (`application/jose+json`) against a server that registers an
  *   `application/*+json` parser.
- * @param [options.maxBlobBytes] {number}   single-document binary cap in raw
- *   bytes (default 512 KiB, sized so the encrypted envelope stays under a
+ * @param [options.maxBlobBytes] {number}   the size in raw bytes above which a
+ *   binary `add()` is routed to the chunked-stream path instead of one document
+ *   (default 512 KiB, sized so a single-document envelope stays under a
  *   server's ~1 MiB JSON body cap; raise it against a server with a larger
- *   limit)
+ *   limit). A routing threshold, not a hard cap.
+ * @param [options.chunkSize] {number}   the size of each encrypted chunk a
+ *   routed write emits, in bytes (default 1 MiB). Each chunk is one upload, so
+ *   it must stay under the backend's `maxUploadBytes` constraint (the
+ *   encrypted chunk is somewhat larger than `chunkSize`, so leave headroom).
+ *   This is not checked client-side: the shared backend probe reads the
+ *   descriptor's affordance tokens, not its `constraints`, so a chunk over the
+ *   limit is rejected by the server with a `PayloadTooLargeError` (413) and
+ *   the failed write's document stub is then cleaned up.
  * @param [options.idDerivation] {string}   how `add()` mints a document id.
  *   `'random'` (default) is the classic mutable-document model: a random
  *   `generateId()` id, updated in place via `sequence`. `'content'` derives the
@@ -1311,6 +1775,7 @@ export function createEdvEncryption({
   resolveKeys,
   contentType = DEFAULT_CONTENT_TYPE,
   maxBlobBytes = DEFAULT_MAX_BLOB_BYTES,
+  chunkSize,
   idDerivation = 'random'
 }: {
   resolveKeys: (ref: {
@@ -1319,6 +1784,7 @@ export function createEdvEncryption({
   }) => Promise<EdvKeys | null>
   contentType?: string
   maxBlobBytes?: number
+  chunkSize?: number
   idDerivation?: 'random' | 'content'
 }): EncryptionProvider {
   return {
@@ -1398,8 +1864,10 @@ export function createEdvEncryption({
         writeEpoch: epochKeys.writeEpoch,
         contentType,
         maxBlobBytes,
+        ...(chunkSize !== undefined && { chunkSize }),
         idDerivation,
         version: descriptorVersion ?? EDV_SCHEME_VERSION,
+        spaceId,
         collectionId,
         // Every epoch the descriptor lists, recipient of it or not, so
         // decrypt routing can tell "not a recipient of this epoch" apart

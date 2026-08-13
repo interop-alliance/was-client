@@ -65,6 +65,23 @@ function dataResponse(body: unknown): HttpResponse {
   return { data: body } as unknown as HttpResponse
 }
 
+/**
+ * Builds a write-response stub: bodiless, carrying the `ETag` validator a
+ * server acks a write with (none by default, as a backend without
+ * `conditional-writes` answers). The transport reads it to surface its last
+ * document write.
+ *
+ * @param [etag] {string}   the validator to return, if any
+ * @returns {HttpResponse}
+ */
+function writeResponse(etag?: string): HttpResponse {
+  return {
+    headers: {
+      get: (name: string) => (name === 'etag' ? (etag ?? null) : null)
+    }
+  } as unknown as HttpResponse
+}
+
 function transport(request: ReturnType<typeof vi.fn>, contentType?: string) {
   return new WasTransport({
     was: { request } as never,
@@ -92,7 +109,7 @@ describe('WasTransport — insert (advisory fallback, no conditional-writes)', (
       if (input.method === 'HEAD' && headStatus !== undefined) {
         throw httpError(headStatus)
       }
-      return {} as HttpResponse
+      return writeResponse()
     })
   }
 
@@ -187,7 +204,7 @@ describe('WasTransport — insert (conditional-writes backend)', () => {
       if (putStatus !== undefined) {
         throw httpError(putStatus)
       }
-      return {} as HttpResponse
+      return writeResponse()
     })
   }
 
@@ -231,8 +248,8 @@ describe('WasTransport — insert (conditional-writes backend)', () => {
 
 describe('WasTransport — update', () => {
   it('PUTs the envelope (upsert, no existence check)', async () => {
-    const request = vi.fn(
-      async (_input: Record<string, unknown>) => ({}) as HttpResponse
+    const request = vi.fn(async (_input: Record<string, unknown>) =>
+      writeResponse()
     )
     const doc = encryptedDoc('zUpd')
     await transport(request).update({ encrypted: doc })
@@ -480,7 +497,7 @@ describe('WasTransport -- backend-feature probe resilience', () => {
         }
         return dataResponse(descriptor)
       }
-      return {} as HttpResponse // PUT (or HEAD) succeeds
+      return writeResponse() // PUT (or HEAD) succeeds
     })
     const wasTransport = transport(request)
 

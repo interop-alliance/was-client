@@ -25,7 +25,8 @@ import {
   IntegrityError,
   ValidationError
 } from '../../src/index.js'
-import type { CollectionEncryption, ResourceCodec } from '../../src/index.js'
+import type { CollectionEncryption } from '../../src/index.js'
+import type { SingleWriteCodec } from '../helpers/codec.js'
 import type { Collection } from '../../src/Collection.js'
 import type { Space } from '../../src/Space.js'
 import { createEdvEncryption, EdvCodec } from '../../src/edv/index.js'
@@ -136,9 +137,9 @@ async function makeEpochDescriptor(reader: {
  * @param [options.idDerivation] {string}
  * @param [options.collectionId] {string}   the collection this codec is built
  *   for (default `'c'`)
- * @returns {Promise<{ codec: ResourceCodec; epoch: string;
+ * @returns {Promise<{ codec: SingleWriteCodec; epoch: string;
  *   keyPair: IKeyAgreementKey;
- *   siblingCodec: (collectionId: string) => Promise<ResourceCodec> }>}
+ *   siblingCodec: (collectionId: string) => Promise<SingleWriteCodec> }>}
  */
 async function makeCodec(
   options: {
@@ -146,10 +147,10 @@ async function makeCodec(
     collectionId?: string
   } = {}
 ): Promise<{
-  codec: ResourceCodec
+  codec: SingleWriteCodec
   epoch: string
   keyPair: IKeyAgreementKey
-  siblingCodec: (collectionId: string) => Promise<ResourceCodec>
+  siblingCodec: (collectionId: string) => Promise<SingleWriteCodec>
 }> {
   const { collectionId = 'c', ...providerOptions } = options
   const { kak, keyResolver, publicKeyMultibase } = await makeKeys()
@@ -161,7 +162,7 @@ async function makeCodec(
     resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver }),
     ...providerOptions
   })
-  const codecFor = async (forCollection: string): Promise<ResourceCodec> => {
+  const codecFor = async (forCollection: string): Promise<SingleWriteCodec> => {
     const built = await provider.codecFor({
       spaceId: 's',
       collectionId: forCollection,
@@ -171,7 +172,7 @@ async function makeCodec(
     if (!built) {
       throw new Error('expected a codec')
     }
-    return built
+    return built as SingleWriteCodec
   }
   return {
     codec: await codecFor(collectionId),
@@ -495,9 +496,11 @@ describe('was binding: per-envelope epoch label', () => {
    *   real one
    * @returns {Promise<{ codec: EdvCodec; realEpoch: string; writeEpoch: string }>}
    */
-  async function epochCodec(
-    options: { relabelEpoch?: string } = {}
-  ): Promise<{ codec: EdvCodec; realEpoch: string; writeEpoch: string }> {
+  async function epochCodec(options: { relabelEpoch?: string } = {}): Promise<{
+    codec: SingleWriteCodec
+    realEpoch: string
+    writeEpoch: string
+  }> {
     const { epochId: realEpoch, secret } = await mintEpoch()
     const writeEpoch = options.relabelEpoch ?? realEpoch
     const keyPair = reconstructEpochKeyPair({ epochId: realEpoch, secret })
@@ -513,6 +516,7 @@ describe('was binding: per-envelope epoch label', () => {
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random',
+      spaceId: 's',
       collectionId: 'c',
       epochIds: [realEpoch]
     })

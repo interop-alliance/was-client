@@ -27,7 +27,9 @@
  *   Pass `contentType: JOSE_CONTENT_TYPE` to opt into it where the server
  *   supports it.
  *
- * Scope: documents (`insert` / `update` / `get`) plus blinded-index content
+ * Scope: documents (`insert` / `update` / `get`, plus `deleteDocument`, which
+ * is not part of the EDV `Transport` contract but lets a driver undo a
+ * half-finished multi-request write) plus blinded-index content
  * query (`find`, the `blinded-index` profile of the reserved Collection
  * `POST .../query` endpoint -- the server's `blinded-index-query` backend
  * feature). `updateIndex` throws: in this profile the `indexed` array rides
@@ -53,9 +55,11 @@ import type {
   IEncryptedDocument
 } from '@interop/data-integrity-core'
 import type { WasClient } from '../WasClient.js'
-import { httpStatus } from '../errors.js'
+import { httpStatus, NotSupportedError } from '../errors.js'
 import { BackendFeatures } from '../internal/features.js'
+import type { FeatureProbe } from '../internal/features.js'
 import { readJsonData } from '../internal/content.js'
+import { readEtag } from '../internal/conditional.js'
 import {
   collectionBackend,
   collectionQuery,
@@ -147,7 +151,21 @@ export class WasTransport extends Transport {
   readonly contentType: string
 
   readonly #was: WasRequester
-  readonly #features: BackendFeatures
+  readonly #features: FeatureProbe
+  /**
+   * Extra headers stamped on every document write (never on a chunk write).
+   */
+  readonly #documentHeaders: Record<string, string>
+  /**
+   * The last document write this transport completed, or `undefined` while it
+   * has written none. `EdvClientCore` owns the write sequence and discards the
+   * responses, so a driver (the codec's chunked-write plan) reads the outcome
+   * of the document write here instead of inspecting requests: whether a
+   * document was written at all, and the `ETag` validator the server acked it
+   * with (absent against a backend without `conditional-writes`). Chunk writes
+   * never touch it.
+   */
+  #lastDocumentWrite?: { id: string; etag?: string }
 
   /**
    * @param options {object}
@@ -158,33 +176,59 @@ export class WasTransport extends Transport {
    *   defaults to `application/json` (accepted by an unmodified server). Pass
    *   `JOSE_CONTENT_TYPE` against a server that registers an
    *   `application/*+json` parser.
+   * @param [options.features] {FeatureProbe}   an already-memoized backend
+   *   feature probe to reuse (a Collection handle's shared one). Without it the
+   *   transport builds its own, reading the backend descriptor itself.
+   * @param [options.documentHeaders] {Record<string, string>}   extra headers
+   *   sent with every document write, for a caller that needs the WAS-level
+   *   stamps the codec seam applies (notably `Key-Epoch`). Chunk writes do not
+   *   carry them -- a chunk is an opaque body, not a resource with metadata.
    */
   constructor({
     was,
     spaceId,
     collectionId,
-    contentType = DEFAULT_CONTENT_TYPE
+    contentType = DEFAULT_CONTENT_TYPE,
+    features,
+    documentHeaders
   }: {
     was: WasRequester
     spaceId: string
     collectionId: string
     contentType?: string
+    features?: FeatureProbe
+    documentHeaders?: Record<string, string>
   }) {
     super()
     this.#was = was
+    this.#documentHeaders = documentHeaders ?? {}
     this.spaceId = spaceId
     this.collectionId = collectionId
     this.contentType = contentType
     // The shared memoizing feature probe (see `BackendFeatures` for the
     // definitive-vs-transient caching rules), reading this collection's
     // "Collection Backend Selected" descriptor with a signed GET.
-    this.#features = new BackendFeatures(async () => {
-      const response = await this.#was.request({
-        path: collectionBackend(this.spaceId, this.collectionId),
-        method: 'GET'
+    this.#features =
+      features ??
+      new BackendFeatures(async () => {
+        const response = await this.#was.request({
+          path: collectionBackend(this.spaceId, this.collectionId),
+          method: 'GET'
+        })
+        return readJsonData(response)
       })
-      return readJsonData(response)
-    })
+  }
+
+  /**
+   * The last document write this transport completed: its id and, where the
+   * backend returned one, the `ETag` validator. `undefined` until the first
+   * document write succeeds, so a driver can also tell "nothing was written"
+   * from "written, but the backend advertises no `conditional-writes`".
+   *
+   * @returns {{ id: string; etag?: string } | undefined}
+   */
+  get lastDocumentWrite(): { id: string; etag?: string } | undefined {
+    return this.#lastDocumentWrite
   }
 
   /**
@@ -217,12 +261,36 @@ export class WasTransport extends Transport {
     headers: Record<string, string> = {}
   ): Promise<HttpResponse> {
     const body = envelopeBytes(encrypted)
-    return this.#was.request({
+    const response = await this.#was.request({
       path: this.#resourcePath(id),
       method: 'PUT',
       body,
-      headers: { 'content-type': this.contentType, ...headers }
+      headers: {
+        'content-type': this.contentType,
+        ...this.#documentHeaders,
+        ...headers
+      }
     })
+    // Record the acked write for a driver that needs its outcome: the core
+    // swallows this response, and this is the only place that knows a document
+    // (not a chunk) was written.
+    const etag = readEtag(response)
+    this.#lastDocumentWrite = { id, ...(etag !== undefined && { etag }) }
+    return response
+  }
+
+  /**
+   * Deletes a document resource. Not part of the EDV `Transport` contract (the
+   * EDV core never deletes) -- it is the compensating action a driver needs
+   * when a multi-request write fails partway and the document it already wrote
+   * would otherwise be orphaned.
+   *
+   * @param options {object}
+   * @param options.id {string}   the document id (= WAS resource id)
+   * @returns {Promise<void>}
+   */
+  async deleteDocument({ id }: { id: string }): Promise<void> {
+    await this.#was.request({ path: this.#resourcePath(id), method: 'DELETE' })
   }
 
   /**
@@ -348,9 +416,10 @@ export class WasTransport extends Transport {
   }
 
   /**
-   * Throws a `NotSupportedError` (the name `EdvClientCore` dispatches on)
-   * unless the collection's backend advertises the given affordance token --
-   * the shared gate in front of every optional-feature operation.
+   * Throws the client's typed `NotSupportedError` (whose `name` is what
+   * `EdvClientCore` dispatches on) unless the collection's backend advertises
+   * the given affordance token -- the shared gate in front of every
+   * optional-feature operation.
    *
    * @param feature {string}   the affordance token (e.g. `chunked-streams`)
    * @param what {string}      the operation name, for the message
@@ -358,12 +427,10 @@ export class WasTransport extends Transport {
    */
   async #requireFeature(feature: string, what: string): Promise<void> {
     if (!(await this.#features.has(feature))) {
-      throw namedError({
-        name: 'NotSupportedError',
-        message:
-          `${what} is not supported: the collection's backend ` +
+      throw new NotSupportedError(
+        `${what} is not supported: the collection's backend ` +
           `does not advertise the "${feature}" affordance.`
-      })
+      )
     }
   }
 
@@ -448,13 +515,11 @@ export class WasTransport extends Transport {
    * bind this to.
    */
   override async updateIndex(): Promise<never> {
-    throw namedError({
-      name: 'NotSupportedError',
-      message:
-        '"updateIndex" is not supported by the EDV-over-WAS profile: index ' +
+    throw new NotSupportedError(
+      '"updateIndex" is not supported by the EDV-over-WAS profile: index ' +
         'entries ride inside the stored document envelope, so re-index a ' +
         'document with an ordinary "update()" of the full document.'
-    })
+    )
   }
 
   /**

@@ -28,10 +28,20 @@ import type { HttpResponse } from '@interop/http-client'
 import {
   EncryptionError,
   IntegrityError,
+  isChunkedWrite,
   KeyUnwrapError,
+  NotSupportedError,
   ValidationError
 } from '../../src/index.js'
-import type { CollectionEncryption, ResourceCodec } from '../../src/index.js'
+import type {
+  ChunkedWrite,
+  CodecRequestContext,
+  CollectionEncryption,
+  EncodedWrite,
+  ResourceCodec
+} from '../../src/index.js'
+import type { SingleWriteCodec } from '../helpers/codec.js'
+import { stubFeatures } from '../helpers/codec.js'
 import {
   createEdvEncryption,
   EdvCodec,
@@ -54,6 +64,7 @@ import {
 interface EdvFixtureOptions {
   contentType?: string
   maxBlobBytes?: number
+  chunkSize?: number
   idDerivation?: 'random' | 'content'
 }
 
@@ -149,11 +160,11 @@ async function mintEpochFor({
  * every envelope names.
  *
  * @param [options] {EdvFixtureOptions}
- * @returns {Promise<{ codec: ResourceCodec; encryption: CollectionEncryption;
+ * @returns {Promise<{ codec: SingleWriteCodec; encryption: CollectionEncryption;
  *   epochId: string; decrypt: function }>}
  */
 async function makeFixture(options: EdvFixtureOptions = {}): Promise<{
-  codec: ResourceCodec
+  codec: SingleWriteCodec
   encryption: CollectionEncryption
   epochId: string
   decrypt: (body: Uint8Array | Blob | undefined) => Promise<IEDVDocument>
@@ -194,18 +205,18 @@ async function makeFixture(options: EdvFixtureOptions = {}): Promise<{
       keyAgreementKey: epochKeyPair
     })
   }
-  return { codec, encryption, epochId, decrypt }
+  return { codec: codec as SingleWriteCodec, encryption, epochId, decrypt }
 }
 
 /**
  * The codec alone, for the tests that need no epoch material of their own.
  *
  * @param [options] {EdvFixtureOptions}
- * @returns {Promise<ResourceCodec>}
+ * @returns {Promise<SingleWriteCodec>}
  */
 async function makeCodec(
   options: EdvFixtureOptions = {}
-): Promise<ResourceCodec> {
+): Promise<SingleWriteCodec> {
   return (await makeFixture(options)).codec
 }
 
@@ -422,25 +433,36 @@ describe('EdvCodec: binary', () => {
     expect(encoded.resourceContentType).toBe('image/png')
   })
 
-  it('rejects an oversized binary write', async () => {
-    const codec = await makeCodec({ maxBlobBytes: 4 })
-    await expect(
-      codec.encode({ data: new Uint8Array([1, 2, 3, 4, 5]) })
-    ).rejects.toThrow(ValidationError)
+  it('keeps a binary write at the threshold on the single-document path', async () => {
+    const codec: ResourceCodec = await makeCodec({ maxBlobBytes: 8 })
+    const write = await codec.encode({
+      data: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+    })
+    expect(isChunkedWrite(write)).toBe(false)
+    expect((write as EncodedWrite).body).toBeInstanceOf(Uint8Array)
   })
 
-  it('rejects a write above the 512 KiB default cap with chunked-path guidance', async () => {
-    // The default single-document cap must stay under what the transport can
-    // actually deliver: the envelope rides through the server's ~1 MiB JSON
-    // body parser, and a binary payload inflates ~1.78x (base64 in the
-    // document, base64url again in the JWE). A payload that would pass a lax
-    // cap but die at the server as an opaque 413 must instead get the codec's
-    // clear guidance toward the chunked-stream path.
-    const codec = await makeCodec()
-    const big = new Uint8Array(512 * 1024 + 1)
-    await expect(
-      codec.encode({ data: big, contentType: 'application/octet-stream' })
-    ).rejects.toThrow(/single-document limit/)
+  it('routes on the default threshold: 512 KiB inline, one byte more chunked', async () => {
+    // The default is sized so a single-document envelope stays under a server's
+    // ~1 MiB JSON body cap (~1.78x inflation: base64 inside the document, then
+    // base64url in the JWE ciphertext). Every other threshold test overrides
+    // `maxBlobBytes` to a tiny value, so this is the only guard on the default.
+    const codec: ResourceCodec = await makeCodec()
+    const contentType = 'application/octet-stream'
+    const atThreshold = await codec.encode({
+      data: new Uint8Array(512 * 1024),
+      contentType
+    })
+    expect(isChunkedWrite(atThreshold)).toBe(false)
+    expect((atThreshold as EncodedWrite).body).toBeInstanceOf(Uint8Array)
+
+    // One byte over: a plan, asserted without executing it (there is no
+    // backend here -- only the routing decision is under test).
+    const overThreshold = await codec.encode({
+      data: new Uint8Array(512 * 1024 + 1),
+      contentType
+    })
+    expect(isChunkedWrite(overThreshold)).toBe(true)
   })
 
   it('rejects a bare primitive', async () => {
@@ -450,6 +472,434 @@ describe('EdvCodec: binary', () => {
       // runtime guard still rejects it.
       codec.encode({ data: 'just a string' as unknown as Uint8Array })
     ).rejects.toThrow(ValidationError)
+  })
+})
+
+/**
+ * An in-memory WAS backend for the chunked-blob tests: it answers the request
+ * context a handle hands the codec, storing every `PUT` body under its path and
+ * serving it back on `GET`. That is the whole surface `WasTransport` needs, so
+ * a chunked write plan and a chunked read run end to end with no network.
+ *
+ * It also answers `DELETE` (dropping the stored body), which the chunked
+ * write's failure cleanup needs.
+ *
+ * @param [options] {object}
+ * @param [options.features] {string[]}   the backend's advertised affordances
+ * @param [options.descriptorAbsent] {boolean}   whether the feature probe
+ *   should report that the backend descriptor could not be read at all
+ * @returns {object}   the request context, the stored bodies by path, and the
+ *   ordered lists of written and deleted paths
+ */
+function memoryBackend({
+  features = ['chunked-streams', 'conditional-writes'],
+  descriptorAbsent = false
+}: { features?: string[]; descriptorAbsent?: boolean } = {}): {
+  context: CodecRequestContext
+  store: Map<string, Uint8Array>
+  writes: string[]
+  deletes: string[]
+} {
+  const store = new Map<string, Uint8Array>()
+  const writes: string[] = []
+  const deletes: string[] = []
+  const respond = (
+    body: Uint8Array | undefined,
+    etag?: string
+  ): HttpResponse => {
+    const text = body === undefined ? '' : new TextDecoder().decode(body)
+    return {
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'etag' ? (etag ?? null) : null
+      },
+      async json() {
+        return JSON.parse(text)
+      },
+      async text() {
+        return text
+      }
+    } as unknown as HttpResponse
+  }
+  const context: CodecRequestContext = {
+    features: stubFeatures(features, { descriptorAbsent }),
+    async request(input) {
+      const path = input.path as string
+      const method = input.method ?? 'GET'
+      if (method === 'PUT') {
+        writes.push(path)
+        store.set(path, input.body as Uint8Array)
+        return respond(undefined, '"v1"')
+      }
+      if (method === 'DELETE') {
+        deletes.push(path)
+        store.delete(path)
+        return respond(undefined)
+      }
+      const stored = store.get(path)
+      if (stored === undefined) {
+        throw Object.assign(new Error(`HTTP 404 ${path}`), { status: 404 })
+      }
+      return respond(stored)
+    }
+  }
+  return { context, store, writes, deletes }
+}
+
+describe('EdvCodec: chunked blob auto-routing', () => {
+  const blob = new Uint8Array(64).map((_value, index) => (index * 7) % 251)
+
+  /**
+   * A codec whose threshold routes `blob` to the chunked path, with a chunk
+   * size small enough that the write emits several chunks.
+   *
+   * @returns {Promise<ResourceCodec>}
+   */
+  async function chunkingCodec(): Promise<ResourceCodec> {
+    return makeCodec({ maxBlobBytes: 16, chunkSize: 24 })
+  }
+
+  it('returns a chunked plan for a binary payload over the threshold', async () => {
+    const codec = await chunkingCodec()
+    const write = await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })
+    expect(isChunkedWrite(write)).toBe(true)
+    const plan = write as ChunkedWrite
+    expect(plan.id).toMatch(/^z/)
+    expect(plan.resourceContentType).toBe('application/octet-stream')
+  })
+
+  it('writes the document and its chunks, then reads the bytes back exactly', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+
+    const result = await plan.execute(backend.context)
+    expect(result.id).toBe(plan.id)
+    expect(result.etag).toBe('"v1"')
+
+    // The document was written to its own resource path, and the bytes went to
+    // the reserved chunk sub-segment -- more than one, so reassembly is real.
+    const documentPath = `/space/s/c/${plan.id}`
+    expect(backend.store.has(documentPath)).toBe(true)
+    const chunkPaths = [...backend.store.keys()].filter(path =>
+      path.startsWith(`${documentPath}/chunks/`)
+    )
+    expect(chunkPaths.length).toBeGreaterThan(1)
+    // Nothing readable leaked: the stored document carries no plaintext bytes.
+    const stored = JSON.parse(
+      new TextDecoder().decode(backend.store.get(documentPath))
+    ) as { jwe?: unknown; content?: unknown }
+    expect(stored.jwe).toBeTruthy()
+    expect(stored.content).toBeUndefined()
+
+    const decoded = await codec.decode(
+      responseFrom(backend.store.get(documentPath)),
+      plan.id,
+      backend.context
+    )
+    expect(decoded).toBeInstanceOf(Blob)
+    expect((decoded as Blob).type).toBe('application/octet-stream')
+    const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
+    expect(out).toEqual(blob)
+  })
+
+  it('refuses to write anything when the backend lacks chunked-streams', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend({ features: ['conditional-writes'] })
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    await expect(plan.execute(backend.context)).rejects.toBeInstanceOf(
+      NotSupportedError
+    )
+    // The gate runs before the first write, so no document stub is left behind.
+    expect(backend.writes).toEqual([])
+  })
+
+  it('names the descriptor it read when the backend lacks the feature', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend({ features: ['conditional-writes'] })
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const failure = await plan
+      .execute(backend.context)
+      .catch((err: unknown) => err)
+    expect((failure as Error).message).toMatch(/which it does not/)
+    expect((failure as Error).message).not.toMatch(/could not be read/)
+  })
+
+  it('names an unreadable backend descriptor instead of blaming the server', async () => {
+    // The descriptor 404s (no such endpoint, a deleted collection, or a
+    // capability that cannot read it), which also probes as "no features". The
+    // gate must not report that as an incapable server.
+    const codec = await chunkingCodec()
+    const backend = memoryBackend({ features: [], descriptorAbsent: true })
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const failure = await plan
+      .execute(backend.context)
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(NotSupportedError)
+    expect((failure as Error).message).toMatch(
+      /backend descriptor could not be read at all/
+    )
+    expect(backend.writes).toEqual([])
+  })
+
+  it('refuses to decode a chunked document without a request context', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    await plan.execute(backend.context)
+    const stored = responseFrom(backend.store.get(`/space/s/c/${plan.id}`))
+    await expect(codec.decode(stored, plan.id)).rejects.toBeInstanceOf(
+      EncryptionError
+    )
+  })
+
+  it('addresses chunks by the AEAD-bound id, not the cleartext envelope id', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const otherBlob = new Uint8Array(64).map(
+      (_value, index) => (index * 11) % 251
+    )
+    const planA = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    await planA.execute(backend.context)
+    const planB = (await codec.encode({
+      data: otherBlob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    await planB.execute(backend.context)
+
+    // The server serves A's authentic envelope -- its sealed `was.resource`
+    // still names A, so the binding check passes -- with only the cleartext
+    // top-level id swapped to B. B's chunks decrypt cleanly under the shared
+    // epoch key, so addressing them by that cleartext id would silently return
+    // B's bytes for a read of A.
+    const envelope = JSON.parse(
+      new TextDecoder().decode(backend.store.get(`/space/s/c/${planA.id}`))
+    ) as { id: string }
+    envelope.id = planB.id
+    const swapped = responseFrom(
+      new TextEncoder().encode(JSON.stringify(envelope))
+    )
+
+    const reads: string[] = []
+    const watching: CodecRequestContext = {
+      features: backend.context.features,
+      async request(input) {
+        reads.push(input.path as string)
+        return backend.context.request(input)
+      }
+    }
+    const decoded = await codec.decode(swapped, planA.id, watching)
+    const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
+    expect(out).toEqual(blob)
+    expect(out).not.toEqual(otherBlob)
+    // Nothing under B's document path was ever fetched.
+    expect(reads.some(path => path.startsWith(`/space/s/c/${planB.id}`))).toBe(
+      false
+    )
+
+    // And served into B's own slot, the same envelope is refused outright by
+    // the `was.resource` binding check, before any chunk is fetched.
+    await expect(
+      codec.decode(swapped, planB.id, backend.context)
+    ).rejects.toBeInstanceOf(IntegrityError)
+  })
+
+  it('ignores a forged cleartext stream on a single-document blob', async () => {
+    // The routing signal is the sealed `meta.encoding`, so a server bolting a
+    // cleartext `stream` onto an ordinary small document cannot mask its
+    // sealed content or turn the read into chunk fetches.
+    const codec = await makeCodec({ maxBlobBytes: 16, chunkSize: 24 })
+    const backend = memoryBackend()
+    const small = new Uint8Array([1, 2, 3])
+    const encoded = await codec.encode({
+      data: small,
+      contentType: 'application/octet-stream'
+    })
+    const envelope = JSON.parse(
+      new TextDecoder().decode(encoded.body as Uint8Array)
+    ) as { stream?: unknown }
+    envelope.stream = { chunks: 1 }
+
+    const reads: string[] = []
+    const watching: CodecRequestContext = {
+      features: backend.context.features,
+      async request(input) {
+        reads.push(input.path as string)
+        return backend.context.request(input)
+      }
+    }
+    const decoded = await codec.decode(
+      responseFrom(new TextEncoder().encode(JSON.stringify(envelope))),
+      encoded.id,
+      watching
+    )
+    expect(decoded).toBeInstanceOf(Blob)
+    const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
+    expect(out).toEqual(small)
+    expect(reads).toEqual([])
+  })
+
+  it('routes an over-threshold Blob on its size alone', async () => {
+    // The routing decision reads `Blob.size`, so a blob never has to be
+    // buffered to be measured -- it is handed on as `blob.stream()`.
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const write = await codec.encode({
+      data: new Blob([blob as BlobPart], { type: 'application/octet-stream' })
+    })
+    expect(isChunkedWrite(write)).toBe(true)
+    const plan = write as ChunkedWrite
+    await plan.execute(backend.context)
+    const decoded = await codec.decode(
+      responseFrom(backend.store.get(`/space/s/c/${plan.id}`)),
+      plan.id,
+      backend.context
+    )
+    const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
+    expect(out).toEqual(blob)
+  })
+
+  /**
+   * Wraps a backend context so a chosen request fails, for the failure-cleanup
+   * tests.
+   *
+   * @param options {object}
+   * @param options.context {CodecRequestContext}   the backend to wrap
+   * @param options.failOn {function}   true for a request that must fail
+   * @param options.failure {Error}   the error to fail it with
+   * @returns {CodecRequestContext}
+   */
+  function failingBackend({
+    context,
+    failOn,
+    failure
+  }: {
+    context: CodecRequestContext
+    failOn: (input: { path?: string; method?: string }) => boolean
+    failure: Error
+  }): CodecRequestContext {
+    return {
+      features: context.features,
+      async request(input) {
+        if (failOn(input as { path?: string; method?: string })) {
+          throw failure
+        }
+        return context.request(input)
+      }
+    }
+  }
+
+  it('deletes the orphaned document stub when a chunk write fails', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const failure = Object.assign(new Error('HTTP 413'), { status: 413 })
+    const context = failingBackend({
+      context: backend.context,
+      failOn: input =>
+        input.method === 'PUT' && input.path!.includes('/chunks/'),
+      failure
+    })
+
+    // The document stub was already written when the chunk failed, and its
+    // sealed stream state is still `{ pending: true }` -- undecryptable, and
+    // never re-used (a retry mints a fresh id). So the plan compensates.
+    const documentPath = `/space/s/c/${plan.id}`
+    await expect(plan.execute(context)).rejects.toBeInstanceOf(EncryptionError)
+    expect(backend.writes).toContain(documentPath)
+    expect(backend.deletes).toEqual([documentPath])
+    expect(backend.store.has(documentPath)).toBe(false)
+
+    // The original failure is preserved as the cause.
+    const plan2 = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const err = await plan2.execute(context).catch(caught => caught)
+    expect((err as Error).cause).toBe(failure)
+  })
+
+  it('deletes nothing when the write fails before the document is written', async () => {
+    // The id is freshly minted, so a failure here is the server or the
+    // network, not a collision: a DELETE would remove a resource this write
+    // never created. The raw failure propagates unwrapped.
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const failure = Object.assign(new Error('HTTP 503'), { status: 503 })
+    const context = failingBackend({
+      context: backend.context,
+      failOn: input => input.method === 'PUT',
+      failure
+    })
+    await expect(plan.execute(context)).rejects.toBe(failure)
+    expect(backend.deletes).toEqual([])
+  })
+
+  it('does not mask the write failure when the cleanup delete also fails', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const failure = Object.assign(new Error('HTTP 413'), { status: 413 })
+    const context: CodecRequestContext = {
+      features: backend.context.features,
+      async request(input) {
+        const path = input.path as string
+        if (input.method === 'PUT' && path.includes('/chunks/')) {
+          throw failure
+        }
+        if (input.method === 'DELETE') {
+          throw Object.assign(new Error('HTTP 500'), { status: 500 })
+        }
+        return backend.context.request(input)
+      }
+    }
+    const err = await plan.execute(context).catch(caught => caught)
+    expect(err).toBeInstanceOf(EncryptionError)
+    expect((err as Error).cause).toBe(failure)
+    // The stub is still stored, and the message says so.
+    expect((err as Error).message).toContain('could NOT be deleted')
+    expect(backend.store.has(`/space/s/c/${plan.id}`)).toBe(true)
+  })
+
+  it('refuses a content-addressed collection (no derivable id for a two-phase write)', async () => {
+    const codec: ResourceCodec = await makeCodec({
+      maxBlobBytes: 16,
+      idDerivation: 'content'
+    })
+    await expect(
+      codec.encode({ data: blob, contentType: 'application/octet-stream' })
+    ).rejects.toBeInstanceOf(ValidationError)
   })
 })
 
@@ -543,12 +993,12 @@ describe('EdvCodec: malformed inner document', () => {
    *
    * @param content {Record<string, unknown>}
    * @param meta {Record<string, unknown>}
-   * @returns {Promise<{ codec: ResourceCodec; response: HttpResponse }>}
+   * @returns {Promise<{ codec: SingleWriteCodec; response: HttpResponse }>}
    */
   async function encodedDocWith(
     content: Record<string, unknown>,
     meta: Record<string, unknown>
-  ): Promise<{ codec: ResourceCodec; response: HttpResponse }> {
+  ): Promise<{ codec: SingleWriteCodec; response: HttpResponse }> {
     const { kak, publicKeyMultibase, keyResolver } = await makeKeys()
     const { encryption, epochId, epochKeyPair } = await mintEpochFor({
       id: kak.id,
@@ -562,7 +1012,7 @@ describe('EdvCodec: malformed inner document', () => {
       collectionId: 'c',
       scheme: 'edv',
       encryption
-    })) as ResourceCodec
+    })) as SingleWriteCodec
     const edv = new EdvClientCore({
       keyAgreementKey: epochKeyPair,
       keyResolver: didKeyResolver
@@ -903,7 +1353,7 @@ describe('EdvCodec: decrypt failure discrimination', () => {
         collectionId: 'c',
         scheme: 'edv',
         encryption: descriptor
-      }))!
+      }))! as SingleWriteCodec
     }
     // readerA writes under epoch 2 (the currentEpoch).
     const writer = await codecOf(readerA, encryption)
@@ -920,7 +1370,7 @@ describe('EdvCodec: decrypt failure discrimination', () => {
     // readerB could already read.
     const preRotation: CollectionEncryption = {
       ...encryption,
-      epochs: [encryption.epochs![0]],
+      epochs: [encryption.epochs![0]!],
       currentEpoch: epoch1.epochId
     }
     const earlyWriter = await codecOf(readerA, preRotation)
@@ -952,7 +1402,7 @@ describe('EdvCodec: decrypt failure discrimination', () => {
         )
       }
     } as IKeyAgreementKey
-    const codec = new EdvCodec({
+    const codec: SingleWriteCodec = new EdvCodec({
       edv,
       keyAgreementKey: epochKeyPair,
       readKeys: [corrupt, epochKeyPair],
@@ -960,6 +1410,7 @@ describe('EdvCodec: decrypt failure discrimination', () => {
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random',
+      spaceId: 's',
       collectionId: 'c',
       epochIds: [epochId]
     })

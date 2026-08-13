@@ -1,5 +1,67 @@
 # @interop/was-client Changelog
 
+## 0.36.0 - TBD
+
+### Added
+
+- `collection.add()` on an encrypted collection now routes a binary payload over
+  `maxBlobBytes` to the chunked-stream path instead of throwing: one EDV
+  document plus its chunk resources, read back transparently by `get()`. Needs
+  the backend's `chunked-streams` feature, checked before the first write; the
+  new `NotSupportedError` is thrown otherwise. `maxBlobBytes` is now a routing
+  threshold rather than a hard cap.
+- `createEdvEncryption({ chunkSize })` sets the size of each encrypted chunk a
+  routed write emits (default 1 MiB).
+- The codec seam gained the multi-request escape hatch that routing rides on:
+  `codec.encode` may return a `ChunkedWrite` plan instead of an `EncodedWrite`
+  (`isChunkedWrite` discriminates them), and both `execute` and `codec.decode`
+  take a `CodecRequestContext` (the handle's signed request primitive plus its
+  memoized backend-feature probe). Exported from the root entry point along with
+  `CodecWrite`.
+- `WasTransport` accepts an already-memoized `features` probe and per-write
+  `documentHeaders`, so a caller can share a handle's backend probe and stamp
+  `Key-Epoch` on document writes.
+
+### Changed
+
+- `ResourceCodec.encode` returns `CodecWrite` (`EncodedWrite | ChunkedWrite`)
+  and `ResourceCodec.decode` takes an optional third argument. An implementation
+  returning an `EncodedWrite` and ignoring the argument is unaffected.
+- `EdvCodec`'s constructor requires `spaceId` (the chunked path addresses
+  documents and chunks itself). `createEdvEncryption` supplies it; only a caller
+  constructing `EdvCodec` directly is affected.
+- `put(id, data)` with a payload over the threshold throws `ValidationError`
+  naming `add()`: auto-routing is an insert-path affordance. A content-addressed
+  collection (`idDerivation: 'content'`) likewise refuses a chunked write, since
+  the document is stored twice and no single ciphertext derives its id.
+- `CodecRequestContext.features` is the handle's `FeatureProbe` itself (exported
+  from the root entry point) rather than a bare token-list thunk, so a codec can
+  tell an unreadable collection descriptor apart from a backend that lacks the
+  feature and name the right cause in its gate error.
+- `WasTransport` exposes `lastDocumentWrite` (the id and ETag of the last
+  document PUT) and a `deleteDocument` helper, and throws the typed
+  `NotSupportedError` class instead of a bare renamed `Error`.
+- An over-threshold `Blob` is routed on its `size` and streamed via
+  `blob.stream()` instead of being buffered whole before the threshold check.
+
+### Fixed
+
+- Chunked reads trust only AEAD-authenticated envelope fields: routing to the
+  chunk-reassembly path keys off the sealed `meta.encoding` marker (never the
+  server-controlled cleartext `stream`), and chunk resources are addressed by
+  the envelope's sealed `was.resource` id (never the cleartext document id), so
+  a malicious server can neither substitute another document's chunks nor mask
+  an ordinary document's sealed content behind forged chunk fetches.
+- A chunked write that fails mid-stream now best-effort deletes the orphaned
+  document stub before rethrowing (with `cause`), instead of leaving an
+  undecryptable entry that `list()` shows and `get()` throws on.
+- Requests issued by a chunked write plan go through the typed error mapping, so
+  a missing collection surfaces as `NotFoundError` as documented rather than a
+  raw transport error.
+- The sync-path document cipher refuses an over-threshold binary with a
+  `ValidationError` naming the unsupported single-request path, instead of a
+  misleading generic error.
+
 ## 0.35.1 - 2026-08-12
 
 ### Added

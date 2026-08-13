@@ -23,7 +23,7 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 
-import { EncryptionError } from '../../src/index.js'
+import { EncryptionError, ValidationError } from '../../src/index.js'
 import {
   createEdvDocCipher,
   ownerRecipient,
@@ -264,6 +264,25 @@ describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
     expect(await cipher.decrypt({ envelope: updated.envelope })).toEqual({
       v: 2
     })
+  })
+
+  it('refuses a binary payload over the single-document threshold', async () => {
+    // Reachable only from an untyped caller: `encrypt` is typed for JSON, but
+    // JS can hand it a large binary value, which the codec answers with a
+    // multi-request chunked plan (a document plus chunk resources on a server).
+    // There is no single envelope to store in a replica, so the seam refuses
+    // the payload by name instead of reporting a missing envelope body.
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'blobs',
+      idDerivation: 'random',
+      encryption
+    })
+    const oversize = new Uint8Array(600 * 1024)
+    await expect(
+      cipher.encrypt({ data: oversize as unknown as Json })
+    ).rejects.toBeInstanceOf(ValidationError)
   })
 })
 

@@ -82,6 +82,18 @@ export class NotImplementedError extends WasError {
 }
 
 /**
+ * A client-side, fail-closed affordance gate: the operation needs an optional
+ * backend feature the collection's backend does not advertise (e.g.
+ * `chunked-streams` for an auto-routed large encrypted blob). Raised before any
+ * request is sent, so it carries no HTTP status. Recover by writing to a
+ * collection whose backend advertises the feature, or by keeping the payload
+ * within what a single request can carry.
+ */
+export class NotSupportedError extends WasError {
+  override name = 'NotSupportedError'
+}
+
+/**
  * A client-supplied id or backend conflicts with existing state (HTTP 409):
  * `id-conflict` (the id already exists), `reserved-id` (the id collides with a
  * reserved path segment), or `unsupported-backend` (the backend id is not in

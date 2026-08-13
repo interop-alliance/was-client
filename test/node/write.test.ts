@@ -11,24 +11,28 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { PreconditionFailedError, ValidationError } from '../../src/index.js'
+import {
+  NotFoundError,
+  PreconditionFailedError,
+  ValidationError
+} from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
 import type { ClientContext, SendInput } from '../../src/internal/request.js'
-import { upsertResource } from '../../src/internal/write.js'
+import { featureProbeFrom } from '../../src/internal/features.js'
+import { insertResource, upsertResource } from '../../src/internal/write.js'
+import { stubFeatures } from '../helpers/codec.js'
+
+/**
+ * A features probe for a backend advertising `conditional-writes` -- the
+ * capable-backend default for these tests.
+ */
+const conditionalFeatures = stubFeatures(['conditional-writes'])
 
 /**
  * A minimal conditional codec: encodes the value as JSON and mirrors the EDV
  * codec's precondition behavior (fresh insert when `current` is null, pinned
  * update otherwise).
  */
-/**
- * A features probe for a backend advertising `conditional-writes` -- the
- * capable-backend default for these tests.
- */
-async function conditionalFeatures(): Promise<string[]> {
-  return ['conditional-writes']
-}
-
 const conditionalCodec: ResourceCodec = {
   conditionalWrites: true,
   async encode({ id, data, current }) {
@@ -173,6 +177,119 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
   })
 })
 
+describe('upsertResource: chunked plans are insert-only', () => {
+  it('refuses a codec that answers a write by id with a chunked plan', async () => {
+    // Auto-routing a large blob is an `add()` affordance: reconciling an
+    // existing document's chunks with a fresh stream is not this path's job, so
+    // the plan is refused before anything is written.
+    const chunkedCodec: ResourceCodec = {
+      ...conditionalCodec,
+      async encode() {
+        return {
+          chunked: true,
+          id: 'r',
+          async execute() {
+            throw new Error('the plan must never be executed here')
+          }
+        }
+      }
+    }
+    const { context, calls } = contextWithStatuses()
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: chunkedCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(ValidationError)
+    expect((failure as Error).message).toMatch(/add\(\)/)
+    // Only the conditional pre-read went out; no PUT was attempted.
+    expect(calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it("appends the codec's own guidance to the generic refusal", async () => {
+    // This layer is scheme-agnostic, so the recovery advice (which low-level
+    // API drives the write directly) comes from the plan, not from here.
+    const guidedCodec: ResourceCodec = {
+      ...conditionalCodec,
+      async encode() {
+        return {
+          chunked: true,
+          id: 'r',
+          guidance: 'Drive it with the low-level API instead.',
+          async execute() {
+            throw new Error('the plan must never be executed here')
+          }
+        }
+      }
+    }
+    const { context } = contextWithStatuses()
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: guidedCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures
+    }).catch((err: unknown) => err)
+    expect((failure as Error).message).toContain(
+      'Drive it with the low-level API instead.'
+    )
+  })
+})
+
+describe('insertResource: a chunked plan runs on the mapped request path', () => {
+  /**
+   * A codec that answers every encode with a plan whose `execute` issues one
+   * `PUT` through the request context it is handed.
+   */
+  const planCodec: ResourceCodec = {
+    ...conditionalCodec,
+    async encode() {
+      return {
+        chunked: true,
+        id: 'r',
+        async execute(codecContext) {
+          await codecContext.request({
+            path: '/space/s/c/r',
+            method: 'PUT',
+            body: new Uint8Array([1, 2, 3])
+          })
+          return { id: 'r' }
+        }
+      }
+    }
+  }
+
+  it('surfaces a 404 from the plan as a typed NotFoundError', async () => {
+    // The plan drives its own I/O, but it is still the caller's `add()`: its
+    // failures must be the typed errors `add()` documents, not raw ky/ezcap
+    // errors.
+    const { context } = contextWithStatuses({ putStatus: 404 })
+    const failure = await insertResource(context, {
+      itemsPath: '/space/s/c/',
+      pathForId: (id: string) => `/space/s/c/${id}`,
+      codec: planCodec,
+      data: { v: 1 },
+      features: conditionalFeatures
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(NotFoundError)
+  })
+
+  it('carries the HTTP status through, so a status-dispatching driver still works', async () => {
+    const { context } = contextWithStatuses({ putStatus: 412 })
+    const failure = await insertResource(context, {
+      itemsPath: '/space/s/c/',
+      pathForId: (id: string) => `/space/s/c/${id}`,
+      codec: planCodec,
+      data: { v: 1 },
+      features: conditionalFeatures
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect((failure as PreconditionFailedError).status).toBe(412)
+  })
+})
+
 describe('upsertResource: insert gate on a non-conditional backend', () => {
   it('refuses an insert-after-null-pre-read when the backend lacks conditional-writes', async () => {
     // The pre-read is null (absent OR unreadable -- indistinguishable), and the
@@ -185,7 +302,7 @@ describe('upsertResource: insert gate on a non-conditional backend', () => {
       codec: conditionalCodec,
       id: 'r',
       data: { v: 1 },
-      features: async () => []
+      features: stubFeatures([])
     }).catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(ValidationError)
     expect((failure as Error).message).toMatch(/conditional-writes/)
@@ -201,9 +318,9 @@ describe('upsertResource: insert gate on a non-conditional backend', () => {
       codec: conditionalCodec,
       id: 'r',
       data: { v: 1 },
-      features: async () => {
+      features: featureProbeFrom(async () => {
         throw new Error('features must not be consulted for an update')
-      }
+      })
     })
     expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
   })

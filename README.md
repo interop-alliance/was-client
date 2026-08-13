@@ -627,7 +627,8 @@ sends no body on an in-place replace).
 ### Encrypted collections (EDV-over-WAS): pass-through encryption via the WAS client (recommended)
 
 This is the recommended way to use encrypted collections. For the low-level
-alternative -- driving an `EdvClientCore` directly via `WasTransport` -- see
+alternative -- driving an `EdvClientCore` directly via `WasTransport`, which is
+also how to stream a blob you do not want to hold in memory -- see
 [docs/edv-client-core-usage.md](docs/edv-client-core-usage.md).
 
 Client-side end-to-end encryption is a per-collection concern -- **not** a
@@ -722,8 +723,17 @@ scope for now):
   and tags, since the Description's plaintext `name` is left unpopulated; the
   collection-level envelope binds no resource id, and a resource-bound envelope
   served into that slot is refused.
-- **Binary.** A small `Blob`/`Uint8Array` is encrypted as a single document;
-  larger binaries are rejected until chunked encrypted blobs land.
+- **Binary.** A `Blob`/`Uint8Array` up to `maxBlobBytes` (512 KiB by default) is
+  encrypted as a single document. A larger one is routed automatically by
+  `add()` to the chunked-stream path: one document plus its chunk resources,
+  read back transparently by `get()`. That needs the backend's `chunked-streams`
+  feature, checked before anything is written (`NotSupportedError` otherwise).
+  Two limits apply. Auto-routing is an `add()` affordance -- `put(id, bigBlob)`
+  is refused, since replacing an existing document's chunks is not automated.
+  And a content-addressed collection (`idDerivation: 'content'`) is refused too:
+  a chunked write stores the document twice, so no single ciphertext derives its
+  id. Tune the threshold and the chunk size with
+  `createEdvEncryption({ maxBlobBytes, chunkSize })`.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
   do not (they return the stored representation).
 
