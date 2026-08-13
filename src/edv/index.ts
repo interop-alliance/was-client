@@ -33,6 +33,10 @@
  * epoch key (see `hmacKey.ts`). It is installed at provisioning or never, and
  * never rotates.
  *
+ * `hasKeyEpochs` and `epochRostersEqual` are the crypto-free predicates over a
+ * descriptor: whether it carries a usable roster, and whether two descriptors
+ * name the same one (roster identity, recipient sets deliberately excluded).
+ *
  * `x25519RecipientFromDidKey` is the one rule for turning a grantee named only
  * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a
  * recipient key is always derived from an identifier both sides already hold
@@ -65,6 +69,7 @@ export {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
+export { hasKeyEpochs, epochRostersEqual } from './epochRoster.js'
 export { resolveEpochKeys } from './epochKeys.js'
 export type { ResolvedEpochKeys } from './epochKeys.js'
 export {

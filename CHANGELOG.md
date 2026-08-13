@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.37.0 - TBD
+
+### Added
+
+- `hasKeyEpochs` and `epochRostersEqual`, exported from the `./edv` subpath: a
+  crypto-free predicate for whether a `CollectionEncryption` descriptor carries
+  a usable key-epoch roster (string `currentEpoch` plus a non-empty `epochs`
+  list), and a comparator for roster identity (equal `currentEpoch` plus the
+  same epoch ids in the same order). The comparator ignores recipient sets, so
+  adding or removing a reader within an existing epoch is not a roster change.
+
 ## 0.36.0 - 2026-08-12
 
 ### Added

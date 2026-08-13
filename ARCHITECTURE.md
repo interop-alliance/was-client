@@ -24,7 +24,7 @@ external deps       @interop/ezcap, @interop/storage-core,
                     @interop/http-client, ...
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
-  EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys,
+  EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochRoster,
   recipients, descriptorStore
   Implements the interfaces in src/codec.ts; imports internal/* and the
   crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
@@ -206,7 +206,17 @@ orthogonal axes: _pull_ (zcap, server-enforced, immediate) and _read_ (epoch-key
 possession, client-side, prospective -- rotation never claws back already-held
 keys or fetched ciphertext). `removeRecipient` does both halves because doing
 only one is a footgun (the pull half is the default zcap revocation, or a
-caller-supplied `pull` action for descriptors whose access lives elsewhere).
+caller-supplied `pull` action for descriptors whose access lives elsewhere). Two
+crypto-free predicates over a descriptor ship beside that machinery
+(`epochRoster.ts`), so a consumer holding descriptors can ask about them without
+pulling in the epoch crypto: `hasKeyEpochs` is the usable-roster test (a
+descriptor with a string `currentEpoch` and a non-empty `epochs` list), and
+`epochRostersEqual` is roster identity -- equal `currentEpoch` plus the same
+epoch ids in the same order. The comparator deliberately ignores the recipients
+wrapped inside each epoch: adding or removing a reader leaves every epoch id and
+the write epoch alone, so a cipher opened from the older descriptor stays valid,
+and only a rotation reads as a change.
+
 Descriptor mutations go through a CAS loop (read descriptor + validator, mutate,
 conditional write, bounded retries) over the **descriptor-store seam**
 (`descriptorStore.ts`): the Collection Description adapter (`describeWithEtag` /
