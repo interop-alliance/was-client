@@ -97,6 +97,7 @@ import {
   UnknownEpochError,
   ValidationError
 } from '../errors.js'
+import { blobBytes } from '../internal/blob.js'
 import { readEtag, writeHeaders } from '../internal/conditional.js'
 import { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
@@ -1527,7 +1528,7 @@ export class EdvCodec implements ResourceCodec {
       }
       // Under the threshold the bytes are sealed inline, so buffer them now.
       const bytes = isBlob(payload.data)
-        ? new Uint8Array(await payload.data.arrayBuffer())
+        ? await blobBytes(payload.data)
         : payload.data
       // Text-family AND valid UTF-8 to store as a legible string. The UTF-8 gate
       // guarantees the bytes survive the string round-trip exactly; anything

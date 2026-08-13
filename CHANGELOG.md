@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.38.1 - TBD
+
+### Fixed
+
+- `Blob` reads now fall back to `FileReader` when `text()` / `arrayBuffer()` are
+  absent, fixing crashes on React Native (whose `Blob` implements neither) in
+  the resource-log read path and the EDV codec's inline byte path.
+
 ## 0.38.0 - 2026-08-13
 
 ### Changed

@@ -477,9 +477,9 @@ on the 0.36.0 npm publish -- both since shipped (see touches), closing the item
     descriptor's OPTIONAL `hmac` member with epoch-style recipient wraps, the
     installed-at-provisioning-or-never and no-rotation rules as normative text,
     the stored-envelope `indexed` entries, index-schema persistence under
-    `custom.indexSchema` (with the per-attribute addition marker recording
-    that matches may be partial), and Security Considerations for the
-    revocation asymmetry and the schema's own sensitivity
+    `custom.indexSchema` (with the per-attribute addition marker recording that
+    matches may be partial), and Security Considerations for the revocation
+    asymmetry and the schema's own sensitivity
   - wallet-attached-storage-spec -- resolved: the `blinded-index` query profile
     was already in the Query Profile Registry, and the schema's home, the
     Collection-level `/meta` endpoints, shipped as WASS-9 (archived in that

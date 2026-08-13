@@ -42,6 +42,7 @@ import type {
 } from '../../src/index.js'
 import type { SingleWriteCodec } from '../helpers/codec.js'
 import { stubFeatures } from '../helpers/codec.js'
+import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 import {
   createEdvEncryption,
   EdvCodec,
@@ -420,6 +421,30 @@ describe('EdvCodec: binary', () => {
     const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
     expect(out).toEqual(bytes)
     expect((decoded as Blob).type).toBe('application/octet-stream')
+  })
+
+  it('seals a React Native blob (no arrayBuffer(), FileReader fallback)', async () => {
+    // RN's `Blob` implements no `arrayBuffer()`, so the inline byte path reads
+    // it through the global `FileReader` the runtime provides instead.
+    const restore = installFileReader()
+    try {
+      const { codec, decrypt } = await makeFixture()
+      const bytes = new Uint8Array([1, 2, 3, 4, 250])
+      const blob = rnBlob([bytes], { type: 'application/octet-stream' })
+      const encoded = await codec.encode({ data: blob })
+      const doc = await decrypt(encoded.body)
+      expect(doc.meta).toEqual({
+        contentType: 'application/octet-stream',
+        encoding: 'base64'
+      })
+      const decoded = await codec.decode(responseFrom(encoded.body))
+      expect(decoded).toBeInstanceOf(Blob)
+      expect(new Uint8Array(await (decoded as Blob).arrayBuffer())).toEqual(
+        bytes
+      )
+    } finally {
+      restore()
+    }
   })
 
   it('surfaces the resolved content type of a typed blob', async () => {

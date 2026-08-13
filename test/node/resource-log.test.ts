@@ -23,6 +23,7 @@ import {
   serializeResourceLog,
   serializeResourceLogEntry
 } from '../../src/log/index.js'
+import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 
 /**
  * Builds a minimal syntactically valid entry at ordinal `n`. The wire types
@@ -36,8 +37,7 @@ function entryAt(n: number): ResourceLogEntry {
   return {
     versionId: `${n}-QmEntryHash${n}`,
     versionTime: '2026-08-10T12:00:00Z',
-    parameters:
-      n === 1 ? { method: 'resource-log:0.1', scid: 'QmScid' } : {},
+    parameters: n === 1 ? { method: 'resource-log:0.1', scid: 'QmScid' } : {},
     state: { type: 'WasEpochConfiguration', currentEpoch: `epoch-${n}` },
     proof: [
       {
@@ -188,6 +188,27 @@ describe('resourceLogStore', () => {
     await expect(
       store.append(entryAt(2), { ifMatch: '"v1"' })
     ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('reads a React Native Blob body (no text(), FileReader fallback)', async () => {
+    // On device the log body arrives as an RN `Blob`, which implements no
+    // `text()`; the store reads it through the `FileReader` fallback.
+    const restore = installFileReader()
+    try {
+      const body = serializeResourceLog([entryAt(1)])
+      const resource = {
+        id: 'user-key.jsonl',
+        getWithEtag: async () => ({
+          data: rnBlob([body], { type: LOG_CONTENT_TYPE }),
+          etag: '"v1"'
+        })
+      } as unknown as Resource
+      const store = resourceLogStore({ resource })
+      const current = (await store.read())!
+      expect(current.entries).toEqual([entryAt(1)])
+    } finally {
+      restore()
+    }
   })
 
   it('refuses a resource that does not hold a text body', async () => {

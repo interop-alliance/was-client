@@ -23,7 +23,8 @@ import { canonicalize } from 'json-canonicalize'
 import type { ResourceLogEntry } from '@interop/storage-core'
 import type { Resource } from '../Resource.js'
 import { LogNotConfirmedError, ValidationError } from '../errors.js'
-import { ENCODER } from '../internal/content.js'
+import { blobText } from '../internal/blob.js'
+import { ENCODER, isBlob } from '../internal/content.js'
 import {
   parseResourceLog,
   serializeResourceLog,
@@ -111,12 +112,11 @@ export function resourceLogStore({
       if (current === null) {
         return null
       }
-      const body =
-        current.data instanceof Blob
-          ? await current.data.text()
-          : typeof current.data === 'string'
-            ? current.data
-            : undefined
+      const body = isBlob(current.data)
+        ? await blobText(current.data)
+        : typeof current.data === 'string'
+          ? current.data
+          : undefined
       if (body === undefined) {
         throw new ValidationError(
           `Cannot read resource log: the resource "${resource.id}" does not ` +
