@@ -116,7 +116,8 @@ import type {
   CollectionEncryption,
   Json,
   ResourceData,
-  ResourceMetadataCustom
+  ResourceMetadataCustom,
+  ResourceMetadataCustomInput
 } from '../types.js'
 import {
   DEFAULT_CONTENT_TYPE,
@@ -1341,7 +1342,7 @@ export class EdvCodec implements ResourceCodec {
     custom,
     id: resourceId
   }: {
-    custom: ResourceMetadataCustom | Record<string, unknown>
+    custom: ResourceMetadataCustomInput
     id?: string
   }): Promise<{ custom: object; epoch: string }> {
     const { documentCipher } = this.#edv
@@ -1934,9 +1935,11 @@ function guardEncryptionDescriptor({
  *
  * Applies the same fail-closed guards as `codecFor`: a future-scheme
  * descriptor and a descriptor without epochs are refused. The write epoch is
- * the descriptor's `currentEpoch` when listed, else the last listed epoch --
- * the multi-recipient build's deterministic fallback, without the "held by
- * this reader" clause it needs and this build cannot ask.
+ * the descriptor's `currentEpoch`; a descriptor that omits it seals to the
+ * last listed epoch (the roster is append-only, so that is the newest). A
+ * `currentEpoch` the roster does not list violates the descriptor invariant
+ * and is refused fail-closed -- silently re-routing it could seal new
+ * plaintext to a rotated-out epoch whose removed recipients still hold keys.
  *
  * @param options {object}
  * @param options.collectionId {string}   labels errors; and on a slot-bound
@@ -1962,10 +1965,24 @@ export async function encryptOnlyEdvCodec({
     label: `"${collectionId}"`,
     encryption
   })
-  const { epochs } = descriptor
-  const writeEpoch =
-    epochs.find(epoch => epoch.id === descriptor.currentEpoch)?.id ??
-    epochs.at(-1)!.id
+  const { epochs, currentEpoch } = descriptor
+  // `currentEpoch` MUST name a listed epoch (storage-core's descriptor
+  // invariant). A descriptor that violates it is stale, partially synced, or
+  // tampered with; refuse rather than silently seal to another epoch.
+  if (
+    currentEpoch !== undefined &&
+    !epochs.some(epoch => epoch.id === currentEpoch)
+  ) {
+    throw new EncryptionError(
+      `Collection "${collectionId}" declares currentEpoch "${currentEpoch}" ` +
+        'but its epoch roster does not list it. A descriptor names its ' +
+        'current epoch among the epochs it lists; re-read the descriptor ' +
+        'before writing.'
+    )
+  }
+  // With no `currentEpoch`, the last listed epoch is the newest: the roster
+  // is append-only and the current epoch never moves back.
+  const writeEpoch = currentEpoch ?? epochs.at(-1)!.id
   let writeKeyId: string
   try {
     writeKeyId = epochKeyIdFor(writeEpoch)

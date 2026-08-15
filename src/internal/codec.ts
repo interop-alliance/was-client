@@ -34,7 +34,8 @@ import type {
   IZcap,
   Json,
   ResourceData,
-  ResourceMetadataCustom
+  ResourceMetadataCustom,
+  ResourceMetadataCustomInput
 } from '../types.js'
 
 /**
@@ -153,7 +154,7 @@ export const identityCodec: ResourceCodec = {
   async encodeMeta({
     custom
   }: {
-    custom: ResourceMetadataCustom | Record<string, unknown>
+    custom: ResourceMetadataCustomInput
   }): Promise<{ custom: object }> {
     return { custom }
   },

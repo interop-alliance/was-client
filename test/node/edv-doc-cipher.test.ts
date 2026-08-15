@@ -267,7 +267,24 @@ describe('createEdvEncryptOnlyDocCipher', () => {
     ).rejects.toBeInstanceOf(EncryptionError)
   })
 
-  it('falls back to the last listed epoch when currentEpoch is unlisted', async () => {
+  it('refuses a currentEpoch the epoch roster does not list', async () => {
+    // `currentEpoch` MUST name a listed epoch; an unlisted one marks a stale
+    // or tampered descriptor, and silently sealing to another epoch could
+    // reach a rotated-out epoch's removed recipients.
+    const { encryption } = await makeReaderWithDescriptor()
+    await expect(
+      createEdvEncryptOnlyDocCipher({
+        collectionId: 'keyring',
+        encryption: {
+          ...encryption,
+          currentEpoch:
+            'did:key:z6LSoWfUS2Fk8Gv6ZaJZeXm895iS9DWQZ2bPNBPmvv9EnLmz'
+        }
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
+  })
+
+  it('falls back to the last listed epoch when currentEpoch is absent', async () => {
     // A two-epoch roster, so "last listed" is distinguishable from "first
     // listed": a regression to epochs[0] would seal to the rotated-out epoch
     // and fail the assertion below.
@@ -276,9 +293,7 @@ describe('createEdvEncryptOnlyDocCipher', () => {
     const lastEpochId = rotated.epochs![0]!.id
     const multi: CollectionEncryption = {
       scheme: 'edv',
-      epochs: [...encryption.epochs!, ...rotated.epochs!],
-      // Set, but naming an epoch the roster does not list.
-      currentEpoch: 'did:key:z6LSoWfUS2Fk8Gv6ZaJZeXm895iS9DWQZ2bPNBPmvv9EnLmz'
+      epochs: [...encryption.epochs!, ...rotated.epochs!]
     }
     const writer = await createEdvEncryptOnlyDocCipher({
       collectionId: 'keyring',
@@ -291,23 +306,6 @@ describe('createEdvEncryptOnlyDocCipher', () => {
       ...keys,
       collectionId: 'keyring',
       encryption: { ...multi, currentEpoch: lastEpochId }
-    })
-    expect(await reader.decrypt({ envelope })).toEqual(DOC)
-  })
-
-  it('falls back to the last listed epoch when currentEpoch is absent', async () => {
-    const { encryption, ...keys } = await makeReaderWithDescriptor()
-    const { currentEpoch: _currentEpoch, ...absent } = encryption
-    const writer = await createEdvEncryptOnlyDocCipher({
-      collectionId: 'keyring',
-      encryption: absent
-    })
-    const { envelope, epoch } = await writer.encrypt({ data: DOC })
-    expect(epoch).toBe(encryption.epochs![0]!.id)
-    const reader = await createEdvDocCipher({
-      ...keys,
-      collectionId: 'keyring',
-      encryption
     })
     expect(await reader.decrypt({ envelope })).toEqual(DOC)
   })

@@ -37,7 +37,8 @@ import type {
   Json,
   RequestInput,
   ResourceData,
-  ResourceMetadataCustom
+  ResourceMetadataCustom,
+  ResourceMetadataCustomInput
 } from './types.js'
 
 /**
@@ -354,11 +355,11 @@ export interface ResourceCodec {
    * are never server-visible.
    *
    * @param input {object}
-   * @param input.custom {ResourceMetadataCustom | Record<string, unknown>}
-   *   the plaintext user metadata; extra members beyond `name` / `tags` are
-   *   admitted (the Collection-level `custom` carries the persisted
-   *   `indexSchema` alongside them, and storage-core types the stored value
-   *   just as widely)
+   * @param input.custom {ResourceMetadataCustomInput}   the plaintext user
+   *   metadata; extra members beyond `name` / `tags` are admitted (the
+   *   Collection-level `custom` carries the persisted `indexSchema` alongside
+   *   them) while `name` / `tags` themselves stay checked at their stored
+   *   types
    * @param [input.id] {string}   the resource id the metadata belongs to. An
    *   encrypting codec binds it into the metadata envelope's AEAD-authenticated
    *   protected header (so a server-side swap of two resources' metadata is
@@ -373,7 +374,7 @@ export interface ResourceCodec {
    *   Collection metadata write). Absent for a plaintext/identity codec.
    */
   encodeMeta(input: {
-    custom: ResourceMetadataCustom | Record<string, unknown>
+    custom: ResourceMetadataCustomInput
     id?: string
   }): Promise<{ custom: object; epoch?: string }>
 

@@ -63,8 +63,28 @@ export type {
 
 import type {
   BackendReference,
-  CollectionEncryption
+  CollectionEncryption,
+  ResourceMetadataCustom
 } from '@interop/storage-core'
+
+/**
+ * The user-writable metadata `custom` value as a caller passes it in. The
+ * second arm keeps `name` / `tags` checked at their stored types on an object
+ * literal (a mistyped member is a compile error, unlike a bare
+ * `Record<string, unknown>` arm) while admitting extra members -- the
+ * Collection-level `custom` carries the persisted `indexSchema` alongside
+ * them, and storage-core types the stored value as an open object. The plain
+ * `ResourceMetadataCustom` arm admits a value already narrowed to the stored
+ * interface (the natural `getMeta`-to-`setMeta` round-trip), which the
+ * index-signature arm alone would reject for lacking an index signature.
+ */
+export type ResourceMetadataCustomInput =
+  | ResourceMetadataCustom
+  | {
+      name?: string
+      tags?: Record<string, string>
+      [key: string]: unknown
+    }
 
 /**
  * The Collection's blinded-index HMAC key, as it appears on the `encryption`

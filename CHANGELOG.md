@@ -16,17 +16,18 @@
 
 ### Fixed
 
-- An update through the EDV codec carries the prior envelope's blinded
-  `indexed` entries forward. A cipher without the blinding key (the encrypt-only
-  build, or a reader without the descriptor's `hmac`) previously rewrote them to
-  `[]`, silently dropping the record from `collection.find()`.
+- An update through the EDV codec carries the prior envelope's blinded `indexed`
+  entries forward. A cipher without the blinding key (the encrypt-only build, or
+  a reader without the descriptor's `hmac`) previously rewrote them to `[]`,
+  silently dropping the record from `collection.find()`.
 - A malformed key-epoch id in `encryptOnlyEdvCodec` now throws a typed
   `EncryptionError` instead of a plain `Error`.
 - The metadata `custom` input is typed as it is stored: `encodeMeta` (the codec
-  seam and both implementations) and `Collection.setMeta` accept
-  `ResourceMetadataCustom | Record<string, unknown>`, so extra members such as
-  the Collection-level `indexSchema` pass without a cast (the internal
-  `declareIndex` cast is gone, and the test suite typechecks again).
+  seam and both implementations) and `Collection.setMeta` accept the new
+  `ResourceMetadataCustomInput`, which admits extra members such as the
+  Collection-level `indexSchema` without a cast while keeping `name` / `tags`
+  checked at their stored types (the internal `declareIndex` cast is gone, and
+  the test suite typechecks again).
 - `pnpm test` now runs a `typecheck` step (`tsc -p tsconfig.dev.json`), which
   the chain previously lacked.
 
