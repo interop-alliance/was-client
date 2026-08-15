@@ -29,6 +29,15 @@ export const EDV_SCHEME_VERSION = 1
 export const DEFAULT_CONTENT_TYPE = 'application/json'
 
 /**
+ * The placeholder space id for a codec built with no server behind it (the
+ * local-replica DocCipher builds). It labels errors and satisfies the codec's
+ * constructor; it must never reach the transport path -- there is no
+ * `/space/local/` route to sign requests against. The DocCipher seam keeps
+ * that path unreachable by refusing chunked writes up front.
+ */
+export const LOCAL_SPACE_ID = 'local'
+
+/**
  * The preferred content type marking a stored EDV-encrypted document: the JWE
  * JSON Serialization media type (`application/jose+json`, RFC 7516), which is
  * the wire format the WAS spec's Encryption Scheme Registry maps the `edv`

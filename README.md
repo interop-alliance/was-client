@@ -832,7 +832,10 @@ plugs into:
   `ensureFirstEpoch`). On a searchable collection, also hand it the stored
   Collection `/meta` value (the `meta` input, or `applyMeta` when the replica's
   copy changes) so pushed documents carry blinded index entries and stay visible
-  to `find()`.
+  to `find()`. `createEdvEncryptOnlyDocCipher(...)` is the write-only
+  counterpart, built from the descriptor alone with no key-agreement secret
+  (writes seal to the current epoch's public key, reconstructed from the epoch
+  id); `decrypt` on it refuses with the typed `EncryptOnlyCipherError`.
 - **`contentCid(doc)`** and **`deriveSpaceId(controllerDid)`** derive
   content-addressed ids -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
   unpadded -- so the same logical document (and the same controller) lands on

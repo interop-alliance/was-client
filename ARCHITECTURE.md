@@ -262,6 +262,11 @@ plugs into:
   Collection `/meta` value (the `meta` build input, or `applyMeta` on the
   returned cipher when the replica's copy changes mid-session), so pushed
   envelopes carry the same blinded `indexed` entries as handle writes.
+  `createEdvEncryptOnlyDocCipher` (same module) is the write-only counterpart
+  built from the descriptor alone -- no key-agreement secret; writes seal to the
+  write epoch's public key reconstructed from the epoch id, and decrypt refuses
+  with the typed `EncryptOnlyCipherError` -- for a writer holding only a
+  recipient's public half.
 
 The port's defining property: **it moves stored bodies verbatim and never
 touches keys**. Writes and single-resource reads ride the raw signed

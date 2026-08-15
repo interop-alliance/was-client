@@ -153,7 +153,7 @@ export const identityCodec: ResourceCodec = {
   async encodeMeta({
     custom
   }: {
-    custom: ResourceMetadataCustom
+    custom: ResourceMetadataCustom | Record<string, unknown>
   }): Promise<{ custom: object }> {
     return { custom }
   },

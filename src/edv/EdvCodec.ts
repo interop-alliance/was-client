@@ -91,6 +91,7 @@ import {
 } from '../internal/indexSchema.js'
 import {
   EncryptionError,
+  EncryptOnlyCipherError,
   IntegrityError,
   KeyUnwrapError,
   NotSupportedError,
@@ -102,7 +103,7 @@ import { readEtag, writeHeaders } from '../internal/conditional.js'
 import { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
 import { resolveEpochKeys } from './epochKeys.js'
-import { didKeyResolver } from './epochCrypto.js'
+import { didKeyResolver, epochKeyIdFor } from './epochCrypto.js'
 import { resolveHmacKey } from './hmacKey.js'
 import type { BlindingKey } from './hmacKey.js'
 import {
@@ -111,11 +112,17 @@ import {
   readJsonData,
   resolvePayload
 } from '../internal/content.js'
-import type { Json, ResourceData, ResourceMetadataCustom } from '../types.js'
+import type {
+  CollectionEncryption,
+  Json,
+  ResourceData,
+  ResourceMetadataCustom
+} from '../types.js'
 import {
   DEFAULT_CONTENT_TYPE,
   EDV_SCHEME_VERSION,
-  envelopeBytes
+  envelopeBytes,
+  LOCAL_SPACE_ID
 } from './constants.js'
 
 /**
@@ -611,14 +618,21 @@ export class EdvCodec implements ResourceCodec {
         // the plaintext content type and the inline-encoding discriminator,
         // taken fresh from this write (the new type/encoding wins on update).
         meta,
-        ...(priorDoc && { sequence: priorDoc.sequence })
+        ...(priorDoc && { sequence: priorDoc.sequence }),
+        // Carry the prior envelope's blinded `indexed` entries into the
+        // update. With no blinding key edv-client stores `doc.indexed`
+        // verbatim; omitting it would replace the entries with `[]` and
+        // silently drop the record from `find()`. With a blinding key the
+        // entries are recomputed from the schema and this copy is the prior
+        // state that recomputation updates.
+        ...(priorDoc?.indexed !== undefined && { indexed: priorDoc.indexed })
       },
       recipients: this.#recipients,
       keyResolver: this.#edv.keyResolver,
       // Blind the declared attributes into the envelope's cleartext `indexed`
       // entries, so the server can match a search without decrypting anything.
       // Absent a blinding key or a declared attribute there is nothing to
-      // index, and passing no hmac carries any prior entries through verbatim.
+      // index, and the prior entries passed above are stored verbatim.
       hmac: this.#writeBlindingKey(),
       update: priorDoc !== null,
       additionalProtectedParams: { was }
@@ -1327,7 +1341,7 @@ export class EdvCodec implements ResourceCodec {
     custom,
     id: resourceId
   }: {
-    custom: ResourceMetadataCustom
+    custom: ResourceMetadataCustom | Record<string, unknown>
     id?: string
   }): Promise<{ custom: object; epoch: string }> {
     const { documentCipher } = this.#edv
@@ -1793,34 +1807,11 @@ export function createEdvEncryption({
       if (scheme !== EDV_SCHEME) {
         return null
       }
-      // Refuse a descriptor from a future scheme version: this client does not
-      // implement it, and silently operating on it could mis-handle the data.
-      const descriptorVersion = encryption?.version
-      if (
-        typeof descriptorVersion === 'number' &&
-        descriptorVersion > EDV_SCHEME_VERSION
-      ) {
-        throw new EncryptionError(
-          `Collection ${spaceId}/${collectionId} declares EDV-over-WAS scheme ` +
-            `version ${descriptorVersion}, which this client (version ` +
-            `${EDV_SCHEME_VERSION}) does not implement. Upgrade the client.`
-        )
-      }
-      // One routing rule: the descriptor's epoch roster (epoch-from-birth).
-      // An encrypted descriptor without epochs is refused fail-closed rather
-      // than routed to a direct-to-key cipher -- under this design it can only
-      // mean a descriptor whose provision-time install has not run yet, or a
-      // tampering host that stripped the roster.
-      if (!encryption?.epochs || encryption.epochs.length === 0) {
-        throw new EncryptionError(
-          `Collection ${spaceId}/${collectionId} is declared encrypted but ` +
-            'its descriptor carries no key epochs. Every encrypted ' +
-            "collection's descriptor carries an epoch roster from creation " +
-            '(install epoch[0] with ensureFirstEpoch at provision time); a ' +
-            'descriptor without one is refused rather than encrypted ' +
-            'straight to a key-agreement key.'
-        )
-      }
+      const descriptor = guardEncryptionDescriptor({
+        label: `${spaceId}/${collectionId}`,
+        encryption
+      })
+      const descriptorVersion = descriptor.version
       // Prefer override-supplied keys; otherwise consult the keystore.
       const resolved =
         (keys as EdvKeys | undefined) ??
@@ -1836,7 +1827,7 @@ export function createEdvEncryption({
       // refused a descriptor without epochs, the one case resolveEpochKeys
       // resolves null for.
       const epochKeys = (await resolveEpochKeys({
-        encryption,
+        encryption: descriptor,
         keyAgreementKey: resolved.keyAgreementKey
       }))!
       // Epoch keys are self-describing did:key key-agreement keys, so a
@@ -1849,7 +1840,7 @@ export function createEdvEncryption({
       const hmac =
         resolved.hmac ??
         (await resolveHmacKey({
-          encryption,
+          encryption: descriptor,
           keyAgreementKey: resolved.keyAgreementKey
         }))
       const edv = new EdvClientCore({
@@ -1873,8 +1864,148 @@ export function createEdvEncryption({
         // Every epoch the descriptor lists, recipient of it or not, so
         // decrypt routing can tell "not a recipient of this epoch" apart
         // from "descriptor has never seen this epoch".
-        epochIds: encryption.epochs.map(epoch => epoch.id)
+        epochIds: descriptor.epochs.map(epoch => epoch.id)
       })
     }
   }
+}
+
+/**
+ * Refuses an encryption descriptor this client cannot operate on, fail-closed:
+ * a descriptor from a future scheme version (this client does not implement
+ * it, and silently operating on it could mis-handle the data), and a
+ * descriptor without a key-epoch roster (under this design it can only mean a
+ * descriptor whose provision-time install has not run yet, or a tampering
+ * host that stripped the roster -- never a collection to encrypt straight to
+ * a key-agreement key). The single guard shared by the multi-recipient build
+ * (`createEdvEncryption`'s `codecFor`) and the encrypt-only build, so the two
+ * cannot drift.
+ *
+ * @param options {object}
+ * @param options.label {string}   names the collection in error messages
+ * @param [options.encryption] {CollectionEncryption}   the descriptor
+ * @returns {CollectionEncryption}   the descriptor, with `epochs` narrowed
+ *   non-empty
+ */
+function guardEncryptionDescriptor({
+  label,
+  encryption
+}: {
+  label: string
+  encryption?: CollectionEncryption
+}): CollectionEncryption & {
+  epochs: NonNullable<CollectionEncryption['epochs']>
+} {
+  const descriptorVersion = encryption?.version
+  if (
+    typeof descriptorVersion === 'number' &&
+    descriptorVersion > EDV_SCHEME_VERSION
+  ) {
+    throw new EncryptionError(
+      `Collection ${label} declares EDV-over-WAS scheme version ` +
+        `${descriptorVersion}, which this client (version ` +
+        `${EDV_SCHEME_VERSION}) does not implement. Upgrade the client.`
+    )
+  }
+  if (!encryption?.epochs || encryption.epochs.length === 0) {
+    throw new EncryptionError(
+      `Collection ${label} is declared encrypted but its descriptor carries ` +
+        "no key epochs. Every encrypted collection's descriptor carries an " +
+        'epoch roster from creation (install epoch[0] with ensureFirstEpoch ' +
+        'at provision time); a descriptor without one is refused rather than ' +
+        'encrypted straight to a key-agreement key.'
+    )
+  }
+  return encryption as CollectionEncryption & {
+    epochs: NonNullable<CollectionEncryption['epochs']>
+  }
+}
+
+/**
+ * Builds a write-only {@link EdvCodec} for one encrypted collection from its
+ * descriptor alone -- no key-agreement secret anywhere. Encryption in this
+ * scheme needs none: a write seals a fresh content-encryption key to the write
+ * epoch's PUBLIC key, and the epoch id IS that key's did:key, so the write
+ * recipient is reconstructed from the descriptor's `currentEpoch` and resolved
+ * through the standard did:key resolver. The codec's write key is a
+ * public-only stand-in (the id the recipient template and resolver work from;
+ * its `deriveSecret` refuses with {@link EncryptOnlyCipherError}) and it holds
+ * no read keys, so it encrypts everything and decrypts nothing.
+ *
+ * Applies the same fail-closed guards as `codecFor`: a future-scheme
+ * descriptor and a descriptor without epochs are refused. The write epoch is
+ * the descriptor's `currentEpoch` when listed, else the last listed epoch --
+ * the multi-recipient build's deterministic fallback, without the "held by
+ * this reader" clause it needs and this build cannot ask.
+ *
+ * @param options {object}
+ * @param options.collectionId {string}   labels errors; and on a slot-bound
+ *   write, the id bound into the envelope
+ * @param options.idDerivation {'content' | 'random'}   how ids are minted
+ * @param options.encryption {CollectionEncryption}   the collection's
+ *   descriptor; must carry the key-epoch roster
+ * @param [options.contentType] {string}   stored envelope content type
+ * @returns {Promise<EdvCodec>}
+ */
+export async function encryptOnlyEdvCodec({
+  collectionId,
+  idDerivation,
+  encryption,
+  contentType = DEFAULT_CONTENT_TYPE
+}: {
+  collectionId: string
+  idDerivation: 'content' | 'random'
+  encryption: CollectionEncryption
+  contentType?: string
+}): Promise<EdvCodec> {
+  const descriptor = guardEncryptionDescriptor({
+    label: `"${collectionId}"`,
+    encryption
+  })
+  const { epochs } = descriptor
+  const writeEpoch =
+    epochs.find(epoch => epoch.id === descriptor.currentEpoch)?.id ??
+    epochs.at(-1)!.id
+  let writeKeyId: string
+  try {
+    writeKeyId = epochKeyIdFor(writeEpoch)
+    // Fail fast on a malformed epoch id: the resolver validates the fragment
+    // is a well-formed X25519 public-key fingerprint, exactly what every
+    // write's recipient resolution will do.
+    await didKeyResolver({ id: writeKeyId })
+  } catch (err) {
+    throw new EncryptionError(
+      `Collection "${collectionId}" lists a malformed key-epoch id ` +
+        `"${writeEpoch}": it is not the did:key of an X25519 key-agreement ` +
+        'key, so no write recipient can be reconstructed from it.',
+      { cause: err }
+    )
+  }
+  const writeKey: IKeyAgreementKey = {
+    id: writeKeyId,
+    async deriveSecret(): Promise<Uint8Array> {
+      throw new EncryptOnlyCipherError(
+        `The cipher for collection "${collectionId}" is encrypt-only: it ` +
+          'was built from the descriptor alone and holds no key-agreement ' +
+          'secret to derive with.'
+      )
+    }
+  }
+  const edv = new EdvClientCore({
+    keyAgreementKey: writeKey,
+    keyResolver: didKeyResolver
+  })
+  return new EdvCodec({
+    edv,
+    keyAgreementKey: writeKey,
+    readKeys: [],
+    writeEpoch,
+    contentType,
+    maxBlobBytes: DEFAULT_MAX_BLOB_BYTES,
+    idDerivation,
+    version: descriptor.version ?? EDV_SCHEME_VERSION,
+    spaceId: LOCAL_SPACE_ID,
+    collectionId,
+    epochIds: epochs.map(epoch => epoch.id)
+  })
 }

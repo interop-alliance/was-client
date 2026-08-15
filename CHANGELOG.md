@@ -1,5 +1,35 @@
 # @interop/was-client Changelog
 
+## 0.39.0 - TBD
+
+### Added
+
+- `createEdvEncryptOnlyDocCipher` (`/edv`): an encrypt-only `DocCipher` built
+  from a collection's encryption descriptor alone, with no key-agreement secret.
+  Writes seal to the write epoch's public key, reconstructed from the
+  descriptor's `currentEpoch` (the epoch id is that key's did:key), producing
+  envelopes shaped exactly like the multi-recipient build's; `decrypt` refuses
+  with the new typed `EncryptOnlyCipherError` (a subtype of `EncryptionError`,
+  stable `name` for cross-copy dispatch). This is the build for a writer that
+  holds only a recipient's public half, e.g. re-sealing a keyring-style record
+  to a recovery code's unlock key the writer can never open.
+
+### Fixed
+
+- An update through the EDV codec carries the prior envelope's blinded
+  `indexed` entries forward. A cipher without the blinding key (the encrypt-only
+  build, or a reader without the descriptor's `hmac`) previously rewrote them to
+  `[]`, silently dropping the record from `collection.find()`.
+- A malformed key-epoch id in `encryptOnlyEdvCodec` now throws a typed
+  `EncryptionError` instead of a plain `Error`.
+- The metadata `custom` input is typed as it is stored: `encodeMeta` (the codec
+  seam and both implementations) and `Collection.setMeta` accept
+  `ResourceMetadataCustom | Record<string, unknown>`, so extra members such as
+  the Collection-level `indexSchema` pass without a cast (the internal
+  `declareIndex` cast is gone, and the test suite typechecks again).
+- `pnpm test` now runs a `typecheck` step (`tsc -p tsconfig.dev.json`), which
+  the chain previously lacked.
+
 ## 0.38.2 - 2026-08-13
 
 ### Fixed

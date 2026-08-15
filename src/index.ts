@@ -28,6 +28,7 @@ export {
   PayloadTooLargeError,
   QuotaExceededError,
   EncryptionError,
+  EncryptOnlyCipherError,
   KeyUnwrapError,
   IntegrityError,
   WasSyncAuthError,

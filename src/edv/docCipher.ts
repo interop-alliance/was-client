@@ -20,6 +20,14 @@
  * cipher that encrypts under the current epoch and decrypts any epoch that
  * reader still holds a key for.
  *
+ * Alongside the reader's build sits `createEdvEncryptOnlyDocCipher`, the
+ * write-only counterpart built from the descriptor alone: encryption seals to
+ * the write epoch's public key (the epoch id IS that key's did:key), so it
+ * needs no key-agreement secret, and decrypt on that cipher refuses with the
+ * typed `EncryptOnlyCipherError`. It is the build for a writer that holds only
+ * a recipient's public half -- e.g. re-sealing a record to a recovery code's
+ * unlock key the writer can never open.
+ *
  * Rotation is prospective, never retroactive: appending an epoch does not
  * rewrite existing resources, and because resource ids are content-derived they
  * stay stable across a rotation.
@@ -38,14 +46,24 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type { CodecWrite, IndexSchema, ResponseLike } from '../codec.js'
+import type {
+  CodecWrite,
+  IndexSchema,
+  ResourceCodec,
+  ResponseLike
+} from '../codec.js'
 import { isChunkedWrite } from '../codec.js'
 import { storedResponse } from '../internal/content.js'
 import { EMPTY_INDEX_SCHEMA, readIndexSchema } from '../internal/indexSchema.js'
-import { KeyUnwrapError, ValidationError } from '../errors.js'
+import {
+  EncryptOnlyCipherError,
+  KeyUnwrapError,
+  ValidationError
+} from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
-import { createEdvEncryption } from './EdvCodec.js'
+import { createEdvEncryption, encryptOnlyEdvCodec } from './EdvCodec.js'
+import { LOCAL_SPACE_ID } from './constants.js'
 import type { RecipientPublicKey } from './recipients.js'
 
 // `isEncryptedEnvelope` and the `DocCipher` interface live in the crypto-free
@@ -56,7 +74,11 @@ import type { RecipientPublicKey } from './recipients.js'
 // second import.
 export { isEncryptedEnvelope } from '../sync/envelope.js'
 export type { DocCipher } from '../sync/types.js'
-export { KeyUnwrapError, UnknownEpochError } from '../errors.js'
+export {
+  EncryptOnlyCipherError,
+  KeyUnwrapError,
+  UnknownEpochError
+} from '../errors.js'
 
 /**
  * A wallet's own key-agreement key as a `RecipientPublicKey` -- the "recipient
@@ -204,7 +226,7 @@ export async function createEdvDocCipher({
   let resolved: Awaited<ReturnType<typeof provider.codecFor>>
   try {
     resolved = await provider.codecFor({
-      spaceId: 'local',
+      spaceId: LOCAL_SPACE_ID,
       collectionId,
       scheme: 'edv',
       encryption,
@@ -230,6 +252,53 @@ export async function createEdvDocCipher({
   }
   const codec = resolved
 
+  // Decodes the collection's stored metadata and installs the index schema it
+  // carries. A codec with no search capability (no blinding key on the
+  // descriptor) has nothing to install, so it never decrypts anything. A
+  // decode failure -- garbage, an envelope bound to another collection, an
+  // epoch this reader cannot unwrap -- propagates: a caller-supplied metadata
+  // value that cannot be read is a wiring bug, and must be loud.
+  const applyMeta = async (stored: {
+    custom?: unknown
+  }): Promise<IndexSchema> => {
+    const { indexing } = codec
+    if (!indexing) {
+      return EMPTY_INDEX_SCHEMA
+    }
+    const schema = readIndexSchema(await codec.decodeMeta(stored))
+    indexing.applySchema(schema)
+    return schema
+  }
+
+  if (meta !== undefined) {
+    await applyMeta(meta)
+  }
+
+  return {
+    applyMeta,
+    ...docCipherOverCodec({ codec, collectionId })
+  }
+}
+
+/**
+ * The {@link DocCipher} surface over a resolved EDV codec: parse the codec's
+ * `EncodedWrite` to the stored `{ id, envelope, epoch? }` shape and route
+ * encrypt/decrypt through it. Shared by the multi-recipient build and the
+ * encrypt-only build (whose returned cipher overrides `decrypt` with a typed
+ * refusal, since its codec holds no read keys).
+ *
+ * @param options {object}
+ * @param options.codec {ResourceCodec}   the resolved EDV codec
+ * @param options.collectionId {string}   labels errors
+ * @returns {DocCipher}
+ */
+function docCipherOverCodec({
+  codec,
+  collectionId
+}: {
+  codec: ResourceCodec
+  collectionId: string
+}): DocCipher {
   // Parses the codec's `EncodedWrite` (id + envelope body bytes) to the stored
   // `{ id, envelope, epoch? }` shape. Shared by the create and update paths.
   const readEncoded = (
@@ -271,31 +340,7 @@ export async function createEdvDocCipher({
     }
   }
 
-  // Decodes the collection's stored metadata and installs the index schema it
-  // carries. A codec with no search capability (no blinding key on the
-  // descriptor) has nothing to install, so it never decrypts anything. A
-  // decode failure -- garbage, an envelope bound to another collection, an
-  // epoch this reader cannot unwrap -- propagates: a caller-supplied metadata
-  // value that cannot be read is a wiring bug, and must be loud.
-  const applyMeta = async (stored: {
-    custom?: unknown
-  }): Promise<IndexSchema> => {
-    const { indexing } = codec
-    if (!indexing) {
-      return EMPTY_INDEX_SCHEMA
-    }
-    const schema = readIndexSchema(await codec.decodeMeta(stored))
-    indexing.applySchema(schema)
-    return schema
-  }
-
-  if (meta !== undefined) {
-    await applyMeta(meta)
-  }
-
   return {
-    applyMeta,
-
     async encrypt({ data }: { data: Json }) {
       // `encode` with no caller id is the add() path: encrypt, then either
       // derive and stamp the content-hash id (`'content'`) or use the minted
@@ -332,6 +377,68 @@ export async function createEdvDocCipher({
       // and the membership `KeyUnwrapError` (listed epoch this reader is not
       // a recipient of) -- is owned by the codec's decrypt.
       return (await codec.decode(envelopeResponse(envelope))) as Json
+    }
+  }
+}
+
+/**
+ * Builds the encrypt-only {@link DocCipher} for one encrypted collection from
+ * its descriptor alone -- no key-agreement secret anywhere. Encryption in this
+ * scheme needs none: every write seals a fresh content-encryption key to the
+ * write epoch's public key, reconstructed from the descriptor's `currentEpoch`
+ * (the epoch id IS the epoch key's did:key). `decrypt` refuses with
+ * {@link EncryptOnlyCipherError} -- the cipher holds no epoch keys, so wiring
+ * it into a read path is a bug this surfaces typed rather than as a key miss.
+ *
+ * The envelope shape is exactly the multi-recipient build's (same recipient
+ * template, same epoch stamp and `was` binding), so a reader that IS a
+ * recipient opens the result with an ordinary `createEdvDocCipher`. This is
+ * the build for a writer holding only a recipient's public half -- e.g.
+ * re-sealing a keyring-style record to a recovery code's unlock key the
+ * writer can never open.
+ *
+ * The descriptor is guarded exactly as the reader's build guards it: a
+ * future-scheme version and a missing epoch roster are refused fail-closed.
+ * No blinded-index schema applies (unwrapping a descriptor's `hmac` key needs
+ * a recipient secret), so writes emit no `indexed` entries.
+ *
+ * @param options {object}
+ * @param options.collectionId {string}   the collection id errors are labeled
+ *   with
+ * @param [options.idDerivation] {'content' | 'random'}   defaults to
+ *   `'content'`
+ * @param options.encryption {CollectionEncryption}   the collection's
+ *   encryption descriptor; must carry the key-epoch roster
+ * @returns {Promise<DocCipher>}
+ */
+export async function createEdvEncryptOnlyDocCipher({
+  collectionId,
+  idDerivation = 'content',
+  encryption
+}: {
+  collectionId: string
+  idDerivation?: 'content' | 'random'
+  encryption: CollectionEncryption
+}): Promise<DocCipher> {
+  const codec = await encryptOnlyEdvCodec({
+    collectionId,
+    idDerivation,
+    encryption
+  })
+  const { encrypt, encryptUpdate } = docCipherOverCodec({
+    codec,
+    collectionId
+  })
+  return {
+    encrypt,
+    encryptUpdate,
+    async decrypt(): Promise<Json> {
+      throw new EncryptOnlyCipherError(
+        `Cannot decrypt a resource of collection "${collectionId}" with an ` +
+          'encrypt-only cipher: it was built from the descriptor alone and ' +
+          'holds no epoch keys. Build a reading cipher with ' +
+          "createEdvDocCipher and the reader's key-agreement key."
+      )
     }
   }
 }

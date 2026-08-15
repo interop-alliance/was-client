@@ -195,6 +195,20 @@ export class IntegrityError extends EncryptionError {
 }
 
 /**
+ * A decrypt was attempted on an encrypt-only cipher. Raised by the cipher
+ * `createEdvEncryptOnlyDocCipher` builds, which holds no key-agreement secret
+ * at all: it seals writes to the descriptor's current epoch public key (the
+ * epoch id IS the epoch key's did:key) and can never open anything. Its own
+ * class so a caller that wired an encrypt-only cipher into a read path gets a
+ * wiring signal, not a key-material failure; a subtype of
+ * {@link EncryptionError}, so fail-closed handling still catches it. Matched
+ * by `err.name` where the seam may resolve to another copy of this package.
+ */
+export class EncryptOnlyCipherError extends EncryptionError {
+  override name = 'EncryptOnlyCipherError'
+}
+
+/**
  * The replication-port signal for a rejected conditional write (HTTP 412): an
  * `ifMatch` ETag did not match (a lost-update conflict) or an `ifNoneMatch`
  * create-if-absent target already exists. Thrown by a `WasSyncPort`

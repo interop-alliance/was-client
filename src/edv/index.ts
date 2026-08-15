@@ -81,7 +81,9 @@ export {
 export type { BlindingKey } from './hmacKey.js'
 export {
   createEdvDocCipher,
+  createEdvEncryptOnlyDocCipher,
   ownerRecipient,
+  EncryptOnlyCipherError,
   UnknownEpochError,
   isEncryptedEnvelope
 } from './docCipher.js'

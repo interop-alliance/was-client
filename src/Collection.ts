@@ -499,14 +499,17 @@ export class Collection {
    * independent of the Collection Description's ETag. Returns the new `etag`.
    *
    * @param meta {object}
-   * @param [meta.custom] {ResourceMetadataCustom}   the user-writable properties
+   * @param [meta.custom] {ResourceMetadataCustom | Record<string, unknown>}
+   *   the user-writable properties; extra members beyond `name` / `tags` are
+   *   admitted (this Collection-level `custom` also carries the persisted
+   *   `indexSchema`)
    * @param options {object}
    * @param [options.ifMatch] {string}       update only if the `/meta` ETag matches
    * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
    * @returns {Promise<{ etag?: string }>}   the metadata's new ETag
    */
   async setMeta(
-    meta: { custom?: ResourceMetadataCustom } = {},
+    meta: { custom?: ResourceMetadataCustom | Record<string, unknown> } = {},
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ etag?: string }> {
     const codec = await this.#codec()
@@ -715,7 +718,7 @@ export class Collection {
             custom: {
               ...custom,
               [INDEX_SCHEMA_PROPERTY]: next
-            } as ResourceMetadataCustom
+            }
           },
           { ifMatch: current?.etag }
         )

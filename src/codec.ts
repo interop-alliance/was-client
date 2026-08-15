@@ -354,7 +354,11 @@ export interface ResourceCodec {
    * are never server-visible.
    *
    * @param input {object}
-   * @param input.custom {ResourceMetadataCustom}   the plaintext user metadata
+   * @param input.custom {ResourceMetadataCustom | Record<string, unknown>}
+   *   the plaintext user metadata; extra members beyond `name` / `tags` are
+   *   admitted (the Collection-level `custom` carries the persisted
+   *   `indexSchema` alongside them, and storage-core types the stored value
+   *   just as widely)
    * @param [input.id] {string}   the resource id the metadata belongs to. An
    *   encrypting codec binds it into the metadata envelope's AEAD-authenticated
    *   protected header (so a server-side swap of two resources' metadata is
@@ -369,7 +373,7 @@ export interface ResourceCodec {
    *   Collection metadata write). Absent for a plaintext/identity codec.
    */
   encodeMeta(input: {
-    custom: ResourceMetadataCustom
+    custom: ResourceMetadataCustom | Record<string, unknown>
     id?: string
   }): Promise<{ custom: object; epoch?: string }>
 
