@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.39.1 - TBD
+
+### Changed
+
+- Pin `json-canonicalize` to exactly 2.0.0: the 2.0.1 publish is broken (its
+  dist files are missing), and the pin keeps consumers resolving through this
+  package from picking it up.
+
 ## 0.39.0 - 2026-08-15
 
 ### Added

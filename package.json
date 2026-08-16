@@ -71,7 +71,7 @@
     "@interop/x25519-key-agreement-key": "^5.2.1",
     "@noble/hashes": "^2.3.0",
     "@scure/base": "^2.3.0",
-    "json-canonicalize": "^2.0.0"
+    "json-canonicalize": "2.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
