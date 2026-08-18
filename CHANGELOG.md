@@ -1,5 +1,10 @@
 # @interop/was-client Changelog
 
+## 0.39.2 - TBD
+
+### Changed
+- Update to latest `@interop/data-integrity-core@8.7.1`.
+
 ## 0.39.1 - 2026-08-16
 
 ### Changed
