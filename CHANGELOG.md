@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.40.2 - TBD
+
+### Changed
+
+- Update to latest `@interop/ezcap@7.4.3`.
+
 ## 0.40.1 - 2026-08-19
 
 ### Added
