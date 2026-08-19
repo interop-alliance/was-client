@@ -26,6 +26,7 @@
  */
 export {
   spacePath,
+  spaceItems,
   collectionPath,
   collectionItems,
   collectionMeta,

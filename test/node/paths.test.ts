@@ -260,6 +260,7 @@ describe('the ./paths subpath barrel', () => {
         'resourcePath',
         'rootCapability',
         'rootCapabilityId',
+        'spaceItems',
         'spacePath',
         'toUrl'
       ].sort()

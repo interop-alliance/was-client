@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.40.1 - TBD
+
+### Added
+
+- `spaceItems` (`/space/:spaceId/`, trailing slash) is exported from the
+  `/paths` subpath -- the `invocationTarget` builder for a subtree-scoped
+  Space delegation.
+
 ## 0.40.0 - 2026-08-19
 
 ### Added
