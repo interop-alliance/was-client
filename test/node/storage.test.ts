@@ -782,6 +782,76 @@ describe('Space.configure() unreadable-description guard', () => {
       controller: 'did:example:bob'
     })
   })
+
+  it('sends a supplied type array on the create PUT', async () => {
+    const { client, calls } = guardedClient()
+    await client.space('s').configure({
+      controller: 'did:example:bob',
+      type: ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace'],
+      force: true
+    })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toMatchObject({
+      controller: 'did:example:bob',
+      type: ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']
+    })
+  })
+
+  it('omits type from the PUT when neither supplied nor current', async () => {
+    const { client, calls } = guardedClient()
+    await client.space('s').configure({ name: 'x', force: true })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).not.toHaveProperty('type')
+  })
+})
+
+describe('Space.configure() type carry-forward', () => {
+  it('re-sends the current type unchanged on an update', async () => {
+    // The server treats a Space's `type` as immutable after creation, so an
+    // ordinary update (a rename, a controller promotion) must re-state the
+    // current value rather than drop it.
+    const calls: RequestArgs[] = []
+    const current = {
+      id: 's',
+      type: ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace'],
+      name: 'x',
+      controller: 'did:example:alice'
+    }
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        if (args.method === 'GET') {
+          return {
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            data: current,
+            async json() {
+              return current
+            }
+          } as unknown as HttpResponse
+        }
+        return {
+          status: 200,
+          headers: new Headers(),
+          data: undefined,
+          async json() {
+            return undefined
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient
+    })
+    const result = await client
+      .space('s')
+      .configure({ controller: 'did:example:promoted' })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toMatchObject({ type: current.type })
+    expect(result.type).toEqual(current.type)
+  })
 })
 
 describe('resource.getText() / getBytes() on a JSON-typed resource', () => {

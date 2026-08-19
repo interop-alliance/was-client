@@ -129,6 +129,10 @@ export class Space {
    * @param desc {object}
    * @param [desc.name] {string}
    * @param [desc.controller] {string}
+   * @param [desc.type] {string[]}   the Space Description's `type` array (e.g.
+   *   a typed auxiliary Space). The server accepts it at creation only and
+   *   treats it as immutable afterwards, so pass it on the create; on an
+   *   update the current description's `type` is re-sent unchanged
    * @param [desc.force] {boolean}   proceed even when the current description is
    *   unreadable and a full description is not supplied (see above)
    * @returns {Promise<SpaceDescription>}
@@ -136,6 +140,7 @@ export class Space {
   async configure(desc: {
     name?: string
     controller?: string
+    type?: string[]
     force?: boolean
   }): Promise<SpaceDescription> {
     const current = await this.describe()
@@ -158,15 +163,21 @@ export class Space {
     const name = desc.name ?? current?.name
     const controller =
       desc.controller ?? current?.controller ?? this.#context.controllerDid
+    const type = desc.type ?? current?.type
     await send(this.#context, {
       path: this.#path,
       method: 'PUT',
       capability: this.#capability,
-      json: { id: this.id, name, controller }
+      json: {
+        id: this.id,
+        name,
+        controller,
+        ...(type !== undefined ? { type } : {})
+      }
     })
     return {
       id: this.id,
-      type: current?.type ?? ['Space'],
+      type: type ?? ['Space'],
       ...(name !== undefined ? { name } : {}),
       // `controller` is a user-supplied DID string; assert it as the branded
       // `IDID` the wire type now uses (the server validates the DID form).

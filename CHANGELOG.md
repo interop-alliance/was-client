@@ -1,8 +1,18 @@
 # @interop/was-client Changelog
 
+## 0.40.0 - TBD
+
+### Added
+
+- `Space.configure` accepts a `type` array for the Space Description (typed
+  auxiliary Spaces). Sent on the create PUT; on an update the current
+  description's `type` is re-sent unchanged (the server treats it as immutable
+  after creation).
+
 ## 0.39.2 - 2026-08-18
 
 ### Changed
+
 - Update to latest `@interop/data-integrity-core@8.7.1`.
 
 ## 0.39.1 - 2026-08-16
