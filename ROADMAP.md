@@ -135,6 +135,37 @@ stream-profile envelopes (surface them as opaque and let the app fetch via a
 live handle). Related: WCL-11 is the push-side sibling (schema emission), not
 this.
 
+### WCL-18: Refuse an unrecognized `meta.encoding` in `EdvCodec#fromDocument`
+
+- status: todo
+- priority: medium
+- labels: encryption, spec-conformance, fail-closed
+- touches:
+  - was-client: `src/edv/EdvCodec.ts` (`#fromDocument`), a test in
+    `test/node/edv-codec.test.ts`, CHANGELOG.md
+  - encrypted-collections-spec: unaffected (spec.md `#plaintext-document`
+    already requires the refusal; this item brings the code to it)
+- acceptance:
+  - [ ] `#fromDocument` dispatches on `meta.encoding` as a closed set: absent
+        means JSON (content returned verbatim), `"utf-8"` and `"base64"` decode
+        as today, `"chunked"` stays on its existing route, and any other
+        present value throws `EncryptionError` (a scheme refusal), instead of
+        falling through to "return `content` as JSON"
+  - [ ] A test asserts that an envelope sealing `meta: { contentType,
+        encoding: "gzip" }` (or any unknown string, and a non-string value)
+        is refused and not returned as JSON
+  - [ ] ARCHITECTURE.md's decode-path note, if it describes the fallthrough,
+        is updated
+
+discovered-from: WASS-15 (encrypted-collections-spec `#plaintext-document`,
+2026-08-20). The spec's plaintext-document section makes `meta.encoding` a
+closed set and, per the profile's fail-closed extensibility invariant, requires
+a reader to refuse a value it does not recognize rather than pick any
+interpretation of `content`. `#fromDocument` today handles `"utf-8"` and
+`"base64"` and returns `content` verbatim for everything else, so an unknown
+encoding silently decodes as JSON. Reading is unaffected for every envelope a
+conforming writer produces; the change only closes the fallthrough.
+
 ### WCL-4: Live Google Drive backend round-trip
 
 - status: draft (blocked externally)
