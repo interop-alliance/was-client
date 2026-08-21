@@ -188,6 +188,141 @@ describe('replaceRecipient', () => {
     ).not.toBeNull()
   })
 
+  it('escrows several incoming recipients and rotates them all in with ONE write', async () => {
+    const spentKey = await makeUserKeyLike()
+    const standing = await makeReader()
+    const replacement = await makeReader()
+    const survivor = await makeReader()
+    const store = memoryStore(
+      await seedDescriptor([
+        { kid: spentKey.kid, publicKeyMultibase: spentKey.publicKeyMultibase },
+        {
+          kid: survivor.kak.id,
+          publicKeyMultibase: survivor.publicKeyMultibase
+        }
+      ])
+    )
+    const historicEpochId = store.state.descriptor.currentEpoch!
+
+    const result = await replaceRecipient({
+      store,
+      retire: spentKey.kid,
+      recipient: [
+        {
+          id: standing.kak.id,
+          publicKeyMultibase: standing.publicKeyMultibase
+        },
+        {
+          id: replacement.kak.id,
+          publicKeyMultibase: replacement.publicKeyMultibase
+        }
+      ],
+      owner: { keyAgreementKey: spentKey.kak },
+      pull: async () => {}
+    })
+
+    expect(store.writes).toBe(1)
+    expect(result.epochs).toHaveLength(2)
+    // The escrow fold reached BOTH incoming keys on the historical epoch.
+    const historic = result.epochs!.find(epoch => epoch.id === historicEpochId)!
+    const historicKids = historic.recipients.map(entry => entry.header.kid)
+    expect(historicKids).toContain(standing.kak.id)
+    expect(historicKids).toContain(replacement.kak.id)
+    // The fresh epoch wraps to both incoming keys and the survivor, never the
+    // retired key.
+    const current = result.epochs!.find(
+      epoch => epoch.id === result.currentEpoch
+    )!
+    const currentKids = current.recipients.map(entry => entry.header.kid)
+    expect(currentKids).toContain(standing.kak.id)
+    expect(currentKids).toContain(replacement.kak.id)
+    expect(currentKids).toContain(survivor.kak.id)
+    expect(currentKids).not.toContain(spentKey.kid)
+    // Every incoming key unwraps both epochs (the fold kept the earlier
+    // reader's wraps while adding the later one's).
+    for (const reader of [standing, replacement]) {
+      for (const epoch of [historic, current]) {
+        const entry = epoch.recipients.find(
+          wrapped => wrapped.header.kid === reader.kak.id
+        )!
+        expect(
+          await unwrapEpochSecret({ entry, keyAgreementKey: reader.kak })
+        ).not.toBeNull()
+      }
+    }
+  })
+
+  it('converges without a write when every incoming recipient already stands everywhere', async () => {
+    const spentKey = await makeUserKeyLike()
+    const standing = await makeReader()
+    const replacement = await makeReader()
+    const store = memoryStore(
+      await seedDescriptor([
+        { kid: spentKey.kid, publicKeyMultibase: spentKey.publicKeyMultibase }
+      ])
+    )
+    const recipients = [
+      { id: standing.kak.id, publicKeyMultibase: standing.publicKeyMultibase },
+      {
+        id: replacement.kak.id,
+        publicKeyMultibase: replacement.publicKeyMultibase
+      }
+    ]
+    const first = await replaceRecipient({
+      store,
+      retire: spentKey.kid,
+      recipient: recipients,
+      owner: { keyAgreementKey: spentKey.kak },
+      pull: async () => {}
+    })
+    const second = await replaceRecipient({
+      store,
+      retire: spentKey.kid,
+      recipient: recipients,
+      // The re-run's owner is an incoming key: the escrow made it a recipient
+      // of every epoch.
+      owner: { keyAgreementKey: standing.kak },
+      pull: async () => {}
+    })
+    expect(store.writes).toBe(1)
+    expect(second.epochs).toHaveLength(first.epochs!.length)
+    expect(second.currentEpoch).toBe(first.currentEpoch)
+  })
+
+  it('refuses an empty incoming array and an incoming recipient listed in retire', async () => {
+    const spentKey = await makeUserKeyLike()
+    const incoming = await makeReader()
+    const store = memoryStore(
+      await seedDescriptor([
+        { kid: spentKey.kid, publicKeyMultibase: spentKey.publicKeyMultibase }
+      ])
+    )
+    await expect(
+      replaceRecipient({
+        store,
+        retire: spentKey.kid,
+        recipient: [],
+        owner: { keyAgreementKey: spentKey.kak },
+        pull: async () => {}
+      })
+    ).rejects.toThrow(ValidationError)
+    await expect(
+      replaceRecipient({
+        store,
+        retire: [spentKey.kid, incoming.kak.id],
+        recipient: [
+          {
+            id: incoming.kak.id,
+            publicKeyMultibase: incoming.publicKeyMultibase
+          }
+        ],
+        owner: { keyAgreementKey: spentKey.kak },
+        pull: async () => {}
+      })
+    ).rejects.toThrow(ValidationError)
+    expect(store.writes).toBe(0)
+  })
+
   it('appends zero redundant epochs on a naive re-run', async () => {
     const oldUserKey = await makeUserKeyLike()
     const newUserKey = await makeUserKeyLike()

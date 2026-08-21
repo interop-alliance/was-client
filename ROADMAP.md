@@ -148,14 +148,14 @@ this.
 - acceptance:
   - [ ] `#fromDocument` dispatches on `meta.encoding` as a closed set: absent
         means JSON (content returned verbatim), `"utf-8"` and `"base64"` decode
-        as today, `"chunked"` stays on its existing route, and any other
-        present value throws `EncryptionError` (a scheme refusal), instead of
-        falling through to "return `content` as JSON"
-  - [ ] A test asserts that an envelope sealing `meta: { contentType,
-        encoding: "gzip" }` (or any unknown string, and a non-string value)
-        is refused and not returned as JSON
-  - [ ] ARCHITECTURE.md's decode-path note, if it describes the fallthrough,
-        is updated
+        as today, `"chunked"` stays on its existing route, and any other present
+        value throws `EncryptionError` (a scheme refusal), instead of falling
+        through to "return `content` as JSON"
+  - [ ] A test asserts that an envelope sealing
+        `meta: { contentType,     encoding: "gzip" }` (or any unknown string,
+        and a non-string value) is refused and not returned as JSON
+  - [ ] ARCHITECTURE.md's decode-path note, if it describes the fallthrough, is
+        updated
 
 discovered-from: WASS-15 (encrypted-collections-spec `#plaintext-document`,
 2026-08-20). The spec's plaintext-document section makes `meta.encoding` a

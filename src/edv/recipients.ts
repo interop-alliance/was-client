@@ -781,20 +781,21 @@ export async function removeRecipient({
 }
 
 /**
- * Replaces one reader (or several) with another in ONE descriptor write -- the
+ * Replaces one reader (or several) with another (or several) in ONE
+ * descriptor write -- the
  * shape of a key rotation cascading over a collection (e.g. a per-user key
- * replaced by its successor): the incoming recipient is escrowed into EVERY
+ * replaced by its successor): each incoming recipient is escrowed into EVERY
  * epoch (history included, {@link addRecipient}'s semantics) and the current
  * epoch is rotated off the retiring recipient(s) ({@link removeRecipient}'s
  * semantics), in a single compare-and-swap. Two requests total (the read and
  * the CAS write) against the four a compose of addRecipient + removeRecipient
  * would cost, and no intermediate state in which both keys are current.
  *
- * Idempotent to convergence like its two halves: an epoch already carrying the
+ * Idempotent to convergence like its two halves: an epoch already carrying an
  * incoming recipient is left untouched; when additionally no retiring
  * recipient remains in the current epoch, nothing is written at all -- a naive
  * re-run after a crash appends zero redundant epochs. An escrow-only state
- * (the incoming recipient missing from some epoch but no retiring recipient
+ * (an incoming recipient missing from some epoch but no retiring recipient
  * current) writes the escrow wraps without minting an epoch.
  *
  * The pull-axis contract is {@link removeRecipient}'s verbatim: the default
@@ -817,8 +818,9 @@ export async function removeRecipient({
  * @param [options.space] {Space}   the default pull axis, with `revoke`
  * @param options.retire {string | string[]}   the retiring recipient kid(s),
  *   dropped from the fresh epoch's roster
- * @param options.recipient {RecipientPublicKey}   the incoming reader's public
- *   key-agreement key, escrowed into every epoch and wrapped into the fresh one
+ * @param options.recipient {RecipientPublicKey | RecipientPublicKey[]}   the
+ *   incoming reader(s)' public key-agreement key(s), each escrowed into every
+ *   epoch and wrapped into the fresh one
  * @param options.owner {object}   the caller's own key material
  * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps each epoch
  *   key for the escrow -- it must be a recipient of every epoch (a retiring
@@ -829,7 +831,7 @@ export async function removeRecipient({
  *   exclusive with `space` / `revoke`
  * @param [options.resolveRecipientKey] {function}   resolves a remaining
  *   recipient's kid for the fresh epoch, `null` to drop it -- the
- *   {@link removeRecipient} contract (the incoming recipient never routes
+ *   {@link removeRecipient} contract (the incoming recipients never route
  *   through it)
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
@@ -848,7 +850,7 @@ export async function replaceRecipient({
   store?: EncryptionDescriptorStore
   space?: Space
   retire: string | string[]
-  recipient: RecipientPublicKey
+  recipient: RecipientPublicKey | RecipientPublicKey[]
   owner: { keyAgreementKey: IKeyAgreementKey }
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
@@ -857,15 +859,22 @@ export async function replaceRecipient({
   const descriptorStore = descriptorStoreFor({ collection, store })
   const pullAxis = resolvePullAxis({ space, revoke, pull })
   const retiring = Array.isArray(retire) ? retire : [retire]
+  const incoming = Array.isArray(recipient) ? recipient : [recipient]
   if (retiring.length === 0) {
     throw new ValidationError(
       'replaceRecipient needs at least one retiring recipient kid; use ' +
         'addRecipient for a pure escrow.'
     )
   }
-  if (retiring.includes(recipient.id)) {
+  if (incoming.length === 0) {
     throw new ValidationError(
-      'replaceRecipient cannot retire the incoming recipient itself.'
+      'replaceRecipient needs at least one incoming recipient; use ' +
+        'removeRecipient for a pure removal.'
+    )
+  }
+  if (incoming.some(reader => retiring.includes(reader.id))) {
+    throw new ValidationError(
+      'replaceRecipient cannot retire an incoming recipient itself.'
     )
   }
   const { epochId, secret } = await mintEpoch()
@@ -880,30 +889,41 @@ export async function replaceRecipient({
         )
       }
       // The blinded-index roster mirrors the epoch semantics in the same
-      // write: the successor gains a wrap entry, the retiring kid(s) lose
+      // write: each successor gains a wrap entry, the retiring kid(s) lose
       // theirs. The key itself never rotates.
-      const escrowedHmac = await escrowIntoHmac({
-        hmac: current.hmac,
-        recipient,
-        owner,
-        operation: 'replaceRecipient',
-        reader: 'incoming'
-      })
+      let escrowedHmac: CollectionEncryptionHmac | null = null
+      for (const reader of incoming) {
+        const next = await escrowIntoHmac({
+          hmac: escrowedHmac ?? current.hmac,
+          recipient: reader,
+          owner,
+          operation: 'replaceRecipient',
+          reader: 'incoming'
+        })
+        if (next !== null) {
+          escrowedHmac = next
+        }
+      }
       const nextHmac =
         withoutHmacRecipients({
           hmac: escrowedHmac ?? current.hmac,
           retiring
         }) ?? escrowedHmac
-      // Escrow the incoming recipient into every epoch it is missing from
+      // Escrow each incoming recipient into every epoch it is missing from
       // (addRecipient's escrow, so the whole replacement is one write).
-      const { epochs: escrowed, changed: escrowChanged } =
-        await escrowIntoEpochs({
-          epochs,
-          recipient,
+      let escrowed = epochs
+      let escrowChanged = false
+      for (const reader of incoming) {
+        const next = await escrowIntoEpochs({
+          epochs: escrowed,
+          recipient: reader,
           owner,
           operation: 'replaceRecipient',
           reader: 'incoming'
         })
+        escrowed = next.epochs
+        escrowChanged = escrowChanged || next.changed
+      }
       // Rotate only when a retiring kid is still current (the removeRecipient
       // no-op rule, so a naive re-run appends zero redundant epochs).
       const currentEpoch =
@@ -928,16 +948,16 @@ export async function replaceRecipient({
           remaining.add(entry.header.kid)
         }
       }
-      // The escrow above already placed the incoming recipient in the current
-      // epoch, so it is in `remaining`; short-circuit the resolver for it (its
-      // public key is in hand) and route only the other survivors through the
-      // caller's resolver.
+      // The escrow above already placed each incoming recipient in the
+      // current epoch, so they are in `remaining`; short-circuit the resolver
+      // for them (their public keys are in hand) and route only the other
+      // survivors through the caller's resolver.
       const newEpoch = await rotateEpoch({
         epochId,
         secret,
         remaining,
         resolveRecipientKey: async kid =>
-          kid === recipient.id ? recipient : resolveRecipientKey(kid)
+          incoming.find(reader => reader.id === kid) ?? resolveRecipientKey(kid)
       })
       return {
         ...current,

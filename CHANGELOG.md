@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.41.0 - TBD
+
+### Changed
+
+- `replaceRecipient` accepts one or several incoming recipients
+  (`recipient: RecipientPublicKey | RecipientPublicKey[]`): each is escrowed
+  into every epoch and wrapped into the fresh epoch, still one descriptor write.
+  Single-recipient calls are unchanged.
+
 ## 0.40.2 - 2026-08-19
 
 ### Changed
@@ -11,8 +20,8 @@
 ### Added
 
 - `spaceItems` (`/space/:spaceId/`, trailing slash) is exported from the
-  `/paths` subpath -- the `invocationTarget` builder for a subtree-scoped
-  Space delegation.
+  `/paths` subpath -- the `invocationTarget` builder for a subtree-scoped Space
+  delegation.
 
 ## 0.40.0 - 2026-08-19
 

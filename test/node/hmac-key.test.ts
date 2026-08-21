@@ -384,6 +384,39 @@ describe('roster operations carry the blinded-index key', () => {
     })
     expect(forCarol!.id).toBe(hmacId)
   })
+
+  it('replaceRecipient escrows every incoming recipient into the blinding-key roster', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const carol = await makeReader()
+    const dave = await makeReader()
+    const { encryption, hmacId } = await makeDescriptor([alice, bob])
+    const store = memoryStore(encryption)
+
+    const replaced = (await replaceRecipient({
+      store,
+      retire: bob.kak.id,
+      recipient: [
+        { id: carol.kak.id, publicKeyMultibase: carol.publicKeyMultibase },
+        { id: dave.kak.id, publicKeyMultibase: dave.publicKeyMultibase }
+      ],
+      owner: { keyAgreementKey: alice.kak },
+      pull: async () => {}
+    })) as EncryptionWithHmac
+    expect(replaced.hmac!.id).toBe(hmacId)
+    // The fold kept the earlier incoming wrap while adding the later one:
+    // survivor plus both incoming, retiree out.
+    expect(
+      replaced.hmac!.recipients.map(entry => entry.header.kid).sort()
+    ).toEqual([alice.kak.id, carol.kak.id, dave.kak.id].sort())
+    for (const reader of [carol, dave]) {
+      const resolved = await resolveHmacKey({
+        encryption: replaced,
+        keyAgreementKey: reader.kak
+      })
+      expect(resolved!.id).toBe(hmacId)
+    }
+  })
 })
 
 describe('codecFor blinding-key resolution', () => {
