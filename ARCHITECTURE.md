@@ -393,6 +393,100 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
 7. **The wire model lives in `@interop/storage-core`** (description, listing,
    policy, backend, and problem types). Do not redefine wire types locally.
 
+## Glossary
+
+The repo's ubiquitous language: one canonical term per concept, used the same
+way in code, tests, docs, and conversation. An `Avoid:` list names the synonyms
+this repo does not use, so a reviewer or an agent can challenge a term that
+drifts. The convention itself is canonical in isomorphic-lib-template's
+ARCHITECTURE.md Glossary section. The protocol terms -- Space, Collection,
+Resource, controller, zcap, root capability, invocation target -- are owned by
+the [WAS spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)'s
+Terminology section; entries below restate one only to say how this client
+uses it, and otherwise cover the client-side concepts this file names.
+
+- **Handle** -- a client-side object addressing one WAS node, constructed
+  without network I/O. The kinds are `WasClient` (the spaces repository),
+  `Space`, `Collection`, and `Resource`, each creating the next
+  (`src/*.ts`). See The handle model.
+- **`ClientContext`** -- the single `{ serverUrl, zcapClient, controllerDid,
+  encryption? }` record every handle shares by reference
+  (`src/internal/request.ts`). See The handle model.
+- **Bound capability** -- the delegated zcap carried on a handle and inherited
+  by its children as the default for their requests. See The handle model.
+- **zcap action** -- the action named in a zcap invocation, which in WAS is the
+  HTTP method (`GET`, `PUT`, ...), because WAS scopes capabilities by verb.
+  Avoid: ezcap's `read` / `write` actions.
+- **Codec seam** -- the interface-only boundary between core and any encryption
+  implementation: `ResourceCodec` and `EncryptionProvider` in `src/codec.ts`.
+  See The codec seam.
+- **`ResourceCodec`** -- the per-collection transform a resource's content and
+  metadata pass through: `encode` / `decode`, `encodeMeta` / `decodeMeta`, and
+  the `conditionalWrites` flag. See The codec seam.
+- **Identity codec** -- the byte-exact pass-through `ResourceCodec` used for a
+  plaintext collection (`src/internal/codec.ts`). See The codec seam.
+- **`EncryptionProvider`** -- the keys-only injection point (`codecFor`) that
+  supplies key material to a codec. It does not decide whether a collection is
+  encrypted; the encryption descriptor does. See The codec seam.
+- **`CodecHolder`** -- the per-`Collection` memoized codec resolution, shared
+  with child handles and invalidated by `reset()` when the encryption
+  descriptor changes. See The handle model and Concurrency.
+- **`ChunkedWrite` plan** -- what `encode` answers with instead of an
+  `EncodedWrite` when a payload cannot be one request: a resource id plus an
+  `execute` method the insert path runs over a `CodecRequestContext`. See The
+  codec seam.
+- **Indexing capability** -- the optional per-codec state and methods
+  (`applySchema` / `schema` / `buildQuery`) that let an encrypted collection
+  carry a persisted index schema and blind its query terms. Present only where
+  the descriptor declares a blinding key. See The codec seam.
+- **Blinded index** -- the `indexed` entries written beside a JWE, and the
+  blinded terms `Collection.find()` posts to the collection `/query` endpoint
+  under the `blinded-index` profile. See The codec seam.
+- **`EdvCodec`** -- the encrypting `ResourceCodec` implementation
+  (`src/edv/EdvCodec.ts`), reached through the `createEdvEncryption` factory.
+  See The EDV layer.
+- **`WasTransport`** -- the EDV-native `@interop/edv-client` `Transport` that
+  maps EDV document operations onto WAS resource CRUD, one vault per
+  collection (`src/edv/`). See The EDV layer.
+- **Key epoch** -- one generation of a collection's encryption key: a fresh
+  X25519 key whose secret is wrapped to each reader on the descriptor. Rotation
+  adds an epoch (`src/edv/epochCrypto.ts`, `epochKeys.ts`, `epochRoster.ts`).
+  See The EDV layer.
+- **Encryption descriptor** -- the plaintext scaffolding on the Collection
+  description that declares whether and how a collection is encrypted
+  (`scheme`, `version`, epoch ids, blinding-key id). It, not the client, is
+  what says a collection is encrypted. See The codec seam and The EDV layer.
+- **Descriptor-store seam** -- the read-validator/conditional-write pair the
+  descriptor CAS loop runs over (`src/edv/descriptorStore.ts`), with two
+  adapters: the Collection description and a plain JSON Resource. See The EDV
+  layer.
+- **Envelope binding** -- the AEAD-authenticated `was` parameter in a JWE
+  protected header (scheme version, plus `resource` or `collection`) that ties
+  an envelope to the slot it belongs in, verified on decode. See The EDV layer.
+- **`maxBlobBytes`** -- the payload size above which a binary `add()` is routed
+  to the chunked path. Avoid: blob size cap, size limit.
+- **`WasSyncPort`** -- the injected WAS-access seam for cross-replica
+  synchronization (`src/sync/types.ts`, implemented by `createWasSyncPort`): it
+  moves stored bodies verbatim and never touches keys. Avoid: sync engine (the
+  sync layer supplies seams and does not drive reconciliation). See The sync
+  layer.
+- **`DocCipher`** -- the per-collection encrypt/decrypt seam above the port
+  (`src/sync/types.ts`), turning a JSON document into its stored body and back.
+  Implementations: `createPlaintextDocCipher`, `createEdvDocCipher`,
+  `createEdvEncryptOnlyDocCipher`. See The sync layer.
+- **Content id** -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
+  unpadded, so the same logical document mints the same resource id on every
+  replica (`src/sync/cid.ts`). See The sync layer.
+- **Sync checkpoint** -- the change feed's keyset resume position
+  `{ id, updatedAt }`, server time only and opaque to the client. See The sync
+  layer.
+- **Feature probe** -- the once-per-Collection read of the backend descriptor's
+  advertised `features` tokens, which also distinguishes "read and lists none"
+  from "could not be read" (`src/internal/features.ts`). See Feature detection.
+- **Masked 404** -- a 404 that means "missing OR not visible to you", because
+  WAS returns unauthorized as not-found. It is what the fail-closed rules exist
+  to handle. See The 404-vs-null convention.
+
 ## Where to add what
 
 | Change                            | Start in                                                                   |

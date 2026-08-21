@@ -4,8 +4,8 @@ This is a client implementation of the Wallet Attached Storage spec, a W3C CCG
 work item (home: <https://github.com/w3c-ccg/wallet-attached-storage-spec>;
 rendered: <https://w3c-ccg.github.io/wallet-attached-storage-spec/>).
 
-The internal design (layering, request lifecycle, the codec/encryption seam, and
-the invariants to preserve when changing things) is documented in
+The internal design (layering, request lifecycle, the codec/encryption seam, the
+invariants to preserve when changing things, and the glossary) is documented in
 [ARCHITECTURE.md](./ARCHITECTURE.md) -- read it before making structural
 changes.
 
@@ -89,6 +89,13 @@ rules that apply when working an item:
 - Cross-repo decisions are recorded as `decisions/NNNN-slug.md` in the repo that
   owns the contract; the convention and template are canonical in
   [isomorphic-lib-template's `decisions/`](https://github.com/interop-alliance/isomorphic-lib-template/tree/main/decisions).
+- The domain vocabulary is [ARCHITECTURE.md](./ARCHITECTURE.md)'s Glossary; the
+  refinement rules and the mapping for skills that expect `CONTEXT.md` or
+  `docs/adr/` are canonical in
+  [isomorphic-lib-template's AGENTS.md](https://github.com/interop-alliance/isomorphic-lib-template/blob/main/AGENTS.md)
+  ("Domain language") and its
+  [`decisions/README.md`](https://github.com/interop-alliance/isomorphic-lib-template/blob/main/decisions/README.md)
+  ("Qualifying test").
 
 ## Conventions
 
