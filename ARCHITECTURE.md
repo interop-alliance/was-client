@@ -283,7 +283,11 @@ descriptor created with `If-None-Match: *`; integrity rests on client-side epoch
 pinning plus the hosting profile's governance -- for a log-governed descriptor,
 the Resource Log Profile's verified entry proofs and chain-head pin). The
 hosting collection may be plaintext or encrypted; an encrypted host must be
-created under an id the codec mints.
+created under an id the codec mints. A `mutate` resolving `null` means "the
+store already reflects the desired state" and ends the loop without a write;
+`initRecipients` uses it to adopt the winner's descriptor after losing the
+first-create race, while still refusing (`ValidationError`) a descriptor that
+already carried epochs on its first read.
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on

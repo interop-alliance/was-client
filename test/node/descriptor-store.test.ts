@@ -195,11 +195,11 @@ describe('resourceDescriptorStore', () => {
     expect(Array.from(unwrapped!)).toEqual(Array.from(preminted.secret))
   })
 
-  it('a lost create race converges on the already-initialized error', async () => {
+  it("a lost create race adopts the winner's descriptor", async () => {
     // The roster reads absent, but a concurrent writer creates it before this
     // caller's guarded create lands (412). The retry re-reads the now-present
-    // descriptor and surfaces initRecipients' already-has-epochs refusal instead
-    // of clobbering the other writer's roster.
+    // descriptor and resolves it as-is instead of clobbering (or refusing)
+    // the other writer's roster.
     const alice = await makeReader()
     const bob = await makeReader()
     const roster = fakeRosterResource()
@@ -218,19 +218,34 @@ describe('resourceDescriptorStore', () => {
         return roster.getWithEtag()
       }
     }
+    const descriptor = await initRecipients({
+      store: resourceDescriptorStore({
+        resource: racing as unknown as Resource
+      }),
+      recipients: [recipientOf(alice)]
+    })
+    // The loser resolves the winner's roster and never replaced it.
+    const kidsOf = (candidate: CollectionEncryption) =>
+      candidate.epochs![0]!.recipients.map(entry => entry.header.kid)
+    expect(kidsOf(descriptor)).toEqual([bob.kak.id])
+    expect(
+      kidsOf(roster._state.content as unknown as CollectionEncryption)
+    ).toEqual([bob.kak.id])
+    expect(readsSeen).toBe(2)
+  })
+
+  it('refuses a store that already held epochs on the first read', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const roster = fakeRosterResource(await seedDescriptor([bob]))
     await expect(
       initRecipients({
         store: resourceDescriptorStore({
-          resource: racing as unknown as Resource
+          resource: roster as unknown as Resource
         }),
         recipients: [recipientOf(alice)]
       })
     ).rejects.toThrow(/already has key epochs/)
-    // The loser's create never replaced the winner's roster.
-    const kids = (
-      roster._state.content as unknown as CollectionEncryption
-    ).epochs![0]!.recipients.map(entry => entry.header.kid)
-    expect(kids).toEqual([bob.kak.id])
   })
 
   it('addRecipient CAS-updates the roster resource (If-Match)', async () => {

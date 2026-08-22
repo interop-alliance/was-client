@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.44.3 - TBD
+
+### Fixed
+
+- `initRecipients` now adopts the winner's descriptor after losing the create
+  (or compare-and-swap) race instead of refusing with the "already has key
+  epochs" `ValidationError`. The refusal is kept for a store that already held
+  epochs on the first read.
+
 ## 0.44.2 - 2026-08-22
 
 ### Changed

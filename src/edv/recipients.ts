@@ -538,7 +538,10 @@ export async function ensureFirstEpoch({
  * descriptor host starts absent (e.g. `resourceDescriptorStore`, whose roster
  * resource does not exist before the first init), the descriptor itself is
  * created from scratch with a create-if-absent guard (`If-None-Match: *`), so
- * two racing first inits cannot clobber one another.
+ * two racing first inits cannot clobber one another: the loser re-reads and
+ * resolves the winner's descriptor unchanged (the caller's recipients are not
+ * added; use `addRecipient` for that). A descriptor that already carries
+ * epochs on the first read is refused with `ValidationError`.
  *
  * @param options {object}
  * @param [options.collection] {Collection}   the (already encrypted) collection
@@ -574,6 +577,10 @@ export async function initRecipients({
     recipients,
     preminted: premintedEpoch
   })
+  // Epochs present on the FIRST read mean a caller misusing initRecipients on
+  // an initialized collection (refused); epochs present on a later read mean a
+  // lost race (adopted).
+  let sawFirstRead = false
   return casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     // A store whose descriptor starts absent initializes from a versioned
@@ -582,11 +589,19 @@ export async function initRecipients({
     // the seed.
     seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
     mutate: async descriptor => {
+      const firstRead = !sawFirstRead
+      sawFirstRead = true
       if (descriptor.epochs && descriptor.epochs.length > 0) {
-        throw new ValidationError(
-          'This collection already has key epochs; use addRecipient to add a ' +
-            'reader instead of initRecipients.'
-        )
+        if (firstRead) {
+          throw new ValidationError(
+            'This collection already has key epochs; use addRecipient to add a ' +
+              'reader instead of initRecipients.'
+          )
+        }
+        // A concurrent initRecipients won the create (or CAS) race: the
+        // winner's roster is the collection's roster. Adopt it instead of
+        // clobbering it; the loop returns the re-read descriptor as-is.
+        return null
       }
       return withFirstEpoch({ descriptor, epoch })
     }

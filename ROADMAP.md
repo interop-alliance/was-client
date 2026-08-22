@@ -530,6 +530,60 @@ fail at resolution or only when it tries to use it is a fail-closed policy
 question, not a performance one, which is why this is parked as a draft rather
 than filed as work.
 
+### WCL-30: `initRecipients` refuses instead of adopting the winner of a lost create race
+
+- status: in-progress
+- priority: medium
+- labels: encryption, cas, idempotence
+- touches:
+  - was-client `src/edv/recipients.ts` (`initRecipients`' `mutate`),
+    ARCHITECTURE.md if the recipient-loop contract is stated there -- done
+    2026-08-22 (ships in 0.44.3)
+  - wallet-core `ensureUserKeyRoster` (its "converges on the winner's roster"
+    contract becomes true), `credentialAnchoredGenesis` (the roster stage stops
+    reporting a lost race as failed), `test/node/descriptors.test.ts` (the
+    non-member create-race case pins today's `ValidationError` and flips to the
+    adopted descriptor) -- open: needs wallet-core on the published
+    `@interop/was-client@0.44.3`
+- acceptance:
+  - [x] A lost guarded-create race (`store.create` throws
+        `PreconditionFailedError`, or the store's pre-write pass reports one)
+        ends with `initRecipients` resolving the winner's descriptor
+  - [x] The `ValidationError` "already has key epochs" is kept for a caller
+        whose store already held epochs on the first read
+
+`src/edv/recipients.ts:584-592`, `:1199-1214`. After a lost create,
+`casUpdateDescriptor` re-reads and calls `mutate` on the winner's descriptor;
+`initRecipients`' `mutate` throws `ValidationError` whenever `epochs` is
+non-empty, so the loser never reaches the "nothing to write" return. Returning
+`null` from `mutate` when the descriptor already carries epochs is the signal
+the loop already honors. Surfaced by the ceremony-reviewer pass over
+wallet-core's log-governed store (vh-resource-log VRL-2, 2026-08-22), whose
+`create` now translates a pre-write refusal against an existing log into this
+race.
+
+### WCL-31: `casUpdateDescriptor` matches `PreconditionFailedError` by `instanceof`
+
+- status: todo
+- priority: low
+- labels: errors, cas
+- touches:
+  - was-client `src/edv/recipients.ts` (the two catch sites in
+    `casUpdateDescriptor`)
+- acceptance:
+  - [ ] The rebase branch matches the conflict by
+        `err.name ===     'PreconditionFailedError'`, so a conflict minted by a
+        consumer resolving its own was-client copy still rebases
+  - [ ] A test throws a same-named foreign class from a fake store's `replace`
+        and `create` and sees the loop rebase
+
+`src/edv/recipients.ts:1207`, `:1225`. wallet-core's log-governed descriptor
+store mints the conflict from its own `@interop/was-client` import; in a tree
+that resolves was-client twice every lost roster CAS, and now every lost genesis
+race, becomes a hard ceremony failure instead of a rebase. The same two-copies
+hazard is already handled by name for the log conflict (vh-resource-log
+invariant 8). Found by the VRL-2 ceremony-reviewer pass, 2026-08-22.
+
 ---
 
 ## Recorded decisions (kept so they are not re-litigated)
