@@ -252,6 +252,388 @@ spec text.
 
 ---
 
+## Internal design follow-ons
+
+Items raised by the 2026-08-21 cleanup review of `src/` (reuse, simplification,
+efficiency, and altitude passes). The behavior-preserving half of that review
+landed in 0.42.0; everything here was deliberately left out of it because the
+fix changes observable behavior, crosses the codec seam, or needs a maintainer
+decision first. Each carries `discovered-from: 2026-08-21 cleanup review`.
+
+### WCL-19: A conditional codec discards the caller's write precondition
+
+- status: todo
+- priority: high
+- labels: encryption, conditional-writes, correctness
+- touches:
+  - was-client: `upsertResource` (`src/internal/write.ts`) chooses the
+    precondition; `Resource.put`'s documented `ifMatch` is the surface that
+    silently stops applying; `EncryptionDescriptorStore`
+    (`src/edv/descriptorStore.ts`) and `resourceLogStore`
+    (`src/log/logStore.ts`) carry the compensating prose to delete
+  - freewallet, dcw: any caller relying on `put({ ifMatch })` for a lost-update
+    guard against an encrypted collection is not getting one today; the fix
+    turns that into a thrown error
+- acceptance:
+  - [ ] A caller-supplied `ifMatch` / `ifNoneMatch` on an encrypted collection
+        either pins the write to the caller's baseline or is refused loudly
+  - [ ] The "host this in a plaintext collection" paragraphs in
+        `descriptorStore.ts` and `logStore.ts` are removed, and both stores work
+        on an encrypted collection
+  - [ ] The insert path (`insertResource`) is settled the same way, or its
+        divergence is recorded here
+
+`upsertResource` computes
+`codec.conditionalWrites ? encodedPrecondition(encoded) : precondition`, so on
+any collection whose codec sets `conditionalWrites` (every encrypted one) the
+caller's compare-and-swap baseline is dropped and replaced by the ETag the
+codec's own pre-read just observed. The write still succeeds, pinned to current
+server state rather than to what the caller last saw, so a lost-update guard
+degrades to last-write-wins with no signal.
+
+The compensation has already leaked into two seams as prose that nothing
+enforces: both `descriptorStore.ts` and `logStore.ts` tell the reader to host
+the resource in a plaintext collection because "the EDV codec computes the write
+preconditions itself, so this store's `ifMatch` would not be honored". Both are
+compare-and-swap loops where the precondition is the whole mechanism
+(`casUpdateDescriptor` retries only on `PreconditionFailedError`; the resource
+log's append profile requires it). The next store built on `Resource.put` needs
+the same paragraph, and a caller who misses it loses the guard silently.
+
+Two candidate fixes, and the choice is the decision this item needs: refuse the
+combination (`ValidationError` when `codec.conditionalWrites` meets a
+caller-supplied precondition), or forward the caller's precondition into
+`codec.encode` so a conditional codec can pin to the caller's baseline instead
+of its own pre-read. The second is the deeper fix and keeps CAS working on
+encrypted collections; the first is contained to `internal/write.ts`. Either way
+it is not behavior-preserving, which is why it was left out of 0.42.0.
+
+### WCL-20: Sync port re-derives error classification from raw HTTP status
+
+- status: todo
+- priority: medium
+- labels: sync, errors, altitude
+- touches:
+  - was-client: `mapWriteError` and `readContent` in `src/sync/port.ts`; the
+    `./sync` subpath's thrown-error contract
+  - freewallet, dcw, was-react: sync drivers matching on the current raw ky
+    error shapes for statuses outside 412/404 would see typed errors instead
+- acceptance:
+  - [ ] The port's write and read paths classify through `errors.ts` rather than
+        switching on raw HTTP status
+  - [ ] `WasSyncConflictError` / `WasSyncNotFoundError` carry the server's
+        `problem+json` fields (`type`, `title`, `details`, `requestUrl`) and a
+        `cause`
+  - [ ] A status outside the current small list (500, a 507 `quota-exceeded`)
+        leaves the sync subpath as a typed error rather than a raw ky error
+
+`mapWriteError` and `readContent` dispatch on `errorStatus(err)` over the raw
+errors `was.request()` throws, and build `WasSyncConflictError` /
+`WasSyncNotFoundError` with default messages, no `cause`, and none of the
+server's problem details. `mapError` (`src/errors.ts`) already maps 412 to
+`PreconditionFailedError` and 404 to `NotFoundError` carrying all of that, and
+both sync classes are declared as subtypes of those.
+
+The result is one object with two error regimes: `query()` rides
+`Collection.changes()` through `send()` and throws mapped errors, while the
+write and read paths throw hand-built ones. A new problem type added to
+`ERROR_CLASS_BY_KIND` reaches the handle API but never the sync API, and the
+412/404 status list has to be maintained in two places.
+
+The fix is to route the port's writes through `internal/request.ts`'s `send()`
+and classify with `instanceof`. The port's verbatim-bytes property comes from
+bypassing the codec, not from bypassing the error mapper, so nothing about the
+sync contract requires the current shape. `upsertResource` already does exactly
+this when it re-throws a 412. Contained to `src/sync/port.ts`, and
+`instanceof`-based consumers are unaffected because the sync classes stay
+subtypes.
+
+### WCL-21: `Space.createCollection` hardcodes the EDV routability rule
+
+- status: todo
+- priority: medium
+- labels: encryption, layering, altitude
+- touches:
+  - was-client: `Space.createCollection` (`src/Space.ts`), the
+    `EncryptionProvider` seam (`src/codec.ts`), `EncryptionOverride`
+    (`src/types.ts`), and the blind cast in `buildEncryptingCodec`
+    (`src/internal/codec.ts`)
+- acceptance:
+  - [ ] Core (`src/*.ts`) contains no `scheme !== 'edv'` test
+  - [ ] The "can this descriptor route" predicate has exactly one owner
+  - [ ] `EncryptionOverride` admits a full `CollectionEncryption`, so
+        `encryption: override as CollectionEncryption` drops its cast
+
+`Space.createCollection` decides whether to pre-seed the returned handle with a
+codec using
+`declared.scheme !== 'edv' || (declared.epochs !== undefined && declared.epochs.length > 0)`.
+That is a scheme-specific fact living in core, which ARCHITECTURE.md says never
+knows about `src/edv/`, and the same fact is already owned by
+`guardEncryptionDescriptor` in `EdvCodec.ts`.
+
+Two places now decide the same thing, so they can drift. Tighten the edv rule
+(require `currentEpoch` to be listed, which the guard already does) and core
+still pre-seeds a handle pinned to a permanently fail-closed codec. Add a second
+scheme and core silently pre-seeds it as routable, because the test is written
+as "not edv".
+
+The fix puts the predicate behind the seam: an optional
+`EncryptionProvider.canRoute({ scheme, encryption })` that `createCollection`
+consults, or dropping the pre-seed decision so `resolveCodec` falls back to
+descriptor discovery when an override cannot build. Widening
+`EncryptionOverride` to `{ scheme, keys? } | CollectionEncryption` removes the
+related cast. Behavior-preserving for the current single scheme.
+
+### WCL-22: Metadata binding slot is inferred from an absent argument
+
+- status: todo
+- priority: medium
+- labels: encryption, codec-seam, integrity
+- touches:
+  - was-client: `ResourceCodec.encodeMeta` / `decodeMeta` (`src/codec.ts`) -- a
+    public seam, so third-party codec implementations are affected; both
+    implementations plus the `Resource` / `Collection` / `docCipher` call sites
+  - wallet-attached-storage-spec / encrypted-collections spec: no wire change
+    intended, but the `was.collection` vs `was.resource` binding this selects is
+    normative text, so confirm the seam change does not imply one
+- acceptance:
+  - [ ] The metadata slot is stated by the caller rather than deduced from
+        whether `expectedId` was passed
+  - [ ] A caller that legitimately does not know a resource id can still decode
+        metadata without silently getting collection-slot validation
+  - [ ] Stored envelope bytes are unchanged
+
+`EdvCodec` selects the AEAD binding slot with
+`collectionSlot: expectedId === undefined` on the read side and
+`resourceId === undefined ? { collection } : { resource }` on the write side.
+The seam documents `expectedId` as an optional hint that "the identity codec
+ignores", and says a caller that does not know the id omits it. In the EDV
+implementation its absence is instead the mode selector between two mutually
+exclusive bindings that `#verifyBinding` then refuses each other.
+
+Today's two callers happen to be correct (`Resource.meta` passes `this.id`,
+`Collection.meta` passes none), so this is latent rather than broken. The
+failure it invites is asymmetric: a decode path that does not know the id gets
+collection-slot validation quietly, while a write path that forgets to thread
+`id` stamps a collection-bound envelope into a resource's `/meta`, and that only
+surfaces later on some other reader as an `IntegrityError` naming server
+tampering.
+
+The fix is to make the slot explicit in the seam --
+`encodeMeta({ custom, slot: { kind: 'resource', id } | { kind: 'collection' } })`
+and the same on `decodeMeta` -- so the binding is stated, not deduced, and "id
+unknown" stays expressible. Behavior-preserving, but it changes a published
+interface, so it needs sign-off before it is coded.
+
+### WCL-23: `logStore` re-derives the body shape the content layer owns
+
+- status: todo
+- priority: low
+- labels: log, layering, altitude
+- touches:
+  - was-client: a new read shape on `Resource` (additive), consumed by
+    `resourceLogStore.read` (`src/log/logStore.ts`)
+- acceptance:
+  - [ ] `resourceLogStore.read` obtains text plus the ETag validator without
+        re-implementing the content-type to value mapping
+  - [ ] The store no longer needs to know that a `text/jsonl` body comes back as
+        a `Blob`
+
+`resourceLogStore.read` needs text plus the validator, and no single read gives
+it both: `Resource.getText()` produces the right text but no validator, and
+`getWithEtag()` returns the validator with the `Json | Blob` shape
+`parseResource` chose from the content type. So the store re-implements the
+mapping with
+`isBlob(current.data) ? await blobText(...) : typeof current.data === 'string' ? ... : undefined`.
+
+That mapping lives in `parseResource` (`src/internal/content.ts`), and this is a
+second partial copy of it in a consumer. If the content layer ever returns text
+directly for `text/*` -- plausible, since the EDV codec already stores
+text-family payloads as legible strings -- this branch quietly goes dead and the
+`ValidationError` below it starts firing on healthy logs.
+
+The fix adds the missing capability one layer down rather than compensating
+above it: a `getText`-shaped read that also returns the validator, or letting
+`getWithEtag` hand back the `ResponseLike` so the caller picks its own
+projection. Then `logStore.read` is a destructure plus `parseResourceLog`.
+
+### WCL-24: `LOCAL_SPACE_ID` is a sentinel for a dependency the codec does not have
+
+- status: todo
+- priority: low
+- labels: encryption, sync, layering
+- touches:
+  - was-client: `EdvCodec`'s constructor shape, `LOCAL_SPACE_ID`
+    (`src/edv/constants.ts`), `createEdvDocCipher` and `encryptOnlyEdvCodec`
+    (`src/edv/docCipher.ts`, `src/edv/EdvCodec.ts`) -- all internal to
+    `src/edv/`
+- acceptance:
+  - [ ] A local-replica codec cannot address a chunked write at a fabricated
+        `/space/local/` route, structurally rather than by convention
+  - [ ] `LOCAL_SPACE_ID` is gone
+
+`EdvCodec` requires a `spaceId` solely so `#transportFor` can build a
+`WasTransport` for the chunked path. The two server-less builds have no space,
+so they pass `LOCAL_SPACE_ID = 'local'`, and the constant's own comment concedes
+that it "must never reach the transport path -- there is no `/space/local/`
+route", relying on the DocCipher seam refusing chunked writes up front to keep
+that true.
+
+So an invariant about the codec's internals is enforced by guards in a different
+module: `docCipher` refusing `isChunkedWrite`, plus `#readChunked`'s no-context
+refusal. Two distant guards keep a fabricated address off the network, and
+anyone adding a third path that addresses a resource by path has to rediscover
+that the `spaceId` on a local codec is a lie.
+
+The codec does not need a Space id, it needs a way to build a transport. Inject
+that instead -- an optional `transportFactory` supplied by `createEdvEncryption`
+(which knows the space) and omitted by the two local builds -- so a chunked
+write on a local cipher fails structurally. Contained to `src/edv/` and
+behavior-preserving.
+
+### WCL-25: Two compare-and-swap retry policies that can drift
+
+- status: todo
+- priority: low
+- labels: conditional-writes, reuse
+- acceptance:
+  - [ ] `Collection.declareIndex` and `casUpdateDescriptor` share one retry
+        implementation
+  - [ ] The attempt count and the exhaustion error are settled deliberately
+        rather than differing by accident
+
+`declareIndex` hand-rolls a `for (let attempt = 1; ; attempt++)` loop -- read
+current state, reconcile, conditional write, continue on
+`PreconditionFailedError` -- with its own local `maxAttempts = 4`.
+`casUpdateDescriptor` (`src/edv/recipients.ts`) is the same loop, generic over a
+read/replace store, with `MAX_CAS_ATTEMPTS = 3` and a null-means-no-op mutate
+contract.
+
+Two retry policies with two attempt counts and two exhaustion behaviors:
+`declareIndex` rethrows the raw 412 with no context, `casUpdateDescriptor`
+throws an explanatory `PreconditionFailedError` naming the race. A third caller
+wanting CAS has no obvious one to copy.
+
+Lifting the loop into `src/internal/` as a store-shaped generic makes
+`casUpdateDescriptor` a thin call and lets `declareIndex` drive it with a
+`/meta`-backed store. This is not behavior-preserving for `declareIndex` (3
+attempts instead of 4, and a contextual error instead of the raw 412) unless the
+helper takes `maxAttempts` as an option, which is the call to make when picking
+this up.
+
+### WCL-26: Bare `Error` for `did:key` validation failures in the EDV recipient path
+
+- status: todo
+- priority: low
+- labels: errors, encryption
+- touches:
+  - was-client: `didKeyRecipient.ts` and `epochCrypto.ts` throw sites
+  - freewallet, dcw: any consumer matching these failures on `err.constructor`
+    or on the bare message rather than on a class
+- acceptance:
+  - [ ] Caller-input `did:key` validation failures throw `ValidationError`, and
+        key-material failures throw `EncryptionError`
+  - [ ] `catch (err) { if (err instanceof EncryptionError) ... }` -- the
+        documented fail-closed pattern -- sees them
+
+Four validation failures throw untyped `Error`: two in `didKeyRecipient.ts`
+("not an Ed25519 did:key DID", and the key-material case below it) and two in
+`epochCrypto.ts` ("is not a did:key", "Cannot resolve non-did:key key id").
+`ValidationError` and `EncryptionError` in `src/errors.ts` are the established
+classes for exactly this, and `epochKeys.ts` and `recipients.ts` already use
+them for the same class of failure.
+
+A caller running the documented fail-closed handler misses all four. The change
+is small, but it changes the thrown class, so it wants a check against the
+freewallet and dcw call sites before landing rather than being folded into a
+cleanup pass. The shared `DID_KEY_PREFIX` half of this finding already landed in
+0.42.0.
+
+### WCL-27: Every local encrypt serializes an envelope body that is thrown away
+
+- status: todo
+- priority: low
+- labels: encryption, sync, efficiency
+- touches:
+  - was-client: `EdvCodec.encode`'s return shape and `EncodedWrite.body`
+    (`src/codec.ts`), a public seam -- a lazy `body` is observable to any
+    consumer that spreads or clones the returned object
+- acceptance:
+  - [ ] A local-replica encrypt does not pay a full stringify plus UTF-8 encode
+        of the envelope on every write
+  - [ ] The HTTP write path is unchanged
+
+`EdvCodec.encode` unconditionally sets `body: envelopeBytes(encrypted)`. On the
+HTTP path that is the wire body. On the sync path, `readEncoded` only uses
+`encoded.body` for an `instanceof Uint8Array` type check and then takes
+`encoded.envelope`, the object form the codec already holds, so the bytes are
+discarded. A 100 KB document pays roughly 280 KB of transient allocation and a
+full serialization pass for nothing, on every replica write.
+
+`EncodedWrite.body` is already optional, so the shape supports a lazy getter,
+with `readEncoded`'s guard flipped to prefer `envelope` so it never forces it.
+The reason this was left out of the cleanup pass is that a getter on a public
+seam object behaves differently from a data property under spreading and
+structured cloning, so it needs a deliberate decision about the seam rather than
+a silent swap.
+
+### WCL-28: First `meta()` on a blinded-index collection fetches `/meta` twice
+
+- status: todo
+- priority: low
+- labels: encryption, search, efficiency
+- acceptance:
+  - [ ] Resolving a codec and then reading collection metadata costs one GET and
+        one decrypt, not two
+  - [ ] Metadata reads after the first are never served from a stale snapshot
+
+`buildEncryptingCodec` calls `loadIndexSchema`, which issues
+`GET collectionMeta(...)` and runs a full `decodeMeta` JWE open.
+`Collection.meta()` then issues the same GET on the same path and decodes the
+same envelope again. `declareIndex` hits it too, since `#indexing(...)` resolves
+the codec and then immediately calls `meta()`.
+
+The cost is one extra round trip plus one extra decrypt, once per handle, on the
+first `meta()` / `setName()` / `setTags()` / `declareIndex()` against an
+encrypted collection that declares a blinding key. Collections without one do
+not pay it, because `loadIndexSchema` returns early when the codec has no
+`indexing`. The two requests race rather than serialize, so the latency cost is
+smaller than the request and crypto cost.
+
+Either have `loadIndexSchema` stash the response it read on the `CodecHolder`
+for `meta()` to consume once and clear, or invert the flow so `meta()` resolves
+the codec and feeds its own freshly-read `custom` to the indexing seam. The
+consume-once variant is behavior-preserving; any variant that keeps the snapshot
+alive past the first read would start returning stale metadata, which is the
+trap to avoid when picking this up.
+
+### WCL-29: `codecFor` eagerly unwraps the blinded-index key for read-only handles
+
+- status: draft
+- priority: low
+- labels: encryption, search, efficiency
+- acceptance: none yet -- the fail-closed timing change below is the decision
+  this needs before it becomes actionable
+
+`buildEdvCodec` runs `resolveHmacKey` whenever the descriptor declares an `hmac`
+member: an ECDH plus Concat KDF plus A256KW unwrap, then a WebCrypto raw HMAC
+key import. The key is only ever consumed by `#writeBlindingKey()` (which
+returns nothing while the schema declares no indexes) and by `#buildQuery`. So a
+handle that only reads from a searchable collection, or writes to one before any
+index is declared, pays a key derivation and import it never uses. Once per
+handle, not per operation.
+
+Holding it as a memoized thunk forced at the two consumers is the obvious fix,
+but it is deliberately not behavior-preserving: `resolveHmacKey` fails closed
+with an `EncryptionError` when the descriptor declares a key this reader cannot
+unwrap, and making it lazy moves that failure from handle resolution to the
+first write or search. Whether a reader that cannot open the blinding key should
+fail at resolution or only when it tries to use it is a fail-closed policy
+question, not a performance one, which is why this is parked as a draft rather
+than filed as work.
+
+---
+
 ## Recorded decisions (kept so they are not re-litigated)
 
 - **Effective-policy resolution: intentionally out of scope.** `isPublic()` /
