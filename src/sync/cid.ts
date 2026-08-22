@@ -19,14 +19,8 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { base64urlnopad } from '@scure/base'
 import { canonicalize } from 'json-canonicalize'
+import { ENCODER } from '../internal/content.js'
 import type { Json } from '../types.js'
-
-/**
- * The one UTF-8 encoder every derivation here shares: hashing runs on the
- * per-document hot path, so the encoder is allocated once for the module rather
- * than per call. `TextEncoder` is stateless, so reuse is safe.
- */
-const ENCODER = new TextEncoder()
 
 /**
  * Derives a document's content id: `base64url(SHA-256(utf8(canonicalize(doc))))`,

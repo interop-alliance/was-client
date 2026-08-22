@@ -14,6 +14,7 @@ import { httpStatus } from '../errors.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
 import { readJsonData } from './content.js'
+import { Memo } from './memo.js'
 import { collectionBackend } from './paths.js'
 import type { IZcap } from '../types.js'
 
@@ -92,7 +93,7 @@ export function featureProbeFrom(
  * failure must not poison the probe for its lifetime.)
  */
 export class BackendFeatures implements FeatureProbe {
-  #promise?: Promise<string[]>
+  readonly #memo: Memo<string[]>
   /**
    * Set when the probe's definitive answer was "the descriptor could not be
    * read" rather than "the descriptor lists these features", so a gate can tell
@@ -109,6 +110,7 @@ export class BackendFeatures implements FeatureProbe {
    */
   constructor(readDescriptor: () => Promise<unknown>) {
     this.#readDescriptor = readDescriptor
+    this.#memo = new Memo(() => this.#probe())
   }
 
   /**
@@ -118,8 +120,7 @@ export class BackendFeatures implements FeatureProbe {
    * @returns {Promise<string[]>}
    */
   get(): Promise<string[]> {
-    this.#promise ??= this.#probe()
-    return this.#promise
+    return this.#memo.get()
   }
 
   /**
@@ -147,9 +148,9 @@ export class BackendFeatures implements FeatureProbe {
   /**
    * Reads and parses the backend descriptor once. On a definitive answer
    * (success, or a `404` / `405` / `501` that means the endpoint is
-   * legitimately absent) resolves the feature list, which `get` then caches.
-   * On a transient failure, clears the memo (so the next call re-probes) and
-   * rethrows.
+   * legitimately absent) resolves the feature list, which the memo then
+   * caches. On a transient failure it rethrows, which drops the memo so the
+   * next call re-probes.
    *
    * @returns {Promise<string[]>}
    */
@@ -169,9 +170,8 @@ export class BackendFeatures implements FeatureProbe {
         this.#descriptorAbsent = true
         return []
       }
-      // Transient/ambiguous: do not cache this failure -- drop the memo so the
-      // next call re-probes -- and rethrow.
-      this.#promise = undefined
+      // Transient/ambiguous: rethrow, which the memo reads as "do not cache
+      // this" -- it drops the rejected promise so the next call re-probes.
       throw err
     }
   }

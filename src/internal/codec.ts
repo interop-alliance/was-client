@@ -24,6 +24,7 @@ import type { ClientContext } from './request.js'
 import { prepareBody, parseResource } from './content.js'
 import { describeCollection, unreadableDescriptionError } from './describe.js'
 import { readIndexSchema } from './indexSchema.js'
+import { Memo } from './memo.js'
 import { collectionMeta } from './paths.js'
 import { send } from './request.js'
 import { EncryptionError, NotImplementedError } from '../errors.js'
@@ -46,15 +47,14 @@ import type {
  * encryption state changes (e.g. `Collection.configure()` adds the descriptor).
  */
 export class CodecHolder {
-  #promise?: Promise<ResourceCodec>
-  readonly #resolve: () => Promise<ResourceCodec>
+  readonly #memo: Memo<ResourceCodec>
 
   /**
    * @param resolve {function}   resolves a fresh codec; re-invoked after a
    *   rejection or a `reset()`, else called at most once
    */
   constructor(resolve: () => Promise<ResourceCodec>) {
-    this.#resolve = resolve
+    this.#memo = new Memo(resolve)
   }
 
   /**
@@ -63,20 +63,7 @@ export class CodecHolder {
    * @returns {Promise<ResourceCodec>}
    */
   get(): Promise<ResourceCodec> {
-    if (this.#promise) {
-      return this.#promise
-    }
-    const promise = this.#resolve()
-    // Memoize the in-flight promise so concurrent callers share one round-trip,
-    // but drop it on rejection so a transient failure does not permanently
-    // poison the handle. The identity guard avoids clobbering a newer promise.
-    this.#promise = promise
-    promise.catch((): void => {
-      if (this.#promise === promise) {
-        this.#promise = undefined
-      }
-    })
-    return promise
+    return this.#memo.get()
   }
 
   /**
@@ -85,7 +72,7 @@ export class CodecHolder {
    * @returns {void}
    */
   reset(): void {
-    this.#promise = undefined
+    this.#memo.reset()
   }
 }
 

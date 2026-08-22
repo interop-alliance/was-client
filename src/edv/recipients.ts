@@ -46,7 +46,7 @@ import type {
   CollectionEncryption,
   CollectionEncryptionEpoch,
   CollectionEncryptionHmac,
-  EncryptionWithHmac,
+  CollectionEncryptionRecipient,
   IDelegatedZcap
 } from '../types.js'
 import {
@@ -55,6 +55,7 @@ import {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
+import { pickEpoch } from './epochRoster.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
 import { mintHmacKey } from './hmacKey.js'
 
@@ -67,11 +68,108 @@ export type { RecipientPublicKey } from './epochCrypto.js'
 const MAX_CAS_ATTEMPTS = 3
 
 /**
- * Escrows a recipient into every epoch it is not already a recipient of: for
- * each such epoch the caller unwraps the epoch key with its own key-agreement
- * key and re-wraps it to the incoming reader. Shared by {@link addRecipient}
- * (whose whole job this is) and {@link replaceRecipient} (which does it in the
- * same write as its rotation), so the two cannot drift.
+ * The recipient operation an escrow runs under: the name its error messages
+ * carry, and -- through it -- how those messages name the incoming reader
+ * (`new` for an add, `incoming` for a replace).
+ */
+type EscrowOperation = 'addRecipient' | 'replaceRecipient'
+
+/**
+ * Escrows one or more readers into a single wrap roster (one epoch's
+ * `recipients`, or the blinded-index key's): the caller unwraps its OWN entry
+ * with its key-agreement key and re-wraps that secret to each reader the roster
+ * does not already carry. The one shape behind both {@link escrowIntoEpochs}
+ * and {@link escrowIntoHmac}, so an epoch key and the blinding key are escrowed
+ * by identical code.
+ *
+ * The owner's unwrap runs ONCE per roster no matter how many readers are being
+ * escrowed -- the secret depends on the roster and the owner's key, not on who
+ * receives it -- and the per-reader re-wraps then run concurrently. Each wrap
+ * still mints its own ephemeral key.
+ *
+ * Readers already carried by the roster are skipped, so an escrow is
+ * idempotent; `null` means every reader was already a recipient and the roster
+ * is unchanged.
+ *
+ * @param options {object}
+ * @param options.roster {CollectionEncryptionRecipient[]}   the wrap entries to
+ *   escrow into
+ * @param options.recipients {RecipientPublicKey[]}   the readers being escrowed,
+ *   appended in this order
+ * @param options.owner {object}   the caller's own key material
+ * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps the roster's
+ *   secret for re-wrapping
+ * @param options.operation {EscrowOperation}   the calling operation
+ * @param options.subject {object}   how the error messages name this roster's
+ *   secret, so both callers' messages read naturally
+ * @param options.subject.notRecipient {string}   completes "the caller is not a
+ *   recipient of ..." up to the trailing "to the <reader> reader."
+ * @param options.subject.unwrapping {string}   names the secret in "unwrapping
+ *   ... with the caller's key-agreement key failed."
+ * @returns {Promise<CollectionEncryptionRecipient[] | null>}   the roster with
+ *   the escrow wraps appended, or `null` when nothing changed
+ */
+async function escrowInto({
+  roster,
+  recipients,
+  owner,
+  operation,
+  subject
+}: {
+  roster: CollectionEncryptionRecipient[]
+  recipients: RecipientPublicKey[]
+  owner: { keyAgreementKey: IKeyAgreementKey }
+  operation: EscrowOperation
+  subject: { notRecipient: string; unwrapping: string }
+}): Promise<CollectionEncryptionRecipient[] | null> {
+  // Already a recipient of this roster (or named twice among `recipients`)?
+  // Leave it out (idempotent).
+  const missing: RecipientPublicKey[] = []
+  for (const recipient of recipients) {
+    const present =
+      roster.some(entry => entry.header.kid === recipient.id) ||
+      missing.some(pending => pending.id === recipient.id)
+    if (!present) {
+      missing.push(recipient)
+    }
+  }
+  if (missing.length === 0) {
+    return null
+  }
+  const reader = operation === 'addRecipient' ? 'new' : 'incoming'
+  const ownEntry = roster.find(
+    entry => entry.header.kid === owner.keyAgreementKey.id
+  )
+  if (!ownEntry) {
+    throw new ValidationError(
+      `Cannot ${operation}: the caller is not a recipient of ` +
+        `${subject.notRecipient} to the ${reader} reader.`
+    )
+  }
+  const epochSecret = await unwrapEpochSecret({
+    entry: ownEntry,
+    keyAgreementKey: owner.keyAgreementKey
+  })
+  if (!epochSecret) {
+    throw new ValidationError(
+      `Cannot ${operation}: unwrapping ${subject.unwrapping} with the ` +
+        "caller's key-agreement key failed."
+    )
+  }
+  return [
+    ...roster,
+    ...(await Promise.all(
+      missing.map(recipient => wrapEpochSecret({ epochSecret, recipient }))
+    ))
+  ]
+}
+
+/**
+ * Escrows one or more readers into every epoch they are not already a recipient
+ * of: for each such epoch the caller unwraps the epoch key with its own
+ * key-agreement key and re-wraps it to those readers. Shared by
+ * {@link addRecipient} (whose whole job this is) and {@link replaceRecipient}
+ * (which does it in the same write as its rotation), so the two cannot drift.
  *
  * Each epoch's unwrap + re-wrap is independent of the others', so they run
  * concurrently (order-preserving), like `initRecipients` and `removeRecipient`
@@ -79,65 +177,45 @@ const MAX_CAS_ATTEMPTS = 3
  *
  * @param options {object}
  * @param options.epochs {CollectionEncryptionEpoch[]}   the descriptor's epochs
- * @param options.recipient {RecipientPublicKey}   the reader being escrowed
+ * @param options.recipients {RecipientPublicKey[]}   the readers being escrowed
  * @param options.owner {object}   the caller's own key material
  * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps each epoch
  *   key for re-wrapping
- * @param options.operation {string}   the calling operation's name, as the error
- *   messages name it (`addRecipient` / `replaceRecipient`)
- * @param options.reader {string}   how those messages name the incoming reader
- *   (`new` / `incoming`)
+ * @param options.operation {EscrowOperation}   the calling operation
  * @returns {Promise<{ epochs: CollectionEncryptionEpoch[], changed: boolean }>}
  *   the epochs with the escrow wraps applied, and whether any epoch changed
  */
 async function escrowIntoEpochs({
   epochs,
-  recipient,
+  recipients,
   owner,
-  operation,
-  reader
+  operation
 }: {
   epochs: CollectionEncryptionEpoch[]
-  recipient: RecipientPublicKey
+  recipients: RecipientPublicKey[]
   owner: { keyAgreementKey: IKeyAgreementKey }
-  operation: string
-  reader: string
+  operation: EscrowOperation
 }): Promise<{ epochs: CollectionEncryptionEpoch[]; changed: boolean }> {
   let changed = false
   const escrowed = await Promise.all(
     epochs.map(async (epoch): Promise<CollectionEncryptionEpoch> => {
-      // Already a recipient of this epoch? Leave it untouched (idempotent).
-      if (epoch.recipients.some(entry => entry.header.kid === recipient.id)) {
+      const next = await escrowInto({
+        roster: epoch.recipients,
+        recipients,
+        owner,
+        operation,
+        subject: {
+          notRecipient:
+            `epoch "${epoch.id}", so it cannot unwrap that epoch key ` +
+            'to escrow it',
+          unwrapping: `epoch "${epoch.id}"`
+        }
+      })
+      if (next === null) {
         return epoch
       }
-      const ownEntry = epoch.recipients.find(
-        entry => entry.header.kid === owner.keyAgreementKey.id
-      )
-      if (!ownEntry) {
-        throw new ValidationError(
-          `Cannot ${operation}: the caller is not a recipient of epoch ` +
-            `"${epoch.id}", so it cannot unwrap that epoch key to escrow it ` +
-            `to the ${reader} reader.`
-        )
-      }
-      const epochSecret = await unwrapEpochSecret({
-        entry: ownEntry,
-        keyAgreementKey: owner.keyAgreementKey
-      })
-      if (!epochSecret) {
-        throw new ValidationError(
-          `Cannot ${operation}: unwrapping epoch "${epoch.id}" with the ` +
-            "caller's key-agreement key failed."
-        )
-      }
       changed = true
-      return {
-        ...epoch,
-        recipients: [
-          ...epoch.recipients,
-          await wrapEpochSecret({ epochSecret, recipient })
-        ]
-      }
+      return { ...epoch, recipients: next }
     })
   )
   return { epochs: escrowed, changed }
@@ -194,17 +272,17 @@ async function rotateEpoch({
  * @param [options.hmac] {CollectionEncryptionHmac}   the blinded-index key to
  *   install alongside the first epoch (provisioning-time only); a descriptor
  *   that already carries one keeps it
- * @returns {EncryptionWithHmac}   the descriptor to write
+ * @returns {CollectionEncryption}   the descriptor to write
  */
 function withFirstEpoch({
   descriptor,
   epoch,
   hmac
 }: {
-  descriptor: EncryptionWithHmac
+  descriptor: CollectionEncryption
   epoch: CollectionEncryptionEpoch
   hmac?: CollectionEncryptionHmac
-}): EncryptionWithHmac {
+}): CollectionEncryption {
   const installedHmac = descriptor.hmac ?? hmac
   return {
     ...descriptor,
@@ -244,69 +322,47 @@ async function mintHmacRoster({
 }
 
 /**
- * Escrows a recipient into the descriptor's blinded-index key: the caller
- * unwraps the HMAC secret with its own key-agreement key and re-wraps it to the
- * incoming reader, exactly as {@link escrowIntoEpochs} does per epoch. Returns
- * `null` when nothing changes -- the descriptor carries no `hmac`, or the
- * recipient already has an entry (idempotent).
+ * Escrows one or more readers into the descriptor's blinded-index key: the
+ * caller unwraps the HMAC secret with its own key-agreement key and re-wraps it
+ * to those readers, through the same {@link escrowInto} the epoch escrow uses.
+ * Returns `null` when nothing changes -- the descriptor carries no `hmac`, or
+ * every reader already has an entry (idempotent).
  *
  * @param options {object}
  * @param [options.hmac] {CollectionEncryptionHmac}   the descriptor's key
- * @param options.recipient {RecipientPublicKey}   the reader being escrowed
+ * @param options.recipients {RecipientPublicKey[]}   the readers being escrowed
  * @param options.owner {object}   the caller's own key material
  * @param options.owner.keyAgreementKey {IKeyAgreementKey}   unwraps the HMAC
  *   secret for re-wrapping
- * @param options.operation {string}   the calling operation's name, as the
- *   error messages name it
- * @param options.reader {string}   how those messages name the incoming reader
+ * @param options.operation {EscrowOperation}   the calling operation
  * @returns {Promise<CollectionEncryptionHmac | null>}
  */
 async function escrowIntoHmac({
   hmac,
-  recipient,
+  recipients,
   owner,
-  operation,
-  reader
+  operation
 }: {
   hmac?: CollectionEncryptionHmac
-  recipient: RecipientPublicKey
+  recipients: RecipientPublicKey[]
   owner: { keyAgreementKey: IKeyAgreementKey }
-  operation: string
-  reader: string
+  operation: EscrowOperation
 }): Promise<CollectionEncryptionHmac | null> {
   if (!hmac) {
     return null
   }
-  if (hmac.recipients.some(entry => entry.header.kid === recipient.id)) {
-    return null
-  }
-  const ownEntry = hmac.recipients.find(
-    entry => entry.header.kid === owner.keyAgreementKey.id
-  )
-  if (!ownEntry) {
-    throw new ValidationError(
-      `Cannot ${operation}: the caller is not a recipient of this ` +
-        "collection's blinded-index key, so it cannot escrow that key to the " +
-        `${reader} reader.`
-    )
-  }
-  const secret = await unwrapEpochSecret({
-    entry: ownEntry,
-    keyAgreementKey: owner.keyAgreementKey
+  const next = await escrowInto({
+    roster: hmac.recipients,
+    recipients,
+    owner,
+    operation,
+    subject: {
+      notRecipient:
+        "this collection's blinded-index key, so it cannot escrow that key",
+      unwrapping: 'the blinded-index key'
+    }
   })
-  if (!secret) {
-    throw new ValidationError(
-      `Cannot ${operation}: unwrapping the blinded-index key with the ` +
-        "caller's key-agreement key failed."
-    )
-  }
-  return {
-    ...hmac,
-    recipients: [
-      ...hmac.recipients,
-      await wrapEpochSecret({ epochSecret: secret, recipient })
-    ]
-  }
+  return next === null ? null : { ...hmac, recipients: next }
 }
 
 /**
@@ -442,8 +498,7 @@ export async function ensureFirstEpoch({
   const descriptor = await casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
     seed: { scheme: 'edv', version: EDV_SCHEME_VERSION },
-    mutate: async descriptor => {
-      const current: EncryptionWithHmac = descriptor
+    mutate: async current => {
       if (current.epochs && current.epochs.length > 0) {
         // Another provisioner's install already landed (possibly winning the
         // create/CAS race against this very call): adopt its roster as-is.
@@ -573,8 +628,7 @@ export async function addRecipient({
 }): Promise<CollectionEncryption> {
   return casUpdateDescriptor({
     store: descriptorStoreFor({ collection, store }),
-    mutate: async descriptor => {
-      const current: EncryptionWithHmac = descriptor
+    mutate: async current => {
       const epochs = current.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
@@ -584,20 +638,18 @@ export async function addRecipient({
       }
       const { epochs: nextEpochs } = await escrowIntoEpochs({
         epochs,
-        recipient,
+        recipients: [recipient],
         owner,
-        operation: 'addRecipient',
-        reader: 'new'
+        operation: 'addRecipient'
       })
       // The blinded-index key rides the same compare-and-swap write as the
       // epoch escrow -- never a second write. `null` means unchanged (no key,
       // or this recipient already has an entry).
       const nextHmac = await escrowIntoHmac({
         hmac: current.hmac,
-        recipient,
+        recipients: [recipient],
         owner,
-        operation: 'addRecipient',
-        reader: 'new'
+        operation: 'addRecipient'
       })
       return {
         ...current,
@@ -689,84 +741,177 @@ export async function removeRecipient({
   // Resolve the pull axis up front, before any rotation, so a malformed call
   // fails before the descriptor is mutated.
   const pullAxis = resolvePullAxis({ space, revoke, pull })
+  // A removal is a replacement with nobody incoming: no escrow, the same
+  // rotation.
+  return rotateOffRecipients({
+    store: descriptorStore,
+    retiring: [recipientId],
+    operation: 'removeRecipient',
+    resolveRecipientKey,
+    pullAxis
+  })
+}
+
+/**
+ * The rotation shared by {@link removeRecipient} and {@link replaceRecipient}:
+ * rotate the current epoch off the retiring recipient kid(s), optionally
+ * escrowing incoming reader(s) into the whole history first, in ONE
+ * compare-and-swap write; then run the pull axis. A removal is exactly this
+ * with no `escrow`, so the two public operations cannot drift.
+ *
+ * The rotation runs first so it is durable before the irreversible pull: if the
+ * compare-and-swap keeps losing the race and throws, nothing is pulled and the
+ * caller's operation stays safely retryable. It is also idempotent -- when no
+ * retiring kid is still current (a prior attempt's rotation landed but its pull
+ * failed transiently), no fresh epoch is minted or appended, so a retry appends
+ * zero redundant epochs.
+ *
+ * @param options {object}
+ * @param options.store {EncryptionDescriptorStore}   the descriptor host
+ * @param options.retiring {string[]}   the retiring recipients' kids, dropped
+ *   from the fresh epoch's roster and from the blinded-index roster
+ * @param [options.escrow] {object}   the incoming half of a replacement; absent
+ *   for a pure removal
+ * @param options.escrow.incoming {RecipientPublicKey[]}   the incoming readers,
+ *   escrowed into every epoch and into the blinded-index key
+ * @param options.escrow.owner {object}   the caller's own key material
+ * @param options.escrow.owner.keyAgreementKey {IKeyAgreementKey}   unwraps each
+ *   epoch key for the escrow
+ * @param options.operation {string}   the calling operation's name, as the error
+ *   messages name it (`removeRecipient` / `replaceRecipient`)
+ * @param options.resolveRecipientKey {function}   resolves a surviving
+ *   recipient's kid for the fresh epoch, `null` to drop it
+ * @param options.pullAxis {function}   the pull action, run once the rotation is
+ *   durable
+ * @returns {Promise<CollectionEncryption>}   the new descriptor
+ */
+async function rotateOffRecipients({
+  store,
+  retiring,
+  escrow,
+  operation,
+  resolveRecipientKey,
+  pullAxis
+}: {
+  store: EncryptionDescriptorStore
+  retiring: string[]
+  escrow?: {
+    incoming: RecipientPublicKey[]
+    owner: { keyAgreementKey: IKeyAgreementKey }
+  }
+  operation: 'removeRecipient' | 'replaceRecipient'
+  resolveRecipientKey: (kid: string) => Promise<RecipientPublicKey | null>
+  pullAxis: () => Promise<void>
+}): Promise<CollectionEncryption> {
+  const incoming = escrow?.incoming ?? []
   // 1. Read axis: mint a fresh epoch, wrap it to every remaining recipient,
   // append it, and repoint `currentEpoch` (compare-and-swap, retried on race).
-  // Rotate FIRST so the rotation is durable before any irreversible pull:
-  // if the CAS keeps losing the race and throws, the reader is neither pulled
-  // nor rotated, so `removeRecipient` is safely retryable to convergence.
   const { epochId, secret } = await mintEpoch()
   const rotatedDescriptor = await casUpdateDescriptor({
-    store: descriptorStore,
-    mutate: async descriptor => {
-      const current: EncryptionWithHmac = descriptor
+    store,
+    mutate: async current => {
       const epochs = current.epochs
       if (!epochs || epochs.length === 0) {
         throw new ValidationError(
-          'Cannot removeRecipient: this collection has no key epochs.'
+          `Cannot ${operation}: this collection has no key epochs.`
         )
       }
       // Housekeeping on the blinded-index roster, in the same write as the
-      // rotation: drop the leaver's wrap entry. The key itself does NOT rotate
-      // (blinded tokens must compare across the collection's whole history),
-      // so the removed recipient keeps the blinding key it already holds -- an
-      // accepted revocation asymmetry.
-      const nextHmac = withoutHmacRecipients({
-        hmac: current.hmac,
-        retiring: [recipientId]
-      })
+      // rotation: each incoming reader gains a wrap entry, the retiring kid(s)
+      // lose theirs. The key itself does NOT rotate (blinded tokens must
+      // compare across the collection's whole history), so a removed recipient
+      // keeps the blinding key it already holds -- an accepted revocation
+      // asymmetry. Only a replacement has an incoming half to escrow.
+      const escrowedHmac =
+        escrow && operation === 'replaceRecipient'
+          ? await escrowIntoHmac({
+              hmac: current.hmac,
+              recipients: escrow.incoming,
+              owner: escrow.owner,
+              operation
+            })
+          : null
+      const nextHmac =
+        withoutHmacRecipients({
+          hmac: escrowedHmac ?? current.hmac,
+          retiring
+        }) ?? escrowedHmac
+      // Escrow each incoming reader into every epoch it is missing from
+      // (addRecipient's escrow, so the whole replacement is one write).
+      let escrowed = epochs
+      let escrowChanged = false
+      if (escrow && operation === 'replaceRecipient') {
+        const next = await escrowIntoEpochs({
+          epochs,
+          recipients: escrow.incoming,
+          owner: escrow.owner,
+          operation
+        })
+        escrowed = next.epochs
+        escrowChanged = next.changed
+      }
       // Remaining recipients: the CURRENT epoch's recipients (the authoritative
-      // roster by construction), minus the removed reader. Deliberately NOT the
-      // union across all epochs -- a reader dropped in an earlier rotation is
-      // still present in that older epoch, so unioning would silently re-escrow
-      // it into the fresh epoch and hand it back read access. Older epochs exist
-      // only so existing readers can decrypt history.
-      const currentEpoch =
-        epochs.find(epoch => epoch.id === descriptor.currentEpoch) ??
-        epochs[epochs.length - 1]!
-      // Already excluded from the current epoch? A prior attempt's rotation
-      // landed (its revoke step then failed transiently and the caller
-      // retried), or the reader never held the current epoch. Nothing to
-      // rotate -- signal no-op so the retry proceeds to the revoke step
-      // instead of appending a redundant epoch per attempt.
-      if (
-        !currentEpoch.recipients.some(entry => entry.header.kid === recipientId)
-      ) {
-        // Still write when only the blinded-index roster needs the leaver
-        // dropped (e.g. a prior attempt rotated but its pull step failed).
-        return nextHmac === null ? null : { ...current, hmac: nextHmac }
+      // roster by construction), minus the retiring reader(s). Deliberately NOT
+      // the union across all epochs -- a reader dropped in an earlier rotation
+      // is still present in that older epoch, so unioning would silently
+      // re-escrow it into the fresh epoch and hand it back read access. Older
+      // epochs exist only so existing readers can decrypt history.
+      const currentEpoch = pickEpoch(escrowed, current.currentEpoch)
+      // No retiring kid still current? A prior attempt's rotation landed (its
+      // pull step then failed transiently and the caller retried), or the
+      // reader never held the current epoch. Nothing to rotate -- write only
+      // what the escrow and the blinded-index housekeeping changed, so a retry
+      // proceeds to the pull step instead of appending a redundant epoch per
+      // attempt.
+      const rotating = currentEpoch.recipients.some(entry =>
+        retiring.includes(entry.header.kid)
+      )
+      if (!rotating) {
+        if (!escrowChanged && nextHmac === null) {
+          return null
+        }
+        return {
+          ...current,
+          ...(escrowChanged && { epochs: escrowed }),
+          ...(nextHmac !== null && { hmac: nextHmac })
+        }
       }
       const remaining = new Set<string>()
       for (const entry of currentEpoch.recipients) {
-        if (entry.header.kid !== recipientId) {
+        if (!retiring.includes(entry.header.kid)) {
           remaining.add(entry.header.kid)
         }
       }
       if (remaining.size === 0) {
         throw new ValidationError(
-          'Cannot removeRecipient: no recipients would remain after the ' +
+          `Cannot ${operation}: no recipients would remain after the ` +
             'removal (a collection with no readers cannot be rotated to).'
         )
       }
       // Wrap the fresh epoch key to each remaining recipient. The resolver may
       // signal drop-this-kid by resolving `null` (e.g. a roster entry whose
       // key material is no longer resolvable), so the rotation excludes that
-      // entry instead of throwing.
+      // entry instead of throwing. The escrow above already placed each
+      // incoming reader in the current epoch, so they are in `remaining`;
+      // short-circuit the resolver for them (their public keys are in hand) and
+      // route only the other survivors through the caller's resolver.
       const newEpoch = await rotateEpoch({
         epochId,
         secret,
         remaining,
-        resolveRecipientKey
+        resolveRecipientKey: async kid =>
+          incoming.find(reader => reader.id === kid) ?? resolveRecipientKey(kid)
       })
       if (newEpoch.recipients.length === 0) {
         throw new ValidationError(
-          'Cannot removeRecipient: no recipients would remain after the ' +
+          `Cannot ${operation}: no recipients would remain after the ` +
             'removal (resolveRecipientKey dropped every remaining entry, ' +
             'and a collection with no readers cannot be rotated to).'
         )
       }
       return {
         ...current,
-        epochs: [...epochs, newEpoch],
+        epochs: [...escrowed, newEpoch],
         currentEpoch: epochId,
         ...(nextHmac !== null && { hmac: nextHmac })
       }
@@ -804,8 +949,8 @@ export async function removeRecipient({
  * already run elsewhere (e.g. a DID-document edit under a current-key-set
  * rule) passes a no-op `pull`.
  *
- * The rotation ceiling is unchanged: nothing is re-encrypted, so a retired
- * key still opens every pre-rotation epoch it was a recipient of.
+ * The limits of the rotation are unchanged: nothing is re-encrypted, so a
+ * retired key still opens every pre-rotation epoch it was a recipient of.
  *
  * A blinded-index HMAC key on the descriptor follows the same shape in the same
  * write: the incoming recipient gains a wrap entry, the retiring kid(s) lose
@@ -877,100 +1022,14 @@ export async function replaceRecipient({
       'replaceRecipient cannot retire an incoming recipient itself.'
     )
   }
-  const { epochId, secret } = await mintEpoch()
-  const rotatedDescriptor = await casUpdateDescriptor({
+  return rotateOffRecipients({
     store: descriptorStore,
-    mutate: async descriptor => {
-      const current: EncryptionWithHmac = descriptor
-      const epochs = current.epochs
-      if (!epochs || epochs.length === 0) {
-        throw new ValidationError(
-          'Cannot replaceRecipient: this collection has no key epochs.'
-        )
-      }
-      // The blinded-index roster mirrors the epoch semantics in the same
-      // write: each successor gains a wrap entry, the retiring kid(s) lose
-      // theirs. The key itself never rotates.
-      let escrowedHmac: CollectionEncryptionHmac | null = null
-      for (const reader of incoming) {
-        const next = await escrowIntoHmac({
-          hmac: escrowedHmac ?? current.hmac,
-          recipient: reader,
-          owner,
-          operation: 'replaceRecipient',
-          reader: 'incoming'
-        })
-        if (next !== null) {
-          escrowedHmac = next
-        }
-      }
-      const nextHmac =
-        withoutHmacRecipients({
-          hmac: escrowedHmac ?? current.hmac,
-          retiring
-        }) ?? escrowedHmac
-      // Escrow each incoming recipient into every epoch it is missing from
-      // (addRecipient's escrow, so the whole replacement is one write).
-      let escrowed = epochs
-      let escrowChanged = false
-      for (const reader of incoming) {
-        const next = await escrowIntoEpochs({
-          epochs: escrowed,
-          recipient: reader,
-          owner,
-          operation: 'replaceRecipient',
-          reader: 'incoming'
-        })
-        escrowed = next.epochs
-        escrowChanged = escrowChanged || next.changed
-      }
-      // Rotate only when a retiring kid is still current (the removeRecipient
-      // no-op rule, so a naive re-run appends zero redundant epochs).
-      const currentEpoch =
-        escrowed.find(epoch => epoch.id === descriptor.currentEpoch) ??
-        escrowed[escrowed.length - 1]!
-      const rotating = currentEpoch.recipients.some(entry =>
-        retiring.includes(entry.header.kid)
-      )
-      if (!rotating) {
-        if (!escrowChanged && nextHmac === null) {
-          return null
-        }
-        return {
-          ...current,
-          ...(escrowChanged && { epochs: escrowed }),
-          ...(nextHmac !== null && { hmac: nextHmac })
-        }
-      }
-      const remaining = new Set<string>()
-      for (const entry of currentEpoch.recipients) {
-        if (!retiring.includes(entry.header.kid)) {
-          remaining.add(entry.header.kid)
-        }
-      }
-      // The escrow above already placed each incoming recipient in the
-      // current epoch, so they are in `remaining`; short-circuit the resolver
-      // for them (their public keys are in hand) and route only the other
-      // survivors through the caller's resolver.
-      const newEpoch = await rotateEpoch({
-        epochId,
-        secret,
-        remaining,
-        resolveRecipientKey: async kid =>
-          incoming.find(reader => reader.id === kid) ?? resolveRecipientKey(kid)
-      })
-      return {
-        ...current,
-        epochs: [...escrowed, newEpoch],
-        currentEpoch: epochId,
-        ...(nextHmac !== null && { hmac: nextHmac })
-      }
-    }
+    retiring,
+    escrow: { incoming, owner },
+    operation: 'replaceRecipient',
+    resolveRecipientKey,
+    pullAxis
   })
-
-  await pullAxis()
-
-  return rotatedDescriptor
 }
 
 /**
@@ -1015,18 +1074,23 @@ function resolvePullAxis({
   // That same status also covers tampered/expired/foreign capabilities, which
   // the client cannot distinguish here, so this swallows only ValidationError
   // and re-throws anything else.
+  //
+  // Each revocation is an independent signed request against a different
+  // capability id, so they run concurrently.
   const toRevoke = Array.isArray(revoke) ? revoke : [revoke]
   return async function revokeZcaps(): Promise<void> {
-    for (const zcap of toRevoke) {
-      try {
-        await space.revoke(zcap)
-      } catch (err) {
-        if (err instanceof ValidationError) {
-          continue
+    await Promise.all(
+      toRevoke.map(async zcap => {
+        try {
+          await space.revoke(zcap)
+        } catch (err) {
+          if (err instanceof ValidationError) {
+            return
+          }
+          throw err
         }
-        throw err
-      }
-    }
+      })
+    )
   }
 }
 

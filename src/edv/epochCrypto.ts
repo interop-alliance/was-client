@@ -53,6 +53,14 @@ const KEY_WRAP_ALG = 'ECDH-ES+A256KW'
 const X25519_TYPE = 'X25519KeyAgreementKey2020'
 
 /**
+ * The `did:key` method prefix. An epoch id IS a `did:key`, so this module owns
+ * the grammar: it mints ids with the prefix, strips it back off to recover the
+ * public key fingerprint, and `didKeyRecipient` reuses it to recognize the
+ * controller DIDs it can derive a recipient key from.
+ */
+export const DID_KEY_PREFIX = 'did:key:'
+
+/**
  * A reader's public key-agreement key, as needed to wrap an epoch key to it:
  * the recipient `id` (`kid`, which the reader's own key-agreement key must also
  * report) and its `publicKeyMultibase`.
@@ -186,7 +194,7 @@ export async function mintEpoch(): Promise<{
     throw new Error('Generated epoch key is missing its private key.')
   }
   const secret = generated.rawSecret
-  const epochId = `did:key:${generated.publicKeyMultibase}`
+  const epochId = `${DID_KEY_PREFIX}${generated.publicKeyMultibase}`
   return { epochId, secret }
 }
 
@@ -238,13 +246,13 @@ export function epochKeyIdFor(epochId: string): string {
  * @returns {string}
  */
 function publicKeyMultibaseFromEpochId(epochId: string): string {
-  const prefix = 'did:key:'
-  if (!epochId.startsWith(prefix)) {
+  if (!epochId.startsWith(DID_KEY_PREFIX)) {
     throw new Error(
-      `Epoch id "${epochId}" is not a did:key (expected a "${prefix}z..." id).`
+      `Epoch id "${epochId}" is not a did:key (expected a ` +
+        `"${DID_KEY_PREFIX}z..." id).`
     )
   }
-  return epochId.slice(prefix.length)
+  return epochId.slice(DID_KEY_PREFIX.length)
 }
 
 /**

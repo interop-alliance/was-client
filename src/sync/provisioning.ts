@@ -20,6 +20,28 @@ import type { WasClient } from '../WasClient.js'
 // A direct module import (not the `./edv` subpath entry), so the crypto-free
 // sync module does not pull the EDV crypto graph for one number.
 import { EDV_SCHEME_VERSION } from '../edv/constants.js'
+import { WasError } from '../errors.js'
+
+/**
+ * Rethrows a failed provisioning step. A typed client error propagates
+ * UNCHANGED, because what a caller does next depends on which one it is: an
+ * `AuthRequiredError` (a revoked or expired grant) means stop retrying and
+ * prompt for a reconnect, a `ConflictError` (`encryption-immutable`) means the
+ * descriptor is already settled by another client, and a `WasServerError` is
+ * worth a retry. Wrapping every failure in a bare `Error` made all of them
+ * indistinguishable at the caller. Anything untyped -- which carries no such
+ * signal to preserve -- is wrapped with the step's context instead.
+ *
+ * @param err {unknown}   the caught failure
+ * @param context {string}   what the step was trying to do
+ * @returns {never}   always throws
+ */
+function rethrowProvisioningFailure(err: unknown, context: string): never {
+  if (err instanceof WasError) {
+    throw err
+  }
+  throw new Error(context, { cause: err })
+}
 
 /**
  * Ensures the controller's Space exists and one synced collection is
@@ -83,9 +105,9 @@ export async function ensureSpaceAndCollection({
       await space.configure({ name: spaceName, controller: controllerDid })
     }
   } catch (err) {
-    throw new Error(
-      `Failed to configure WAS space "${spaceId}" for "${controllerDid}".`,
-      { cause: err }
+    rethrowProvisioningFailure(
+      err,
+      `Failed to configure WAS space "${spaceId}" for "${controllerDid}".`
     )
   }
 
@@ -115,9 +137,9 @@ export async function ensureSpaceAndCollection({
       await collection.setPublic()
     }
   } catch (err) {
-    throw new Error(
-      `Failed to configure collection "${collectionId}" in space "${spaceId}".`,
-      { cause: err }
+    rethrowProvisioningFailure(
+      err,
+      `Failed to configure collection "${collectionId}" in space "${spaceId}".`
     )
   }
 }

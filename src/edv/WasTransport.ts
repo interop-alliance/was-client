@@ -59,7 +59,7 @@ import { httpStatus, NotSupportedError } from '../errors.js'
 import { BackendFeatures } from '../internal/features.js'
 import type { FeatureProbe } from '../internal/features.js'
 import { readJsonData } from '../internal/content.js'
-import { readEtag } from '../internal/conditional.js'
+import { readEtag, writeHeaders } from '../internal/conditional.js'
 import {
   collectionBackend,
   collectionQuery,
@@ -330,7 +330,7 @@ export class WasTransport extends Transport {
       await this.#put(
         encrypted.id,
         encrypted,
-        conditional ? { 'if-none-match': '*' } : {}
+        writeHeaders({ precondition: { ifNoneMatch: conditional } })
       )
     } catch (err) {
       const mapping: Record<number, { name: string; message: string }> = {

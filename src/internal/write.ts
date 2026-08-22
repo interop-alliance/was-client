@@ -147,10 +147,10 @@ export type InsertOutcome =
  *
  * A codec that mints its own id (e.g. the encrypting codec's EDV id) writes it
  * by `PUT` to that id's path; a codec that mints none (the identity codec)
- * `POST`s to the items path and lets the server mint one. As in
- * {@link upsertResource}, a conditional codec computes the precondition itself
- * (the EDV codec guards its fresh insert with `If-None-Match: *`) and a
- * non-conditional one defers to the caller's explicit precondition.
+ * `POST`s to the items path and lets the server mint one. A conditional codec
+ * computes the precondition itself (the EDV codec guards its fresh insert with
+ * `If-None-Match: *`); an insert through a non-conditional codec is
+ * unconditional, since `add()` names no target revision to pin against.
  *
  * Returns the codec's encoded write and the path actually written alongside the
  * response, so the caller can shape its result (the created id and URL) without
@@ -169,8 +169,6 @@ export type InsertOutcome =
  *   no extra round trip
  * @param [options.contentType] {string}   caller-supplied content type
  * @param [options.capability] {IZcap}
- * @param [options.precondition] {WritePrecondition}   the caller's explicit
- *   precondition (used only for a non-conditional codec)
  * @returns {Promise<InsertOutcome>}
  */
 export async function insertResource(
@@ -182,8 +180,7 @@ export async function insertResource(
     data,
     features,
     contentType,
-    capability,
-    precondition
+    capability
   }: {
     itemsPath: string
     pathForId: (id: string) => string
@@ -192,7 +189,6 @@ export async function insertResource(
     features: FeatureProbe
     contentType?: string
     capability?: IZcap
-    precondition?: WritePrecondition
   }
 ): Promise<InsertOutcome> {
   const write = await codec.encode({ data, contentType })
@@ -211,7 +207,7 @@ export async function insertResource(
   const encoded = write
   const chosen = codec.conditionalWrites
     ? encodedPrecondition(encoded)
-    : precondition
+    : undefined
   const path = encoded.id !== undefined ? pathForId(encoded.id) : itemsPath
   const response = await sendEncodedWrite(context, {
     path,

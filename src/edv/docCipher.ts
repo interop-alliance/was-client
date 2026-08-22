@@ -46,14 +46,9 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type {
-  CodecWrite,
-  IndexSchema,
-  ResourceCodec,
-  ResponseLike
-} from '../codec.js'
+import type { CodecWrite, IndexSchema, ResourceCodec } from '../codec.js'
 import { isChunkedWrite } from '../codec.js'
-import { storedResponse } from '../internal/content.js'
+import { DECODER, storedResponse } from '../internal/content.js'
 import { EMPTY_INDEX_SCHEMA, readIndexSchema } from '../internal/indexSchema.js'
 import {
   EncryptOnlyCipherError,
@@ -62,7 +57,8 @@ import {
 } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
-import { createEdvEncryption, encryptOnlyEdvCodec } from './EdvCodec.js'
+import { buildEdvCodec, encryptOnlyEdvCodec } from './EdvCodec.js'
+import type { EdvCodec } from './EdvCodec.js'
 import { LOCAL_SPACE_ID } from './constants.js'
 import type { RecipientPublicKey } from './recipients.js'
 
@@ -142,18 +138,6 @@ export interface EdvDocCipher extends DocCipher {
 }
 
 /**
- * Presents a locally-held envelope to the codec seam as the `ResponseLike` the
- * seam is typed against. A replica's envelope never came from HTTP, so the
- * shared stored-body adapter is the whole surface it needs.
- *
- * @param envelope {Json}   the stored envelope
- * @returns {ResponseLike}
- */
-function envelopeResponse(envelope: Json): ResponseLike {
-  return storedResponse(envelope)
-}
-
-/**
  * Builds a {@link DocCipher} for one encrypted collection from a reader's key
  * material (the key-agreement key + resolver). Keys are supplied directly (no
  * keystore lookup).
@@ -215,26 +199,22 @@ export async function createEdvDocCipher({
   encryption: CollectionEncryption
   meta?: { custom?: unknown }
 }): Promise<EdvDocCipher> {
-  const provider = createEdvEncryption({
-    resolveKeys: async () => null,
-    idDerivation
-  })
-  // One codec owns both axes. `codecFor` resolves this reader's per-epoch
+  // One codec owns both axes. `buildEdvCodec` resolves this reader's per-epoch
   // keys from the descriptor: writes go under the descriptor's
   // `currentEpoch`, and reads pick the epoch key matching the envelope's
   // recipient kid. A descriptor without epochs is refused fail-closed there.
-  let resolved: Awaited<ReturnType<typeof provider.codecFor>>
+  let codec: EdvCodec
   try {
-    resolved = await provider.codecFor({
+    codec = await buildEdvCodec({
       spaceId: LOCAL_SPACE_ID,
       collectionId,
-      scheme: 'edv',
       encryption,
-      keys: { keyAgreementKey, keyResolver }
+      keys: { keyAgreementKey, keyResolver },
+      idDerivation
     })
   } catch (err) {
     if (err instanceof KeyUnwrapError) {
-      throw new Error(
+      throw new KeyUnwrapError(
         `Cannot build the multi-recipient EDV cipher for collection ` +
           `"${collectionId}": the key-agreement key is not a recipient of any ` +
           'key epoch on this collection. The owner must be a recipient of ' +
@@ -245,12 +225,6 @@ export async function createEdvDocCipher({
     }
     throw err
   }
-  if (!resolved) {
-    throw new Error(
-      `Could not build the EDV cipher for collection "${collectionId}".`
-    )
-  }
-  const codec = resolved
 
   // Decodes the collection's stored metadata and installs the index schema it
   // carries. A codec with no search capability (no blinding key on the
@@ -332,7 +306,7 @@ function docCipherOverCodec({
     const envelope =
       encoded.envelope !== undefined
         ? (encoded.envelope as Json)
-        : (JSON.parse(new TextDecoder().decode(encoded.body)) as Json)
+        : (JSON.parse(DECODER.decode(encoded.body)) as Json)
     return {
       id: encoded.id,
       envelope,
@@ -366,7 +340,7 @@ function docCipherOverCodec({
       const encoded = await codec.encode({
         id,
         data: data as Extract<Json, object>,
-        current: envelopeResponse(current)
+        current: storedResponse(current)
       })
       return readEncoded(encoded)
     },
@@ -376,7 +350,7 @@ function docCipherOverCodec({
       // stale-descriptor `UnknownEpochError` (epoch not on the descriptor)
       // and the membership `KeyUnwrapError` (listed epoch this reader is not
       // a recipient of) -- is owned by the codec's decrypt.
-      return (await codec.decode(envelopeResponse(envelope))) as Json
+      return (await codec.decode(storedResponse(envelope))) as Json
     }
   }
 }

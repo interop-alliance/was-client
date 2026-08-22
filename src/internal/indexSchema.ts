@@ -106,7 +106,7 @@ export function readIndexSchema(custom: unknown): IndexSchema {
  * @param schema {IndexSchema}
  * @returns {Set<string>}
  */
-export function declaredAttributeNames(schema: IndexSchema): Set<string> {
+function declaredAttributeNames(schema: IndexSchema): Set<string> {
   const names = new Set<string>()
   for (const entry of schema.indexes) {
     const parts = Array.isArray(entry.attribute)

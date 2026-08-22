@@ -25,6 +25,14 @@ const OCTET_STREAM = 'application/octet-stream'
 export const ENCODER = new TextEncoder()
 
 /**
+ * The shared `TextDecoder` (stateless in its default non-fatal, non-streaming
+ * mode, so one instance serves the whole library): reading back UTF-8 bodies
+ * that were written through {@link ENCODER} -- envelope bytes on the EDV write
+ * path, protected-header bytes on the read path.
+ */
+export const DECODER = new TextDecoder()
+
+/**
  * Whether a content-type denotes JSON -- `application/json` or any
  * `application/<prefix>+json` structured-suffix variant (e.g.
  * `application/ld+json`, `application/jose+json`), each optionally followed by

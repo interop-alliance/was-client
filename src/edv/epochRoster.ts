@@ -80,3 +80,33 @@ export function epochRostersEqual(
     currentIds.every((id, index) => id === nextIds[index])
   )
 }
+
+/**
+ * Picks the epoch to write under from a roster: the entry named by
+ * `currentEpoch` when the list holds it, otherwise the LAST entry in the
+ * list's canonical order.
+ *
+ * The fallback is defined against the list's own order rather than against the
+ * incidental order in which secrets happened to unwrap, so the choice is
+ * deterministic for every caller. Callers pass the list they are entitled to
+ * write under -- the full roster during a rotation, or only the epochs a given
+ * reader names -- and the rule itself does not vary between them. A reader that
+ * does not hold `currentEpoch` is a removed/archive reader whose writes the
+ * server rejects via its revoked zcap anyway; the fallback only keeps the
+ * selection well-defined instead of assuming the list is append-ordered
+ * newest-last.
+ *
+ * The list must be non-empty -- every caller has already established that it
+ * holds at least one epoch, so an empty list is a programming error rather than
+ * a state this can report on.
+ *
+ * @param epochs {CollectionEncryptionEpoch[]}   the non-empty list to pick from
+ * @param [currentEpoch] {string}   the descriptor's declared write epoch
+ * @returns {CollectionEncryptionEpoch}
+ */
+export function pickEpoch(
+  epochs: CollectionEncryptionEpoch[],
+  currentEpoch?: string
+): CollectionEncryptionEpoch {
+  return epochs.find(epoch => epoch.id === currentEpoch) ?? epochs.at(-1)!
+}

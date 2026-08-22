@@ -9,13 +9,14 @@
 import type { HttpResponse } from '@interop/http-client'
 import { resourcePath, resourcePolicy, resourceMeta } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { WasServerError } from './errors.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { collectionCodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
 import type { FeatureProbe } from './internal/features.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
+import { withCodec } from './internal/withCodec.js'
+import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
 import { ENCODER } from './internal/content.js'
 import { codecRequestContext, upsertResource } from './internal/write.js'
 import {
@@ -198,20 +199,7 @@ export class Resource {
    * @returns {Promise<Json | Blob | null>}
    */
   async get(): Promise<Json | Blob | null> {
-    // The read is the same signed GET whatever the codec turns out to be, so
-    // the two round trips overlap. The codec promise is awaited first, so a
-    // codec failure still takes precedence over a read failure; the no-op
-    // handler on the read keeps an abandoned read from surfacing as an
-    // unhandled rejection in that case (the read is still awaited below, so
-    // its error is not swallowed).
-    const codecPromise = this.#codec()
-    const responsePromise = this.#read()
-    responsePromise.catch(() => {})
-    const codec = await codecPromise
-    const response = await responsePromise
-    return response === null
-      ? null
-      : codec.decode(response, this.id, this.#codecContext())
+    return (await this.getWithEtag())?.data ?? null
   }
 
   /**
@@ -227,14 +215,7 @@ export class Resource {
    * @returns {Promise<{ data: Json | Blob; etag?: string } | null>}
    */
   async getWithEtag(): Promise<{ data: Json | Blob; etag?: string } | null> {
-    // Overlapped like `get()`: codec resolution and the read are independent,
-    // the codec is awaited first for error precedence, and the no-op handler
-    // keeps an abandoned read from becoming an unhandled rejection.
-    const codecPromise = this.#codec()
-    const responsePromise = this.#read()
-    responsePromise.catch(() => {})
-    const codec = await codecPromise
-    const response = await responsePromise
+    const [codec, response] = await withCodec(this.#codec(), this.#read())
     if (response === null) {
       return null
     }
@@ -388,44 +369,13 @@ export class Resource {
    * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(ResourceMetadata & { etag?: string }) | null> {
-    // Overlapped like `get()`: the metadata GET does not depend on the codec
-    // (only its `custom` decode below does), the codec is awaited first for
-    // error precedence, and the no-op handler keeps an abandoned read from
-    // becoming an unhandled rejection.
-    const codecPromise = this.#codec()
-    const responsePromise = send(this.#context, {
-      path: this.#metaPath,
-      method: 'GET',
-      capability: this.#capability,
-      read: true
+    return readMeta<ResourceMetadata>(this.#context, {
+      metaPath: this.#metaPath,
+      codec: this.#codec(),
+      subject: `"${this.id}"`,
+      id: this.id,
+      capability: this.#capability
     })
-    responsePromise.catch(() => {})
-    const codec = await codecPromise
-    const response = await responsePromise
-    if (response === null) {
-      return null
-    }
-    if (response.data === undefined) {
-      // A 200 whose body `@interop/http-client` did not pre-parse into `.data`
-      // (a non-JSON content-type, or an empty/204 body): a metadata document
-      // always carries its server-managed fields as JSON, so an absent `.data`
-      // is a malformed response. Fail with a typed error rather than
-      // dereferencing `metadata.custom` off `undefined` as a raw `TypeError`.
-      // (Kept distinct from the `null` return, which means the resource is
-      // missing or not visible -- not that the server answered malformed.)
-      throw new WasServerError(
-        `Metadata response for "${this.id}" carried no JSON body ` +
-          `(content-type ` +
-          `"${response.headers.get('content-type') ?? 'unknown'}").`
-      )
-    }
-    const metadata = response.data as ResourceMetadata
-    // Decode the user-writable `custom` (decrypting it on an encrypted
-    // collection) so callers uniformly see plaintext `{ name, tags }`.
-    const custom = await codec.decodeMeta({ custom: metadata.custom }, this.id)
-    const decoded = { ...metadata, custom }
-    const etag = readEtag(response)
-    return etag !== undefined ? { ...decoded, etag } : decoded
   }
 
   /**
@@ -458,44 +408,18 @@ export class Resource {
     meta: { custom?: ResourceMetadataCustom } = {},
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ etag?: string }> {
-    const codec = await this.#codec()
-    const { custom } = await codec.encodeMeta({
+    return writeMeta(this.#context, {
+      metaPath: this.#metaPath,
+      codec: this.#codec(),
       custom: meta.custom ?? {},
-      id: this.id
+      // A Resource's key epoch stamps its content write via the `Key-Epoch`
+      // header, so the one the codec surfaces here is deliberately dropped.
+      sendEpoch: false,
+      id: this.id,
+      ifMatch: options.ifMatch,
+      ifNoneMatch: options.ifNoneMatch,
+      capability: this.#capability
     })
-    const response = await send(this.#context, {
-      path: this.#metaPath,
-      method: 'PUT',
-      capability: this.#capability,
-      json: { custom },
-      headers: writeHeaders({
-        precondition: {
-          ifMatch: options.ifMatch,
-          ifNoneMatch: options.ifNoneMatch
-        }
-      })
-    })
-    return { etag: readEtag(response) }
-  }
-
-  /**
-   * The shared read-then-CAS body of {@link setName} / {@link setTags}: reads
-   * the current metadata, merges `patch` over its `custom`, and writes it back
-   * pinned to the read's `etag` (when the backend supports
-   * `conditional-writes`), so a concurrent metadata write surfaces as
-   * `PreconditionFailedError` instead of being silently erased by the
-   * full-replacement write.
-   *
-   * @param patch {ResourceMetadataCustom}   the properties to merge over the
-   *   current `custom`
-   * @returns {Promise<void>}
-   */
-  async #patchCustom(patch: ResourceMetadataCustom): Promise<void> {
-    const current = await this.meta()
-    await this.setMeta(
-      { custom: { ...current?.custom, ...patch } },
-      { ifMatch: current?.etag }
-    )
   }
 
   /**
@@ -510,7 +434,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return this.#patchCustom({ name })
+    return patchCustom(this, { name })
   }
 
   /**
@@ -521,7 +445,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return this.#patchCustom({ tags })
+    return patchCustom(this, { tags })
   }
 
   get #policyPath(): string {

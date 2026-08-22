@@ -31,10 +31,12 @@ export {
   createWasSyncPort,
   KEY_EPOCH_HEADER,
   formatEtag,
-  parseEtag,
-  errorStatus,
-  errorMessage
+  parseEtag
 } from './port.js'
+// The sync subpath's names for the client's own error accessors, so a
+// sync-only consumer reads a raw ky/ezcap failure without importing the core
+// entry.
+export { httpStatus as errorStatus, errorMessage } from '../errors.js'
 export { contentCid, cidFrom, deriveSpaceId } from './cid.js'
 export { isEncryptedEnvelope } from './envelope.js'
 export { createPlaintextDocCipher } from './plaintextCipher.js'

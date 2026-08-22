@@ -21,9 +21,8 @@
  * through the default `did:key` recipient resolver.
  */
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import { DID_KEY_PREFIX } from './epochCrypto.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
-
-const DID_KEY_PREFIX = 'did:key:'
 
 // Multibase base58btc + multicodec ed25519-pub: every Ed25519 did:key
 // identifier starts with these four characters.

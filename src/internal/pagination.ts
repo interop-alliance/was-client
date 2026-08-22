@@ -151,7 +151,7 @@ export async function collectPages<
   for await (const page of walkPages(walk)) {
     aggregate ??= page
     // Append one by one: spreading a page's items as call arguments would hit
-    // the engine's max-arguments ceiling on a very large page.
+    // the engine's max-arguments limit on a very large page.
     for (const item of page.items) {
       items.push(item)
     }

@@ -34,7 +34,6 @@ import {
 } from '../internal/conditional.js'
 import { resourceMeta, resourcePath } from '../internal/paths.js'
 import {
-  errorMessage,
   httpStatus,
   WasSyncAuthError,
   WasSyncConflictError,
@@ -59,21 +58,6 @@ export { KEY_EPOCH_HEADER }
  * the authority on ordering, so this only feeds the one-off conflict entry.
  */
 const UNKNOWN_UPDATED_AT = new Date(0).toISOString()
-
-/**
- * Extracts an HTTP status from a raw ky/ezcap error. `was.request()` rejects on
- * any non-2xx with `err.status` set; this reads it defensively from either the
- * flat `status` or the nested `response.status` shape. The sync subpath's name
- * for the client's own {@link httpStatus}.
- */
-export const errorStatus = httpStatus
-
-/**
- * Normalizes an unknown caught error into a display string. The sync subpath's
- * name for the client's own {@link errorMessage}, the companion to
- * {@link errorStatus}.
- */
-export { errorMessage }
 
 /**
  * The statuses a WAS server can return for an authorization failure: `401` (no
@@ -111,7 +95,7 @@ function mapWriteError(
     authErrors = false
   }: { notFound?: boolean; authErrors?: boolean } = {}
 ): never {
-  const status = errorStatus(err)
+  const status = httpStatus(err)
   if (notFound && status === 404) {
     throw new WasSyncNotFoundError()
   }
@@ -218,7 +202,7 @@ export function createWasSyncPort({
         method: 'GET'
       })
     } catch (err) {
-      const status = errorStatus(err)
+      const status = httpStatus(err)
       // A read's `404` stays "absent or tombstoned" even under
       // `mapAuthErrors`: it is a modeled outcome here, and the callers read it
       // as deletion-wins.
@@ -257,7 +241,7 @@ export function createWasSyncPort({
         // The pull path is where revoked access surfaces reliably: unlike a
         // read or a delete, a `404` on the collection's own query endpoint has
         // no benign reading once the collection is known to exist.
-        const status = errorStatus(err)
+        const status = httpStatus(err)
         if (mapAuthErrors && isAuthStatus(status)) {
           throw new WasSyncAuthError(status)
         }
@@ -299,7 +283,7 @@ export function createWasSyncPort({
         // holds and the batch must not be retried forever. A masked
         // authorization `404` is swallowed with it -- indistinguishable by
         // design -- but revoked access still surfaces on the next `query`.
-        if (mapAuthErrors && errorStatus(err) === 404) {
+        if (mapAuthErrors && httpStatus(err) === 404) {
           return undefined
         }
         mapWriteError(err, {
@@ -354,7 +338,7 @@ export function createWasSyncPort({
       // yet 404s here; only a hard error propagates.
       const meta = await metaRead
       if (!meta.ok) {
-        const status = errorStatus(meta.err)
+        const status = httpStatus(meta.err)
         // A `/meta` `404` is routine (the resource has no metadata document
         // yet), so it stays benign under `mapAuthErrors` -- only `401`/`403`
         // map there.

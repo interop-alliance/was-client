@@ -1,5 +1,26 @@
 # @interop/was-client Changelog
 
+## 0.42.0 - TBD
+
+### Changed
+
+- `ensureSpaceAndCollection` propagates typed errors (`AuthRequiredError`,
+  `NotFoundError`, `ConflictError`, `WasServerError`) instead of flattening
+  every provisioning failure into a bare `Error`, so a caller can tell a revoked
+  grant from a missing Space. Untyped failures are still wrapped with the same
+  contextual message.
+- Building an EDV cipher rethrows `KeyUnwrapError` rather than a bare `Error`,
+  restoring the documented fail-closed contract.
+- `BackendFeatures` no longer lets a slow failing probe clear a newer in-flight
+  feature-probe memo.
+- `Collection.find()` decrypts a page of results concurrently rather than one at
+  a time. On a page where a document fails to decrypt, the surfaced error is now
+  the first to reject rather than the lowest-indexed one.
+- Escrowing readers into a collection unwraps the owner's epoch and
+  blinded-index secrets once per roster instead of once per incoming reader, and
+  `removeRecipient`'s capability revocations run concurrently.
+- `insertResource` drops its unused `precondition` option (internal).
+
 ## 0.41.0 - 2026-08-20
 
 ### Changed

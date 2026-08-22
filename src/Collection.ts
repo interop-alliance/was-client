@@ -45,6 +45,7 @@ import {
   unreadableDescriptionError
 } from './internal/describe.js'
 import { readEtag, writeHeaders } from './internal/conditional.js'
+import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
 import { codecRequestContext, insertResource } from './internal/write.js'
 import {
   readPolicy,
@@ -92,7 +93,6 @@ import type {
   LinkSet,
   PolicyDocument,
   CollectionResourcesList,
-  ResourceMetadataCustom,
   ResourceMetadataCustomInput,
   ResourceSummary
 } from './types.js'
@@ -437,46 +437,12 @@ export class Collection {
    * @returns {Promise<(CollectionMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(CollectionMetadata & { etag?: string }) | null> {
-    // Overlapped like `Resource.meta()`: the metadata GET does not depend on
-    // the codec (only its `custom` decode below does), the codec is awaited
-    // first for error precedence, and the no-op handler keeps an abandoned read
-    // from becoming an unhandled rejection.
-    const codecPromise = this.#codec()
-    const responsePromise = send(this.#context, {
-      path: this.#metaPath,
-      method: 'GET',
-      capability: this.#capability,
-      read: true
+    return readMeta<CollectionMetadata>(this.#context, {
+      metaPath: this.#metaPath,
+      codec: this.#codec(),
+      subject: `collection "${this.id}"`,
+      capability: this.#capability
     })
-    responsePromise.catch(() => {})
-    const codec = await codecPromise
-    const response = await responsePromise
-    if (response === null) {
-      return null
-    }
-    if (response.data === undefined) {
-      // A 200 whose body `@interop/http-client` did not pre-parse into `.data`
-      // (a non-JSON content-type, or an empty/204 body): a metadata document
-      // always carries its server-managed fields as JSON, so an absent `.data`
-      // is a malformed response. Fail with a typed error rather than
-      // dereferencing `metadata.custom` off `undefined` as a raw `TypeError`.
-      // (Kept distinct from the `null` return, which means the collection is
-      // missing or not visible -- not that the server answered malformed.)
-      throw new WasServerError(
-        `Metadata response for collection "${this.id}" carried no JSON body ` +
-          `(content-type ` +
-          `"${response.headers.get('content-type') ?? 'unknown'}").`
-      )
-    }
-    const metadata = response.data as CollectionMetadata
-    // Decode the user-writable `custom` (decrypting it on an encrypted
-    // collection) so callers uniformly see plaintext `{ name, tags }`. No
-    // resource id is passed: this slot belongs to the collection itself, and
-    // the encrypting codec refuses a resource-bound envelope served here.
-    const custom = await codec.decodeMeta({ custom: metadata.custom })
-    const decoded = { ...metadata, custom }
-    const etag = readEtag(response)
-    return etag !== undefined ? { ...decoded, etag } : decoded
   }
 
   /**
@@ -513,49 +479,17 @@ export class Collection {
     meta: { custom?: ResourceMetadataCustomInput } = {},
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ etag?: string }> {
-    const codec = await this.#codec()
-    const { custom, epoch } = await codec.encodeMeta({
-      custom: meta.custom ?? {}
+    return writeMeta(this.#context, {
+      metaPath: this.#metaPath,
+      codec: this.#codec(),
+      custom: meta.custom ?? {},
+      // The Collection metadata stamp describes the `custom` envelope itself,
+      // so it travels as a top-level member of this PUT body.
+      sendEpoch: true,
+      ifMatch: options.ifMatch,
+      ifNoneMatch: options.ifNoneMatch,
+      capability: this.#capability
     })
-    const response = await send(this.#context, {
-      path: this.#metaPath,
-      method: 'PUT',
-      capability: this.#capability,
-      // The key epoch travels in the body here, not in the `Key-Epoch` header:
-      // the header channel stamps a Resource's *content* write, while the
-      // Collection metadata stamp describes the `custom` envelope itself and is
-      // a top-level member of this PUT body. The server clears the stored stamp
-      // when the member is omitted -- which is exactly right on a plaintext
-      // collection, whose codec surfaces no epoch.
-      json: epoch !== undefined ? { custom, epoch } : { custom },
-      headers: writeHeaders({
-        precondition: {
-          ifMatch: options.ifMatch,
-          ifNoneMatch: options.ifNoneMatch
-        }
-      })
-    })
-    return { etag: readEtag(response) }
-  }
-
-  /**
-   * The shared read-then-CAS body of {@link setName} / {@link setTags}: reads
-   * the current metadata, merges `patch` over its `custom`, and writes it back
-   * pinned to the read's `etag` (when the backend supports
-   * `conditional-writes`), so a concurrent metadata write surfaces as
-   * `PreconditionFailedError` instead of being silently erased by the
-   * full-replacement write.
-   *
-   * @param patch {ResourceMetadataCustom}   the properties to merge over the
-   *   current `custom`
-   * @returns {Promise<void>}
-   */
-  async #patchCustom(patch: ResourceMetadataCustom): Promise<void> {
-    const current = await this.meta()
-    await this.setMeta(
-      { custom: { ...current?.custom, ...patch } },
-      { ifMatch: current?.etag }
-    )
   }
 
   /**
@@ -577,7 +511,7 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return this.#patchCustom({ name })
+    return patchCustom(this, { name })
   }
 
   /**
@@ -589,7 +523,7 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return this.#patchCustom({ tags })
+    return patchCustom(this, { tags })
   }
 
   /**
@@ -803,28 +737,29 @@ export class Collection {
       return { count: typeof result.count === 'number' ? result.count : 0 }
     }
     const documents = Array.isArray(result.documents) ? result.documents : []
-    const items: FindPage['items'] = []
-    for (const envelope of documents) {
-      // Restrict-mode ids make the stored document's own id the WAS resource
-      // id, so it is also the id the codec verifies the envelope's
-      // AEAD-authenticated binding against -- a server that returns one
-      // document under another's id is caught here, not trusted.
-      const id = (envelope as { id?: unknown }).id
-      if (typeof id !== 'string') {
-        throw new WasServerError(
-          `Search response for collection "${this.id}" returned a document ` +
-            'with no id.'
-        )
-      }
-      items.push({
-        id,
-        data: await codec.decode(
-          storedResponse(envelope),
+    // Each envelope is an independent JWE open with nothing carried between
+    // them, so the page decrypts concurrently. `Promise.all` preserves order,
+    // so `items` still matches the server's ranking.
+    const codecContext = this.#codecContext()
+    const items: FindPage['items'] = await Promise.all(
+      documents.map(async envelope => {
+        // Restrict-mode ids make the stored document's own id the WAS resource
+        // id, so it is also the id the codec verifies the envelope's
+        // AEAD-authenticated binding against -- a server that returns one
+        // document under another's id is caught here, not trusted.
+        const id = (envelope as { id?: unknown }).id
+        if (typeof id !== 'string') {
+          throw new WasServerError(
+            `Search response for collection "${this.id}" returned a document ` +
+              'with no id.'
+          )
+        }
+        return {
           id,
-          this.#codecContext()
-        )
+          data: await codec.decode(storedResponse(envelope), id, codecContext)
+        }
       })
-    }
+    )
     return {
       items,
       hasMore: result.hasMore === true,

@@ -19,6 +19,7 @@
  */
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import { KeyUnwrapError } from '../errors.js'
+import { Memo } from '../internal/memo.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionEpoch
@@ -28,6 +29,7 @@ import {
   reconstructEpochKeyPair,
   unwrapEpochSecret
 } from './epochCrypto.js'
+import { pickEpoch } from './epochRoster.js'
 
 /**
  * The reader's resolved key-epoch material for a Collection.
@@ -92,17 +94,10 @@ export async function resolveEpochKeys({
         'supply the correct key-agreement key.'
     )
   }
-  // Choose the write epoch: `currentEpoch` when this reader holds it, otherwise
-  // the newest epoch it holds -- defined deterministically as the LAST epoch in
-  // the descriptor's canonical `epochs` order that names this reader, never the
-  // incidental order in which secrets happened to unwrap. A reader that is not a
-  // recipient of `currentEpoch` is a removed/archive reader whose writes the
-  // server rejects via its revoked zcap anyway; selecting a deterministic
-  // fallback here only keeps the local `writeEpoch`/`writeKey` well-defined
-  // instead of assuming the `epochs` array is append-ordered newest-last.
-  const writeEpochEntry =
-    namedEpochs.find(epoch => epoch.id === encryption.currentEpoch) ??
-    namedEpochs.at(-1)!
+  // The candidates are only the epochs this reader is named in: it can write
+  // under no other, so a `currentEpoch` it does not hold falls back within its
+  // own epochs rather than to a roster entry it cannot unwrap.
+  const writeEpochEntry = pickEpoch(namedEpochs, encryption.currentEpoch)
   // The write epoch is unwrapped eagerly: `writeKey` must be a full key pair the
   // EDV cipher can name recipients with and encrypt under right away.
   const writeKey = await unwrapEpochKey({
@@ -184,39 +179,27 @@ function lazyEpochKey({
   epoch: CollectionEncryptionEpoch
   keyAgreementKey: IKeyAgreementKey
 }): IKeyAgreementKey {
-  let pending: Promise<IKeyAgreementKey> | undefined
-  const resolve = (): Promise<IKeyAgreementKey> => {
-    if (pending === undefined) {
-      const promise = unwrapEpochKey({ epoch, keyAgreementKey }).then(key => {
-        if (!key) {
-          // The reader was named in this epoch (else no lazy key was built)
-          // but its entry did not unwrap: a corrupt entry. The codec's
-          // `_decrypt` catches this and tries the next candidate before
-          // surfacing its own typed failure.
-          throw new KeyUnwrapError(
-            `This reader's recipient entry for epoch "${epoch.id}" did not ` +
-              'unwrap (a corrupt entry).'
-          )
-        }
-        return key
-      })
-      // Cache only a successful unwrap: drop a rejected promise so the next
-      // read re-attempts (the failure may have been transient), rather than
-      // replaying the same cached rejection for the life of the handle. The
-      // identity guard avoids clobbering a newer in-flight attempt.
-      promise.catch((): void => {
-        if (pending === promise) {
-          pending = undefined
-        }
-      })
-      pending = promise
+  // The memo caches only a successful unwrap: a rejected attempt is dropped so
+  // the next read re-attempts (the failure may have been transient), rather
+  // than replaying the same cached rejection for the life of the handle.
+  const memo = new Memo(async () => {
+    const key = await unwrapEpochKey({ epoch, keyAgreementKey })
+    if (!key) {
+      // The reader was named in this epoch (else no lazy key was built) but its
+      // entry did not unwrap: a corrupt entry. The codec's `_decrypt` catches
+      // this and tries the next candidate before surfacing its own typed
+      // failure.
+      throw new KeyUnwrapError(
+        `This reader's recipient entry for epoch "${epoch.id}" did not ` +
+          'unwrap (a corrupt entry).'
+      )
     }
-    return pending
-  }
+    return key
+  })
   return {
     id: epochKeyIdFor(epoch.id),
     async deriveSecret(options: { publicKey: unknown }): Promise<Uint8Array> {
-      const key = await resolve()
+      const key = await memo.get()
       return key.deriveSecret(options)
     }
   }
