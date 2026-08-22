@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.44.2 - TBD
+
+### Changed
+
+- Update to `@interop/vh-resource-log@0.3.0` (json-canonicalize 3.0.0).
+
 ## 0.44.1 - 2026-08-22
 
 ### Changed
