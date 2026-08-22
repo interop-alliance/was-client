@@ -294,13 +294,13 @@ function docCipherOverCodec({
     // Read `envelope` first and never touch `body` when it is there: the EDV
     // codec exposes `body` as a lazy getter, so testing it would serialize the
     // wire bytes this path has no use for.
-    const envelope =
-      encoded.envelope !== undefined
-        ? (encoded.envelope as Json)
-        : // A codec that surfaces no object form: parse the wire bytes.
-          encoded.body instanceof Uint8Array
-          ? (JSON.parse(DECODER.decode(encoded.body)) as Json)
-          : undefined
+    let envelope: Json | undefined
+    if (encoded.envelope !== undefined) {
+      envelope = encoded.envelope as Json
+    } else if (encoded.body instanceof Uint8Array) {
+      // A codec that surfaces no object form: parse the wire bytes.
+      envelope = JSON.parse(DECODER.decode(encoded.body)) as Json
+    }
     if (typeof encoded.id !== 'string' || envelope === undefined) {
       throw new Error(
         `EDV encrypt for collection "${collectionId}" returned no id/envelope body.`

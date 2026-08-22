@@ -150,13 +150,17 @@ describe('createEdvDocCipher (epoch roster, content derivation)', () => {
       .spyOn(EdvCodec.prototype, 'encode')
       .mockImplementation(async function (this: EdvCodec, ...encodeArgs) {
         const encoded = (await encode.apply(this, encodeArgs)) as EncodedWrite
-        return {
-          ...encoded,
-          get body() {
+        // Replace the descriptor in place: spreading `encoded` would read the
+        // lazy getter during setup, serializing the body before the test runs.
+        Object.defineProperty(encoded, 'body', {
+          configurable: true,
+          enumerable: true,
+          get() {
             forced = true
             return undefined
           }
-        }
+        })
+        return encoded
       })
     try {
       const { envelope } = await cipher.encrypt({ data: DOC })
