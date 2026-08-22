@@ -292,6 +292,31 @@ describe('EdvCodec: JSON round trip', () => {
     expect(doc.meta?.encoding).toBeUndefined()
   })
 
+  it('serializes the wire body lazily, once, and forces it on a spread', async () => {
+    const { codec } = await makeFixture()
+    const encoded = (await codec.encode({
+      data: { a: 1 }
+    })) as EncodedWrite
+
+    // A consumer reading `envelope` pays no serialization: `body` is a getter
+    // that has not run yet.
+    const descriptor = Object.getOwnPropertyDescriptor(encoded, 'body')
+    expect(descriptor?.get).toBeInstanceOf(Function)
+    expect(descriptor?.enumerable).toBe(true)
+    expect(encoded.envelope).toBeTruthy()
+
+    // Forcing it twice serializes once (the same instance comes back), and a
+    // spread carries the identical bytes under the same key.
+    const first = encoded.body as Uint8Array
+    expect(first).toBeInstanceOf(Uint8Array)
+    expect(encoded.body).toBe(first)
+    const copy = { ...encoded }
+    expect(copy.body).toBe(first)
+    expect(
+      JSON.parse(new TextDecoder().decode(copy.body as Uint8Array))
+    ).toEqual(encoded.envelope)
+  })
+
   it('honors an opted-in application/jose+json content type', async () => {
     const codec = await makeCodec({ contentType: JOSE_CONTENT_TYPE })
     const encoded = await codec.encode({ data: { a: 1 } })

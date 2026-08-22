@@ -668,3 +668,32 @@ precondition option (`insertResource` dropped its unused one in 0.42.0), so
 there is no caller baseline for it to discard. An insert names no target
 revision to pin against, and the conditional codec's own `If-None-Match: *`
 guard is the whole precondition there.
+
+### WCL-27: Every local encrypt serializes an envelope body that is thrown away
+
+- status: done
+- done: 2026-08-21
+- priority: low
+- labels: encryption, sync, efficiency
+- touches:
+  - was-client: `EdvCodec.encode`'s return shape and `EncodedWrite.body`
+    (`src/codec.ts`), a public seam -- a lazy `body` is observable to any
+    consumer that spreads or clones the returned object
+- acceptance:
+  - [x] A local-replica encrypt does not pay a full stringify plus UTF-8 encode
+        of the envelope on every write
+  - [x] The HTTP write path is unchanged
+
+`EdvCodec.encode` unconditionally sets `body: envelopeBytes(encrypted)`. On the
+HTTP path that is the wire body. On the sync path, `readEncoded` only uses
+`encoded.body` for an `instanceof Uint8Array` type check and then takes
+`encoded.envelope`, the object form the codec already holds, so the bytes are
+discarded. A 100 KB document pays roughly 280 KB of transient allocation and a
+full serialization pass for nothing, on every replica write.
+
+`EncodedWrite.body` is already optional, so the shape supports a lazy getter,
+with `readEncoded`'s guard flipped to prefer `envelope` so it never forces it.
+The reason this was left out of the cleanup pass is that a getter on a public
+seam object behaves differently from a data property under spreading and
+structured cloning, so it needs a deliberate decision about the seam rather than
+a silent swap.

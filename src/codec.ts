@@ -70,7 +70,12 @@ export interface ResponseLike {
  *   write is a `POST` and the server mints the id (the identity codec's `add()`
  *   path).
  * - `json` / `body` -- mutually exclusive payloads, mirroring the request
- *   layer: `json` for a structured body, `body` for raw bytes.
+ *   layer: `json` for a structured body, `body` for raw bytes. A codec that
+ *   also surfaces `envelope` may expose `body` as a lazy getter that serializes
+ *   on first read, so a consumer with no use for the wire bytes should read
+ *   `envelope` and leave `body` untouched rather than type-testing it first.
+ *   The getter is enumerable, so a spread or a structured clone of this object
+ *   still carries the same `body` bytes -- it just pays for them.
  * - `contentType` -- the content type to send for a `body` write (e.g.
  *   `application/jose+json` for an encrypted envelope).
  * - `resourceContentType` -- the plaintext content type of the resource, when it
