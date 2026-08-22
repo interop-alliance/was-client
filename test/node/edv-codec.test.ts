@@ -43,6 +43,7 @@ import type {
 import type { SingleWriteCodec } from '../helpers/codec.js'
 import { stubFeatures } from '../helpers/codec.js'
 import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
+import { buildEdvCodec } from '../../src/edv/EdvCodec.js'
 import {
   createEdvEncryption,
   EdvCodec,
@@ -738,6 +739,34 @@ describe('EdvCodec: chunked blob auto-routing', () => {
     expect(failure).toBeInstanceOf(NotSupportedError)
     expect((failure as Error).message).toMatch(
       /backend descriptor could not be read at all/
+    )
+    expect(backend.writes).toEqual([])
+  })
+
+  it('refuses the chunked path outright on a codec built with no transport', async () => {
+    // The local-replica build injects no transport factory, so the codec holds
+    // no route it could address a document and its chunks with -- the refusal
+    // is structural, not a convention about a placeholder space id.
+    const { kak, publicKeyMultibase, keyResolver } = await makeKeys()
+    const { encryption } = await mintEpochFor({
+      id: kak.id,
+      publicKeyMultibase
+    })
+    const local = await buildEdvCodec({
+      collectionId: 'c',
+      encryption,
+      keys: { keyAgreementKey: kak, keyResolver },
+      idDerivation: 'random',
+      maxBlobBytes: 16,
+      chunkSize: 24
+    })
+    const backend = memoryBackend()
+    const plan = (await local.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    await expect(plan.execute(backend.context)).rejects.toBeInstanceOf(
+      NotSupportedError
     )
     expect(backend.writes).toEqual([])
   })
@@ -1495,7 +1524,6 @@ describe('EdvCodec: decrypt failure discrimination', () => {
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random',
-      spaceId: 's',
       collectionId: 'c',
       epochIds: [epochId]
     })

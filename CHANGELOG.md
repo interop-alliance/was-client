@@ -1,8 +1,19 @@
 # @interop/was-client Changelog
 
-## 0.42.1 - TBD
+## 0.43.0 - TBD
 
 ### Changed
+
+- `EdvCodec` takes an optional `transportFactory` in place of `spaceId`. The
+  codec needed a Space id only to build the `WasTransport` its chunked-stream
+  paths drive, so the two builds with no server behind them
+  (`createEdvDocCipher`, `createEdvEncryptOnlyDocCipher`) passed a placeholder
+  `'local'`. They now pass no factory at all, and a chunked read or write on
+  such a codec is refused with `NotSupportedError` rather than relying on guards
+  elsewhere to keep a fabricated `/space/local/` route off the network.
+  `createEdvEncryption` supplies the factory, so the server-backed path is
+  unchanged. New exports: `wasTransportFactory` and the `CodecTransportFactory`
+  type.
 
 - `EdvCodec.encode` serializes the envelope wire bytes lazily:
   `EncodedWrite.body` is now a memoizing getter, so a local-replica encrypt

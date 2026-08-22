@@ -697,3 +697,38 @@ The reason this was left out of the cleanup pass is that a getter on a public
 seam object behaves differently from a data property under spreading and
 structured cloning, so it needs a deliberate decision about the seam rather than
 a silent swap.
+
+### WCL-24: `LOCAL_SPACE_ID` is a sentinel for a dependency the codec does not have
+
+- status: done
+- done: 2026-08-21
+- priority: low
+- labels: encryption, sync, layering
+- touches:
+  - was-client: `EdvCodec`'s constructor shape, `LOCAL_SPACE_ID`
+    (`src/edv/constants.ts`), `createEdvDocCipher` and `encryptOnlyEdvCodec`
+    (`src/edv/docCipher.ts`, `src/edv/EdvCodec.ts`) -- all internal to
+    `src/edv/`
+- acceptance:
+  - [x] A local-replica codec cannot address a chunked write at a fabricated
+        `/space/local/` route, structurally rather than by convention
+  - [x] `LOCAL_SPACE_ID` is gone
+
+`EdvCodec` requires a `spaceId` solely so `#transportFor` can build a
+`WasTransport` for the chunked path. The two server-less builds have no space,
+so they pass `LOCAL_SPACE_ID = 'local'`, and the constant's own comment concedes
+that it "must never reach the transport path -- there is no `/space/local/`
+route", relying on the DocCipher seam refusing chunked writes up front to keep
+that true.
+
+So an invariant about the codec's internals is enforced by guards in a different
+module: `docCipher` refusing `isChunkedWrite`, plus `#readChunked`'s no-context
+refusal. Two distant guards keep a fabricated address off the network, and
+anyone adding a third path that addresses a resource by path has to rediscover
+that the `spaceId` on a local codec is a lie.
+
+The codec does not need a Space id, it needs a way to build a transport. Inject
+that instead -- an optional `transportFactory` supplied by `createEdvEncryption`
+(which knows the space) and omitted by the two local builds -- so a chunked
+write on a local cipher fails structurally. Contained to `src/edv/` and
+behavior-preserving.

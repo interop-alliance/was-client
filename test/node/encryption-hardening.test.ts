@@ -516,7 +516,6 @@ describe('was binding: per-envelope epoch label', () => {
       contentType: 'application/json',
       maxBlobBytes: 512 * 1024,
       idDerivation: 'random',
-      spaceId: 's',
       collectionId: 'c',
       epochIds: [realEpoch]
     })
