@@ -9,8 +9,10 @@
   paths drive, so the two builds with no server behind them
   (`createEdvDocCipher`, `createEdvEncryptOnlyDocCipher`) passed a placeholder
   `'local'`. They now pass no factory at all, and a chunked read or write on
-  such a codec is refused with `NotSupportedError` rather than relying on guards
-  elsewhere to keep a fabricated `/space/local/` route off the network.
+  such a codec is refused rather than relying on guards elsewhere to keep a
+  fabricated `/space/local/` route off the network. The refusal is a
+  `NotSupportedError` naming the missing route; a caller that also supplied no
+  request context is still refused earlier, with the existing `EncryptionError`.
   `createEdvEncryption` supplies the factory, so the server-backed path is
   unchanged. New exports: `wasTransportFactory` and the `CodecTransportFactory`
   type.
