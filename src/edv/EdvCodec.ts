@@ -128,8 +128,7 @@ import type {
 import {
   DEFAULT_CONTENT_TYPE,
   EDV_SCHEME_VERSION,
-  envelopeBytes,
-  LOCAL_SPACE_ID
+  envelopeBytes
 } from './constants.js'
 
 /**
@@ -154,6 +153,53 @@ const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
  * decrypted document self-describing alongside `'utf-8'` and `'base64'`.
  */
 const CHUNKED_ENCODING = 'chunked'
+
+/**
+ * Builds the `WasTransport` a codec's chunked-stream paths drive, over the
+ * signed requester core of one request. Injected into {@link EdvCodec} by the
+ * build that knows where the Collection lives (a Space on a server); a codec
+ * built without one has no server behind it and refuses the chunked path.
+ *
+ * @param options {object}
+ * @param options.context {CodecRequestContext}   the signed-request context
+ * @param [options.documentHeaders] {Record<string, string>}   extra headers
+ *   for document writes (the `Key-Epoch` stamp the codec seam applies)
+ * @returns {WasTransport}
+ */
+export type CodecTransportFactory = (options: {
+  context: CodecRequestContext
+  documentHeaders?: Record<string, string>
+}) => WasTransport
+
+/**
+ * Builds the transport factory for a Collection reachable over WAS: the
+ * codec's route to its own document and chunk resources on the server.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}        the Space holding the Collection
+ * @param options.collectionId {string}   the Collection
+ * @param options.contentType {string}    stored envelope content type
+ * @returns {CodecTransportFactory}
+ */
+export function wasTransportFactory({
+  spaceId,
+  collectionId,
+  contentType
+}: {
+  spaceId: string
+  collectionId: string
+  contentType: string
+}): CodecTransportFactory {
+  return ({ context, documentHeaders }) =>
+    new WasTransport({
+      was: { request: input => context.request(input) },
+      spaceId,
+      collectionId,
+      contentType,
+      features: context.features,
+      ...(documentHeaders !== undefined && { documentHeaders })
+    })
+}
 
 /**
  * A shared strict UTF-8 decoder used to test whether a non-JSON payload is
@@ -308,11 +354,13 @@ export class EdvCodec implements ResourceCodec {
    */
   readonly #version: number
   /**
-   * The id of the Space holding this codec's Collection. Needed only by the
-   * chunked-stream path, which addresses the document and its chunks through a
-   * `WasTransport` of its own.
+   * Builds the `WasTransport` the chunked-stream paths drive, or `undefined`
+   * on a codec with no server behind it (the local-replica cipher builds).
+   * The factory is the codec's only way to address a resource by path, so a
+   * codec built without one cannot reach the network at all -- there is no id
+   * it could fabricate a route from.
    */
-  readonly #spaceId: string
+  readonly #transportFactory?: CodecTransportFactory
   /**
    * The id of the Collection this codec was built for. It is bound into the
    * Collection metadata envelope's `was.collection` on write and required to
@@ -376,8 +424,9 @@ export class EdvCodec implements ResourceCodec {
    *   JWE ciphertext, content-addressed)
    * @param [options.version] {number}   the EDV-over-WAS scheme version to bind
    *   into each envelope's `was.v` (defaults to {@link EDV_SCHEME_VERSION})
-   * @param options.spaceId {string}   the Space holding the Collection, for the
-   *   chunked-stream path's own transport
+   * @param [options.transportFactory] {CodecTransportFactory}   builds the
+   *   transport the chunked-stream path drives; omitted by a build with no
+   *   server behind it, which then refuses that path
    * @param options.collectionId {string}   the Collection this codec reads and
    *   writes: bound into the Collection metadata envelope's `was.collection`
    *   (and checked on read), and it labels decrypt-routing errors
@@ -397,7 +446,7 @@ export class EdvCodec implements ResourceCodec {
     chunkSize,
     idDerivation,
     version,
-    spaceId,
+    transportFactory,
     collectionId,
     epochIds,
     hmac
@@ -411,7 +460,7 @@ export class EdvCodec implements ResourceCodec {
     chunkSize?: number
     idDerivation: 'random' | 'content'
     version?: number
-    spaceId: string
+    transportFactory?: CodecTransportFactory
     collectionId: string
     epochIds: string[]
     hmac?: BlindingKey | null
@@ -426,7 +475,7 @@ export class EdvCodec implements ResourceCodec {
     this.#chunkSize = chunkSize
     this.#idDerivation = idDerivation
     this.#version = version ?? EDV_SCHEME_VERSION
-    this.#spaceId = spaceId
+    this.#transportFactory = transportFactory
     this.#collectionId = collectionId
     this.#epochIds = new Set(epochIds)
     this.#blindingKey = hmac ?? null
@@ -690,9 +739,9 @@ export class EdvCodec implements ResourceCodec {
 
   /**
    * Builds the `WasTransport` the chunked-stream paths drive, over the signed
-   * requester core supplied and this codec's own Space/Collection. The
-   * handle's memoized feature probe is passed straight through, so the
-   * transport's own affordance gates cost no extra descriptor read.
+   * requester core supplied and this codec's injected factory. The handle's
+   * memoized feature probe is passed straight through, so the transport's own
+   * affordance gates cost no extra descriptor read.
    *
    * @param context {CodecRequestContext}
    * @param [documentHeaders] {Record<string, string>}   extra headers for
@@ -703,14 +752,16 @@ export class EdvCodec implements ResourceCodec {
     context: CodecRequestContext,
     documentHeaders?: Record<string, string>
   ): WasTransport {
-    return new WasTransport({
-      was: { request: input => context.request(input) },
-      spaceId: this.#spaceId,
-      collectionId: this.#collectionId,
-      contentType: this.#contentType,
-      features: context.features,
-      ...(documentHeaders !== undefined && { documentHeaders })
-    })
+    if (this.#transportFactory === undefined) {
+      throw new NotSupportedError(
+        `Collection "${this.#collectionId}" has no server behind it: this ` +
+          'codec was built for a local replica and holds no route to address ' +
+          'a document and its chunk resources with. Chunked encrypted blobs ' +
+          'can only be read and written through a Collection handle bound to ' +
+          'a Space.'
+      )
+    }
+    return this.#transportFactory({ context, documentHeaders })
   }
 
   /**
@@ -1909,7 +1960,12 @@ export function createEdvEncryption({
         return null
       }
       return buildEdvCodec({
-        spaceId,
+        label: `${spaceId}/${collectionId}`,
+        transportFactory: wasTransportFactory({
+          spaceId,
+          collectionId,
+          contentType
+        }),
         collectionId,
         encryption,
         keys: resolved,
@@ -1932,8 +1988,12 @@ export function createEdvEncryption({
  * which holds its keys already.
  *
  * @param options {object}
- * @param options.spaceId {string}   the collection's space id; labels errors
  * @param options.collectionId {string}   the collection's WAS id
+ * @param [options.label] {string}   how the collection is named in errors;
+ *   defaults to its id alone, which is all a build with no Space knows
+ * @param [options.transportFactory] {CodecTransportFactory}   builds the
+ *   transport the chunked-stream path drives; omitted by the local-replica
+ *   build, which has no server to address
  * @param [options.encryption] {CollectionEncryption}   the collection's
  *   encryption descriptor; must carry the key-epoch roster
  * @param options.keys {EdvKeys}   the reader's key material
@@ -1944,8 +2004,9 @@ export function createEdvEncryption({
  * @returns {Promise<EdvCodec>}
  */
 export async function buildEdvCodec({
-  spaceId,
   collectionId,
+  label = `"${collectionId}"`,
+  transportFactory,
   encryption,
   keys,
   idDerivation,
@@ -1953,8 +2014,9 @@ export async function buildEdvCodec({
   maxBlobBytes = DEFAULT_MAX_BLOB_BYTES,
   chunkSize
 }: {
-  spaceId: string
   collectionId: string
+  label?: string
+  transportFactory?: CodecTransportFactory
   encryption?: CollectionEncryption
   keys: EdvKeys
   idDerivation: 'random' | 'content'
@@ -1963,7 +2025,7 @@ export async function buildEdvCodec({
   chunkSize?: number
 }): Promise<EdvCodec> {
   const descriptor = guardEncryptionDescriptor({
-    label: `${spaceId}/${collectionId}`,
+    label,
     encryption
   })
   const descriptorVersion = descriptor.version
@@ -2007,7 +2069,7 @@ export async function buildEdvCodec({
     ...(chunkSize !== undefined && { chunkSize }),
     idDerivation,
     version: descriptorVersion ?? EDV_SCHEME_VERSION,
-    spaceId,
+    ...(transportFactory !== undefined && { transportFactory }),
     collectionId,
     // Every epoch the descriptor lists, recipient of it or not, so
     // decrypt routing can tell "not a recipient of this epoch" apart
@@ -2163,7 +2225,6 @@ export async function encryptOnlyEdvCodec({
     maxBlobBytes: DEFAULT_MAX_BLOB_BYTES,
     idDerivation,
     version: descriptor.version ?? EDV_SCHEME_VERSION,
-    spaceId: LOCAL_SPACE_ID,
     collectionId,
     epochIds: epochs.map(epoch => epoch.id)
   })

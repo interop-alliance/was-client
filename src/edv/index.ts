@@ -42,8 +42,12 @@
  * recipient key is always derived from an identifier both sides already hold
  * rather than transmitted.
  */
-export { createEdvEncryption, EdvCodec } from './EdvCodec.js'
-export type { EdvKeys } from './EdvCodec.js'
+export {
+  createEdvEncryption,
+  EdvCodec,
+  wasTransportFactory
+} from './EdvCodec.js'
+export type { CodecTransportFactory, EdvKeys } from './EdvCodec.js'
 export { WasTransport } from './WasTransport.js'
 export { EDV_SCHEME_VERSION, JOSE_CONTENT_TYPE } from './constants.js'
 export {

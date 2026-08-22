@@ -59,7 +59,6 @@ import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
 import { buildEdvCodec, encryptOnlyEdvCodec } from './EdvCodec.js'
 import type { EdvCodec } from './EdvCodec.js'
-import { LOCAL_SPACE_ID } from './constants.js'
 import type { RecipientPublicKey } from './recipients.js'
 
 // `isEncryptedEnvelope` and the `DocCipher` interface live in the crypto-free
@@ -206,7 +205,6 @@ export async function createEdvDocCipher({
   let codec: EdvCodec
   try {
     codec = await buildEdvCodec({
-      spaceId: LOCAL_SPACE_ID,
       collectionId,
       encryption,
       keys: { keyAgreementKey, keyResolver },

@@ -415,16 +415,16 @@ drifts. The convention itself is canonical in isomorphic-lib-template's
 ARCHITECTURE.md Glossary section. The protocol terms -- Space, Collection,
 Resource, controller, zcap, root capability, invocation target -- are owned by
 the [WAS spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)'s
-Terminology section; entries below restate one only to say how this client
-uses it, and otherwise cover the client-side concepts this file names.
+Terminology section; entries below restate one only to say how this client uses
+it, and otherwise cover the client-side concepts this file names.
 
 - **Handle** -- a client-side object addressing one WAS node, constructed
   without network I/O. The kinds are `WasClient` (the spaces repository),
-  `Space`, `Collection`, and `Resource`, each creating the next
-  (`src/*.ts`). See The handle model.
-- **`ClientContext`** -- the single `{ serverUrl, zcapClient, controllerDid,
-  encryption? }` record every handle shares by reference
-  (`src/internal/request.ts`). See The handle model.
+  `Space`, `Collection`, and `Resource`, each creating the next (`src/*.ts`).
+  See The handle model.
+- **`ClientContext`** -- the single
+  `{ serverUrl, zcapClient, controllerDid, encryption? }` record every handle
+  shares by reference (`src/internal/request.ts`). See The handle model.
 - **Bound capability** -- the delegated zcap carried on a handle and inherited
   by its children as the default for their requests. See The handle model.
 - **zcap action** -- the action named in a zcap invocation, which in WAS is the
@@ -442,8 +442,8 @@ uses it, and otherwise cover the client-side concepts this file names.
   supplies key material to a codec. It does not decide whether a collection is
   encrypted; the encryption descriptor does. See The codec seam.
 - **`CodecHolder`** -- the per-`Collection` memoized codec resolution, shared
-  with child handles and invalidated by `reset()` when the encryption
-  descriptor changes. See The handle model and Concurrency.
+  with child handles and invalidated by `reset()` when the encryption descriptor
+  changes. See The handle model and Concurrency.
 - **`ChunkedWrite` plan** -- what `encode` answers with instead of an
   `EncodedWrite` when a payload cannot be one request: a resource id plus an
   `execute` method the insert path runs over a `CodecRequestContext`. See The
@@ -459,16 +459,16 @@ uses it, and otherwise cover the client-side concepts this file names.
   (`src/edv/EdvCodec.ts`), reached through the `createEdvEncryption` factory.
   See The EDV layer.
 - **`WasTransport`** -- the EDV-native `@interop/edv-client` `Transport` that
-  maps EDV document operations onto WAS resource CRUD, one vault per
-  collection (`src/edv/`). See The EDV layer.
+  maps EDV document operations onto WAS resource CRUD, one vault per collection
+  (`src/edv/`). See The EDV layer.
 - **Key epoch** -- one generation of a collection's encryption key: a fresh
   X25519 key whose secret is wrapped to each reader on the descriptor. Rotation
   adds an epoch (`src/edv/epochCrypto.ts`, `epochKeys.ts`, `epochRoster.ts`).
   See The EDV layer.
 - **Encryption descriptor** -- the plaintext scaffolding on the Collection
-  description that declares whether and how a collection is encrypted
-  (`scheme`, `version`, epoch ids, blinding-key id). It, not the client, is
-  what says a collection is encrypted. See The codec seam and The EDV layer.
+  description that declares whether and how a collection is encrypted (`scheme`,
+  `version`, epoch ids, blinding-key id). It, not the client, is what says a
+  collection is encrypted. See The codec seam and The EDV layer.
 - **Descriptor-store seam** -- the read-validator/conditional-write pair the
   descriptor CAS loop runs over (`src/edv/descriptorStore.ts`), with two
   adapters: the Collection description and a plain JSON Resource. See The EDV
