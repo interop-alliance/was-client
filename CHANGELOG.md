@@ -1,5 +1,20 @@
 # @interop/was-client Changelog
 
+## 0.43.1 - TBD
+
+### Added
+
+- An import-graph test (`test/node/import-graph.test.ts`) that walks the static
+  imports of the `.`, `./paths`, `./log`, and `./sync` entries and fails if any
+  reaches an `edv/` module (other than the crypto-free `edv/constants.ts`) or
+  `@interop/edv-client`, `@interop/minimal-cipher`, or
+  `@interop/x25519-key-agreement-key`. The core/encrypted split is by subpath,
+  not by package; this makes the rule the module headers state an enforced one.
+- ARCHITECTURE.md: a "Subpaths, not packages" subsection under Layering
+  recording why the core/encrypted split stays within one package and when to
+  revisit; the Layering map now lists all five entry points and the `src/log/`
+  subpath; invariant 8 names the import-graph test.
+
 ## 0.43.0 - 2026-08-22
 
 ### Changed

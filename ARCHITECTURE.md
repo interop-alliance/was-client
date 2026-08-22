@@ -32,17 +32,57 @@ src/edv/*.ts        Encryption subpath (sibling, opt-in)
 src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
   port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState),
   cid, plaintextCipher, envelope, provisioning
-  Imports core (WasClient, errors, internal/conditional) but never
-  src/edv/; src/edv/docCipher.ts imports its DocCipher/envelope types.
+  Imports core (WasClient, errors, internal/conditional) and one crypto-free
+  constant module (src/edv/constants.ts, for EDV_SCHEME_VERSION), nothing
+  else under src/edv/; src/edv/docCipher.ts imports its DocCipher/envelope
+  types.
+
+src/log/*.ts        Resource-log subpath (sibling, opt-in, crypto-free)
+  jsonl, logStore (the ResourceLogStore seam and its WAS adapter)
 ```
 
-The load-bearing rule: **core never imports `src/edv/`, and neither does
-`src/sync/`**. The package ships three entry points (`.`, `./edv`, and `./sync`
-in the package.json exports map); `src/codec.ts` and `src/sync/types.ts` define
-their seams as pure interfaces, so plaintext consumers never load the crypto
-dependency graph. The dependency between the two opt-in subpaths points one way:
-`src/edv/docCipher.ts` implements the `DocCipher` interface that
-`src/sync/types.ts` declares.
+The load-bearing rule: **core does not import `src/edv/`, and neither do
+`src/sync/` or `src/log/`** (the one exception is `src/edv/constants.ts`, which
+itself reaches only core). The package ships five entry points in the
+package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
+client, and `./edv` is the only one that pulls the encrypted-collection graph
+(`@interop/edv-client`, `@interop/minimal-cipher`,
+`@interop/x25519-key-agreement-key`). `src/codec.ts` and `src/sync/types.ts`
+define their seams as pure interfaces, so plaintext consumers never load the
+crypto dependency graph. The dependency between the two opt-in subpaths points
+one way: `src/edv/docCipher.ts` implements the `DocCipher` interface that
+`src/sync/types.ts` declares. `test/node/import-graph.test.ts` walks the static
+imports of each core entry and fails on any reach past this rule.
+
+### Subpaths, not packages
+
+The core/encrypted split is by subpath within one package, not by splitting the
+repo into a core client and an encrypted client built on it. Decided 2026-08-22;
+the reasons, so the split is not re-proposed without new facts:
+
+- ESM subpath entries already give runtime isolation. A consumer that imports
+  `@interop/was-client` never evaluates `src/edv/`, bundler or not, so the
+  isolation does not depend on tree-shaking (which Metro does poorly).
+- A package boundary would fall on seams that are private today. `src/edv/`
+  imports `internal/content`, `internal/conditional`, `internal/indexSchema`,
+  and `internal/features`; a separate package would have to import them as
+  public, semver-bound exports of the core package, freezing exactly the modules
+  the content and conditional-write work is still reshaping.
+- Every codec-seam change would become a two-package release train, and the
+  tests that drive the codec through a real `Collection` would need a published
+  testing subpath.
+- Nothing asks for what a package split adds beyond subpaths: install-time
+  isolation (the crypto packages absent from a core-only consumer's
+  `node_modules` and audit surface) and independent versioning. Both wallets and
+  was-react use the encrypted side, and the server does not depend on was-client
+  at all.
+
+Revisit when any of these arrives: a core-only consumer that needs the crypto
+packages out of its install, the encrypted side needing a release cadence
+different from core, or a second `EncryptionProvider` implementation (at which
+point `src/edv/` is one of several providers and a package per provider is the
+natural shape). The seam is already clean, so the split would be mechanical
+then; doing it earlier promotes internals to public API for no consumer.
 
 ## The handle model
 
@@ -405,6 +445,10 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
    `getText`/`getBytes` are not byte-exact for JSON content types.
 7. **The wire model lives in `@interop/storage-core`** (description, listing,
    policy, backend, and problem types). Do not redefine wire types locally.
+8. **The core entries stay crypto-free.** `.`, `./paths`, `./log`, and `./sync`
+   reach neither `src/edv/` (beyond `edv/constants.ts`) nor the
+   encrypted-collection packages; `test/node/import-graph.test.ts` enforces it
+   (see "Subpaths, not packages" under Layering).
 
 ## Glossary
 
