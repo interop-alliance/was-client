@@ -15,7 +15,7 @@
  * straight to the reader's own key-agreement key is unroutable. Also covers
  * `ownerRecipient` and the exports.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { EdvClientCore } from '@interop/edv-client'
 import type {
@@ -24,6 +24,8 @@ import type {
 } from '@interop/data-integrity-core'
 
 import { EncryptionError, ValidationError } from '../../src/index.js'
+import type { EncodedWrite } from '../../src/index.js'
+import { EdvCodec } from '../../src/edv/EdvCodec.js'
 import {
   createEdvDocCipher,
   createEdvEncryptOnlyDocCipher,
@@ -129,6 +131,40 @@ describe('createEdvDocCipher (epoch roster, content derivation)', () => {
     expect(isEncryptedEnvelope(envelope)).toBe(true)
     // No plaintext leak in the stored envelope.
     expect(JSON.stringify(envelope)).not.toContain('Alice')
+  })
+
+  it('never forces the codec wire body on a local-replica encrypt', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'private-credentials',
+      encryption
+    })
+
+    // The replica path takes the codec's object-form `envelope`, so it must
+    // leave the lazy `body` getter -- a full stringify plus UTF-8 encode of the
+    // envelope -- unforced.
+    let forced = false
+    const encode = EdvCodec.prototype.encode
+    const spy = vi
+      .spyOn(EdvCodec.prototype, 'encode')
+      .mockImplementation(async function (this: EdvCodec, ...encodeArgs) {
+        const encoded = (await encode.apply(this, encodeArgs)) as EncodedWrite
+        return {
+          ...encoded,
+          get body() {
+            forced = true
+            return undefined
+          }
+        }
+      })
+    try {
+      const { envelope } = await cipher.encrypt({ data: DOC })
+      expect(isEncryptedEnvelope(envelope)).toBe(true)
+      expect(forced).toBe(false)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('round-trips encrypt then decrypt', async () => {

@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.42.1 - TBD
+
+### Changed
+
+- `EdvCodec.encode` serializes the envelope wire bytes lazily:
+  `EncodedWrite.body` is now a memoizing getter, so a local-replica encrypt
+  (which takes the object form from `EncodedWrite.envelope`) no longer pays a
+  full stringify plus UTF-8 encode on every write. The HTTP write path is
+  unchanged, and a spread or a structured clone of the encoded write still
+  carries the same `body` bytes.
+
 ## 0.42.0 - 2026-08-21
 
 ### Fixed

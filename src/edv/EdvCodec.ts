@@ -639,12 +639,22 @@ export class EdvCodec implements ResourceCodec {
       docId = await documentCipher.deriveId({ jwe: encrypted.jwe })
       encrypted.id = docId
     }
+    // Serialized on first read of `body` and kept for any later read, so the
+    // wire bytes are built once per write and only when someone asks for them.
+    let bytes: Uint8Array | undefined
     return {
       id: docId,
-      body: envelopeBytes(encrypted),
+      // Lazy: the HTTP write path reads `body` and pays the serialization, and
+      // a local-replica consumer reads `envelope` instead and pays nothing.
+      // Enumerable and forced by a spread or a structured clone, so a consumer
+      // that copies this object still sees the same bytes under the same key.
+      get body() {
+        bytes ??= envelopeBytes(encrypted)
+        return bytes
+      },
       // The same envelope in object form, so a consumer holding a local replica
-      // (the sync `DocCipher`) need not decode and re-parse the bytes it was
-      // just serialized from. `body` remains the wire truth.
+      // (the sync `DocCipher`) need not force `body` and re-parse the bytes it
+      // was just serialized from. `body` remains the wire truth.
       envelope: encrypted,
       contentType: this.#contentType,
       // Surface the plaintext content type (the server-opaque envelope type

@@ -501,34 +501,6 @@ freewallet and dcw call sites before landing rather than being folded into a
 cleanup pass. The shared `DID_KEY_PREFIX` half of this finding already landed in
 0.42.0.
 
-### WCL-27: Every local encrypt serializes an envelope body that is thrown away
-
-- status: todo
-- priority: low
-- labels: encryption, sync, efficiency
-- touches:
-  - was-client: `EdvCodec.encode`'s return shape and `EncodedWrite.body`
-    (`src/codec.ts`), a public seam -- a lazy `body` is observable to any
-    consumer that spreads or clones the returned object
-- acceptance:
-  - [ ] A local-replica encrypt does not pay a full stringify plus UTF-8 encode
-        of the envelope on every write
-  - [ ] The HTTP write path is unchanged
-
-`EdvCodec.encode` unconditionally sets `body: envelopeBytes(encrypted)`. On the
-HTTP path that is the wire body. On the sync path, `readEncoded` only uses
-`encoded.body` for an `instanceof Uint8Array` type check and then takes
-`encoded.envelope`, the object form the codec already holds, so the bytes are
-discarded. A 100 KB document pays roughly 280 KB of transient allocation and a
-full serialization pass for nothing, on every replica write.
-
-`EncodedWrite.body` is already optional, so the shape supports a lazy getter,
-with `readEncoded`'s guard flipped to prefer `envelope` so it never forces it.
-The reason this was left out of the cleanup pass is that a getter on a public
-seam object behaves differently from a data property under spreading and
-structured cloning, so it needs a deliberate decision about the seam rather than
-a silent swap.
-
 ### WCL-28: First `meta()` on a blinded-index collection fetches `/meta` twice
 
 - status: todo

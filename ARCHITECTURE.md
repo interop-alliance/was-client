@@ -142,6 +142,13 @@ codec whose stored form spans several resources can read the remainder; a caller
 with no request layer (the sync `DocCipher`) omits it, and such a document then
 fails loudly rather than decoding to a stub.
 
+An `EncodedWrite` from the EDV codec carries the envelope twice: `body`, the
+wire bytes, and `envelope`, the object form the codec already holds. `body` is a
+memoizing getter, so only a consumer that actually sends the write pays the
+serialization; the sync `DocCipher` reads `envelope` and leaves it unforced. The
+getter is enumerable, so spreading or structured-cloning an encoded write still
+yields the same bytes under the same key -- it just forces them.
+
 The second: a codec that indexes what it stores carries per-collection state --
 the persisted index schema -- which the resolver loads onto it before handing it
 over. That is the optional `indexing` capability (`applySchema` / `schema` /
