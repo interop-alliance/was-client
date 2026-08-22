@@ -314,6 +314,92 @@ describe('resourceDescriptorStore', () => {
   })
 })
 
+describe('casUpdateDescriptor conflict matching', () => {
+  /**
+   * A conflict minted by a consumer's own copy of `@interop/was-client`: the
+   * same `name` as ours, but a foreign class that `instanceof` rejects.
+   */
+  class ForeignPreconditionFailedError extends Error {
+    override name = 'PreconditionFailedError'
+  }
+
+  /**
+   * An in-memory `EncryptionDescriptorStore` whose `create` and `replace`
+   * throw the foreign conflict once before the write lands, so the
+   * compare-and-swap loop must rebase exactly once.
+   *
+   * @param [initial] {CollectionEncryption}
+   * @returns {object}
+   */
+  function foreignConflictStore(initial?: CollectionEncryption) {
+    const state = {
+      descriptor: initial ?? null,
+      version: 1,
+      conflictsThrown: 0
+    }
+    return {
+      _state: state,
+      read: async () =>
+        state.descriptor === null
+          ? null
+          : { descriptor: state.descriptor, etag: `"v${state.version}"` },
+      replace: async (descriptor: CollectionEncryption) => {
+        if (state.conflictsThrown === 0) {
+          state.conflictsThrown++
+          state.version++
+          throw new ForeignPreconditionFailedError('stale')
+        }
+        state.descriptor = descriptor
+        state.version++
+      },
+      create: async (descriptor: CollectionEncryption) => {
+        if (state.conflictsThrown === 0) {
+          state.conflictsThrown++
+          throw new ForeignPreconditionFailedError('exists')
+        }
+        state.descriptor = descriptor
+        state.version++
+      }
+    }
+  }
+
+  it('rebases on a same-named foreign conflict from replace', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const store = foreignConflictStore(await seedDescriptor([alice]))
+    const descriptor = await addRecipient({
+      store,
+      recipient: recipientOf(bob),
+      owner: { keyAgreementKey: alice.kak }
+    })
+    expect(store._state.conflictsThrown).toBe(1)
+    expect(store._state.descriptor).toBe(descriptor)
+    expect(
+      descriptor.epochs![0]!.recipients.map(entry => entry.header.kid)
+    ).toEqual([alice.kak.id, bob.kak.id])
+  })
+
+  it('rebases on a same-named foreign conflict from create', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const store = foreignConflictStore()
+    // The concurrent winner lands between the first read and the guarded
+    // create; the retry re-reads it and adopts it.
+    const winner = await seedDescriptor([bob])
+    const create = store.create
+    store.create = async descriptor => {
+      store._state.descriptor = winner
+      return create(descriptor)
+    }
+    const descriptor = await initRecipients({
+      store,
+      recipients: [recipientOf(alice)]
+    })
+    expect(store._state.conflictsThrown).toBe(1)
+    expect(descriptor).toBe(winner)
+  })
+})
+
 describe('removeRecipient pull axis', () => {
   it('runs a caller-supplied pull action after the rotation is durable', async () => {
     const alice = await makeReader()

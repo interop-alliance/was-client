@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.44.4 - TBD
+
+### Fixed
+
+- `casUpdateDescriptor` (`initRecipients`, `addRecipient`, `removeRecipient`)
+  now recognizes the compare-and-swap conflict by
+  `err.name === 'PreconditionFailedError'` as well as `instanceof`, so a
+  conflict minted by a consumer's own copy of `@interop/was-client` (a tree that
+  resolves the package twice) still rebases instead of failing the recipient
+  change.
+
 ## 0.44.3 - 2026-08-22
 
 ### Fixed

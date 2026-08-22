@@ -1160,6 +1160,25 @@ function descriptorStoreFor({
 }
 
 /**
+ * Whether `err` is the compare-and-swap conflict a descriptor store raises
+ * (`PreconditionFailedError`, 412). Matched by `name` as well as `instanceof`:
+ * a store implemented by a consumer (wallet-core's log-governed store) mints
+ * the conflict from its own `@interop/was-client` import, and in a tree that
+ * resolves was-client twice that class is a different object from ours, so an
+ * `instanceof`-only check would turn every lost race into a hard failure
+ * instead of a rebase.
+ *
+ * @param err {unknown}
+ * @returns {boolean}
+ */
+function isPreconditionFailed(err: unknown): boolean {
+  return (
+    err instanceof PreconditionFailedError ||
+    (err instanceof Error && err.name === 'PreconditionFailedError')
+  )
+}
+
+/**
  * Reads the store's descriptor, applies `mutate`, and writes the result back
  * with a compare-and-swap (`If-Match`). Retries on a stale (`412`) validator,
  * re-reading the fresh descriptor each time, up to {@link MAX_CAS_ATTEMPTS};
@@ -1219,7 +1238,7 @@ async function casUpdateDescriptor({
         await store.create(created)
         return created
       } catch (err) {
-        if (err instanceof PreconditionFailedError) {
+        if (isPreconditionFailed(err)) {
           // A concurrent writer created the first descriptor: re-read and
           // re-apply.
           lastError = err
@@ -1237,7 +1256,7 @@ async function casUpdateDescriptor({
       await store.replace(next, { ifMatch: current.etag })
       return next
     } catch (err) {
-      if (err instanceof PreconditionFailedError) {
+      if (isPreconditionFailed(err)) {
         // A concurrent recipient change landed first: re-read and re-apply.
         lastError = err
         continue
