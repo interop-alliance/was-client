@@ -2,36 +2,20 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The `@interop/was-client/log` subpath entry: transport for resource logs
- * (the Resource Log Profile, App Connect spec `#resource-log-profile`) -- the
- * hash-linked log format governing key resources co-managed between a
- * wallet's clients and the storage server. Deliberately crypto-free and kept
- * off the `/edv` graph: what lives here is the wire level (strict JSON Lines
- * parse/serialize) and the log-store seam (read-with-etag, compare-and-swap
- * append, guarded genesis create, the read-back `confirmAppend`). Chain
- * verification -- SCID and entry-hash
- * recomputation, proofs, the external-authorization rule, the chain-head pin
- * -- lives in the consuming verifier, which reads and appends through the
- * seam. The wire types themselves come from `@interop/storage-core` and are
- * re-exported here so a consumer imports one package.
+ * The `@interop/was-client/log` subpath entry: the WAS binding of
+ * `@interop/vh-resource-log`'s store port -- `resourceLogStore` maps the
+ * port's read-with-etag, compare-and-swap append, and guarded genesis create
+ * onto one WAS Resource's conditional writes, rethrowing a lost race as the
+ * library's `ResourceLogConflictError`. Everything else about resource logs
+ * (the Resource Log Profile, encrypted-collections-spec
+ * `#resource-log-profile`) lives in that library: the JSON Lines codec, the
+ * `ResourceLogStore` port itself, the read-back `confirmAppend`, chain
+ * verification, and the chain-head pin. The wire types live in
+ * `@interop/storage-core`. This subpath re-exports none of them: one owner
+ * per name.
+ *
+ * The subpath stays off the `/edv` graph. It is no longer crypto-free: the
+ * library's graph includes `@interop/did-method-webvh` and `@noble/curves`
+ * -- the hashing and proof kernel only, with no DID resolution.
  */
-export {
-  parseResourceLog,
-  serializeResourceLog,
-  serializeResourceLogEntry
-} from './jsonl.js'
-export {
-  LOG_CONTENT_TYPE,
-  resourceLogStore,
-  confirmAppend
-} from './logStore.js'
-export type { ResourceLogStore } from './logStore.js'
-export { LogNotConfirmedError } from '../errors.js'
-export { RESOURCE_LOG_METHOD } from '@interop/storage-core'
-export type {
-  ResourceLogEntry,
-  ResourceLogEntryProof,
-  ResourceLogGenesisParameters,
-  ResourceLogTerminalParameters,
-  ResourceLogParameters
-} from '@interop/storage-core'
+export { LOG_CONTENT_TYPE, resourceLogStore } from './logStore.js'

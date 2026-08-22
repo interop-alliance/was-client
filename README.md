@@ -901,27 +901,23 @@ Collection-handle write does; a cipher built without it writes documents
 
 ### Resource logs (co-managed key resources)
 
-The opt-in `@interop/was-client/log` subpath is the transport layer for resource
-logs -- the hash-linked, JSON Lines log format (the App Connect spec's Resource
-Log Profile) governing key resources co-managed between a wallet's clients and
-the storage server, such as encryption descriptors and key rosters. It is
-transport only: chain verification (SCID, entry hashes, proofs, authorization,
-the chain-head pin) lives in the consuming verifier.
+The opt-in `@interop/was-client/log` subpath is the WAS binding of
+`@interop/vh-resource-log`'s store port. Resource logs -- the hash-linked, JSON
+Lines log format (the encrypted-collections spec's Resource Log Profile)
+governing key resources co-managed between a wallet's clients and the storage
+server, such as encryption descriptors and key rosters -- otherwise live in that
+library: the JSON Lines codec, the `ResourceLogStore` port, the read-back
+`confirmAppend`, chain verification, and the chain-head pin. The wire types
+(`ResourceLogEntry` et al.) live in `@interop/storage-core`. This subpath
+re-exports none of them.
 
-- **`parseResourceLog` / `serializeResourceLog`** -- strict JSON Lines: a
-  non-object line is a parse failure, not a skip.
-- **`resourceLogStore({ resource })`** -- the log-store seam over a WAS Resource
-  (stored as `text/jsonl`): read-with-etag of the full log, compare-and-swap
-  append conditioned on that etag, and the guarded create of a genesis entry.
-  Appends carry the prior lines' bytes forward verbatim. Both writes ride the
-  backend's `conditional-writes` feature, which the profile requires.
-- **`confirmAppend({ store, entry })`** -- the profile's "acknowledgement is a
-  promise" rule: read the log back after an acked append and check the entry is
-  actually in the served history (else `LogNotConfirmedError`) before treating
-  the append as durable.
-
-The subpath is crypto-free and re-exports the wire types (`ResourceLogEntry` et
-al.) from `@interop/storage-core`.
+- **`resourceLogStore({ resource })`** -- the port over a WAS Resource (stored
+  as `text/jsonl`): read-with-etag of the full log, compare-and-swap append
+  conditioned on that etag, and the guarded create of a genesis entry. Appends
+  carry the prior lines' bytes forward verbatim. Both writes ride the backend's
+  `conditional-writes` feature, which the profile requires; a lost race rethrows
+  the library's `ResourceLogConflictError` with the transport's
+  `PreconditionFailedError` as `cause`.
 
 ### Export and import
 

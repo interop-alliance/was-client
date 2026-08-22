@@ -37,8 +37,11 @@ src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
   else under src/edv/; src/edv/docCipher.ts imports its DocCipher/envelope
   types.
 
-src/log/*.ts        Resource-log subpath (sibling, opt-in, crypto-free)
-  jsonl, logStore (the ResourceLogStore seam and its WAS adapter)
+src/log/*.ts        Resource-log subpath (sibling, opt-in)
+  logStore: the WAS binding of @interop/vh-resource-log's ResourceLogStore
+  port (LOG_CONTENT_TYPE and the resourceLogStore adapter); a lost CAS race
+  rethrows as the library's ResourceLogConflictError with the transport's
+  PreconditionFailedError as cause
 ```
 
 The load-bearing rule: **core does not import `src/edv/`, and neither do
@@ -47,10 +50,14 @@ itself reaches only core). The package ships five entry points in the
 package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
 client, and `./edv` is the only one that pulls the encrypted-collection graph
 (`@interop/edv-client`, `@interop/minimal-cipher`,
-`@interop/x25519-key-agreement-key`). `src/codec.ts` and `src/sync/types.ts`
-define their seams as pure interfaces, so plaintext consumers never load the
-crypto dependency graph. The dependency between the two opt-in subpaths points
-one way: `src/edv/docCipher.ts` implements the `DocCipher` interface that
+`@interop/x25519-key-agreement-key`). `./log` is the one core entry with a
+crypto dependency of its own: it is the WAS binding of
+`@interop/vh-resource-log`'s store port, and that library's graph includes
+`@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof kernel
+only, with no DID resolution. `src/codec.ts` and `src/sync/types.ts` define
+their seams as pure interfaces, so plaintext consumers never load the crypto
+dependency graph. The dependency between the two opt-in subpaths points one way:
+`src/edv/docCipher.ts` implements the `DocCipher` interface that
 `src/sync/types.ts` declares. `test/node/import-graph.test.ts` walks the static
 imports of each core entry and fails on any reach past this rule.
 
@@ -445,10 +452,13 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
    `getText`/`getBytes` are not byte-exact for JSON content types.
 7. **The wire model lives in `@interop/storage-core`** (description, listing,
    policy, backend, and problem types). Do not redefine wire types locally.
-8. **The core entries stay crypto-free.** `.`, `./paths`, `./log`, and `./sync`
-   reach neither `src/edv/` (beyond `edv/constants.ts`) nor the
-   encrypted-collection packages; `test/node/import-graph.test.ts` enforces it
-   (see "Subpaths, not packages" under Layering).
+8. **The core entries stay off the encrypted-collection graph.** `.`, `./paths`,
+   `./log`, and `./sync` reach neither `src/edv/` (beyond `edv/constants.ts`)
+   nor the encrypted-collection packages; `test/node/import-graph.test.ts`
+   enforces it (see "Subpaths, not packages" under Layering). `./log` is not
+   crypto-free: its dependency, `@interop/vh-resource-log`, pulls
+   `@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof
+   kernel only, with no DID resolution.
 
 ## Glossary
 

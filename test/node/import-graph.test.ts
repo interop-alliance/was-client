@@ -2,17 +2,22 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The crypto-free entry points stay crypto-free. The package is split by
- * subpath rather than by package: `.`, `./paths`, `./log`, and `./sync` are
- * the core client, and `./edv` is the one entry that pulls the encrypted
- * collection graph (`@interop/edv-client`, `@interop/minimal-cipher`,
- * `@interop/x25519-key-agreement-key`). The module headers in `codec.ts`,
- * `edv/index.ts`, and `sync/provisioning.ts` state the rule; this test
- * enforces it by walking each core entry's transitive static-import graph
- * over `src/` and refusing any reach into `src/edv/` or into the three
- * packages. The single allowed `edv/` module is `edv/constants.ts`, which
- * `sync/provisioning.ts` reads for `EDV_SCHEME_VERSION` and which reaches
- * only core modules itself.
+ * The core entry points stay off the encrypted-collection graph. The package
+ * is split by subpath rather than by package: `.`, `./paths`, `./log`, and
+ * `./sync` are the core client, and `./edv` is the one entry that pulls the
+ * encrypted collection graph (`@interop/edv-client`,
+ * `@interop/minimal-cipher`, `@interop/x25519-key-agreement-key`). The module
+ * headers in `codec.ts`, `edv/index.ts`, and `sync/provisioning.ts` state the
+ * rule; this test enforces it by walking each core entry's transitive
+ * static-import graph over `src/` and refusing any reach into `src/edv/` or
+ * into the three packages. The single allowed `edv/` module is
+ * `edv/constants.ts`, which `sync/provisioning.ts` reads for
+ * `EDV_SCHEME_VERSION` and which reaches only core modules itself.
+ *
+ * `./log` is the one core entry that is not crypto-free: it binds
+ * `@interop/vh-resource-log`'s store port, and that library's graph includes
+ * `@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof
+ * kernel only, with no DID resolution. The edv rule above still binds it.
  */
 import fs from 'node:fs'
 import path from 'node:path'

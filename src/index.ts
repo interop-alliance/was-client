@@ -24,7 +24,6 @@ export {
   NotSupportedError,
   ConflictError,
   PreconditionFailedError,
-  LogNotConfirmedError,
   PayloadTooLargeError,
   QuotaExceededError,
   EncryptionError,

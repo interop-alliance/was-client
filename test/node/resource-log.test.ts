@@ -2,27 +2,21 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Tests for the `/log` subpath: strict JSON Lines parse/serialize, the
- * resource-log store adapter (read-with-etag, CAS append, guarded genesis
- * create), and the read-back `confirmAppend` -- all against an in-memory
- * fake Resource (no network).
+ * Tests for the `/log` subpath: the WAS Resource adapter of
+ * `@interop/vh-resource-log`'s store port (read-with-etag, CAS append,
+ * guarded genesis create, and the 412-to-conflict-error translation) --
+ * against an in-memory fake Resource (no network). The codec,
+ * `confirmAppend`, and verification suites live in the library.
  */
 import { describe, expect, it } from 'vitest'
 import type { ResourceLogEntry } from '@interop/storage-core'
+import {
+  ResourceLogConflictError,
+  serializeResourceLog
+} from '@interop/vh-resource-log'
 import type { Resource } from '../../src/Resource.js'
-import {
-  LogNotConfirmedError,
-  PreconditionFailedError,
-  ValidationError
-} from '../../src/errors.js'
-import {
-  LOG_CONTENT_TYPE,
-  confirmAppend,
-  parseResourceLog,
-  resourceLogStore,
-  serializeResourceLog,
-  serializeResourceLogEntry
-} from '../../src/log/index.js'
+import { PreconditionFailedError, ValidationError } from '../../src/errors.js'
+import { LOG_CONTENT_TYPE, resourceLogStore } from '../../src/log/index.js'
 import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 
 /**
@@ -106,41 +100,6 @@ function fakeLogResource(initialBody?: string) {
   return { resource: resource as unknown as Resource, state }
 }
 
-describe('parseResourceLog / serializeResourceLog', () => {
-  it('round-trips a serialized log, with the terminating newline', () => {
-    const entries = [entryAt(1), entryAt(2)]
-    const text = serializeResourceLog(entries)
-    expect(text.endsWith('\n')).toBe(true)
-    expect(text).toBe(
-      serializeResourceLogEntry(entries[0]!) +
-        '\n' +
-        serializeResourceLogEntry(entries[1]!) +
-        '\n'
-    )
-    expect(parseResourceLog(text)).toEqual(entries)
-  })
-
-  it('parses a body without a trailing newline', () => {
-    const text = serializeResourceLogEntry(entryAt(1))
-    expect(parseResourceLog(text)).toEqual([entryAt(1)])
-  })
-
-  it('fails the whole parse on a non-object line, not a skip', () => {
-    const good = serializeResourceLogEntry(entryAt(1))
-    for (const bad of ['[1,2]', '"text"', 'null', '42', 'not json', '']) {
-      expect(() => parseResourceLog(`${good}\n${bad}\n`)).toThrow(
-        ValidationError
-      )
-    }
-  })
-
-  it('rejects an empty body (a log has at least its genesis entry)', () => {
-    expect(() => parseResourceLog('')).toThrow(ValidationError)
-    expect(() => parseResourceLog('\n')).toThrow(ValidationError)
-    expect(() => serializeResourceLog([])).toThrow(ValidationError)
-  })
-})
-
 describe('resourceLogStore', () => {
   it('reads null for an absent log, and creates the genesis guarded', async () => {
     const { resource, state } = fakeLogResource()
@@ -173,13 +132,28 @@ describe('resourceLogStore', () => {
     expect(state.body).toBe(serializeResourceLog([entryAt(1), entryAt(2)]))
   })
 
-  it('surfaces a stale-validator append as PreconditionFailedError', async () => {
+  it('rethrows a stale-validator 412 as the conflict error, cause set', async () => {
     const { resource } = fakeLogResource(serializeResourceLog([entryAt(1)]))
     const store = resourceLogStore({ resource })
     await store.read()
-    await expect(
-      store.append(entryAt(2), { ifMatch: '"v0"' })
-    ).rejects.toBeInstanceOf(PreconditionFailedError)
+    const err = await store
+      .append(entryAt(2), { ifMatch: '"v0"' })
+      .then(() => undefined)
+      .catch((thrown: unknown) => thrown as Error)
+    expect(err).toBeInstanceOf(ResourceLogConflictError)
+    expect(err!.name).toBe('ResourceLogConflictError')
+    expect(err!.cause).toBeInstanceOf(PreconditionFailedError)
+  })
+
+  it('rethrows a lost guarded-create race as the conflict error', async () => {
+    const { resource } = fakeLogResource(serializeResourceLog([entryAt(1)]))
+    const store = resourceLogStore({ resource })
+    const err = await store
+      .create(entryAt(1))
+      .then(() => undefined)
+      .catch((thrown: unknown) => thrown as Error)
+    expect(err).toBeInstanceOf(ResourceLogConflictError)
+    expect(err!.cause).toBeInstanceOf(PreconditionFailedError)
   })
 
   it('refuses an append with no prior read on this store instance', async () => {
@@ -219,51 +193,14 @@ describe('resourceLogStore', () => {
     const store = resourceLogStore({ resource })
     await expect(store.read()).rejects.toBeInstanceOf(ValidationError)
   })
-})
 
-describe('confirmAppend', () => {
-  it('returns the read-back log containing the entry at its ordinal', async () => {
-    const { resource } = fakeLogResource(
-      serializeResourceLog([entryAt(1), entryAt(2)])
-    )
-    const store = resourceLogStore({ resource })
-    const confirmed = await confirmAppend({ store, entry: entryAt(2) })
-    expect(confirmed.entries).toHaveLength(2)
-  })
-
-  it('throws LogNotConfirmedError when the served log is too short', async () => {
-    const { resource } = fakeLogResource(serializeResourceLog([entryAt(1)]))
-    const store = resourceLogStore({ resource })
-    await expect(
-      confirmAppend({ store, entry: entryAt(2) })
-    ).rejects.toBeInstanceOf(LogNotConfirmedError)
-  })
-
-  it('throws LogNotConfirmedError on a different entry at the ordinal', async () => {
-    const other = { ...entryAt(2), versionTime: '2026-08-11T00:00:00Z' }
-    const { resource } = fakeLogResource(
-      serializeResourceLog([entryAt(1), other])
-    )
-    const store = resourceLogStore({ resource })
-    await expect(
-      confirmAppend({ store, entry: entryAt(2) })
-    ).rejects.toBeInstanceOf(LogNotConfirmedError)
-  })
-
-  it('throws LogNotConfirmedError when the log vanished', async () => {
-    const { resource } = fakeLogResource()
-    const store = resourceLogStore({ resource })
-    await expect(
-      confirmAppend({ store, entry: entryAt(1) })
-    ).rejects.toBeInstanceOf(LogNotConfirmedError)
-  })
-
-  it('refuses an entry whose versionId has no ordinal', async () => {
-    const { resource } = fakeLogResource(serializeResourceLog([entryAt(1)]))
-    const store = resourceLogStore({ resource })
-    const bad = { ...entryAt(1), versionId: 'Qm-no-ordinal' }
-    await expect(confirmAppend({ store, entry: bad })).rejects.toBeInstanceOf(
-      ValidationError
-    )
+  it('the subpath exposes exactly the adapter and its content type', async () => {
+    // Invariant: one owner per name -- the subpath re-exports nothing from
+    // the library or storage-core.
+    const subpath = await import('../../src/log/index.js')
+    expect(Object.keys(subpath).sort()).toEqual([
+      'LOG_CONTENT_TYPE',
+      'resourceLogStore'
+    ])
   })
 })

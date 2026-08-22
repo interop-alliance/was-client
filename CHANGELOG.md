@@ -1,9 +1,33 @@
 # @interop/was-client Changelog
 
-## 0.43.1 - TBD
+## 0.44.0 - TBD
+
+### Changed
+
+- **BREAKING**: The `./log` subpath is reduced to the WAS binding of
+  `@interop/vh-resource-log`'s store port and now exposes exactly
+  `LOG_CONTENT_TYPE` and `resourceLogStore`. The JSON Lines codec
+  (`parseResourceLog`, `serializeResourceLog`, `serializeResourceLogEntry`), the
+  `ResourceLogStore` port type, `confirmAppend`, and the re-exported wire types
+  (`ResourceLogEntry` et al., `RESOURCE_LOG_METHOD`) moved to
+  `@interop/vh-resource-log` and `@interop/storage-core`; import them from their
+  owning packages.
+- **BREAKING**: `LogNotConfirmedError` moved to `@interop/vh-resource-log` (same
+  `name` string; it extends `Error` directly there, no longer `WasError`) and is
+  no longer exported from the root entry.
+- **BREAKING**: `resourceLogStore`'s `append` and `create` rethrow a lost
+  compare-and-swap (a stale validator, or a lost guarded-create race) as the
+  library's `ResourceLogConflictError`, with the transport's
+  `PreconditionFailedError` as `cause`, instead of letting the 412 escape raw.
+  Match it by `err.name` across package boundaries.
 
 ### Added
 
+- Dependency on `@interop/vh-resource-log`, the Resource Log Profile's generic
+  client side. The `./log` subpath is therefore no longer crypto-free (the
+  library's graph includes `@interop/did-method-webvh` and `@noble/curves` --
+  the hashing and proof kernel only, with no DID resolution); it stays off the
+  `/edv` graph.
 - An import-graph test (`test/node/import-graph.test.ts`) that walks the static
   imports of the `.`, `./paths`, `./log`, and `./sync` entries and fails if any
   reaches an `edv/` module (other than the crypto-free `edv/constants.ts`) or
