@@ -286,13 +286,16 @@ export class Resource {
    * Conditional writes (the backend's `conditional-writes` feature): pass
    * `ifMatch` (the ETag from a prior read/write) for an update-if-unchanged, or
    * `ifNoneMatch: true` for a create-if-absent. A failed precondition throws
-   * `PreconditionFailedError` (412). On an encrypted collection these are
-   * managed automatically by the codec (the EDV `sequence` becomes the enforced
-   * ETag), so the explicit options are for plaintext collections -- and because
-   * the codec pre-reads the current document to compute them, updating an
-   * existing encrypted document needs read access (a PUT-only capability can
-   * only create, and only against a backend advertising `conditional-writes`;
-   * see `upsertResource`). Returns the new `etag`.
+   * `PreconditionFailedError` (412). They work the same on an encrypted
+   * collection: the codec manages the precondition on its own when the caller
+   * names none (the EDV `sequence` becomes the enforced ETag), and pins the
+   * write to the caller's baseline when one is given. Because that codec
+   * pre-reads the current document, updating an existing encrypted document
+   * needs read access (a PUT-only capability can only create, and only against
+   * a backend advertising `conditional-writes`; see `upsertResource`) -- and a
+   * precondition the pre-read already contradicts fails locally with the same
+   * `PreconditionFailedError` the server would return. Returns the new
+   * `etag`.
    *
    * @param data {ResourceData}
    * @param options {object}

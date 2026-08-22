@@ -30,7 +30,11 @@ import type { IZcap, ResourceData } from '../types.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
 import type { FeatureProbe } from './features.js'
-import { encodedPrecondition, writeHeaders } from './conditional.js'
+import {
+  assertPreconditionAgainstPreRead,
+  encodedPrecondition,
+  writeHeaders
+} from './conditional.js'
 import type { WritePrecondition } from './conditional.js'
 
 /**
@@ -286,6 +290,10 @@ export async function upsertResource(
       capability,
       read: true
     })
+    // The caller's own compare-and-swap baseline is checked against what the
+    // pre-read just observed, so a lost race fails here rather than being
+    // encoded into a sequence advance the server would then reject.
+    assertPreconditionAgainstPreRead({ path, current, precondition })
     if (current === null && !(await features.has('conditional-writes'))) {
       // The write would be encoded as a fresh insert guarded only by
       // `If-None-Match: *`, which this backend ignores -- so if the document in
@@ -305,7 +313,18 @@ export async function upsertResource(
       )
     }
   }
-  const write = await codec.encode({ id, data, contentType, current })
+  const write = await codec.encode({
+    id,
+    data,
+    contentType,
+    current,
+    // Hand a conditional codec the caller's baseline so it pins the write to
+    // that revision instead of to the one its own pre-read observed.
+    ...(codec.conditionalWrites &&
+      precondition !== undefined && {
+        precondition
+      })
+  })
   if (isChunkedWrite(write)) {
     // Auto-routing is an insert-path affordance: a write by id would have to
     // reconcile the existing stored parts (and the codec's sequence) with the
@@ -321,7 +340,8 @@ export async function upsertResource(
   }
   const encoded = write
   // A conditional codec computes the precondition itself (from the sequence /
-  // ETag); a plaintext codec defers to the caller's explicit options.
+  // ETag, or from the caller's baseline handed to `encode` above); a plaintext
+  // codec defers to the caller's explicit options.
   const chosen = codec.conditionalWrites
     ? encodedPrecondition(encoded)
     : precondition

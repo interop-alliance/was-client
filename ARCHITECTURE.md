@@ -79,7 +79,10 @@ Taking `resource.put(data)` as the canonical path:
 3. **Conditional-write orchestration** (`internal/write.ts`, `upsertResource`):
    conditional codecs trigger a pre-read of the current document (to advance the
    EDV `sequence`); plaintext writes use the caller's explicit
-   `ifMatch`/`ifNoneMatch`.
+   `ifMatch`/`ifNoneMatch`. A caller's explicit precondition is handed to a
+   conditional codec too, which pins the write to that baseline rather than to
+   its own pre-read -- and one the pre-read already contradicts is refused here
+   with `PreconditionFailedError` before the write is sent.
 4. **Path building** (`internal/paths.ts`): percent-encoded ids, reserved-id
    guards, and exact trailing-slash discipline.
 5. **Transport** (`internal/request.ts`): `zcapClient.request(...)` (ezcap)
@@ -224,8 +227,9 @@ conditional write, bounded retries) over the **descriptor-store seam**
 plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first
 descriptor created with `If-None-Match: *`; integrity rests on client-side epoch
 pinning plus the hosting profile's governance -- for a log-governed descriptor,
-the Resource Log Profile's verified entry proofs and chain-head pin -- so host
-it in a plaintext collection).
+the Resource Log Profile's verified entry proofs and chain-head pin). The
+hosting collection may be plaintext or encrypted; an encrypted host must be
+created under an id the codec mints.
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
@@ -345,7 +349,9 @@ No locks; safety is optimistic (ETag/CAS) throughout
   clients declaring different attributes at once do not erase each other.
 - The EDV codec sets `conditionalWrites = true`, making the sequence check
   enforced automatically: updates pin `If-Match` to the pre-read ETag, fresh
-  inserts guard with `If-None-Match: *`.
+  inserts guard with `If-None-Match: *`. A caller that named its own baseline
+  (`put({ ifMatch })`) keeps it, so a compare-and-swap loop behaves the same on
+  an encrypted collection as on a plaintext one.
 - `CodecHolder` memoizes the in-flight codec promise (concurrent callers share
   one round trip) and is `reset()` when `configure` or `replaceDescription`
   changes the encryption descriptor.

@@ -35,14 +35,15 @@ const conditionalFeatures = stubFeatures(['conditional-writes'])
  */
 const conditionalCodec: ResourceCodec = {
   conditionalWrites: true,
-  async encode({ id, data, current }) {
+  async encode({ id, data, current, precondition }) {
     return {
       id,
       json: data as object,
       contentType: 'application/json',
-      ...(current
-        ? { ifMatch: current.headers.get('etag') ?? undefined }
-        : { ifNoneMatch: true })
+      ...(precondition ??
+        (current
+          ? { ifMatch: current.headers.get('etag') ?? undefined }
+          : { ifNoneMatch: true }))
     }
   },
   async decode() {
@@ -156,6 +157,72 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
     expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
     // The pre-read succeeded, so the codec pinned the update to its ETag.
     expect(calls[1]?.headers?.['if-match']).toBe('"v2"')
+  })
+
+  it("pins a conditional codec's write to the caller's own baseline", async () => {
+    // The caller named the same revision the pre-read observed, so the write
+    // goes out pinned to the caller's validator rather than being silently
+    // repinned to whatever the codec just read.
+    const { context, calls } = contextWithStatuses()
+    await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures,
+      precondition: { ifMatch: '"v2"' }
+    })
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
+    expect(calls[1]?.headers?.['if-match']).toBe('"v2"')
+  })
+
+  it('refuses a caller baseline the pre-read has already moved past', async () => {
+    const { context, calls } = contextWithStatuses()
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures,
+      precondition: { ifMatch: '"v1"' }
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect((failure as PreconditionFailedError).status).toBe(412)
+    expect((failure as Error).message).toMatch(/another writer changed it/)
+    // The write never left the client.
+    expect(calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it('refuses a create-if-absent against a document that is already there', async () => {
+    const { context, calls } = contextWithStatuses()
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures,
+      precondition: { ifNoneMatch: true }
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect((failure as Error).message).toMatch(/already stored there/)
+    expect(calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it('refuses a caller baseline when the pre-read finds nothing readable', async () => {
+    const { context, calls } = contextWithStatuses({ getStatus: 404 })
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures,
+      precondition: { ifMatch: '"v1"' }
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect((failure as Error).message).toMatch(
+      /no current document is readable/
+    )
+    expect(calls.map(call => call.method)).toEqual(['GET'])
   })
 
   it('uses the caller precondition for a non-conditional codec (no pre-read)', async () => {

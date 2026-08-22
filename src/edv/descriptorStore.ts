@@ -23,9 +23,11 @@
  *   log-governed descriptor (the Resource Log Profile), the verified entry
  *   proofs and the chain-head pin. Both the compare-and-swap and the
  *   create-if-absent guard ride the backend's `conditional-writes` feature.
- *   The hosting collection must be plaintext: on an encrypted collection the
- *   EDV codec computes the write preconditions itself and the store's
- *   `ifMatch` would not be honored.
+ *   The hosting collection may be plaintext or encrypted -- a conditional
+ *   codec pins the write to the `ifMatch` passed here rather than to its own
+ *   pre-read -- but an encrypted host must be created under an id its codec
+ *   mints (the EDV codec refuses a human-readable resource id, which would
+ *   leak onto the URL).
  */
 import type { Collection } from '../Collection.js'
 import type { Resource } from '../Resource.js'
@@ -156,9 +158,11 @@ export function collectionDescriptorStore({
  * epoch pinning plus whatever governance the hosting profile adds (for a
  * log-governed descriptor, the Resource Log Profile's verified entry proofs
  * and chain-head pin), and the CAS/create guards ride the backend's
- * `conditional-writes` feature. Host the resource in a plaintext
- * collection -- on an encrypted collection the EDV codec computes the write
- * preconditions itself, so this store's `ifMatch` would not be honored.
+ * `conditional-writes` feature. The hosting collection may be plaintext or
+ * encrypted: a conditional codec pins the write to the `ifMatch` this store
+ * passes rather than to the ETag its own pre-read observed. On an encrypted
+ * host the resource id must be one the codec mints, since the EDV codec
+ * refuses to create a document under a human-readable id.
  *
  * @param options {object}
  * @param options.resource {Resource}

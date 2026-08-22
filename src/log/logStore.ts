@@ -88,9 +88,12 @@ export interface ResourceLogStore {
 
 /**
  * The WAS Resource adapter: the log is the resource's entire body, stored as
- * `text/jsonl`. Host the resource in a plaintext collection -- on an encrypted
- * collection the EDV codec computes the write preconditions itself, so this
- * store's `ifMatch` / create guard would not be honored.
+ * `text/jsonl`. The hosting collection may be plaintext or encrypted: a
+ * conditional codec pins the write to the `ifMatch` this store passes rather
+ * than to the ETag its own pre-read observed, so the append profile's
+ * compare-and-swap holds either way. On an encrypted host the resource id must
+ * be one the codec mints, since the EDV codec refuses to create a document
+ * under a human-readable id.
  *
  * @param options {object}
  * @param options.resource {Resource}

@@ -316,6 +316,41 @@ describe('EdvCodec: id strategy', () => {
     expect(decoded).toEqual({ v: 2 })
   })
 
+  it("pins an update to the caller's precondition instead of its pre-read", async () => {
+    // `put({ ifMatch })` on an encrypted collection: the caller's baseline is
+    // the compare-and-swap guard, so the codec must not repin the write to the
+    // ETag its own pre-read observed.
+    const codec = await makeCodec()
+    const minted = await codec.encode({ data: { v: 1 } })
+    const priorEnvelope = JSON.parse(
+      new TextDecoder().decode(minted.body as Uint8Array)
+    ) as Record<string, unknown>
+    const current = {
+      data: priorEnvelope,
+      async json() {
+        return priorEnvelope
+      },
+      headers: { get: () => '"7"' }
+    } as unknown as HttpResponse
+    const repinned = await codec.encode({
+      id: minted.id as string,
+      data: { v: 2 },
+      current,
+      precondition: { ifMatch: '"5"' }
+    })
+    expect(repinned.ifMatch).toBe('"5"')
+    expect(repinned.ifNoneMatch).toBeUndefined()
+    // A caller asking for create-if-absent keeps that intent too.
+    const insisted = await codec.encode({
+      id: minted.id as string,
+      data: { v: 2 },
+      current,
+      precondition: { ifNoneMatch: true }
+    })
+    expect(insisted.ifNoneMatch).toBe(true)
+    expect(insisted.ifMatch).toBeUndefined()
+  })
+
   it('accepts a pre-existing non-EDV id verbatim on the update path', async () => {
     // A resource authored by a client that mints its own row ids (e.g. a
     // legacy uuid): the id is already on the server, so an update (`current`

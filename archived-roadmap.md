@@ -590,3 +590,81 @@ those documents until they are rewritten (the backfill is a re-blind sweep, the
 same cost class as an HMAC key rotation), so the persisted schema should record
 enough (e.g. a per-attribute addition marker) for a querier to know matches may
 be partial.
+
+### WCL-19: A conditional codec discards the caller's write precondition
+
+- status: done
+- done: 2026-08-21
+- priority: high
+- labels: encryption, conditional-writes, correctness
+- touches:
+  - was-client: `upsertResource` (`src/internal/write.ts`) chooses the
+    precondition; `Resource.put`'s documented `ifMatch` is the surface that
+    silently stops applying; `EncryptionDescriptorStore`
+    (`src/edv/descriptorStore.ts`) and `resourceLogStore`
+    (`src/log/logStore.ts`) carry the compensating prose to delete
+  - freewallet, dcw: any caller relying on `put({ ifMatch })` for a lost-update
+    guard against an encrypted collection is not getting one today; the fix
+    turns that into a thrown error
+- acceptance:
+  - [x] A caller-supplied `ifMatch` / `ifNoneMatch` on an encrypted collection
+        either pins the write to the caller's baseline or is refused loudly
+  - [x] The "host this in a plaintext collection" paragraphs in
+        `descriptorStore.ts` and `logStore.ts` are removed, and both stores work
+        on an encrypted collection
+  - [x] The insert path (`insertResource`) is settled the same way, or its
+        divergence is recorded here
+
+`upsertResource` computes
+`codec.conditionalWrites ? encodedPrecondition(encoded) : precondition`, so on
+any collection whose codec sets `conditionalWrites` (every encrypted one) the
+caller's compare-and-swap baseline is dropped and replaced by the ETag the
+codec's own pre-read just observed. The write still succeeds, pinned to current
+server state rather than to what the caller last saw, so a lost-update guard
+degrades to last-write-wins with no signal.
+
+The compensation has already leaked into two seams as prose that nothing
+enforces: both `descriptorStore.ts` and `logStore.ts` tell the reader to host
+the resource in a plaintext collection because "the EDV codec computes the write
+preconditions itself, so this store's `ifMatch` would not be honored". Both are
+compare-and-swap loops where the precondition is the whole mechanism
+(`casUpdateDescriptor` retries only on `PreconditionFailedError`; the resource
+log's append profile requires it). The next store built on `Resource.put` needs
+the same paragraph, and a caller who misses it loses the guard silently.
+
+Two candidate fixes, and the choice is the decision this item needs: refuse the
+combination (`ValidationError` when `codec.conditionalWrites` meets a
+caller-supplied precondition), or forward the caller's precondition into
+`codec.encode` so a conditional codec can pin to the caller's baseline instead
+of its own pre-read. The second is the deeper fix and keeps CAS working on
+encrypted collections; the first is contained to `internal/write.ts`. Either way
+it is not behavior-preserving, which is why it was left out of 0.42.0.
+
+Resolved 2026-08-21 by the second fix. `ResourceCodec.encode` takes an optional
+`precondition` alongside `current`, supplied only for a codec that sets
+`conditionalWrites`; the EDV codec pins the write to it and falls back to its
+own pre-read derivation when the caller named none. `upsertResource` forwards
+it, so `Resource.put`'s documented `ifMatch` / `ifNoneMatch` applies on an
+encrypted collection exactly as on a plaintext one.
+
+A caller baseline the pre-read has already moved past is refused locally, since
+the pre-read makes the mismatch visible before the write is sent:
+`assertPreconditionAgainstPreRead` (`src/internal/conditional.ts`) throws
+`PreconditionFailedError` with status 412 when the caller's `ifMatch` names a
+validator the current document no longer carries, when nothing is readable at
+the path at all, or when `ifNoneMatch` meets a document that already exists. The
+type matches what the server would have answered, so a compare-and-swap retry
+loop needs no special case, and no sequence advance is encoded from a revision
+the caller never saw.
+
+The compensating paragraphs in `descriptorStore.ts` and `logStore.ts` are gone;
+both stores now run on a plaintext or an encrypted collection. One constraint
+replaces them: on an encrypted host the resource must be created under an id the
+codec mints, because the EDV codec refuses to create a document under a
+human-readable id (it would leak onto the URL).
+
+The insert path diverges and stays as it is: `Collection.add()` exposes no
+precondition option (`insertResource` dropped its unused one in 0.42.0), so
+there is no caller baseline for it to discard. An insert names no target
+revision to pin against, and the conditional codec's own `If-None-Match: *`
+guard is the whole precondition there.

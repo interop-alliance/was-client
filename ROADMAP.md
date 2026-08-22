@@ -260,54 +260,6 @@ landed in 0.42.0; everything here was deliberately left out of it because the
 fix changes observable behavior, crosses the codec seam, or needs a maintainer
 decision first. Each carries `discovered-from: 2026-08-21 cleanup review`.
 
-### WCL-19: A conditional codec discards the caller's write precondition
-
-- status: todo
-- priority: high
-- labels: encryption, conditional-writes, correctness
-- touches:
-  - was-client: `upsertResource` (`src/internal/write.ts`) chooses the
-    precondition; `Resource.put`'s documented `ifMatch` is the surface that
-    silently stops applying; `EncryptionDescriptorStore`
-    (`src/edv/descriptorStore.ts`) and `resourceLogStore`
-    (`src/log/logStore.ts`) carry the compensating prose to delete
-  - freewallet, dcw: any caller relying on `put({ ifMatch })` for a lost-update
-    guard against an encrypted collection is not getting one today; the fix
-    turns that into a thrown error
-- acceptance:
-  - [ ] A caller-supplied `ifMatch` / `ifNoneMatch` on an encrypted collection
-        either pins the write to the caller's baseline or is refused loudly
-  - [ ] The "host this in a plaintext collection" paragraphs in
-        `descriptorStore.ts` and `logStore.ts` are removed, and both stores work
-        on an encrypted collection
-  - [ ] The insert path (`insertResource`) is settled the same way, or its
-        divergence is recorded here
-
-`upsertResource` computes
-`codec.conditionalWrites ? encodedPrecondition(encoded) : precondition`, so on
-any collection whose codec sets `conditionalWrites` (every encrypted one) the
-caller's compare-and-swap baseline is dropped and replaced by the ETag the
-codec's own pre-read just observed. The write still succeeds, pinned to current
-server state rather than to what the caller last saw, so a lost-update guard
-degrades to last-write-wins with no signal.
-
-The compensation has already leaked into two seams as prose that nothing
-enforces: both `descriptorStore.ts` and `logStore.ts` tell the reader to host
-the resource in a plaintext collection because "the EDV codec computes the write
-preconditions itself, so this store's `ifMatch` would not be honored". Both are
-compare-and-swap loops where the precondition is the whole mechanism
-(`casUpdateDescriptor` retries only on `PreconditionFailedError`; the resource
-log's append profile requires it). The next store built on `Resource.put` needs
-the same paragraph, and a caller who misses it loses the guard silently.
-
-Two candidate fixes, and the choice is the decision this item needs: refuse the
-combination (`ValidationError` when `codec.conditionalWrites` meets a
-caller-supplied precondition), or forward the caller's precondition into
-`codec.encode` so a conditional codec can pin to the caller's baseline instead
-of its own pre-read. The second is the deeper fix and keeps CAS working on
-encrypted collections; the first is contained to `internal/write.ts`. Either way
-it is not behavior-preserving, which is why it was left out of 0.42.0.
-
 ### WCL-20: Sync port re-derives error classification from raw HTTP status
 
 - status: todo

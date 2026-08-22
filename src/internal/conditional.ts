@@ -4,10 +4,12 @@
 /**
  * Helpers for conditional writes (the server's `conditional-writes` feature):
  * assembling a write's request headers from an optional content-type plus the
- * `If-Match` / `If-None-Match: *` preconditions, and reading the `ETag` a write
- * response returns.
+ * `If-Match` / `If-None-Match: *` preconditions, reading the `ETag` a write
+ * response returns, and checking a caller's precondition against the document a
+ * conditional codec's write path pre-read.
  */
 import type { EncodedWrite, ResponseLike } from '../codec.js'
+import { PreconditionFailedError } from '../errors.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -91,4 +93,73 @@ export function writeHeaders({
  */
 export function readEtag(response: ResponseLike | null): string | undefined {
   return response?.headers.get('etag') ?? undefined
+}
+
+/**
+ * Checks a caller-supplied precondition against the document the conditional
+ * write path just pre-read, throwing `PreconditionFailedError` when the two
+ * already disagree.
+ *
+ * A conditional codec pre-reads the current document to advance its sequence,
+ * which means the caller's compare-and-swap baseline can be compared with
+ * server state locally: a caller whose `ifMatch` names a validator the current
+ * document no longer carries has lost the race, and a caller asking for
+ * create-if-absent has lost it too when a document is already there. Failing
+ * here costs no round trip and, more importantly, avoids encoding a sequence
+ * advance from a revision the caller never saw.
+ *
+ * The thrown error is the same `PreconditionFailedError` (412) the server
+ * would answer with, so a compare-and-swap retry loop needs no special case
+ * for an encrypted collection. A backend that returned no `ETag` on the
+ * pre-read advertises no `conditional-writes` feature, so there is nothing to
+ * compare against and the caller's `ifMatch` is left to the server.
+ *
+ * @param options {object}
+ * @param options.path {string}                       the resource path written
+ * @param options.current {ResponseLike | null}       the pre-read document
+ * @param [options.precondition] {WritePrecondition}  the caller's precondition
+ * @returns {void}
+ */
+export function assertPreconditionAgainstPreRead({
+  path,
+  current,
+  precondition
+}: {
+  path: string
+  current: ResponseLike | null
+  precondition?: WritePrecondition
+}): void {
+  if (precondition === undefined) {
+    return
+  }
+  if (precondition.ifNoneMatch && current !== null) {
+    throw new PreconditionFailedError(
+      `Cannot create the document at "${path}": create-if-absent was ` +
+        'requested (ifNoneMatch), but a document is already stored there. ' +
+        'Re-read it and write an update instead.',
+      { status: 412 }
+    )
+  }
+  if (precondition.ifMatch === undefined) {
+    return
+  }
+  if (current === null) {
+    throw new PreconditionFailedError(
+      `Cannot update the document at "${path}": an ifMatch validator was ` +
+        'supplied, but no current document is readable there -- it was ' +
+        'deleted, or it is not readable with this capability (WAS masks ' +
+        'unauthorized reads as 404). Re-read the resource before retrying.',
+      { status: 412 }
+    )
+  }
+  const etag = readEtag(current)
+  if (etag !== undefined && etag !== precondition.ifMatch) {
+    throw new PreconditionFailedError(
+      `Cannot update the document at "${path}": its current version ` +
+        `(${etag}) is not the one the write was pinned to ` +
+        `(${precondition.ifMatch}) -- another writer changed it. Re-read the ` +
+        'resource, rebase the change, and retry.',
+      { status: 412 }
+    )
+  }
 }

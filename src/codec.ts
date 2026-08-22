@@ -32,6 +32,7 @@
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { FeatureProbe } from './internal/features.js'
+import type { WritePrecondition } from './internal/conditional.js'
 import type {
   CollectionEncryption,
   Json,
@@ -81,7 +82,8 @@ export interface ResponseLike {
  * - `ifMatch` / `ifNoneMatch` -- an optional conditional-write precondition the
  *   codec computed (e.g. the EDV codec maps its `sequence` onto an `If-Match`
  *   ETag for lost-update-safe updates, or `If-None-Match: *` for a fresh
- *   insert). The write path forwards these as the request's conditional headers.
+ *   insert -- or echoes the caller's own `precondition` when one was supplied).
+ *   The write path forwards these as the request's conditional headers.
  *   Only honored for a codec that sets {@link ResourceCodec.conditionalWrites}.
  * - `envelope` -- the already-parsed object form of `body`, for a consumer that
  *   needs the object rather than the bytes (an encrypting codec that built an
@@ -290,8 +292,8 @@ export interface ResourceCodec {
   /**
    * Whether this codec drives optimistic-concurrency (conditional) writes. When
    * `true`, the write path pre-reads the current stored resource and passes it
-   * to {@link encode} as `current`, then forwards the precondition `encode`
-   * returns ({@link EncodedWrite.ifMatch} / `ifNoneMatch`). The EDV codec sets
+   * to {@link encode} as `current` (along with the caller's own `precondition`,
+   * when one was named), then forwards the precondition `encode` returns ({@link EncodedWrite.ifMatch} / `ifNoneMatch`). The EDV codec sets
    * this so its `sequence` is enforced (lost-update-safe) rather than advisory;
    * the identity codec leaves it unset (plaintext writes carry only the caller's
    * explicit precondition).
@@ -310,6 +312,12 @@ export interface ResourceCodec {
    * @param [input.current] {ResponseLike | null}     the current stored response
    *   (or `null` if absent), supplied only when {@link conditionalWrites} is
    *   set, so the codec can derive the next `sequence` and the `If-Match` ETag.
+   * @param [input.precondition] {WritePrecondition}   the caller's explicit
+   *   compare-and-swap baseline (`Resource.put`'s `ifMatch` / `ifNoneMatch`),
+   *   supplied only when {@link conditionalWrites} is set and the caller named
+   *   one. A conditional codec pins the write to it instead of to the ETag its
+   *   own pre-read observed, so a lost-update guard keeps working on a
+   *   collection whose codec computes its own preconditions.
    * @returns {Promise<CodecWrite>}   the single-request encoding, or -- for a
    *   payload the codec cannot store in one request -- a {@link ChunkedWrite}
    *   plan the insert path executes. Only `add()` drives a plan; a write by id
@@ -320,6 +328,7 @@ export interface ResourceCodec {
     data: ResourceData
     contentType?: string
     current?: ResponseLike | null
+    precondition?: WritePrecondition
   }): Promise<CodecWrite>
 
   /**

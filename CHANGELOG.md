@@ -2,8 +2,23 @@
 
 ## 0.42.0 - TBD
 
+### Fixed
+
+- `Resource.put({ ifMatch })` / `put({ ifNoneMatch })` now applies on an
+  encrypted collection. The write path forwards the caller's precondition to the
+  codec, which pins the write to that baseline instead of to the ETag its own
+  pre-read observed -- previously the caller's compare-and-swap guard was
+  dropped and the write silently degraded to last-write-wins. A precondition the
+  pre-read already contradicts fails locally with `PreconditionFailedError`
+  (412) before the write is sent.
+
 ### Changed
 
+- `ResourceCodec.encode` receives the caller's `precondition` alongside
+  `current` on a codec that sets `conditionalWrites`.
+- `resourceDescriptorStore` and `resourceLogStore` work on an encrypted
+  collection, not only a plaintext one. On an encrypted host the resource must
+  be created under an id the codec mints.
 - `ensureSpaceAndCollection` propagates typed errors (`AuthRequiredError`,
   `NotFoundError`, `ConflictError`, `WasServerError`) instead of flattening
   every provisioning failure into a bare `Error`, so a caller can tell a revoked

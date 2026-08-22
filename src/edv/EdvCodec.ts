@@ -47,9 +47,13 @@
  *   `conditionalWrites`, so the write path pre-reads the current envelope and
  *   hands it to `encode`: an update advances `sequence` from its prior value and
  *   pins the write to the server's current ETag via `If-Match`, while a fresh
- *   insert (`sequence: 0`) is guarded by `If-None-Match: *`. A stale write
- *   surfaces as a `PreconditionFailedError` (412) -- the lost-update guard --
- *   rather than the old advisory last-writer-wins. Against a backend that does
+ *   insert (`sequence: 0`) is guarded by `If-None-Match: *`. A caller that
+ *   named its own baseline (`put({ ifMatch })`) keeps it: the write is pinned
+ *   to the revision the caller last saw rather than to the codec's pre-read, so
+ *   a compare-and-swap loop works the same on an encrypted collection as on a
+ *   plaintext one. A stale write surfaces as a `PreconditionFailedError` (412)
+ *   -- the lost-update guard -- rather than the old advisory
+ *   last-writer-wins. Against a backend that does
  *   not advertise `conditional-writes` (no ETag) an update degrades to
  *   advisory, and a create-by-put is refused by the write path (the masked-404
  *   pre-read could otherwise silently clobber; see `upsertResource`).
@@ -100,6 +104,7 @@ import {
 } from '../errors.js'
 import { blobBytes } from '../internal/blob.js'
 import { readEtag, writeHeaders } from '../internal/conditional.js'
+import type { WritePrecondition } from '../internal/conditional.js'
 import { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
 import { resolveEpochKeys } from './epochKeys.js'
@@ -522,12 +527,14 @@ export class EdvCodec implements ResourceCodec {
     id,
     data,
     contentType,
-    current
+    current,
+    precondition
   }: {
     id?: string
     data: ResourceData
     contentType?: string
     current?: ResponseLike | null
+    precondition?: WritePrecondition
   }): Promise<CodecWrite> {
     if (id !== undefined && !current) {
       try {
@@ -643,19 +650,28 @@ export class EdvCodec implements ResourceCodec {
       // Surface the plaintext content type (the server-opaque envelope type
       // stays `contentType`) so `add()` reports the real resource type.
       resourceContentType: meta.contentType as string,
-      // Pin an update to the server's current ETag; guard a fresh insert with
-      // create-if-absent. An update's `If-Match` carries a server-provided ETag,
-      // so it degrades to an advisory write against a backend without the
-      // conditional-writes feature (the ETag is absent). A fresh insert's
-      // `If-None-Match: *` needs no server-provided validator and so is emitted
-      // unconditionally by design -- it expresses the insert's intent
-      // (create-only-if-absent). A backend that does not honor it would ignore
-      // it, so the write path refuses the insert-after-null-pre-read up front
-      // on such a backend (see `upsertResource`) -- a masked-404 pre-read must
-      // not silently overwrite an existing document there.
-      ...(priorDoc
-        ? { ifMatch: readEtag(current ?? null) }
-        : { ifNoneMatch: true }),
+      // The caller's own compare-and-swap baseline wins when they named one:
+      // an `If-Match` derived from this codec's pre-read would pin the write to
+      // current server state rather than to the revision the caller last saw,
+      // which silently turns a lost-update guard into last-write-wins. The
+      // write path has already checked the caller's baseline against the
+      // pre-read, so the two agree by the time this runs.
+      //
+      // Otherwise pin an update to the server's current ETag and guard a fresh
+      // insert with create-if-absent. An update's `If-Match` carries a
+      // server-provided ETag, so it degrades to an advisory write against a
+      // backend without the conditional-writes feature (the ETag is absent). A
+      // fresh insert's `If-None-Match: *` needs no server-provided validator
+      // and so is emitted unconditionally by design -- it expresses the
+      // insert's intent (create-only-if-absent). A backend that does not honor
+      // it would ignore it, so the write path refuses the
+      // insert-after-null-pre-read up front on such a backend (see
+      // `upsertResource`) -- a masked-404 pre-read must not silently overwrite
+      // an existing document there.
+      ...(precondition ??
+        (priorDoc
+          ? { ifMatch: readEtag(current ?? null) }
+          : { ifNoneMatch: true })),
       // Stamp the key epoch this write encrypted under (the `currentEpoch`), so
       // the server records it and a reader can pick the epoch key.
       epoch: this.#writeEpoch
