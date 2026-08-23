@@ -204,7 +204,11 @@ descriptor declares a blinding key. Consequences worth knowing:
 
 - Resolving such a codec costs one extra read (the Collection `/meta` slot,
   whose encrypted `custom` holds the schema under `indexSchema`); a collection
-  without a blinding key pays nothing.
+  without a blinding key pays nothing. `CodecHolder.resolve()` hands that read's
+  decoded snapshot to the call that triggered resolution, so a first `meta()` or
+  `declareIndex()` on a fresh handle reuses it instead of reading `/meta` again.
+  Every other caller reads fresh, since the snapshot is a point in time and
+  `get()` discards it.
 - The schema is as fresh as the handle. `declareIndex` updates the persisted
   copy and this handle's codec together, and `CodecHolder.reset()` re-reads it.
   The sync `DocCipher` has no request layer, so there the schema is

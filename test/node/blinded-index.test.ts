@@ -262,7 +262,12 @@ function serverFor({
 }: {
   encryption: CollectionEncryption
   keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
-}): { client: WasClient; state: ServerState; calls: RequestArgs[] } {
+}): {
+  client: WasClient
+  state: ServerState
+  calls: RequestArgs[]
+  decodes: () => number
+} {
   const state: ServerState = { meta: { version: 0 }, queryResult: {} }
   const calls: RequestArgs[] = []
   const description: CollectionDescription = {
@@ -297,15 +302,57 @@ function serverFor({
       if (path === '/space/s/c/query' && method === 'POST') {
         return ok(state.queryResult)
       }
+      if (path.startsWith('/space/s/c/') && method === 'PUT') {
+        return ok({}, '1')
+      }
       throw { status: 404, response: { status: 404 } }
     }
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+  const provider = createEdvEncryption({ resolveKeys: async () => keys })
+  let decodes = 0
   const client = new WasClient({
     serverUrl: 'https://was.example',
     zcapClient,
-    encryption: createEdvEncryption({ resolveKeys: async () => keys })
+    // Count every metadata decrypt without disturbing the real codec: the
+    // proxy forwards each member bound to the codec itself, so its private
+    // state keeps working.
+    encryption: {
+      async codecFor(options) {
+        const codec = await provider.codecFor(options)
+        if (!codec) {
+          return codec
+        }
+        return new Proxy(codec, {
+          get(target, property) {
+            if (property === 'decodeMeta') {
+              return async (...args: Parameters<typeof codec.decodeMeta>) => {
+                decodes++
+                return codec.decodeMeta(...args)
+              }
+            }
+            const value = Reflect.get(target, property, target) as unknown
+            return typeof value === 'function' ? value.bind(target) : value
+          }
+        })
+      }
+    }
   })
-  return { client, state, calls }
+  return { client, state, calls, decodes: () => decodes }
+}
+
+/**
+ * How many times the Collection `/meta` document was GET, across every layer
+ * (the index-schema read inside codec resolution included).
+ *
+ * @param calls {RequestArgs[]}
+ * @returns {number}
+ */
+function metaGets(calls: RequestArgs[]): number {
+  return calls.filter(
+    call =>
+      (call.method ?? 'GET') === 'GET' &&
+      new URL(call.url!).pathname === '/space/s/c/meta'
+  ).length
 }
 
 describe('Collection.declareIndex', () => {
@@ -474,5 +521,84 @@ describe('Collection.find', () => {
     await expect(
       plaintext.declareIndex({ attribute: 'content.type' })
     ).rejects.toBeInstanceOf(ValidationError)
+  })
+})
+
+describe('Collection.meta on a blinded-index collection', () => {
+  it('reads and decrypts /meta once on a fresh handle', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls, decodes } = serverFor(fixture)
+    // Resolving this handle's codec reads `/meta` for the index schema; the
+    // `meta()` that triggered it reuses that read instead of repeating it.
+    await client.space('s').collection('c').meta()
+    expect(metaGets(calls)).toBe(1)
+    expect(decodes()).toBe(1)
+  })
+
+  it('reads /meta once before declareIndex writes', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    await client
+      .space('s')
+      .collection('c')
+      .declareIndex({ attribute: 'content.type' })
+    const beforeWrite = calls.slice(
+      0,
+      calls.findIndex(call => call.method === 'PUT')
+    )
+    expect(metaGets(beforeWrite)).toBe(1)
+  })
+
+  it('re-reads /meta on the second call (no snapshot reuse)', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    const collection = client.space('s').collection('c')
+    await collection.meta()
+    await collection.meta()
+    expect(metaGets(calls)).toBe(2)
+  })
+
+  it('never serves a snapshot taken for another operation', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    const collection = client.space('s').collection('c')
+    // A write resolves the codec (reading `/meta` for the schema) without
+    // consuming its snapshot.
+    await collection.add({ type: 'note' })
+    const afterWrite = metaGets(calls)
+    // Another client changes the metadata in between.
+    await client.space('s').collection('c').setName('renamed')
+    const current = await collection.meta()
+    expect(metaGets(calls)).toBeGreaterThan(afterWrite)
+    expect(current?.custom).toEqual({ name: 'renamed' })
+  })
+
+  it('serves at most one of two concurrent first reads from the snapshot', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    const collection = client.space('s').collection('c')
+    const [first, second] = await Promise.all([
+      collection.meta(),
+      collection.meta()
+    ])
+    // One read inside the codec resolution, one for the caller that did not
+    // start it.
+    expect(metaGets(calls)).toBe(2)
+    expect(first).toEqual(second)
+  })
+
+  it('costs one /meta read on a collection with no blinding key', async () => {
+    const fixture = await makeIndexableCollection()
+    delete fixture.encryption.hmac
+    const { client, calls } = serverFor(fixture)
+    await client.space('s').collection('c').meta()
+    expect(metaGets(calls)).toBe(1)
+  })
+
+  it('costs one /meta read on a plaintext handle', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    await client.space('s').collection('c', { encryption: 'plaintext' }).meta()
+    expect(metaGets(calls)).toBe(1)
   })
 })

@@ -787,3 +787,34 @@ that resolves was-client twice every lost roster CAS, and now every lost genesis
 race, becomes a hard ceremony failure instead of a rebase. The same two-copies
 hazard is already handled by name for the log conflict (vh-resource-log
 invariant 8). Found by the VRL-2 ceremony-reviewer pass, 2026-08-22.
+
+### WCL-28: First `meta()` on a blinded-index collection fetches `/meta` twice
+
+- status: done
+- done: 2026-08-22
+- priority: low
+- labels: encryption, search, efficiency
+- acceptance:
+  - [x] Resolving a codec and then reading collection metadata costs one GET and
+        one decrypt, not two
+  - [x] Metadata reads after the first are never served from a stale snapshot
+
+`buildEncryptingCodec` calls `loadIndexSchema`, which issues
+`GET collectionMeta(...)` and runs a full `decodeMeta` JWE open.
+`Collection.meta()` then issues the same GET on the same path and decodes the
+same envelope again. `declareIndex` hits it too, since `#indexing(...)` resolves
+the codec and then immediately calls `meta()`.
+
+The cost is one extra round trip plus one extra decrypt, once per handle, on the
+first `meta()` / `setName()` / `setTags()` / `declareIndex()` against an
+encrypted collection that declares a blinding key. Collections without one do
+not pay it, because `loadIndexSchema` returns early when the codec has no
+`indexing`. The two requests race rather than serialize, so the latency cost is
+smaller than the request and crypto cost.
+
+Either have `loadIndexSchema` stash the response it read on the `CodecHolder`
+for `meta()` to consume once and clear, or invert the flow so `meta()` resolves
+the codec and feeds its own freshly-read `custom` to the indexing seam. The
+consume-once variant is behavior-preserving; any variant that keeps the snapshot
+alive past the first read would start returning stale metadata, which is the
+trap to avoid when picking this up.

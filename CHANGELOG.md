@@ -10,6 +10,12 @@
   conflict minted by a consumer's own copy of `@interop/was-client` (a tree that
   resolves the package twice) still rebases instead of failing the recipient
   change.
+- The first `meta()`, `setName()`, `setTags()`, or `declareIndex()` call on a
+  blinded-index collection now costs one `GET /meta` and one decrypt instead of
+  two: `CodecHolder` hands the metadata snapshot its codec resolution already
+  read to the call that triggered it. Later reads always fetch fresh. A
+  malformed (non-JSON) `/meta` response now throws `WasServerError` during
+  codec resolution instead of leaving the index schema silently empty.
 
 ## 0.44.3 - 2026-08-22
 

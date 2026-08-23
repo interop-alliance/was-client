@@ -30,6 +30,17 @@ export class Memo<T> {
   }
 
   /**
+   * Whether a resolution is already held -- in flight or settled. Lets a caller
+   * tell, synchronously and before calling {@link Memo.get}, whether its own
+   * call is the one that starts the resolution.
+   *
+   * @returns {boolean}
+   */
+  get started(): boolean {
+    return this.#promise !== undefined
+  }
+
+  /**
    * Returns the memoized value, resolving it on first use.
    *
    * @returns {Promise<T>}

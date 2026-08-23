@@ -437,9 +437,19 @@ export class Collection {
    * @returns {Promise<(CollectionMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(CollectionMetadata & { etag?: string }) | null> {
+    // Resolving the codec on a blinded-index collection reads `/meta` itself
+    // (for the index schema). When this call is the one that started that
+    // resolution, its snapshot is this read's answer -- take it rather than
+    // GETting and decrypting the same document twice. Every other caller gets
+    // no snapshot and reads for itself, so a `meta()` never serves a
+    // point-in-time copy another client may have overwritten since.
+    const { codec, meta } = await this.#codecHolder.resolve()
+    if (meta !== undefined) {
+      return meta
+    }
     return readMeta<CollectionMetadata>(this.#context, {
       metaPath: this.#metaPath,
-      codec: this.#codec(),
+      codec: Promise.resolve(codec),
       subject: `collection "${this.id}"`,
       capability: this.#capability
     })
@@ -537,7 +547,23 @@ export class Collection {
    * @returns {Promise<CodecIndexing>}
    */
   async #indexing(operation: string): Promise<CodecIndexing> {
-    const codec = await this.#codec()
+    return (await this.#resolveIndexing(operation)).indexing
+  }
+
+  /**
+   * {@link Collection.#indexing}, plus the metadata snapshot the codec
+   * resolution read when this call is the one that started it (see
+   * {@link CodecHolder.resolve}). `declareIndex` uses it for its first read;
+   * `meta` is `undefined` whenever there is no snapshot to reuse.
+   *
+   * @param operation {string}   what the caller was trying to do, for the message
+   * @returns {Promise<{ indexing: CodecIndexing; meta?: (CollectionMetadata & { etag?: string }) | null }>}
+   */
+  async #resolveIndexing(operation: string): Promise<{
+    indexing: CodecIndexing
+    meta?: (CollectionMetadata & { etag?: string }) | null
+  }> {
+    const { codec, meta } = await this.#codecHolder.resolve()
     if (!codec.indexing) {
       throw new ValidationError(
         `Cannot ${operation} on collection "${this.id}": it carries no ` +
@@ -548,7 +574,9 @@ export class Collection {
           'instead.'
       )
     }
-    return codec.indexing
+    return meta !== undefined
+      ? { indexing: codec.indexing, meta }
+      : { indexing: codec.indexing }
   }
 
   /**
@@ -605,7 +633,8 @@ export class Collection {
     attribute: string | string[]
     unique?: boolean
   }): Promise<IndexSchema> {
-    const indexing = await this.#indexing('declare an index')
+    const { indexing, meta: snapshot } =
+      await this.#resolveIndexing('declare an index')
     const declared = normalizeAttribute(attribute)
     const key = attributeKey(declared)
     // Read, reconcile, conditionally write. A 412 means another client wrote
@@ -613,7 +642,11 @@ export class Collection {
     // rather than clobbering its declaration with ours.
     const maxAttempts = 4
     for (let attempt = 1; ; attempt++) {
-      const current = await this.meta()
+      // Attempt 1 reuses the metadata the codec resolution above already read
+      // (when this call is what triggered it); every retry re-reads, since a
+      // 412 means the document changed.
+      const current =
+        attempt === 1 && snapshot !== undefined ? snapshot : await this.meta()
       const custom = (current?.custom ?? {}) as CustomWithIndexSchema
       const schema = readIndexSchema(custom)
       const existing = schema.indexes.find(

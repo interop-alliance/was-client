@@ -26,7 +26,7 @@ import type {
   EncodedWrite,
   ResourceMetadataCustom
 } from '../../src/index.js'
-import { identityCodec } from '../../src/internal/codec.js'
+import { CodecHolder, identityCodec } from '../../src/internal/codec.js'
 
 interface RequestArgs {
   url?: string
@@ -947,5 +947,92 @@ describe('identityCodec: metadata identity (byte-for-byte)', () => {
   it('decodeMeta returns {} for an absent custom', async () => {
     expect(await identityCodec.decodeMeta({})).toEqual({})
     expect(await identityCodec.decodeMeta({ custom: undefined })).toEqual({})
+  })
+})
+
+describe('CodecHolder: the initiator-only metadata snapshot', () => {
+  const snapshot = { custom: { name: 'first' }, etag: '1' }
+
+  /**
+   * A holder over a canned resolution, counting how often it re-resolves and
+   * serving a fresh snapshot object each time.
+   *
+   * @param [meta] {object}   what each resolution reports as its snapshot;
+   *   `'none'` for a resolution that read no metadata at all
+   * @returns {{ holder: CodecHolder; resolutions: () => number }}
+   */
+  function holderFor(
+    meta: { custom: { name: string }; etag: string } | null | 'none' = snapshot
+  ): { holder: CodecHolder; resolutions: () => number } {
+    let resolutions = 0
+    const holder = new CodecHolder(async () => {
+      resolutions++
+      return meta !== 'none'
+        ? { codec: identityCodec, meta }
+        : { codec: identityCodec }
+    })
+    return { holder, resolutions: () => resolutions }
+  }
+
+  it('hands the snapshot to the call that started the resolution', async () => {
+    const { holder } = holderFor()
+    await expect(holder.resolve()).resolves.toEqual({
+      codec: identityCodec,
+      meta: snapshot
+    })
+  })
+
+  it('hands it out at most once', async () => {
+    const { holder, resolutions } = holderFor()
+    await holder.resolve()
+    const second = await holder.resolve()
+    expect(second.meta).toBeUndefined()
+    expect(resolutions()).toBe(1)
+  })
+
+  it('withholds it from a concurrent caller', async () => {
+    const { holder } = holderFor()
+    const [first, second] = await Promise.all([
+      holder.resolve(),
+      holder.resolve()
+    ])
+    expect(first!.meta).toEqual(snapshot)
+    expect(second!.meta).toBeUndefined()
+  })
+
+  it('withholds it when another path resolved the codec', async () => {
+    const { holder } = holderFor()
+    await holder.get()
+    await expect(holder.resolve()).resolves.toEqual({ codec: identityCodec })
+  })
+
+  it('reports no snapshot when the resolution read no metadata', async () => {
+    const { holder } = holderFor('none')
+    await expect(holder.resolve()).resolves.toEqual({ codec: identityCodec })
+  })
+
+  it('passes through a snapshot of "there is no metadata"', async () => {
+    const { holder } = holderFor(null)
+    await expect(holder.resolve()).resolves.toEqual({
+      codec: identityCodec,
+      meta: null
+    })
+  })
+
+  it('serves no stale snapshot after a reset', async () => {
+    let resolutions = 0
+    const holder = new CodecHolder(async () => {
+      resolutions++
+      return {
+        codec: identityCodec,
+        meta: { custom: { name: `read-${resolutions}` }, etag: '1' }
+      }
+    })
+    // The first resolution's snapshot goes unconsumed; the reset drops it, so
+    // the next `resolve()` reports what its own re-resolution read.
+    await holder.get()
+    holder.reset()
+    const after = await holder.resolve()
+    expect(after.meta).toEqual({ custom: { name: 'read-2' }, etag: '1' })
   })
 })
