@@ -11,6 +11,10 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
+import type {
+  SpaceDescription,
+  CollectionDescription
+} from '../../src/index.js'
 import {
   WasClient,
   ValidationError,
@@ -715,6 +719,21 @@ describe('Collection.configure() unreadable-description guard', () => {
     const put = calls.find(call => call.method === 'PUT')
     expect(put?.json).toMatchObject({ backend: { id: 'custom' } })
   })
+
+  it('fails closed on a supplied `current: null`', async () => {
+    // `current: null` is an answer the caller already read, not a request to
+    // read: the guard fires on it exactly as it does on this handle's own
+    // masked describe().
+    const { client, calls } = clientWithRequestSpy()
+    await expect(
+      client
+        .space('s')
+        .collection('docs')
+        .configure({ name: 'x', current: null })
+    ).rejects.toThrow(ValidationError)
+    // Not even the describe() GET went out: the caller supplied the answer.
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('Space.configure() unreadable-description guard', () => {
@@ -802,6 +821,57 @@ describe('Space.configure() unreadable-description guard', () => {
     await client.space('s').configure({ name: 'x', force: true })
     const put = calls.find(call => call.method === 'PUT')
     expect(put?.json).not.toHaveProperty('type')
+  })
+
+  it('fails closed on a supplied `current: null`', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await expect(
+      client.space('s').configure({ name: 'x', current: null })
+    ).rejects.toThrow(ValidationError)
+    // Not even the describe() GET went out: the caller supplied the answer.
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('configure() with a supplied current description', () => {
+  it('Space.configure merges from `current` without reading it back', async () => {
+    const current = {
+      id: 's',
+      type: ['Space', 'AuxiliarySpace'],
+      name: 'Existing',
+      controller: 'did:example:alice'
+    } as SpaceDescription
+    const { client, calls } = clientWithRequestSpy()
+    await client.space('s').configure({ name: 'Renamed', current })
+    // One request, the PUT: `type` and `controller` still carry forward, from
+    // the supplied description rather than from a second GET.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.json).toMatchObject({
+      name: 'Renamed',
+      controller: 'did:example:alice',
+      type: ['Space', 'AuxiliarySpace']
+    })
+  })
+
+  it('Collection.configure merges from `current` without reading it back', async () => {
+    const current = {
+      id: 'docs',
+      type: ['Collection'],
+      name: 'Docs',
+      backend: { id: 'custom' }
+    } as CollectionDescription
+    const { client, calls } = clientWithRequestSpy()
+    await client
+      .space('s')
+      .collection('docs')
+      .configure({ name: 'Renamed', current })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.json).toMatchObject({
+      name: 'Renamed',
+      backend: { id: 'custom' }
+    })
   })
 })
 

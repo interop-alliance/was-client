@@ -13,7 +13,9 @@
  * - `createPlaintextDocCipher` / `isEncryptedEnvelope` -- the identity cipher
  *   for a plaintext content-addressed collection, and the envelope predicate,
  *   both free of the `@interop/was-client/edv` crypto graph.
- * - `ensureSpaceAndCollection` -- idempotent Space + Collection provisioning.
+ * - `ensureSpaceAndCollection` / `ensureSpace` -- idempotent Space +
+ *   Collection provisioning, and its Space half alone (ensure the Space once,
+ *   then thread the returned description through every collection).
  *
  * The 412 conflict / 404 not-found port signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), and the opt-in revoked-access signal
@@ -40,7 +42,7 @@ export { httpStatus as errorStatus, errorMessage } from '../errors.js'
 export { contentCid, cidFrom, deriveSpaceId } from './cid.js'
 export { isEncryptedEnvelope } from './envelope.js'
 export { createPlaintextDocCipher } from './plaintextCipher.js'
-export { ensureSpaceAndCollection } from './provisioning.js'
+export { ensureSpace, ensureSpaceAndCollection } from './provisioning.js'
 export {
   EncryptionError,
   KeyUnwrapError,

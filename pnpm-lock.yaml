@@ -18,8 +18,8 @@ importers:
         specifier: ^17.8.1
         version: 17.8.1
       '@interop/ezcap':
-        specifier: ^7.4.3
-        version: 7.4.3
+        specifier: ^7.4.4
+        version: 7.4.4
       '@interop/http-client':
         specifier: ^1.0.5
         version: 1.0.5
@@ -229,8 +229,8 @@ packages:
       react-native-get-random-values:
         optional: true
 
-  '@interop/ezcap@7.4.3':
-    resolution: {integrity: sha512-6zL1rmjKdBkzyn+Zhg+ltJk+pxJvFwD8gzPjgcC/S/GIuywMP+JAzpKoCFiDK1gQnrbPjwQ8kKnmTkC3sMGQVA==}
+  '@interop/ezcap@7.4.4':
+    resolution: {integrity: sha512-SwAmHaqq0Cg1IOhre/+UKcbLukB4brgqbJPPr908UKlwjwkCBf3T6DTFU8Sr2Ukuk/WskxPmBgWw8BNXLJuDPw==}
     engines: {node: '>=20.0'}
 
   '@interop/http-client@1.0.5':
@@ -250,8 +250,16 @@ packages:
     resolution: {integrity: sha512-Sd+wNfMCvkxvNUoV+VoLfwn+IjTdtk0T1j/tQqxUiYUOkmS0V24O3ENiwCWfgUNkmmGIhlno9VIzLzd9mDwRkw==}
     engines: {node: '>=14'}
 
+  '@interop/http-signature-header@5.0.3':
+    resolution: {integrity: sha512-fe9waxlrnOOSxlpUeQUAHAf1bT0zTQkLF74m1i6/ok8OgMN8IkY07dsPHK6xPEQjSNASerq03spf60VHUVu9+Q==}
+    engines: {node: '>=14'}
+
   '@interop/http-signature-zcap-invoke@6.2.4':
     resolution: {integrity: sha512-X95N3RhTg/+5L3daWZR69LbOtUtoPkH1XKtueqEc1/MhQ5sSMF0JDYQLd3xu905Ppmdw3mWr2Fn1txlhsBYMhw==}
+    engines: {node: '>=20'}
+
+  '@interop/http-signature-zcap-invoke@6.2.6':
+    resolution: {integrity: sha512-GE4+yi+uvBN+6XDNASOavZfauZGUDF9GupmNtzZc2Lv/Wr2kdeqoIrw4Jkl/iVnuwkt37AccVqKI7K9EOER/tw==}
     engines: {node: '>=20'}
 
   '@interop/jsonld-signatures@11.8.5':
@@ -1355,13 +1363,13 @@ snapshots:
     transitivePeerDependencies:
       - expo-crypto
 
-  '@interop/ezcap@7.4.3':
+  '@interop/ezcap@7.4.4':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/data-integrity-proof': 3.4.5
       '@interop/ecdsa-signature': 2.0.6(@interop/jsonld-signatures@11.8.5)
       '@interop/http-client': 1.0.5
-      '@interop/http-signature-zcap-invoke': 6.2.4
+      '@interop/http-signature-zcap-invoke': 6.2.6
       '@interop/jsonld-signatures': 11.8.5
       '@interop/zcap': 11.1.0
     transitivePeerDependencies:
@@ -1376,11 +1384,22 @@ snapshots:
 
   '@interop/http-signature-header@5.0.2': {}
 
+  '@interop/http-signature-header@5.0.3': {}
+
   '@interop/http-signature-zcap-invoke@6.2.4':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-header': 5.0.2
+      pako: 2.2.0
+    transitivePeerDependencies:
+      - expo-crypto
+
+  '@interop/http-signature-zcap-invoke@6.2.6':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+      '@interop/http-digest-header': 3.1.0
+      '@interop/http-signature-header': 5.0.3
       pako: 2.2.0
     transitivePeerDependencies:
       - expo-crypto

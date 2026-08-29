@@ -500,6 +500,84 @@ fail at resolution or only when it tries to use it is a fail-closed policy
 question, not a performance one, which is why this is parked as a draft rather
 than filed as work.
 
+### WCL-32: Provisioning creates cannot be made race-safe (no create-if-absent precondition)
+
+- status: todo
+- priority: low
+- labels: conditional-writes, provisioning, spec
+- touches:
+  - wallet-attached-storage-spec: the Update (or Create By Id) Collection
+    operation documents `If-Match` and its 412 but no `If-None-Match`; the Space
+    Data Model carries no version property, and Update Space documents no
+    preconditions at all
+  - was-teaching-server: `assertCollectionWritePrecondition` takes no
+    `ifNoneMatch` and `CollectionRequest.put` discards the parsed one;
+    `SpaceRequest.put` reads no preconditions, and the Space read emits no
+    `ETag`
+  - was-client: `Collection.replaceDescription` accepts `ifMatch` only, and
+    `Space` has no `describeWithEtag` / `replaceDescription` pair
+  - freewallet, dcw: callers relying on `ensureSpace` and
+    `ensureSpaceAndCollection` not throwing when two clients boot at once
+- acceptance:
+  - [ ] A concurrent create of the same Space or collection loses at the server
+        instead of silently replacing the winner's description
+  - [ ] `ensureSpace` and `ensureSpaceAndCollection` stay idempotent under that
+        race: a lost create is recovered by re-reading the winner rather than
+        surfacing to the caller as a `PreconditionFailedError`
+  - [ ] `Space` gains the `describeWithEtag` / `replaceDescription` pair
+        `Collection` already has
+
+discovered-from: the review of the `ensureSpace` split. Both create branches in
+`src/sync/provisioning.ts` read the description, find it absent, and pass that
+`null` into `configure` as `current`. The merge then runs against a read one
+round trip older than the `PUT`. A Space created concurrently inside that window
+has its `type` array omitted from the body, and `type` is accepted at creation
+only, so a replace-semantics server drops it for good. A collection created
+concurrently loses its `backend`. The window predates the split: the second
+`describe()` that used to run inside `configure` narrowed it without closing it,
+and threading the description widened it again by one request.
+
+No client-side change closes it. `If-None-Match: *` is the only precondition
+that states create-if-absent, and neither endpoint honors it -- the collection
+handler parses the header and drops it, and the Space handler reads no
+preconditions at all. Neither one rejects it either, so a client sending it gets
+no 412 and no protection, which is worse than sending nothing.
+
+Closing it is spec work first: the Update Collection operation needs
+`If-None-Match` and its 412, and Space Descriptions need a version property plus
+an `ETag` on the read before they can carry any precondition at all. The client
+half is small once those land. The part to settle deliberately is the recovery
+behavior -- an ensure that throws when two clients boot at once is worse than
+one that races, so a 412 has to become a re-read rather than an error.
+
+Interim mitigation, if the window matters before the spec work: stop passing
+`current` on the two create branches. Both run once in a Space's or a
+collection's lifetime, so the cost is one request on a cold path, and the
+steady-state saving (one Space ensure for N collections, via `spaceDescription`)
+is untouched.
+
+### WCL-33: Late encryption declaration writes without a precondition
+
+- status: todo
+- priority: low
+- labels: conditional-writes, provisioning, encryption
+- acceptance:
+  - [ ] The in-place `encryption` declaration in `ensureSpaceAndCollection`
+        writes against the `ETag` it read, and a lost race retries instead of
+        overwriting the concurrent change
+
+discovered-from: WCL-32. The third `configure` call in
+`src/sync/provisioning.ts` -- adding an `encryption` descriptor to a collection
+that lacks one -- differs from the two create branches: it holds a real
+description, and `If-Match` on a Collection Description is honored by the server
+today. So this one is closable now, independently of the spec work WCL-32 needs.
+
+`describeWithEtag()` in place of `describe()`, then
+`replaceDescription(fields, { ifMatch })` in place of `configure`. Note that
+`replaceDescription` does not merge, so the call has to pass every writable
+field forward. The retry on 412 belongs in whatever shared loop WCL-25 settles
+on rather than as a fourth hand-rolled one.
+
 ---
 
 ## Recorded decisions (kept so they are not re-litigated)

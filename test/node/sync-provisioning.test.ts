@@ -13,7 +13,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '../../src/index.js'
-import { ensureSpaceAndCollection } from '../../src/sync/index.js'
+import { ValidationError } from '../../src/index.js'
+import { ensureSpace, ensureSpaceAndCollection } from '../../src/sync/index.js'
 import { EDV_SCHEME_VERSION } from '../../src/edv/constants.js'
 
 interface ConfigureOpts {
@@ -21,6 +22,7 @@ interface ConfigureOpts {
   controller?: string
   encryption?: { scheme: string; version: number }
   force?: boolean
+  current?: unknown
 }
 
 interface CollectionDesc {
@@ -88,11 +90,12 @@ class FakeSpace {
     return this.current
   }
 
-  configure = async (opts: ConfigureOpts): Promise<void> => {
+  configure = async (opts: ConfigureOpts): Promise<unknown> => {
     this.configureCalls.push(opts)
     if (this.failSpace) {
       throw this.failSpace
     }
+    return { id: SPACE, name: opts.name, controller: opts.controller }
   }
 
   collection = (id: string): FakeCollection => {
@@ -130,12 +133,16 @@ describe('ensureSpaceAndCollection', () => {
     })
 
     expect(was.spaceArg).toBe(SPACE)
+    // The description this ensure read is threaded into its own configure,
+    // so the create costs one describe rather than two.
+    expect(space.describeCalls).toBe(1)
     expect(space.configureCalls).toEqual([
-      { name: 'WAS Space', controller: DID }
+      { name: 'WAS Space', controller: DID, current: null }
     ])
     expect(space.collectionIds).toEqual([COLL])
+    expect(space.collectionObj.describeCalls).toBe(1)
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: COLL, encryption: EDV }
+      { name: COLL, encryption: EDV, current: null }
     ])
     expect(space.collectionObj.setPublicCalls).toBe(0)
   })
@@ -153,7 +160,7 @@ describe('ensureSpaceAndCollection', () => {
     })
 
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: 'public-credentials', force: true }
+      { name: 'public-credentials', force: true, current: null }
     ])
     expect(space.collectionObj.setPublicCalls).toBe(1)
   })
@@ -196,7 +203,7 @@ describe('ensureSpaceAndCollection', () => {
     })
 
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: 'Kept Name', encryption: EDV }
+      { name: 'Kept Name', encryption: EDV, current: { name: 'Kept Name' } }
     ])
   })
 
@@ -390,5 +397,102 @@ describe('ensureSpaceAndCollection', () => {
       ),
       cause
     })
+  })
+})
+
+describe('ensureSpace', () => {
+  it('creates the absent space and returns the description it wrote', async () => {
+    const space = new FakeSpace()
+    const was = new FakeWas(space)
+    const description = await ensureSpace({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID
+    })
+
+    expect(space.describeCalls).toBe(1)
+    expect(space.configureCalls).toEqual([
+      { name: 'WAS Space', controller: DID, current: null }
+    ])
+    expect(description).toMatchObject({ id: SPACE, controller: DID })
+  })
+
+  it('returns an existing description without writing anything', async () => {
+    const current = { name: 'Wallet Space', controller: 'did:webvh:other' }
+    const space = new FakeSpace({ current })
+    const was = new FakeWas(space)
+    const description = await ensureSpace({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID
+    })
+
+    expect(space.describeCalls).toBe(1)
+    expect(space.configureCalls).toEqual([])
+    expect(description).toBe(current)
+  })
+
+  it('wraps a failure with the space-labelled error + cause', async () => {
+    const cause = new Error('space boom')
+    const space = new FakeSpace({ failSpace: cause })
+    const was = new FakeWas(space)
+    await expect(
+      ensureSpace({ was: was.asClient(), spaceId: SPACE, controllerDid: DID })
+    ).rejects.toMatchObject({
+      message: expect.stringContaining(
+        'Failed to configure WAS space "space-abc"'
+      ),
+      cause
+    })
+  })
+})
+
+describe('ensureSpaceAndCollection with a supplied space description', () => {
+  it('skips the space half entirely', async () => {
+    const space = new FakeSpace()
+    const was = new FakeWas(space)
+    await ensureSpaceAndCollection({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      spaceDescription: {
+        id: SPACE,
+        type: ['Space'],
+        controller: DID
+      } as never
+    })
+
+    // The whole point of threading: an already-ensured Space is neither
+    // described nor configured again, however many collections fan out.
+    expect(space.describeCalls).toBe(0)
+    expect(space.configureCalls).toEqual([])
+    expect(space.collectionObj.configureCalls).toEqual([
+      { name: COLL, encryption: EDV, current: null }
+    ])
+  })
+
+  it('rejects a description that names a different space', async () => {
+    const space = new FakeSpace()
+    const was = new FakeWas(space)
+    await expect(
+      ensureSpaceAndCollection({
+        was: was.asClient(),
+        spaceId: SPACE,
+        controllerDid: DID,
+        collectionId: COLL,
+        spaceDescription: {
+          id: 'urn:uuid:a-different-space',
+          type: ['Space'],
+          controller: DID
+        } as never
+      })
+    ).rejects.toThrow(ValidationError)
+
+    // Caught before anything is provisioned: supplying the description skips
+    // the Space half, so the mismatch would leave `spaceId` unensured.
+    expect(space.describeCalls).toBe(0)
+    expect(space.configureCalls).toEqual([])
+    expect(space.collectionObj.configureCalls).toEqual([])
   })
 })

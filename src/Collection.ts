@@ -244,12 +244,25 @@ export class Collection {
    *   `encryption-immutable`)
    * @param [desc.force] {boolean}   proceed even when the current description
    *   is unreadable and `backend`/`encryption` are omitted (see above)
+   * @param [desc.current] {CollectionDescription | null}   the current
+   *   description, when the caller has already read it -- the merge and the
+   *   fail-closed check then run against this instead of a second `describe()`
+   *   round trip. `null` means the caller read it and found the collection
+   *   absent or unreadable, which is a supplied answer; omitting the member
+   *   entirely is what asks for the read. Supplying a description this
+   *   handle's own writes have since superseded would merge stale fields
+   *   forward -- dropping a `backend` or tripping `encryption-immutable` --
+   *   so pass only a read the caller itself made and has not written over
    * @returns {Promise<CollectionDescription>}
    */
   async configure(
-    desc: CollectionWritableFields & { force?: boolean }
+    desc: CollectionWritableFields & {
+      force?: boolean
+      current?: CollectionDescription | null
+    }
   ): Promise<CollectionDescription> {
-    const current = await this.describe()
+    const current =
+      desc.current !== undefined ? desc.current : await this.describe()
     if (
       current === null &&
       desc.backend === undefined &&

@@ -1,5 +1,26 @@
 # @interop/was-client Changelog
 
+## 0.45.0 - TBD
+
+### Added
+
+- `ensureSpace` (`/sync`): the Space half of `ensureSpaceAndCollection`, split
+  out so a caller provisioning several collections into one Space ensures it
+  once. Returns the Space Description, existing or just written.
+- `ensureSpaceAndCollection` takes an optional `spaceDescription`. Supplying the
+  description `ensureSpace` returned skips the Space half entirely; its `id`
+  must name the Space being provisioned, or it throws `ValidationError`.
+- `Space.configure` and `Collection.configure` take an optional `current`
+  description. The merge and the fail-closed unreadable-description check run
+  against it instead of a second `describe()` round trip. `null` is a supplied
+  answer (the caller read it and found the target absent or unreadable);
+  omitting the member is what asks for the read.
+
+### Changed
+
+- `ensureSpaceAndCollection` threads the description it reads into `configure`,
+  so provisioning a collection costs one describe rather than two.
+
 ## 0.44.5 - 2026-08-22
 
 ### Changed
@@ -20,8 +41,8 @@
   blinded-index collection now costs one `GET /meta` and one decrypt instead of
   two: `CodecHolder` hands the metadata snapshot its codec resolution already
   read to the call that triggered it. Later reads always fetch fresh. A
-  malformed (non-JSON) `/meta` response now throws `WasServerError` during
-  codec resolution instead of leaving the index schema silently empty.
+  malformed (non-JSON) `/meta` response now throws `WasServerError` during codec
+  resolution instead of leaving the index schema silently empty.
 
 ## 0.44.3 - 2026-08-22
 

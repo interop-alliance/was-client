@@ -135,6 +135,14 @@ export class Space {
    *   update the current description's `type` is re-sent unchanged
    * @param [desc.force] {boolean}   proceed even when the current description is
    *   unreadable and a full description is not supplied (see above)
+   * @param [desc.current] {SpaceDescription | null}   the current description,
+   *   when the caller has already read it -- the merge and the fail-closed
+   *   check then run against this instead of a second `describe()` round trip.
+   *   `null` means the caller read it and found the Space absent or
+   *   unreadable, which is a supplied answer; omitting the member entirely is
+   *   what asks for the read. Supplying a description this handle's own writes
+   *   have since superseded would merge stale fields forward, so pass only a
+   *   read the caller itself made and has not written over
    * @returns {Promise<SpaceDescription>}
    */
   async configure(desc: {
@@ -142,8 +150,10 @@ export class Space {
     controller?: string
     type?: string[]
     force?: boolean
+    current?: SpaceDescription | null
   }): Promise<SpaceDescription> {
-    const current = await this.describe()
+    const current =
+      desc.current !== undefined ? desc.current : await this.describe()
     if (
       current === null &&
       !desc.force &&

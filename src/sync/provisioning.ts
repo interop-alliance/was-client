@@ -16,11 +16,17 @@
  * (epoch-from-birth) -- is installed by the EDV-bearing second step,
  * `ensureFirstEpoch` in `@interop/was-client/edv`.
  */
+import type { SpaceDescription } from '../types.js'
 import type { WasClient } from '../WasClient.js'
 // A direct module import (not the `./edv` subpath entry), so the crypto-free
 // sync module does not pull the EDV crypto graph for one number.
 import { EDV_SCHEME_VERSION } from '../edv/constants.js'
-import { WasError } from '../errors.js'
+import { ValidationError, WasError } from '../errors.js'
+
+/**
+ * The Space display name applied at creation when the caller names none.
+ */
+const DEFAULT_SPACE_NAME = 'WAS Space'
 
 /**
  * Rethrows a failed provisioning step. A typed client error propagates
@@ -77,6 +83,14 @@ function rethrowProvisioningFailure(err: unknown, context: string): never {
  *   Space creation; defaults to `'WAS Space'`
  * @param [options.collectionName] {string}   the collection display name,
  *   applied only at collection creation; defaults to the collection id
+ * @param [options.spaceDescription] {SpaceDescription}   the Space's
+ *   description, when the caller has already ensured the Space (with
+ *   {@link ensureSpace}). Supplying it skips the Space half entirely, which is
+ *   what keeps a caller provisioning N collections from ensuring one Space N
+ *   times over; omit it and the Space is ensured here as before. Its `id` must
+ *   be `spaceId` -- a description of some other Space throws
+ *   `ValidationError`, since skipping the ensure would leave that Space
+ *   unprovisioned
  * @returns {Promise<void>}
  */
 export async function ensureSpaceAndCollection({
@@ -86,8 +100,9 @@ export async function ensureSpaceAndCollection({
   collectionId,
   encryption = 'edv',
   isPublic = false,
-  spaceName = 'WAS Space',
-  collectionName = collectionId
+  spaceName = DEFAULT_SPACE_NAME,
+  collectionName = collectionId,
+  spaceDescription
 }: {
   was: WasClient
   spaceId: string
@@ -97,17 +112,21 @@ export async function ensureSpaceAndCollection({
   isPublic?: boolean
   spaceName?: string
   collectionName?: string
+  spaceDescription?: SpaceDescription
 }): Promise<void> {
   const space = was.space(spaceId)
 
-  try {
-    if ((await space.describe()) === null) {
-      await space.configure({ name: spaceName, controller: controllerDid })
-    }
-  } catch (err) {
-    rethrowProvisioningFailure(
-      err,
-      `Failed to configure WAS space "${spaceId}" for "${controllerDid}".`
+  if (spaceDescription === undefined) {
+    await ensureSpace({ was, spaceId, controllerDid, spaceName })
+  } else if (spaceDescription.id !== spaceId) {
+    // Supplying a description skips the Space half entirely, so a caller
+    // holding descriptions for several Spaces that passes the wrong one
+    // provisions a collection into a Space this call never ensured. Caught
+    // here, that is a misuse with a name; caught later, it is an opaque
+    // collection-configure failure.
+    throw new ValidationError(
+      `Space description id "${spaceDescription.id}" does not name the space ` +
+        `being provisioned ("${spaceId}").`
     )
   }
 
@@ -119,9 +138,10 @@ export async function ensureSpaceAndCollection({
         encryption === 'edv'
           ? {
               name: collectionName,
+              current,
               encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION }
             }
-          : { name: collectionName, force: true }
+          : { name: collectionName, current, force: true }
       )
     } else if (encryption === 'edv' && current.encryption === undefined) {
       // The late in-place declaration: adding a descriptor to a collection
@@ -130,6 +150,7 @@ export async function ensureSpaceAndCollection({
       // exactly why an existing descriptor is never touched.
       await collection.configure({
         name: current.name ?? collectionName,
+        current,
         encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION }
       })
     }
@@ -140,6 +161,58 @@ export async function ensureSpaceAndCollection({
     rethrowProvisioningFailure(
       err,
       `Failed to configure collection "${collectionId}" in space "${spaceId}".`
+    )
+  }
+}
+
+/**
+ * Ensures the controller's Space exists, without overwriting anything already
+ * there -- the Space half of {@link ensureSpaceAndCollection}, split out so a
+ * caller provisioning SEVERAL collections into one Space pays for it once
+ * rather than once per collection. An existing Space keeps its name AND its
+ * controller, so `controllerDid` is used only at creation.
+ *
+ * Costs one `GET` on a settled Space, and one `GET` plus one `PUT` on a fresh
+ * one: the description read here is threaded into `configure`, which therefore
+ * does not re-read it.
+ *
+ * @param options {object}
+ * @param options.was {WasClient}
+ * @param options.spaceId {string}
+ * @param options.controllerDid {string}   the Space controller (e.g.
+ *   `did:key`); used only when the Space does not exist yet
+ * @param [options.spaceName] {string}   the Space display name, applied only at
+ *   Space creation; defaults to `'WAS Space'`
+ * @returns {Promise<SpaceDescription>}   the Space's description, existing or
+ *   just written -- pass it to {@link ensureSpaceAndCollection} as
+ *   `spaceDescription` so each collection skips the Space ensure
+ */
+export async function ensureSpace({
+  was,
+  spaceId,
+  controllerDid,
+  spaceName = DEFAULT_SPACE_NAME
+}: {
+  was: WasClient
+  spaceId: string
+  controllerDid: string
+  spaceName?: string
+}): Promise<SpaceDescription> {
+  const space = was.space(spaceId)
+  try {
+    const current = await space.describe()
+    if (current !== null) {
+      return current
+    }
+    return await space.configure({
+      name: spaceName,
+      controller: controllerDid,
+      current
+    })
+  } catch (err) {
+    rethrowProvisioningFailure(
+      err,
+      `Failed to configure WAS space "${spaceId}" for "${controllerDid}".`
     )
   }
 }
