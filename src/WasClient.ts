@@ -10,7 +10,7 @@
  * escape-hatch (`request`).
  */
 import { ZcapClient } from '@interop/ezcap'
-import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { EddsaJcs2022 } from '@interop/ed25519-signature'
 import type { HttpResponse } from '@interop/http-client'
 import {
   collectionItemsUrl,
@@ -84,7 +84,12 @@ export class WasClient {
 
   /**
    * Convenience constructor that builds the ezcap `ZcapClient` internally from
-   * a signer, using the `Ed25519Signature2020` suite.
+   * a signer, using the `eddsa-jcs-2022` suite for delegation proofs.
+   *
+   * The suite is fixed rather than an option: a caller who needs a different
+   * one builds the `ZcapClient` itself and passes it to the constructor.
+   * `eddsa-jcs-2022` canonicalizes with JCS, so delegating never runs URDNA2015
+   * and never needs a JSON-LD document loader to serve the suite's context.
    *
    * @param options {object}
    * @param options.serverUrl {string}
@@ -102,7 +107,7 @@ export class WasClient {
     encryption?: EncryptionProvider
   }): WasClient {
     const zcapClient = new ZcapClient({
-      SuiteClass: Ed25519Signature2020,
+      SuiteClass: EddsaJcs2022,
       invocationSigner: signer,
       delegationSigner: signer
     })

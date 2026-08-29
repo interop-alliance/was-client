@@ -89,7 +89,7 @@ generates a key pair and a matching DID document, wiring the signer's
 ```ts
 import { ZcapClient } from '@interop/ezcap'
 import * as didKey from '@interop/did-method-key'
-import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { EddsaJcs2022 } from '@interop/ed25519-signature'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
 
@@ -102,7 +102,7 @@ const { didDocument, keyPairs } = await didKeyDriver.generate()
 const zcapClient = new ZcapClient({
   didDocument,
   keyPairs,
-  SuiteClass: Ed25519Signature2020
+  SuiteClass: EddsaJcs2022
 })
 
 // 3. Wrap it.
@@ -110,9 +110,9 @@ const was = new WasClient({ serverUrl: 'https://was.example', zcapClient })
 ```
 
 If you already have a single signer, `WasClient.fromSigner()` builds the
-`ZcapClient` internally (using the `Ed25519Signature2020` suite). A signer is
-any object with `{ id, sign() }`; here we get one from a generated key. The
-signer's `id` must be a `did:key` so the server can resolve and verify it:
+`ZcapClient` internally (using the `eddsa-jcs-2022` suite). A signer is any
+object with `{ id, sign() }`; here we get one from a generated key. The signer's
+`id` must be a `did:key` so the server can resolve and verify it:
 
 ```ts
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -138,6 +138,19 @@ required, just a common alternative.)
 `serverUrl` is the base for both URL building and zcap `invocationTarget`s, so
 the "server URL must equal the invocation target host:port" constraint holds by
 construction.
+
+### The delegation-proof suite
+
+Delegation proofs are signed with `eddsa-jcs-2022`. That cryptosuite
+canonicalizes with JCS (RFC 8785), which is plain JSON, so delegating runs no
+JSON-LD canonicalization and needs no document loader to serve the suite's
+context at signing time. Invocations are unaffected -- those ride HTTP
+signatures, not proofs.
+
+The server has to verify `eddsa-jcs-2022` for grants from this client to be
+accepted. A server that verifies both it and the older `Ed25519Signature2020`
+accepts chains whose links mix the two, which is what a fleet upgrading at its
+own pace produces.
 
 ### The handle model
 

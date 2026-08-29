@@ -12,14 +12,14 @@ importers:
         specifier: ^8.7.1
         version: 8.7.1
       '@interop/ed25519-signature':
-        specifier: ^7.1.4
-        version: 7.1.4(@interop/jsonld-signatures@11.8.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@interop/jsonld-signatures@11.8.5)
       '@interop/edv-client':
         specifier: ^17.8.1
         version: 17.8.1
       '@interop/ezcap':
-        specifier: ^7.4.4
-        version: 7.4.4
+        specifier: ^7.4.5
+        version: 7.4.5
       '@interop/http-client':
         specifier: ^1.0.5
         version: 1.0.5
@@ -48,9 +48,18 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.9.0(supports-color@7.2.0))
+      '@interop/data-integrity-proof':
+        specifier: 3.4.5
+        version: 3.4.5
       '@interop/ed25519-verification-key':
         specifier: ^8.0.4
         version: 8.0.4
+      '@interop/jsonld-signatures':
+        specifier: 11.8.5
+        version: 11.8.5
+      '@interop/zcap':
+        specifier: 11.1.0
+        version: 11.1.0
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.62.1
@@ -202,8 +211,8 @@ packages:
       '@interop/jsonld-signatures':
         optional: true
 
-  '@interop/ed25519-signature@7.1.4':
-    resolution: {integrity: sha512-HYACWkTc4iz5QFdC/hci4fpT/+jbuer3/TuiTq4GFHUrIEI28Wgde8UramYmvNL3sOZjYKjClAyNQJcW+O4Vkg==}
+  '@interop/ed25519-signature@7.2.0':
+    resolution: {integrity: sha512-itcYilt1LH0xp+j/p9egUn9a2lwqkOIAhRRg+GKF1hHidexnhcErOlly79l/wMvQKAVfFNCUwnbdrPvw3svxQA==}
     engines: {node: '>=24.0'}
     peerDependencies:
       '@interop/jsonld-signatures': ^11.7.1
@@ -229,8 +238,8 @@ packages:
       react-native-get-random-values:
         optional: true
 
-  '@interop/ezcap@7.4.4':
-    resolution: {integrity: sha512-SwAmHaqq0Cg1IOhre/+UKcbLukB4brgqbJPPr908UKlwjwkCBf3T6DTFU8Sr2Ukuk/WskxPmBgWw8BNXLJuDPw==}
+  '@interop/ezcap@7.4.5':
+    resolution: {integrity: sha512-jSfK1JwuH+3csuY+VOXqzJUde8QOB3LpMlqEsC/c+CFVi8WWX1fGxg514bYq8469QJFYjayu+j3Do4BKqb14wg==}
     engines: {node: '>=20.0'}
 
   '@interop/http-client@1.0.5':
@@ -1328,7 +1337,7 @@ snapshots:
     optionalDependencies:
       '@interop/jsonld-signatures': 11.8.5
 
-  '@interop/ed25519-signature@7.1.4(@interop/jsonld-signatures@11.8.5)':
+  '@interop/ed25519-signature@7.2.0(@interop/jsonld-signatures@11.8.5)':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/data-integrity-proof': 3.4.5
@@ -1363,7 +1372,7 @@ snapshots:
     transitivePeerDependencies:
       - expo-crypto
 
-  '@interop/ezcap@7.4.4':
+  '@interop/ezcap@7.4.5':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/data-integrity-proof': 3.4.5

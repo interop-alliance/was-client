@@ -1,5 +1,33 @@
 # @interop/was-client Changelog
 
+## 0.46.0 - TBD
+
+### Changed
+
+- `WasClient.fromSigner` signs delegation proofs with `eddsa-jcs-2022`
+  (`EddsaJcs2022`) instead of `Ed25519Signature2020`. JCS canonicalization is
+  plain JSON, so delegating no longer runs URDNA2015 and no longer needs a
+  JSON-LD document loader to serve the suite's context at signing time.
+  Invocations are unaffected -- they ride HTTP signatures, not proofs.
+- The README's hand-built `ZcapClient` example passes `EddsaJcs2022` as its
+  `SuiteClass`, matching what `fromSigner` does.
+
+### Notes
+
+- The suite is fixed rather than a `fromSigner` option. A caller needing a
+  different one builds the `ZcapClient` and passes it to the constructor, which
+  is the primary form.
+- A server must verify `eddsa-jcs-2022` before a client on this version reaches
+  it. Verifying both suites is what lets a chain mix them across its links,
+  which a fleet upgrading at its own pace produces.
+- One transition direction does not work on default settings: a client still on
+  `Ed25519Signature2020` cannot re-delegate a JCS-signed parent, because
+  URDNA2015 expands the parent embedded in `proof.capabilityChain` and neither
+  ezcap's auto-loader branch nor jsigs' strict loader serves the data-integrity
+  context. It fails at signing time on that client, before any server sees the
+  chain. The fix is on the old client -- a loader that serves that context, or
+  the suite bump. `test/node/delegation-suite.test.ts` pins it.
+
 ## 0.45.0 - 2026-08-28
 
 ### Added

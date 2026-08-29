@@ -587,44 +587,41 @@ on rather than as a fourth hand-rolled one.
 - labels: testing, provisioning, ci
 - discovered-from: freewallet FW-384's CI failure (2026-08-29)
 - acceptance:
-  - [ ] `test/integration/` covers `ensureSpace` and
-        `ensureSpaceAndCollection` against a real server, including the
-        already-provisioned second pass
-  - [ ] The description that test threads comes from `ensureSpace`'s own
-        return rather than a hand-written literal
-  - [ ] `test:integration` runs in CI, or the reason it cannot is recorded
-        here
+  - [ ] `test/integration/` covers `ensureSpace` and `ensureSpaceAndCollection`
+        against a real server, including the already-provisioned second pass
+  - [ ] The description that test threads comes from `ensureSpace`'s own return
+        rather than a hand-written literal
+  - [ ] `test:integration` runs in CI, or the reason it cannot is recorded here
 
-Context: the integration tier exists and covers ten files, but it runs
-against a server the developer starts by hand (`TEST_SERVER_URL`, absent
-means `describe.skip`), appears in no CI workflow, and is documented nowhere
-outside the test file headers. It also does not touch provisioning at all:
-`ensureSpace` appears in exactly one test file in the repo, the fakes tier.
+Context: the integration tier exists and covers ten files, but it runs against a
+server the developer starts by hand (`TEST_SERVER_URL`, absent means
+`describe.skip`), appears in no CI workflow, and is documented nowhere outside
+the test file headers. It also does not touch provisioning at all: `ensureSpace`
+appears in exactly one test file in the repo, the fakes tier.
 
 That combination let a real divergence through. `ensureSpaceAndCollection`
-refuses a supplied `spaceDescription` whose `id` does not name the Space
-being provisioned, and `ensureSpace` returns the served description verbatim
-on its existing-Space path. So the guard depends on a member only a real
-server supplies. The fakes tier tested the two halves separately, each
-against its own hand-written description -- one of which carried no `id`, and
-the one that did threaded a literal with an `as never` cast at exactly the
-join where the type system would have objected. The seam was covered twice
-and never once end to end. (The joined case now exists, added 2026-08-29;
-what is still missing is a real server supplying the description.)
+refuses a supplied `spaceDescription` whose `id` does not name the Space being
+provisioned, and `ensureSpace` returns the served description verbatim on its
+existing-Space path. So the guard depends on a member only a real server
+supplies. The fakes tier tested the two halves separately, each against its own
+hand-written description -- one of which carried no `id`, and the one that did
+threaded a literal with an `as never` cast at exactly the join where the type
+system would have objected. The seam was covered twice and never once end to
+end. (The joined case now exists, added 2026-08-29; what is still missing is a
+real server supplying the description.)
 
-A live-server test is what pins "a served description always carries `id`".
-No fake can assert that about a server, and this repo is where the guard
-lives.
+A live-server test is what pins "a served description always carries `id`". No
+fake can assert that about a server, and this repo is where the guard lives.
 
-The CI half is the larger point. Three live-server tiers exist across this
-repo, freewallet, and freewallet's e2e, and none of them runs in any
-workflow. A tier that runs when someone remembers catches nothing. The
-server publishes to npm and exports `createApp` / `FileSystemBackend`, and
-its own suite already boots it in-process on port 0
-(`was-teaching-server/test/helpers.ts`), so an in-process boot is available
-here too and would remove the `TEST_SERVER_URL` handshake. Weigh the licence
-edge first: the server is AGPL-3.0-or-later and this package is MIT, so a
-test-only devDependency needs a deliberate call rather than a default.
+The CI half is the larger point. Three live-server tiers exist across this repo,
+freewallet, and freewallet's e2e, and none of them runs in any workflow. A tier
+that runs when someone remembers catches nothing. The server publishes to npm
+and exports `createApp` / `FileSystemBackend`, and its own suite already boots
+it in-process on port 0 (`was-teaching-server/test/helpers.ts`), so an
+in-process boot is available here too and would remove the `TEST_SERVER_URL`
+handshake. Weigh the licence edge first: the server is AGPL-3.0-or-later and
+this package is MIT, so a test-only devDependency needs a deliberate call rather
+than a default.
 
 Siblings, each owning its own repo's half: wallet-core WC-152, freewallet
 FW-392.
@@ -678,6 +675,15 @@ FW-392.
   the narrower target as an attenuated `invocationTarget`, so every such chain
   is revocable at the Space's revocation endpoint. Re-delegation and non-Space
   targets (`/kms`, other origins) are unaffected.
+- **The delegation-proof suite is fixed at `eddsa-jcs-2022`, not an option.**
+  `fromSigner` hard-codes `EddsaJcs2022`; the rejected alternative was threading
+  a `SuiteClass` option through it. The primary constructor already takes a
+  caller-built `ZcapClient`, so the escape hatch exists without a second one,
+  and a knob on the convenience constructor is one whose wrong setting is an
+  interop failure a caller only discovers at the server. Scoped by freewallet
+  FW-395, which also carries the condition under which the server drops
+  `Ed25519Signature2020` from its verify side; this repo signs one suite and
+  states no removal condition of its own.
 - **`updateIndex` deliberately throws.** In the `blinded-index` profile the
   `indexed` array rides inside the stored envelope, so `update()` IS the
   re-index operation -- there is no `/{id}/index` endpoint to bind.
