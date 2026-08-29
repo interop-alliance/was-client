@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.46.1 - TBD
+
+### Changed
+
+- Import `EddsaJcs2022` from `@interop/ed25519-signature/eddsa-jcs-2022` rather
+  than the package root (removes `@interop/jsonld`, `rdf-canonize`, and context
+  weight).
+
 ## 0.46.0 - 2026-08-29
 
 ### Changed

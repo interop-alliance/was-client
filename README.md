@@ -89,7 +89,7 @@ generates a key pair and a matching DID document, wiring the signer's
 ```ts
 import { ZcapClient } from '@interop/ezcap'
 import * as didKey from '@interop/did-method-key'
-import { EddsaJcs2022 } from '@interop/ed25519-signature'
+import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
 

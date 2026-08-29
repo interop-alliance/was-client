@@ -10,7 +10,7 @@
  * escape-hatch (`request`).
  */
 import { ZcapClient } from '@interop/ezcap'
-import { EddsaJcs2022 } from '@interop/ed25519-signature'
+import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import type { HttpResponse } from '@interop/http-client'
 import {
   collectionItemsUrl,
