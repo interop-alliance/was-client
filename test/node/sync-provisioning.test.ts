@@ -418,7 +418,14 @@ describe('ensureSpace', () => {
   })
 
   it('returns an existing description without writing anything', async () => {
-    const current = { name: 'Wallet Space', controller: 'did:webvh:other' }
+    // `id` is not decoration: every server write path stamps it from the URL
+    // segment, so a served description always carries it -- and it is what
+    // `ensureSpaceAndCollection` checks the threaded description against.
+    const current = {
+      id: SPACE,
+      name: 'Wallet Space',
+      controller: 'did:webvh:other'
+    }
     const space = new FakeSpace({ current })
     const was = new FakeWas(space)
     const description = await ensureSpace({
@@ -448,6 +455,57 @@ describe('ensureSpace', () => {
 })
 
 describe('ensureSpaceAndCollection with a supplied space description', () => {
+  it('accepts what ensureSpace returned, on both of its paths', async () => {
+    // The two functions are halves of one seam, so assert them joined rather
+    // than only side by side: whatever `ensureSpace` hands back must satisfy
+    // `ensureSpaceAndCollection`'s check. Testing each half against its own
+    // hand-written description is what let an id-less fixture pass while the
+    // join would have thrown.
+    for (const current of [
+      null,
+      { id: SPACE, name: 'Wallet Space', controller: 'did:webvh:other' }
+    ]) {
+      const space = new FakeSpace({ current })
+      const was = new FakeWas(space)
+      const spaceDescription = await ensureSpace({
+        was: was.asClient(),
+        spaceId: SPACE,
+        controllerDid: DID
+      })
+      await ensureSpaceAndCollection({
+        was: was.asClient(),
+        spaceId: SPACE,
+        controllerDid: DID,
+        collectionId: COLL,
+        spaceDescription
+      })
+      // One describe from the ensure, none from the collection branch.
+      expect(space.describeCalls).toBe(1)
+    }
+  })
+
+  it('refuses a description naming another space', async () => {
+    const space = new FakeSpace()
+    const was = new FakeWas(space)
+    await expect(
+      ensureSpaceAndCollection({
+        was: was.asClient(),
+        spaceId: SPACE,
+        controllerDid: DID,
+        collectionId: COLL,
+        spaceDescription: {
+          id: 'space-somewhere-else',
+          type: ['Space'],
+          controller: DID
+        } as never
+      })
+    ).rejects.toMatchObject({
+      name: 'ValidationError',
+      message: expect.stringContaining('space-somewhere-else')
+    })
+    expect(space.describeCalls).toBe(0)
+  })
+
   it('skips the space half entirely', async () => {
     const space = new FakeSpace()
     const was = new FakeWas(space)
