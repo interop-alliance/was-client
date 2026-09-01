@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.46.2 - TBD
+
+### Added
+
+- `KeyUnwrapError` is exported from the `/edv` subpath, beside the
+  `UnknownEpochError` it is dispatched against. The two are what a caller
+  scanning rows tells apart -- an epoch the descriptor does not list at all
+  versus one it lists but this reader holds no key for -- and only the second
+  was reachable from the subpath that ships the cipher raising them, so a
+  consumer had to import half the pair from the package root.
+
 ## 0.46.1 - 2026-08-29
 
 ### Changed

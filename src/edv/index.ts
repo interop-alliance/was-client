@@ -41,6 +41,17 @@
  * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a
  * recipient key is always derived from an identifier both sides already hold
  * rather than transmitted.
+ *
+ * A decrypt that finds no key raises one of two classes, and a caller scanning
+ * rows must tell them apart: `UnknownEpochError` when the envelope's epoch is
+ * not on the descriptor the reader holds (a re-read may fix it) and
+ * `KeyUnwrapError` when the epoch IS listed but this reader has no key for it
+ * (never a recipient, or removed and the epoch rotated since -- re-reading
+ * cannot help). Both ship from this subpath beside the cipher that raises
+ * them, so a consumer classifying what a cipher threw need not reach for the
+ * package root. Both assign their `name` explicitly, and a consumer whose
+ * cipher arrives through an injected seam should match on that name rather
+ * than `instanceof`: the seam may resolve to a second copy of this package.
  */
 export {
   createEdvEncryption,
@@ -88,6 +99,7 @@ export {
   createEdvEncryptOnlyDocCipher,
   ownerRecipient,
   EncryptOnlyCipherError,
+  KeyUnwrapError,
   UnknownEpochError,
   isEncryptedEnvelope
 } from './docCipher.js'

@@ -32,6 +32,7 @@ import {
   createEdvEncryption,
   ownerRecipient,
   EncryptOnlyCipherError,
+  KeyUnwrapError,
   UnknownEpochError,
   isEncryptedEnvelope
 } from '../../src/edv/index.js'
@@ -662,6 +663,19 @@ describe('ownerRecipient', () => {
         keyAgreementKey: { id: 'did:key:zX#kak' } as unknown as IKeyAgreementKey
       })
     ).toThrow(/publicKeyMultibase/)
+  })
+})
+
+describe('the decrypt refusals', () => {
+  it('both reach a consumer from this subpath, beside the cipher', () => {
+    // The pair is what a caller scanning rows dispatches on, so both ship
+    // from `/edv` rather than one here and its sibling at the package root.
+    // Each assigns its `name` explicitly, which is the contract a consumer
+    // whose cipher arrives through an injected seam matches on.
+    expect(new UnknownEpochError({ collectionId: 'c', kids: [] }).name).toBe(
+      'UnknownEpochError'
+    )
+    expect(new KeyUnwrapError('no key').name).toBe('KeyUnwrapError')
   })
 })
 
