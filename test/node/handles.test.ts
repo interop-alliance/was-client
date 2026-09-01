@@ -9,12 +9,14 @@
  */
 import { describe, it, expect } from 'vitest'
 
+import type { HttpResponse } from '@interop/http-client'
 import {
   WasClient,
   Space,
   Collection,
   Resource,
-  ValidationError
+  ValidationError,
+  AuthRequiredError
 } from '../../src/index.js'
 
 /**
@@ -148,5 +150,88 @@ describe('fromCapability', () => {
         invocationTarget: 'https://was.example/space/s/policy'
       } as never)
     ).toThrow(/sub-resource/)
+  })
+})
+
+interface RequestArgs {
+  url?: string
+  method?: string
+  action?: string
+  json?: unknown
+  capability?: unknown
+}
+
+/**
+ * Builds a `WasClient` over a stub `ZcapClient` that records the most recent
+ * `request(...)` call and either returns a canned 2xx response or throws an
+ * error carrying the given HTTP status (so `mapError` sees a real status).
+ *
+ * @param options {object}
+ * @param [options.fail] {number}   an HTTP status to throw instead of
+ *   succeeding
+ * @returns {object} { client, lastRequest }
+ */
+function clientWithRequestSpy({ fail }: { fail?: number } = {}): {
+  client: WasClient
+  lastRequest: () => RequestArgs | undefined
+} {
+  let captured: RequestArgs | undefined
+  const zcapClient = {
+    invocationSigner: { id: 'did:example:alice#key-1' },
+    async request(args: RequestArgs) {
+      captured = args
+      if (fail !== undefined) {
+        throw { status: fail, response: { status: fail } }
+      }
+      return {
+        status: 204,
+        headers: new Headers(),
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
+    }
+  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  return { client, lastRequest: () => captured }
+}
+
+describe('Space.deleteWithOutcome / delete', () => {
+  it('deleteWithOutcome() resolves { outcome: "deleted" } on a 2xx response', async () => {
+    const { client, lastRequest } = clientWithRequestSpy()
+    const capability = { id: 'urn:zcap:delete-only' } as never
+    const result = await client
+      .space('s', { capability })
+      .deleteWithOutcome()
+    expect(result).toEqual({ outcome: 'deleted' })
+    const req = lastRequest()
+    expect(req?.url).toBe('https://was.example/space/s')
+    expect(req?.method).toBe('DELETE')
+    expect(req?.capability).toBe(capability)
+  })
+
+  it('deleteWithOutcome() resolves { outcome: "not-found" } on a 404, without throwing', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    const result = await client.space('s').deleteWithOutcome()
+    expect(result).toEqual({ outcome: 'not-found' })
+  })
+
+  it('deleteWithOutcome() rethrows the mapped WasError for a non-404 status', async () => {
+    const { client: clientForServerError } = clientWithRequestSpy({
+      fail: 500
+    })
+    await expect(
+      clientForServerError.space('s').deleteWithOutcome()
+    ).rejects.toThrow()
+
+    const { client: clientForForbidden } = clientWithRequestSpy({ fail: 403 })
+    await expect(
+      clientForForbidden.space('s').deleteWithOutcome()
+    ).rejects.toBeInstanceOf(AuthRequiredError)
+  })
+
+  it('delete() still resolves void on a 404 (idempotent, regression pin)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    await expect(client.space('s').delete()).resolves.toBeUndefined()
   })
 })

@@ -1,5 +1,17 @@
 # @interop/was-client Changelog
 
+## 0.47.0 - TBD
+
+### Added
+
+- `Space.deleteWithOutcome()`, beside the unchanged `Space.delete()`. It sends
+  the same `DELETE /space/{id}` under the capability the handle was opened
+  with, but reports `{ outcome: 'deleted' | 'not-found' }` instead of
+  resolving void: a 404 is reported as `'not-found'` rather than swallowed as
+  an idempotent success. Other errors still throw the mapped `WasError`. For a
+  caller running a deletion ceremony that needs to know whether the request
+  removed anything.
+
 ## 0.46.2 - 2026-09-01
 
 ### Added

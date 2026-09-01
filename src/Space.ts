@@ -3,7 +3,7 @@
  */
 /**
  * A navigational handle to a Space. Exposes its own lifecycle
- * (`describe`/`configure`/`delete`), contained Collections
+ * (`describe`/`configure`/`delete`/`deleteWithOutcome`), contained Collections
  * (`collection`/`createCollection`/`collections`), delegation (`grant`), and
  * whole-space `export`/`import`.
  */
@@ -36,7 +36,7 @@ import {
   walkPagesOrEmpty
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
-import { WasServerError } from './errors.js'
+import { NotFoundError, WasServerError } from './errors.js'
 import { createdId, dataOrNull, toPlainBytes } from './internal/content.js'
 import {
   readPolicy,
@@ -207,6 +207,36 @@ export class Space {
       capability: this.#capability,
       idempotent: true
     })
+  }
+
+  /**
+   * Deletes the space and reports the server's answer instead of treating a
+   * 404 as success. `delete()` is the idempotent form; this one exists for a
+   * caller that must know whether the DELETE actually removed anything. The
+   * server answers 404 both for an absent Space and for an unauthorized
+   * capability, so `'not-found'` means "absent or refused" and only a caller
+   * with its own prior discovery may read it as absence.
+   *
+   * The capability is the one the handle was opened with
+   * (`was.space(id, { capability })`), so a delegated DELETE-only capability
+   * is supplied by opening the handle with it.
+   *
+   * @returns {Promise<{ outcome: 'deleted' | 'not-found' }>}
+   */
+  async deleteWithOutcome(): Promise<{ outcome: 'deleted' | 'not-found' }> {
+    try {
+      await send(this.#context, {
+        path: this.#path,
+        method: 'DELETE',
+        capability: this.#capability
+      })
+    } catch (err) {
+      if (err instanceof NotFoundError) {
+        return { outcome: 'not-found' }
+      }
+      throw err
+    }
+    return { outcome: 'deleted' }
   }
 
   /**

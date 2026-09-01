@@ -200,6 +200,12 @@ const desc = await space.describe() // { id, type: ['Space'], name, controller }
 await space.configure({ name: 'Home (renamed)' })
 
 await space.delete() // idempotent
+
+// Need to know whether the DELETE actually removed anything, rather than
+// treating a 404 as success? `deleteWithOutcome()` reports
+// `{ outcome: 'deleted' | 'not-found' }` -- 'not-found' means absent or
+// refused, since the server answers 404 for both.
+const { outcome } = await space.deleteWithOutcome()
 ```
 
 List the spaces in the repository visible to your signer with
@@ -998,7 +1004,8 @@ on that kind first and falls back to the HTTP status -- so, for example, a 409
 `id-conflict` from `createSpace({ id })` is catchable as a `ConflictError`, and
 a 507 `quota-exceeded` (a client-actionable storage-full condition, not a server
 fault) as a `QuotaExceededError`. `delete()` additionally treats a 404 as
-success, so it is idempotent.
+success, so it is idempotent; `Space.deleteWithOutcome()` reports that outcome
+instead, as `{ outcome: 'not-found' }`, rather than swallowing it.
 
 Spec endpoints a given server has not yet implemented surface as
 `NotImplementedError` (the server's 501).

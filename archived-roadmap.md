@@ -818,3 +818,35 @@ the codec and feeds its own freshly-read `custom` to the indexing seam. The
 consume-once variant is behavior-preserving; any variant that keeps the snapshot
 alive past the first read would start returning stale metadata, which is the
 trap to avoid when picking this up.
+
+---
+
+### WCL-35: Space delete that reports its 404 as an outcome
+
+- status: done 2026-09-01
+- priority: medium
+- labels: space, errors, api
+- discovered-from: freewallet FW-403 (Space deletion through a ladder-signed
+  DELETE-only delegation)
+- acceptance:
+  - [x] `Space.deleteWithOutcome()` added beside `delete()`; `delete()` is
+        unchanged
+  - [x] A 404 is reported as `{ outcome: 'not-found' }`; other errors still
+        throw the mapped `WasError`
+  - [x] Unit tests cover both outcomes
+  - [x] README documents the new method
+
+A caller running a deletion ceremony must know whether the DELETE actually
+removed anything. The server answers 404 both for an absent Space and for a
+capability it refuses. `deleteWithOutcome()` reports that 404 as
+`{ outcome: 'not-found' }`, which reads as absent or refused. Only a caller
+with its own prior discovery can read it as absence.
+
+It ships as a new method rather than a changed `delete()` return type.
+Existing consumers keep working unchanged -- the conformance suite calls
+`space.delete()` in seven suites.
+
+Cross-repo context: this is was-client's part of freewallet's FW-403 (Space
+deletion through a ladder-signed DELETE-only delegation). wallet-core's
+`deleteSpaceWithCapability` currently goes through the raw `was.request()`
+escape hatch and can switch to the new method as a follow-up in that repo.
