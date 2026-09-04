@@ -124,10 +124,10 @@ export function formatEtag(version: number): string {
  * Parses a quoted strong `ETag` (`"3"`) into its numeric revision, or
  * `undefined` when the header is absent or non-numeric (no such revision yet).
  *
- * @param etag {string | null}
+ * @param etag {string | null | undefined}
  * @returns {number | undefined}
  */
-export function parseEtag(etag: string | null): number | undefined {
+export function parseEtag(etag: string | null | undefined): number | undefined {
   if (!etag) {
     return undefined
   }
@@ -215,7 +215,7 @@ export function createWasSyncPort({
       throw err
     }
     return {
-      version: parseEtag(readEtag(response) ?? null) ?? 0,
+      version: parseEtag(readEtag(response)) ?? 0,
       updatedAt: UNKNOWN_UPDATED_AT,
       data: response.data as Json
     }
@@ -226,7 +226,7 @@ export function createWasSyncPort({
     response: HttpResponse,
     id: string
   ): Promise<number> => {
-    const version = parseEtag(readEtag(response) ?? null)
+    const version = parseEtag(readEtag(response))
     if (version !== undefined) {
       return version
     }
@@ -307,9 +307,7 @@ export function createWasSyncPort({
           json: custom === undefined ? {} : { custom },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
-        // `readEtag` reports an absent header as `undefined`; `parseEtag` reads
-        // the `null` spelling of the same thing.
-        return parseEtag(readEtag(response) ?? null)
+        return parseEtag(readEtag(response))
       } catch (err) {
         mapWriteError(err, { authErrors: mapAuthErrors })
       }
@@ -371,7 +369,7 @@ export function createWasSyncPort({
       if (metaBody?.custom !== undefined) {
         master.custom = metaBody.custom
       }
-      const metaVersion = parseEtag(readEtag(meta.response) ?? null)
+      const metaVersion = parseEtag(readEtag(meta.response))
       if (metaVersion !== undefined) {
         master.metaVersion = metaVersion
       }

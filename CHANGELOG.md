@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.47.1 - TBD
+
+### Changed
+
+- Run escrow crypto concurrently and dedupe small helpers.
+
 ## 0.47.0 - 2026-09-01
 
 ### Added

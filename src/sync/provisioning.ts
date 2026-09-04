@@ -29,6 +29,12 @@ import { ValidationError, WasError } from '../errors.js'
 const DEFAULT_SPACE_NAME = 'WAS Space'
 
 /**
+ * The encryption descriptor declared on a fresh (or not yet encrypted)
+ * collection when the caller asks for `encryption: 'edv'`.
+ */
+const EDV_DESCRIPTOR = { scheme: 'edv', version: EDV_SCHEME_VERSION } as const
+
+/**
  * Rethrows a failed provisioning step. A typed client error propagates
  * UNCHANGED, because what a caller does next depends on which one it is: an
  * `AuthRequiredError` (a revoked or expired grant) means stop retrying and
@@ -139,7 +145,7 @@ export async function ensureSpaceAndCollection({
           ? {
               name: collectionName,
               current,
-              encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION }
+              encryption: EDV_DESCRIPTOR
             }
           : { name: collectionName, current, force: true }
       )
@@ -151,7 +157,7 @@ export async function ensureSpaceAndCollection({
       await collection.configure({
         name: current.name ?? collectionName,
         current,
-        encryption: { scheme: 'edv', version: EDV_SCHEME_VERSION }
+        encryption: EDV_DESCRIPTOR
       })
     }
     if (isPublic && !(await collection.isPublic())) {

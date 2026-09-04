@@ -94,44 +94,54 @@ export function resourceLogStore({
       const separator = lastReadBody.endsWith('\n') ? '' : '\n'
       const extended =
         lastReadBody + separator + serializeResourceLogEntry(entry) + '\n'
-      try {
-        await resource.put(ENCODER.encode(extended), {
-          contentType: LOG_CONTENT_TYPE,
-          ifMatch
-        })
-      } catch (err) {
-        // However the 412 was minted (problem type or status fallback), and
-        // including the WasSyncConflictError subtype, it is the port's CAS
-        // conflict, not an error: the library's rebase loop re-reads,
-        // re-verifies, and retries on it.
-        if (err instanceof PreconditionFailedError) {
-          throw new ResourceLogConflictError(
-            'Resource-log append lost its compare-and-swap: the validator ' +
-              'is stale.',
-            { cause: err }
-          )
-        }
-        throw err
-      }
+      await putOrConflict({
+        body: extended,
+        options: { ifMatch },
+        conflict:
+          'Resource-log append lost its compare-and-swap: the validator ' +
+          'is stale.'
+      })
       lastReadBody = extended
     },
     async create(entry) {
-      try {
-        await resource.put(ENCODER.encode(serializeResourceLog([entry])), {
-          contentType: LOG_CONTENT_TYPE,
-          ifNoneMatch: true
-        })
-      } catch (err) {
-        if (err instanceof PreconditionFailedError) {
-          throw new ResourceLogConflictError(
-            'Resource-log create lost its guarded-create race: the log ' +
-              'already exists.',
-            { cause: err }
-          )
-        }
-        throw err
+      const serialized = serializeResourceLog([entry])
+      await putOrConflict({
+        body: serialized,
+        options: { ifNoneMatch: true },
+        conflict:
+          'Resource-log create lost its guarded-create race: the log ' +
+          'already exists.'
+      })
+      lastReadBody = serialized
+    }
+  }
+
+  /**
+   * Writes the log body under the given precondition, translating a 412 into
+   * a {@link ResourceLogConflictError}. However the 412 was minted (problem
+   * type or status fallback), and including the WasSyncConflictError subtype,
+   * it is the port's CAS conflict, not an error: the library's rebase loop
+   * re-reads, re-verifies, and retries on it.
+   */
+  async function putOrConflict({
+    body,
+    options,
+    conflict
+  }: {
+    body: string
+    options: { ifMatch?: string; ifNoneMatch?: true }
+    conflict: string
+  }): Promise<void> {
+    try {
+      await resource.put(ENCODER.encode(body), {
+        contentType: LOG_CONTENT_TYPE,
+        ...options
+      })
+    } catch (err) {
+      if (err instanceof PreconditionFailedError) {
+        throw new ResourceLogConflictError(conflict, { cause: err })
       }
-      lastReadBody = serializeResourceLog([entry])
+      throw err
     }
   }
 }

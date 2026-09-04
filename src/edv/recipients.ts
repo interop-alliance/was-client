@@ -53,7 +53,8 @@ import {
   didKeyResolver,
   mintEpoch,
   unwrapEpochSecret,
-  wrapEpochSecret
+  wrapEpochSecret,
+  wrapEpochSecretTo
 } from './epochCrypto.js'
 import { pickEpoch } from './epochRoster.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
@@ -158,9 +159,7 @@ async function escrowInto({
   }
   return [
     ...roster,
-    ...(await Promise.all(
-      missing.map(recipient => wrapEpochSecret({ epochSecret, recipient }))
-    ))
+    ...(await wrapEpochSecretTo({ epochSecret, recipients: missing }))
   ]
 }
 
@@ -313,11 +312,7 @@ async function mintHmacRoster({
   return {
     id,
     type,
-    recipients: await Promise.all(
-      recipients.map(recipient =>
-        wrapEpochSecret({ epochSecret: secret, recipient })
-      )
-    )
+    recipients: await wrapEpochSecretTo({ epochSecret: secret, recipients })
   }
 }
 
@@ -420,11 +415,7 @@ async function mintFirstEpoch({
   const { epochId, secret } = preminted ?? (await mintEpoch())
   return {
     id: epochId,
-    recipients: await Promise.all(
-      recipients.map(recipient =>
-        wrapEpochSecret({ epochSecret: secret, recipient })
-      )
-    )
+    recipients: await wrapEpochSecretTo({ epochSecret: secret, recipients })
   }
 }
 
@@ -515,10 +506,13 @@ export async function ensureFirstEpoch({
         return null
       }
       installed = true
-      staged ??= (async () => ({
-        epoch: await mintFirstEpoch({ recipients }),
-        ...(blindedIndex && { hmac: await mintHmacRoster({ recipients }) })
-      }))()
+      staged ??= (async () => {
+        const [epoch, hmac] = await Promise.all([
+          mintFirstEpoch({ recipients }),
+          blindedIndex ? mintHmacRoster({ recipients }) : undefined
+        ])
+        return { epoch, ...(hmac && { hmac }) }
+      })()
       const { epoch, hmac } = await staged
       return withFirstEpoch({ descriptor: current, epoch, hmac })
     }
@@ -651,21 +645,23 @@ export async function addRecipient({
             'initRecipients first.'
         )
       }
-      const { epochs: nextEpochs } = await escrowIntoEpochs({
-        epochs,
-        recipients: [recipient],
-        owner,
-        operation: 'addRecipient'
-      })
       // The blinded-index key rides the same compare-and-swap write as the
       // epoch escrow -- never a second write. `null` means unchanged (no key,
       // or this recipient already has an entry).
-      const nextHmac = await escrowIntoHmac({
-        hmac: current.hmac,
-        recipients: [recipient],
-        owner,
-        operation: 'addRecipient'
-      })
+      const [{ epochs: nextEpochs }, nextHmac] = await Promise.all([
+        escrowIntoEpochs({
+          epochs,
+          recipients: [recipient],
+          owner,
+          operation: 'addRecipient'
+        }),
+        escrowIntoHmac({
+          hmac: current.hmac,
+          recipients: [recipient],
+          owner,
+          operation: 'addRecipient'
+        })
+      ])
       return {
         ...current,
         epochs: nextEpochs,
@@ -837,34 +833,34 @@ async function rotateOffRecipients({
       // compare across the collection's whole history), so a removed recipient
       // keeps the blinding key it already holds -- an accepted revocation
       // asymmetry. Only a replacement has an incoming half to escrow.
-      const escrowedHmac =
-        escrow && operation === 'replaceRecipient'
-          ? await escrowIntoHmac({
+      // Each incoming reader is also escrowed into every epoch it is missing
+      // from (addRecipient's escrow, so the whole replacement is one write).
+      // The two escrows are independent, so they run concurrently.
+      const replacement =
+        escrow && operation === 'replaceRecipient' ? escrow : null
+      const [escrowedHmac, escrowedEpochs] = replacement
+        ? await Promise.all([
+            escrowIntoHmac({
               hmac: current.hmac,
-              recipients: escrow.incoming,
-              owner: escrow.owner,
-              operation
+              recipients: replacement.incoming,
+              owner: replacement.owner,
+              operation: 'replaceRecipient'
+            }),
+            escrowIntoEpochs({
+              epochs,
+              recipients: replacement.incoming,
+              owner: replacement.owner,
+              operation: 'replaceRecipient'
             })
-          : null
+          ])
+        : [null, null]
       const nextHmac =
         withoutHmacRecipients({
           hmac: escrowedHmac ?? current.hmac,
           retiring
         }) ?? escrowedHmac
-      // Escrow each incoming reader into every epoch it is missing from
-      // (addRecipient's escrow, so the whole replacement is one write).
-      let escrowed = epochs
-      let escrowChanged = false
-      if (escrow && operation === 'replaceRecipient') {
-        const next = await escrowIntoEpochs({
-          epochs,
-          recipients: escrow.incoming,
-          owner: escrow.owner,
-          operation
-        })
-        escrowed = next.epochs
-        escrowChanged = next.changed
-      }
+      const escrowed = escrowedEpochs?.epochs ?? epochs
+      const escrowChanged = escrowedEpochs?.changed ?? false
       // Remaining recipients: the CURRENT epoch's recipients (the authoritative
       // roster by construction), minus the retiring reader(s). Deliberately NOT
       // the union across all epochs -- a reader dropped in an earlier rotation

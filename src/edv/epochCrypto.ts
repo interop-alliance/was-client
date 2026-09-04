@@ -118,6 +118,29 @@ export async function wrapEpochSecret({
 }
 
 /**
+ * Wraps one epoch secret to each of several readers, concurrently: the fan-out
+ * behind every roster mint and escrow, so each recipient entry is produced by
+ * {@link wrapEpochSecret} and nothing else.
+ *
+ * @param options {object}
+ * @param options.epochSecret {Uint8Array}
+ * @param options.recipients {RecipientPublicKey[]}
+ * @returns {Promise<CollectionEncryptionRecipient[]>}   one entry per reader, in
+ *   input order
+ */
+export async function wrapEpochSecretTo({
+  epochSecret,
+  recipients
+}: {
+  epochSecret: Uint8Array
+  recipients: RecipientPublicKey[]
+}): Promise<CollectionEncryptionRecipient[]> {
+  return Promise.all(
+    recipients.map(recipient => wrapEpochSecret({ epochSecret, recipient }))
+  )
+}
+
+/**
  * Unwraps an epoch secret from a descriptor `recipients` entry using the
  * reader's own key-agreement key. Returns `null` when this key does not match
  * the entry (the wrong recipient, or a corrupt entry) -- never treat `null` as

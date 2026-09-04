@@ -118,16 +118,6 @@ export function guessContentTypeFromId(id: string): string | undefined {
 }
 
 /**
- * A write body resolved into either a JSON payload (passed to ezcap as `json`)
- * or a binary payload with its content-type (passed as `body` + header).
- */
-interface PreparedBody {
-  json?: object
-  body?: Uint8Array | Blob
-  contentType?: string
-}
-
-/**
  * Whether a value is a `Blob`, guarding for environments where `Blob` is
  * undefined.
  *
@@ -225,12 +215,14 @@ export function resolvePayload({
  *   for binary data
  * @param [options.filename] {string}       resource id used to guess a
  *   content-type by extension when none is given (binary data only)
- * @returns {PreparedBody}
+ * @returns {{ json?: object, body?: Uint8Array | Blob, contentType?: string }}
+ *   either a JSON payload (passed to ezcap as `json`) or a binary payload with
+ *   its content-type (passed as `body` + header)
  */
 export function prepareBody(
   data: ResourceData,
   options: { contentType?: string; filename?: string } = {}
-): PreparedBody {
+): { json?: object; body?: Uint8Array | Blob; contentType?: string } {
   const payload = resolvePayload({
     data,
     contentType: options.contentType,
