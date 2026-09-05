@@ -62,14 +62,14 @@
   "sideEffects": false,
   "dependencies": {
     "@interop/data-integrity-core": "^8.7.1",
-    "@interop/ed25519-signature": "^7.2.0",
-    "@interop/edv-client": "^17.8.1",
-    "@interop/ezcap": "^7.4.5",
+    "@interop/ed25519-signature": "^7.2.1",
+    "@interop/edv-client": "^17.8.2",
+    "@interop/ezcap": "^7.4.6",
     "@interop/http-client": "^1.0.5",
-    "@interop/minimal-cipher": "^7.8.3",
+    "@interop/minimal-cipher": "^7.10.0",
     "@interop/storage-core": "^0.10.0",
     "@interop/vh-resource-log": "^0.4.1",
-    "@interop/x25519-key-agreement-key": "^5.2.2",
+    "@interop/x25519-key-agreement-key": "^5.3.0",
     "@noble/hashes": "^2.3.0",
     "@scure/base": "^2.3.0",
     "json-canonicalize": "3.0.0"
@@ -77,7 +77,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@interop/data-integrity-proof": "3.4.5",
-    "@interop/ed25519-verification-key": "^8.0.4",
+    "@interop/ed25519-verification-key": "^8.1.0",
     "@interop/jsonld-signatures": "11.8.5",
     "@interop/zcap": "11.1.0",
     "@playwright/test": "^1.62.1",

@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.48.1 - TBD
+
+### Changed
+
+- Update to latest ecdsa and eddsa key deps.
+
 ## 0.48.0 - 2026-09-05
 
 ### Added
