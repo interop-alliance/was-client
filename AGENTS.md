@@ -64,12 +64,12 @@ isomorphic-lib-template's AGENTS.md under "Roadmap & Task Conventions"); the
 rules that apply when working an item:
 
 - Item ids are permanent and never reused. The `nextAvailableId: <n>` line at
-  the top of ROADMAP.md is the sole source of the next id: filing an item
-  takes `n` and rewrites the line to `n + 1`, in the same edit. Never derive
-  the next id by scanning the roadmap; the highest id usually lives in
+  the top of ROADMAP.md is the sole source of the next id: filing an item takes
+  `n` and rewrites the line to `n + 1`, in the same edit. Never derive the next
+  id by scanning the roadmap; the highest id usually lives in
   archived-roadmap.md, not in the open roadmap. If the counter's id already
-  appears in either file, the counter is stale: reset it to one past the
-  highest id across both files, then take it.
+  appears in either file, the counter is stale: reset it to one past the highest
+  id across both files, then take it.
 - Statuses are edited in place; acceptance checkboxes are ticked as they are
   met.
 - **Completing an item includes archiving it**: in the same pass that marks it

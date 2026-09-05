@@ -9,7 +9,6 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import type { HttpResponse } from '@interop/http-client'
 import {
   WasClient,
   Space,
@@ -18,6 +17,8 @@ import {
   ValidationError,
   AuthRequiredError
 } from '../../src/index.js'
+import type { RequestArgs } from '../helpers/stubClient.js'
+import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
 
 /**
  * Builds a `WasClient` over a minimal stub `ZcapClient` -- enough to construct
@@ -153,18 +154,10 @@ describe('fromCapability', () => {
   })
 })
 
-interface RequestArgs {
-  url?: string
-  method?: string
-  action?: string
-  json?: unknown
-  capability?: unknown
-}
-
 /**
  * Builds a `WasClient` over a stub `ZcapClient` that records the most recent
- * `request(...)` call and either returns a canned 2xx response or throws an
- * error carrying the given HTTP status (so `mapError` sees a real status).
+ * `request(...)` call and either returns a canned 204 or throws an error
+ * carrying the given HTTP status (so `mapError` sees a real status).
  *
  * @param options {object}
  * @param [options.fail] {number}   an HTTP status to throw instead of
@@ -176,23 +169,13 @@ function clientWithRequestSpy({ fail }: { fail?: number } = {}): {
   lastRequest: () => RequestArgs | undefined
 } {
   let captured: RequestArgs | undefined
-  const zcapClient = {
-    invocationSigner: { id: 'did:example:alice#key-1' },
-    async request(args: RequestArgs) {
-      captured = args
-      if (fail !== undefined) {
-        throw { status: fail, response: { status: fail } }
-      }
-      return {
-        status: 204,
-        headers: new Headers(),
-        async json() {
-          return undefined
-        }
-      } as unknown as HttpResponse
+  const client = clientWithStub(args => {
+    captured = args
+    if (fail !== undefined) {
+      throw { status: fail, response: { status: fail } }
     }
-  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+    return jsonResponse()
+  })
   return { client, lastRequest: () => captured }
 }
 
@@ -200,9 +183,7 @@ describe('Space.deleteWithOutcome / delete', () => {
   it('deleteWithOutcome() resolves { outcome: "deleted" } on a 2xx response', async () => {
     const { client, lastRequest } = clientWithRequestSpy()
     const capability = { id: 'urn:zcap:delete-only' } as never
-    const result = await client
-      .space('s', { capability })
-      .deleteWithOutcome()
+    const result = await client.space('s', { capability }).deleteWithOutcome()
     expect(result).toEqual({ outcome: 'deleted' })
     const req = lastRequest()
     expect(req?.url).toBe('https://was.example/space/s')

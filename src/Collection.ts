@@ -22,7 +22,8 @@ import { assertNotReserved } from './internal/reserved.js'
 import {
   PreconditionFailedError,
   ValidationError,
-  WasServerError
+  WasServerError,
+  httpStatus
 } from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
@@ -74,7 +75,11 @@ import type {
   ResourceCodec
 } from './codec.js'
 import { Resource } from './Resource.js'
-import type { ChangesCheckpoint, ChangesPage } from '@interop/storage-core'
+import type {
+  ChangeDocument,
+  ChangesCheckpoint,
+  ChangesPage
+} from '@interop/storage-core'
 import type {
   AddResult,
   BackendDescriptor,
@@ -1039,7 +1044,10 @@ export class Collection {
    * This is deliberately a single page, not an iterator: it is shaped for an
    * RxDB `pull.handler(checkpoint, batchSize)`, which owns the iteration and
    * persists the checkpoint between batches. Resume by passing the returned
-   * `checkpoint` back; a page shorter than `limit` means you have caught up.
+   * `checkpoint` back. Only a `null` checkpoint (an empty page) means you have
+   * caught up: a page shorter than `limit` does not, since the server reduces
+   * `limit` to its own maximum, so a short page can still be a full server
+   * page.
    *
    * Requires the collection's backend to advertise the `changes-query` feature
    * (see `backend()`); a backend without it answers `501`. On an encrypted
@@ -1047,9 +1055,14 @@ export class Collection {
    * envelopes (an EDV encrypted document under the v1 `edv` scheme) -- this
    * method does not decrypt them, unlike `get()`.
    *
+   * Two server faults fail the call with a `WasServerError` instead of passing
+   * through as a page: a 2xx response with no JSON body (indistinguishable
+   * from an end-of-feed page otherwise), and a live entry with no `data` (the
+   * server could not read or parse that resource's body).
+   *
    * @param [options] {object}
    * @param [options.checkpoint] {ChangesCheckpoint}   resume strictly after this
-   * @param [options.limit] {number}   max documents; the server clamps its own maximum
+   * @param [options.limit] {number}   max documents; the server reduces it to its own maximum
    * @returns {Promise<ChangesPage>}
    */
   async changes(
@@ -1068,9 +1081,95 @@ export class Collection {
     })
     // A `changes` query is a POST, so it never carries the null-on-404 `read`
     // flag: a missing or unauthorized collection throws, as every other write
-    // -shaped call on this handle does.
+    // -shaped call on this handle does. A `null` here is therefore a 2xx whose
+    // body did not parse as JSON, which must not masquerade as the end-of-feed
+    // page `{ documents: [], checkpoint: null }`.
     const page = dataOrNull<ChangesPage>(response)
-    return page ?? { documents: [], checkpoint: null }
+    if (page === null) {
+      throw new WasServerError(
+        `The changes feed of collection "${this.id}" answered with no JSON ` +
+          `body (content-type ` +
+          `"${response?.headers.get('content-type') ?? 'unknown'}").`
+      )
+    }
+    for (const doc of page.documents) {
+      if (!doc._deleted && doc.data === undefined) {
+        throw new WasServerError(
+          `The changes feed of collection "${this.id}" served resource ` +
+            `"${doc.id}" with no body: the server could not read it.`
+        )
+      }
+    }
+    return page
+  }
+
+  /**
+   * Reads the collection's current live JSON documents, bodies included, by
+   * walking the `changes` feed from its beginning to its end. One request per
+   * page rather than one per resource, so a reader with no local replica
+   * snapshots a collection in a handful of round trips.
+   *
+   * The feed is in ascending `(updatedAt, id)` order and carries tombstones,
+   * so the pages reduce to the latest state per id: a later entry for an id
+   * replaces an earlier one (a resource rewritten while the walk was in
+   * flight) and a tombstone drops it. Each surviving entry is returned as the
+   * feed served it, so `data` is the raw stored body (the scheme's opaque
+   * envelope on an encrypted collection; this method does not decrypt) and
+   * `epoch`, `version`, and `createdBy` ride along. Feed order is preserved.
+   *
+   * The walk ends only on the feed's `checkpoint: null`; a short page is not
+   * the end (see `changes()`). Returns `null` if the collection is missing or
+   * not visible to you (404 conflation caveat) on the first page, like
+   * `list()`. Unlike `list()`, a 404 on a later page throws: the collection
+   * vanished mid-walk, and the pages already read are not a snapshot of
+   * anything. The server faults `changes()` rejects on (a bodiless 2xx, a
+   * live entry with no `data`, or a `501` from a backend without the
+   * `changes-query` feature) fail the walk with the same `WasServerError`, as
+   * does a server that repeats a checkpoint instead of advancing.
+   *
+   * @param [options] {object}
+   * @param [options.limit] {number}   max documents per request (default 1000, the teaching server's maximum); the server reduces it to its own maximum
+   * @returns {Promise<ChangeDocument[] | null>}
+   */
+  async documents(
+    options: { limit?: number } = {}
+  ): Promise<ChangeDocument[] | null> {
+    const { limit = 1000 } = options
+    const latest = new Map<string, ChangeDocument>()
+    // Every checkpoint the walk has resumed from, keyed by its wire position.
+    // A server that hands one back again would otherwise loop forever.
+    const seen = new Set<string>()
+    let checkpoint: ChangesCheckpoint | undefined
+    for (;;) {
+      let page: ChangesPage
+      try {
+        page = await this.changes({ checkpoint, limit })
+      } catch (err) {
+        if (checkpoint === undefined && httpStatus(err) === 404) {
+          return null
+        }
+        throw err
+      }
+      for (const doc of page.documents) {
+        // Delete first so a rewritten resource takes its new feed position.
+        latest.delete(doc.id)
+        if (!doc._deleted) {
+          latest.set(doc.id, doc)
+        }
+      }
+      if (page.checkpoint === null) {
+        return [...latest.values()]
+      }
+      const position = `${page.checkpoint.updatedAt}\u0000${page.checkpoint.id}`
+      if (seen.has(position)) {
+        throw new WasServerError(
+          `The changes feed of collection "${this.id}" repeated checkpoint ` +
+            `${JSON.stringify(page.checkpoint)} instead of advancing.`
+        )
+      }
+      seen.add(position)
+      checkpoint = page.checkpoint
+    }
   }
 
   /**

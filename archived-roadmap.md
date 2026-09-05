@@ -839,14 +839,39 @@ trap to avoid when picking this up.
 A caller running a deletion ceremony must know whether the DELETE actually
 removed anything. The server answers 404 both for an absent Space and for a
 capability it refuses. `deleteWithOutcome()` reports that 404 as
-`{ outcome: 'not-found' }`, which reads as absent or refused. Only a caller
-with its own prior discovery can read it as absence.
+`{ outcome: 'not-found' }`, which reads as absent or refused. Only a caller with
+its own prior discovery can read it as absence.
 
-It ships as a new method rather than a changed `delete()` return type.
-Existing consumers keep working unchanged -- the conformance suite calls
-`space.delete()` in seven suites.
+It ships as a new method rather than a changed `delete()` return type. Existing
+consumers keep working unchanged -- the conformance suite calls `space.delete()`
+in seven suites.
 
 Cross-repo context: this is was-client's part of freewallet's FW-403 (Space
 deletion through a ladder-signed DELETE-only delegation). wallet-core's
 `deleteSpaceWithCapability` currently goes through the raw `was.request()`
 escape hatch and can switch to the new method as a follow-up in that repo.
+
+---
+
+### WCL-36: Collection snapshot over the changes feed
+
+- status: done 2026-09-05
+- priority: medium
+- labels: collection, changes-feed, api
+- acceptance:
+  - [x] `Collection.documents()` walks the `changes` feed to its `null`
+        checkpoint and reduces the pages to the live documents
+  - [x] Only the `null` checkpoint ends the walk; a short page does not
+  - [x] Server faults (bodiless 2xx, live entry with no `data`, repeated
+        checkpoint) fail the walk with a `WasServerError`
+  - [x] A first-page 404 resolves `null`; a later-page 404 throws
+  - [x] Unit tests cover the walk, the reduction, the defaults, and each fault
+
+A reader with no local replica needs the collection's current documents with
+their bodies. `list()` returns summaries only, so reading bodies costs one GET
+per resource. The `changes` feed already ships bodies and tombstones in
+`(updatedAt, id)` order, so a walk from the beginning is a snapshot in a handful
+of round trips.
+
+Filed at completion. The malformed-page guards it needed belong in `changes()`
+itself, so the sync port's pull path gets them too.

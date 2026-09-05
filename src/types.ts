@@ -32,6 +32,9 @@ export type { IZcap, IDelegatedZcap, IRootZcap, IDID, ISigner }
 export type {
   Action,
   ActionInput,
+  ChangeDocument,
+  ChangesCheckpoint,
+  ChangesPage,
   SpaceDescription,
   CollectionDescription,
   CollectionEncryption,

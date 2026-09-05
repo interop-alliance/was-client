@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
+
 import type {
   SpaceDescription,
   CollectionDescription
@@ -21,13 +22,8 @@ import {
   ConflictError,
   WasServerError
 } from '../../src/index.js'
-
-interface RequestArgs {
-  url?: string
-  method?: string
-  json?: unknown
-  headers?: Record<string, string>
-}
+import type { RequestArgs } from '../helpers/stubClient.js'
+import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
 
 /**
  * Builds a `WasClient` over a stub `ZcapClient` that records every
@@ -51,24 +47,17 @@ function clientWithRequestSpy({
   calls: RequestArgs[]
 } {
   const calls: RequestArgs[] = []
-  const zcapClient = {
-    invocationSigner: { id: 'did:example:alice#key-1' },
-    async request(args: RequestArgs) {
-      calls.push(args)
-      if (fail !== undefined) {
-        throw { status: fail, response: { status: fail } }
-      }
-      return {
-        status: 200,
-        headers: new Headers(etag !== undefined ? { etag } : {}),
-        data,
-        async json() {
-          return data
-        }
-      } as unknown as HttpResponse
+  const client = clientWithStub(args => {
+    calls.push(args)
+    if (fail !== undefined) {
+      throw { status: fail, response: { status: fail } }
     }
-  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+    return jsonResponse({
+      data,
+      status: 200,
+      headers: etag !== undefined ? { etag } : {}
+    })
+  })
   return { client, calls }
 }
 

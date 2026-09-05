@@ -12,22 +12,11 @@ import { describe, it, expect } from 'vitest'
 
 import { WasClient, ValidationError, NotFoundError } from '../../src/index.js'
 import type { IDelegatedZcap } from '../../src/index.js'
+import type { RequestArgs } from '../helpers/stubClient.js'
+import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
 
 const SERVER_URL = 'https://was.example'
 const CAPABILITY_ID = 'urn:uuid:6f1c1b0e-1f3a-4a5e-9a1e-3b2c4d5e6f70'
-
-interface RequestArgs {
-  url?: string
-  method?: string
-  action?: string
-  capability?: {
-    '@context'?: string
-    id?: string
-    invocationTarget?: string
-    controller?: string
-  }
-  json?: unknown
-}
 
 /**
  * A delegated capability granting read/write on a collection under `spaceId`,
@@ -78,17 +67,13 @@ function clientWithRequestSpy({ rejectWith }: { rejectWith?: unknown } = {}): {
   lastRequest: () => RequestArgs | undefined
 } {
   let captured: RequestArgs | undefined
-  const zcapClient = {
-    invocationSigner: { id: 'did:example:alice#key-1' },
-    async request(args: RequestArgs) {
-      captured = args
-      if (rejectWith !== undefined) {
-        throw rejectWith
-      }
-      return { status: 204, headers: new Headers() }
+  const client = clientWithStub(args => {
+    captured = args
+    if (rejectWith !== undefined) {
+      throw rejectWith
     }
-  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  const client = new WasClient({ serverUrl: SERVER_URL, zcapClient })
+    return jsonResponse()
+  })
   return { client, lastRequest: () => captured }
 }
 

@@ -1035,6 +1035,45 @@ describe('removeRecipient security', () => {
     expect(kids).not.toContain(yolanda.kak.id)
   })
 
+  it('retires several readers in one rotation (one fresh epoch, not k)', async () => {
+    const alice = await makeReader()
+    const xavier = await makeReader()
+    const yolanda = await makeReader()
+    const fake = mutableCollection(
+      await seedDescriptor([alice, xavier, yolanda])
+    )
+    const fakeSpace = { revoke: async () => undefined }
+
+    const after = await removeRecipient({
+      collection: fake as unknown as Collection,
+      space: fakeSpace as unknown as Space,
+      recipientId: [xavier.kak.id, yolanda.kak.id],
+      revoke: []
+    })
+
+    expect(after.epochs).toHaveLength(2)
+    const currentEpoch = after.epochs!.find(
+      epoch => epoch.id === after.currentEpoch
+    )!
+    expect(currentEpoch.recipients.map(entry => entry.header.kid)).toEqual([
+      alice.kak.id
+    ])
+  })
+
+  it('refuses an empty retiring set', async () => {
+    const alice = await makeReader()
+    const fake = mutableCollection(await seedDescriptor([alice]))
+    await expect(
+      removeRecipient({
+        collection: fake as unknown as Collection,
+        space: { revoke: async () => undefined } as unknown as Space,
+        recipientId: [],
+        revoke: []
+      })
+    ).rejects.toThrow(/at least one retiring recipient/)
+    expect(fake._state.encryption.epochs).toHaveLength(1)
+  })
+
   it('rotates the epoch BEFORE revoking capabilities', async () => {
     // At revoke time the descriptor must already be rotated (rotation is durable
     // first), so a revoke failure cannot leave the reader revoked but the epoch

@@ -27,8 +27,8 @@ importers:
         specifier: ^7.8.3
         version: 7.8.3
       '@interop/storage-core':
-        specifier: ^0.9.1
-        version: 0.9.1
+        specifier: ^0.10.0
+        version: 0.10.0
       '@interop/vh-resource-log':
         specifier: ^0.4.1
         version: 0.4.1
@@ -286,6 +286,10 @@ packages:
   '@interop/minimal-cipher@7.8.3':
     resolution: {integrity: sha512-MJ0VLEq+vdzkBe8uWl6slS+2pmHXal0LnVA4pbFrOKGXrEkIC/94x5j6jz6/UBQoL1lAMFny0Zwjx8MT7kWo0w==}
     engines: {node: '>=24.0'}
+
+  '@interop/storage-core@0.10.0':
+    resolution: {integrity: sha512-I2XJAaUlT3rfFm6jthsDWCAcbgzpIyqx3556aiqLKFcFNYDEi4Mu2+PqMK3hI4nGGMPypNFdQPdTa4Wo+lsQSg==}
+    engines: {node: '>=22.0'}
 
   '@interop/storage-core@0.9.1':
     resolution: {integrity: sha512-YF+qMjuBn+ehqqY+dKNRF6k34f0uvWh+ojzg+mC71TPtJ6B/7+Qjm8MTYPFRfoW8wekEoSB525a1uto+mMfoKQ==}
@@ -1442,6 +1446,10 @@ snapshots:
       '@scure/base': 2.3.0
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
+
+  '@interop/storage-core@0.10.0':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
 
   '@interop/storage-core@0.9.1':
     dependencies:

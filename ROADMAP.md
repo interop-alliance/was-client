@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 36
+nextAvailableId: 37
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -30,17 +30,17 @@ Companion document: the server-side gap analysis at
 ## Item format
 
 Each work item is a `### WCL-N: Title` heading followed by a field block and
-free prose context. Ids are permanent and never reused. The `nextAvailableId` line at the top of
-this file is the next id to take: filing an item takes that number and
-rewrites the line to one higher, in the same edit. Never derive the next id
-by scanning, since the highest id usually sits in `archived-roadmap.md`
-rather than here. Statuses: `todo`, `in-progress`, `draft`
-(no actionable done-state yet -- blocked externally or a parking record); `done`
-items move to [archived-roadmap.md](archived-roadmap.md) once shipped. The full
-conventions -- including the `touches:` field, required for any item changing a
-spec, a wire contract, or a shared `@interop/*` API, and blocking `done` while
-any of its entries is unresolved -- live in isomorphic-lib-template's AGENTS.md
-under "Roadmap & Task Conventions" and apply to WCL-N items too.
+free prose context. Ids are permanent and never reused. The `nextAvailableId`
+line at the top of this file is the next id to take: filing an item takes that
+number and rewrites the line to one higher, in the same edit. Never derive the
+next id by scanning, since the highest id usually sits in `archived-roadmap.md`
+rather than here. Statuses: `todo`, `in-progress`, `draft` (no actionable
+done-state yet -- blocked externally or a parking record); `done` items move to
+[archived-roadmap.md](archived-roadmap.md) once shipped. The full conventions --
+including the `touches:` field, required for any item changing a spec, a wire
+contract, or a shared `@interop/*` API, and blocking `done` while any of its
+entries is unresolved -- live in isomorphic-lib-template's AGENTS.md under
+"Roadmap & Task Conventions" and apply to WCL-N items too.
 
 ---
 

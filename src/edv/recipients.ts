@@ -713,8 +713,10 @@ export async function addRecipient({
  * @param [options.space] {Space}   the collection's Space, for the default
  *   pull axis (zcap revocation); required together with `revoke` unless a
  *   custom `pull` is supplied
- * @param options.recipientId {string}   the removed reader's key-agreement key
- *   id (`kid`), dropped from the new epoch's recipients
+ * @param options.recipientId {string | string[]}   the removed reader(s)'
+ *   key-agreement key id(s) (`kid`), dropped from the new epoch's recipients.
+ *   Several kids retire in ONE rotation, so a collection losing k readers at
+ *   once gains one epoch rather than k
  * @param [options.revoke] {IDelegatedZcap | IDelegatedZcap[]}   the reader's
  *   delegated capability/capabilities to revoke (the default pull axis);
  *   required together with `space` unless a custom `pull` is supplied
@@ -743,7 +745,7 @@ export async function removeRecipient({
   collection?: Collection
   store?: EncryptionDescriptorStore
   space?: Space
-  recipientId: string
+  recipientId: string | string[]
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
   resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
@@ -752,11 +754,17 @@ export async function removeRecipient({
   // Resolve the pull axis up front, before any rotation, so a malformed call
   // fails before the descriptor is mutated.
   const pullAxis = resolvePullAxis({ space, revoke, pull })
+  const retiring = Array.isArray(recipientId) ? recipientId : [recipientId]
+  if (retiring.length === 0) {
+    throw new ValidationError(
+      'removeRecipient needs at least one retiring recipient kid.'
+    )
+  }
   // A removal is a replacement with nobody incoming: no escrow, the same
   // rotation.
   return rotateOffRecipients({
     store: descriptorStore,
-    retiring: [recipientId],
+    retiring,
     operation: 'removeRecipient',
     resolveRecipientKey,
     pullAxis

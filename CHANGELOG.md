@@ -1,9 +1,27 @@
 # @interop/was-client Changelog
 
-## 0.47.1 - TBD
+## 0.48.0 - TBD
+
+### Added
+
+- `Collection.documents()`: the collection's current live JSON documents, bodies
+  included, read by walking the `changes` feed to its `null` checkpoint, one
+  request per page (default `limit` 1000). Pages reduce to the latest state per
+  id; tombstones drop it. Entries come back as the feed served them (raw `data`,
+  `epoch` / `version` / `createdBy`). Returns `null` for a missing or invisible
+  collection on the first page; a later-page 404 throws. `ChangeDocument`,
+  `ChangesPage`, and `ChangesCheckpoint` are re-exported from the package root.
 
 ### Changed
 
+- `Collection.changes()` throws a `WasServerError` on a 2xx page with no JSON
+  body and on a live entry with no `data` (a server-side read fault), instead of
+  passing them through. Its doc now states that only a `null` checkpoint ends
+  the feed; a page shorter than `limit` does not.
+- `removeRecipient` takes `recipientId: string | string[]`. Several readers
+  retire in one rotation (one fresh epoch and one pull-axis run), the same shape
+  `replaceRecipient`'s `retire` already had. An empty array is a
+  `ValidationError`.
 - Run escrow crypto concurrently and dedupe small helpers.
 
 ## 0.47.0 - 2026-09-01
@@ -11,12 +29,11 @@
 ### Added
 
 - `Space.deleteWithOutcome()`, beside the unchanged `Space.delete()`. It sends
-  the same `DELETE /space/{id}` under the capability the handle was opened
-  with, but reports `{ outcome: 'deleted' | 'not-found' }` instead of
-  resolving void: a 404 is reported as `'not-found'` rather than swallowed as
-  an idempotent success. Other errors still throw the mapped `WasError`. For a
-  caller running a deletion ceremony that needs to know whether the request
-  removed anything.
+  the same `DELETE /space/{id}` under the capability the handle was opened with,
+  but reports `{ outcome: 'deleted' | 'not-found' }` instead of resolving void:
+  a 404 is reported as `'not-found'` rather than swallowed as an idempotent
+  success. Other errors still throw the mapped `WasError`. For a caller running
+  a deletion ceremony that needs to know whether the request removed anything.
 
 ## 0.46.2 - 2026-09-01
 
