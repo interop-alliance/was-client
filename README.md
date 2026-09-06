@@ -840,7 +840,17 @@ plugs into:
   itself never touches keys. A rejected precondition throws
   `WasSyncConflictError` (412); a delete of an already-gone resource throws
   `WasSyncNotFoundError` (404) -- both catchable subtypes of the core
-  `PreconditionFailedError` / `NotFoundError`.
+  `PreconditionFailedError` / `NotFoundError`. Every other failure arrives as
+  the typed `WasError` subclass for its status, carrying the server's
+  `problem+json` fields.
+- **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
+  `isUnknownEpochError`** classify those signals by `err.name`. Use them rather
+  than `instanceof`: the port and the `DocCipher` are seams your app injects,
+  and a tree that resolves two copies of this package makes an `instanceof`
+  check quietly false. Read what you need off the matched value, such as
+  `err.status` on an auth error to tell a 401 from the masked 404.
+- **`SyncStatus`** (`'idle' | 'syncing' | 'synced' | 'error'`) is the closed
+  vocabulary a replication driver reports one feed's state through.
 - **`DocCipher`** is the per-collection encrypt/decrypt seam sitting above the
   port: it turns a JSON document into its stored body (minting the resource id)
   and back. `createPlaintextDocCipher(...)` is the crypto-free identity
@@ -869,7 +879,7 @@ import {
   createPlaintextDocCipher,
   deriveSpaceId,
   ensureSpaceAndCollection,
-  WasSyncConflictError
+  isSyncConflictError
 } from '@interop/was-client/sync'
 
 const spaceId = deriveSpaceId(controllerDid) // same Space on every device
@@ -889,7 +899,7 @@ const { id, envelope } = await cipher.encrypt({ data: { note: 'hello' } })
 try {
   await port.putContent({ id, data: envelope, ifNoneMatch: true })
 } catch (err) {
-  if (!(err instanceof WasSyncConflictError)) {
+  if (!isSyncConflictError(err)) {
     throw err
   }
   // 412 on a content-addressed insert: another replica already wrote this

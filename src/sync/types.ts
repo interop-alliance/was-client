@@ -9,7 +9,8 @@
  * here under replication-facing names so a sync consumer imports one module.
  * `WasSyncPort` and `MasterState` are the injectable access seam the change
  * engine depends on, and `DocCipher` is the encrypt/decrypt seam a per-
- * collection cipher implements.
+ * collection cipher implements. `SyncStatus` is the closed status vocabulary
+ * every replication driver reports one feed's state through.
  */
 import type {
   ChangeDocument,
@@ -172,3 +173,11 @@ export interface DocCipher {
   }): Promise<{ id: string; envelope: Json; epoch?: string }>
   decrypt(options: { envelope: Json }): Promise<Json>
 }
+
+/**
+ * Per-feed replication status, surfaced to the app's state layer. The
+ * vocabulary is closed: a consumer may render a status through a lookup keyed
+ * on the string, so a widened value would fail at runtime rather than at
+ * compile time.
+ */
+export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error'

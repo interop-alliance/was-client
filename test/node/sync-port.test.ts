@@ -8,6 +8,10 @@
  * method, JSON body, conditional-write headers, and the `Key-Epoch` stamp --
  * plus the 412-conflict and 404-not-found error mapping and the acked-version
  * parsing, all without a live server.
+ *
+ * The port classifies through the client's own `mapError`, so the signals it
+ * raises carry the server's `problem+json` fields and every other status
+ * leaves the subpath as a typed `WasError` rather than a raw ky error.
  */
 import { describe, it, expect, vi } from 'vitest'
 
@@ -20,9 +24,13 @@ import {
   WasSyncNotFoundError,
   AuthRequiredError,
   PreconditionFailedError,
-  NotFoundError
+  NotFoundError,
+  QuotaExceededError,
+  WasError,
+  WasServerError
 } from '../../src/index.js'
 import type { IZcap } from '../../src/index.js'
+import type { SyncStatus } from '../../src/sync/index.js'
 
 type RequestOptions = {
   path?: string
@@ -40,6 +48,22 @@ function response(data: unknown, headers: Record<string, string> = {}) {
 /** An error shaped like a thrown ky/ezcap non-2xx (flat `status`). */
 function httpError(status: number): Error & { status: number } {
   return Object.assign(new Error(`HTTP ${status}`), { status })
+}
+
+/**
+ * A thrown ky/ezcap non-2xx carrying an `application/problem+json` body, the
+ * shape a real WAS server answers a refused write with.
+ */
+function problemError(status: number, type: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    status,
+    requestUrl: 'https://was.example/space/space-abc/private-credentials/res-1',
+    data: {
+      type,
+      title: 'The write was refused.',
+      errors: [{ detail: 'the precondition did not hold' }]
+    }
+  })
 }
 
 const SPACE = 'space-abc'
@@ -191,16 +215,18 @@ describe('createWasSyncPort.putContent', () => {
     expect(err).toBeInstanceOf(PreconditionFailedError)
   })
 
-  it('propagates a non-412 write error', async () => {
+  it('propagates a non-412 write error as a typed WasError', async () => {
     const { was } = makeWas({
       onRequest: () => {
         throw httpError(500)
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
-    await expect(
-      port.putContent({ id: 'res-1', data: { a: 1 } })
-    ).rejects.toMatchObject({ status: 500 })
+    const err = await port
+      .putContent({ id: 'res-1', data: { a: 1 } })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasServerError)
+    expect(err).toMatchObject({ status: 500 })
   })
 })
 
@@ -513,7 +539,8 @@ describe('createWasSyncPort mapAuthErrors', () => {
     await expect(
       failingPort(404, false).deleteContent({ id: 'res-1' })
     ).rejects.toBeInstanceOf(WasSyncNotFoundError)
-    // ... and 401 / 403 / 404 propagate raw everywhere else.
+    // ... and 401 / 403 / 404 stay their ordinary typed class everywhere
+    // else, never the auth signal.
     for (const status of [401, 403, 404]) {
       const port = failingPort(status, false)
       for (const attempt of [
@@ -534,5 +561,111 @@ describe('errorMessage', () => {
     expect(errorMessage(new Error('boom'))).toBe('boom')
     expect(errorMessage('boom')).toBe('boom')
     expect(errorMessage(undefined)).toBe('undefined')
+  })
+})
+
+describe('createWasSyncPort error classification', () => {
+  const PRECONDITION_FAILED = 'https://wallet.storage/spec#precondition-failed'
+  const QUOTA_EXCEEDED = 'https://wallet.storage/spec#quota-exceeded'
+
+  /** A port whose every request fails with the given problem response. */
+  function refusingPort(status: number, type: string) {
+    const { was } = makeWas({
+      onRequest: () => {
+        throw problemError(status, type)
+      }
+    })
+    return createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+  }
+
+  it('carries the problem fields and a cause onto a write conflict', async () => {
+    const raw = problemError(412, PRECONDITION_FAILED)
+    const { was } = makeWas({
+      onRequest: () => {
+        throw raw
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const err = await port
+      .putContent({ id: 'res-1', data: { a: 1 }, ifMatch: '"1"' })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasSyncConflictError)
+    expect(err).toMatchObject({
+      status: 412,
+      type: PRECONDITION_FAILED,
+      title: 'The write was refused.',
+      details: ['the precondition did not hold'],
+      requestUrl: raw.requestUrl
+    })
+    expect((err as Error).cause).toBe(raw)
+  })
+
+  it('carries the problem fields and a cause onto a delete not-found', async () => {
+    const raw = problemError(404, 'https://wallet.storage/spec#not-found')
+    const { was } = makeWas({
+      onRequest: () => {
+        throw raw
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const err = await port
+      .deleteContent({ id: 'res-1', ifMatch: '"1"' })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasSyncNotFoundError)
+    expect(err).toMatchObject({
+      status: 404,
+      type: 'https://wallet.storage/spec#not-found',
+      requestUrl: raw.requestUrl
+    })
+    expect((err as Error).cause).toBe(raw)
+  })
+
+  it('classifies by problem type, not by the status list', async () => {
+    // A 507 quota-exceeded is outside the port's own signal list; it still
+    // leaves the sync subpath as the client's typed class.
+    const err = await refusingPort(507, QUOTA_EXCEEDED)
+      .putContent({ id: 'res-1', data: { a: 1 } })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(QuotaExceededError)
+    expect(err).toMatchObject({ status: 507, type: QUOTA_EXCEEDED })
+  })
+
+  it('types a read failure the port has no signal for', async () => {
+    const err = await refusingPort(500, 'https://wallet.storage/spec#storage')
+      .get({ id: 'res-1' })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasError)
+    expect(err).toMatchObject({ status: 500 })
+  })
+
+  it('carries the problem fields onto the auth signal', async () => {
+    const raw = problemError(403, 'https://wallet.storage/spec#not-authorized')
+    const { was } = makeWas({
+      onRequest: () => {
+        throw raw
+      }
+    })
+    const port = createWasSyncPort({
+      was,
+      spaceId: SPACE,
+      collectionId: COLL,
+      mapAuthErrors: true
+    })
+
+    const err = await port
+      .putContent({ id: 'res-1', data: { a: 1 } })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasSyncAuthError)
+    expect(err).toMatchObject({ status: 403, requestUrl: raw.requestUrl })
+    expect((err as Error).cause).toBe(raw)
+  })
+})
+
+describe('SyncStatus', () => {
+  it('names the four states a feed reports', () => {
+    const states: SyncStatus[] = ['idle', 'syncing', 'synced', 'error']
+    expect(states).toHaveLength(4)
   })
 })

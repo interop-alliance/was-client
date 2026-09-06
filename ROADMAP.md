@@ -273,46 +273,6 @@ landed in 0.42.0; everything here was deliberately left out of it because the
 fix changes observable behavior, crosses the codec seam, or needs a maintainer
 decision first. Each carries `discovered-from: 2026-08-21 cleanup review`.
 
-### WCL-20: Sync port re-derives error classification from raw HTTP status
-
-- status: todo
-- priority: medium
-- labels: sync, errors, altitude
-- touches:
-  - was-client: `mapWriteError` and `readContent` in `src/sync/port.ts`; the
-    `./sync` subpath's thrown-error contract
-  - freewallet, dcw, was-react: sync drivers matching on the current raw ky
-    error shapes for statuses outside 412/404 would see typed errors instead
-- acceptance:
-  - [ ] The port's write and read paths classify through `errors.ts` rather than
-        switching on raw HTTP status
-  - [ ] `WasSyncConflictError` / `WasSyncNotFoundError` carry the server's
-        `problem+json` fields (`type`, `title`, `details`, `requestUrl`) and a
-        `cause`
-  - [ ] A status outside the current small list (500, a 507 `quota-exceeded`)
-        leaves the sync subpath as a typed error rather than a raw ky error
-
-`mapWriteError` and `readContent` dispatch on `errorStatus(err)` over the raw
-errors `was.request()` throws, and build `WasSyncConflictError` /
-`WasSyncNotFoundError` with default messages, no `cause`, and none of the
-server's problem details. `mapError` (`src/errors.ts`) already maps 412 to
-`PreconditionFailedError` and 404 to `NotFoundError` carrying all of that, and
-both sync classes are declared as subtypes of those.
-
-The result is one object with two error regimes: `query()` rides
-`Collection.changes()` through `send()` and throws mapped errors, while the
-write and read paths throw hand-built ones. A new problem type added to
-`ERROR_CLASS_BY_KIND` reaches the handle API but never the sync API, and the
-412/404 status list has to be maintained in two places.
-
-The fix is to route the port's writes through `internal/request.ts`'s `send()`
-and classify with `instanceof`. The port's verbatim-bytes property comes from
-bypassing the codec, not from bypassing the error mapper, so nothing about the
-sync contract requires the current shape. `upsertResource` already does exactly
-this when it re-throws a 412. Contained to `src/sync/port.ts`, and
-`instanceof`-based consumers are unaffected because the sync classes stay
-subtypes.
-
 ### WCL-21: `Space.createCollection` hardcodes the EDV routability rule
 
 - status: todo
@@ -721,51 +681,3 @@ mapping option 2). That hides the id from the provider while letting the client
 re-derive the URL from the human id. Cost: an HMAC index key to manage and
 distribute (alongside the content keys), plus collision/uniqueness handling --
 why it is deferred past the first encrypted increment.
-
-### WCL-6: RxDB sync client follow-ons
-
-- status: draft (parking record)
-- priority: low
-- labels: someday, sync, cross-repo
-- acceptance: none yet -- the one remaining half is deduplicating the two RxDB
-  driver copies into a standalone library; revisit when that gets a trigger
-- touches:
-  - was-rxdb-replication (new repo, from isomorphic-lib-template) -- the
-    extracted RxDB replication driver package, consuming
-    `@interop/was-client/sync` for the port, wire types, and error signals
-  - freewallet -- `src/lib/sync/` (changesQuery, pushWrites, wasReplication,
-    syncedDocSchema, types + tests) is one of the two diverged driver copies;
-    replaced by the extracted package, with `stores/syncController.ts`
-    re-pointed at it
-  - was-react -- `src/sync/` is the other diverged copy, and it has grown pieces
-    the freewallet copy lacks (feed-master port, LWW conflict handler, DocCipher
-    wiring); the extraction must decide which of those move into the package and
-    which stay was-react-side
-  - was-client -- expected code-unaffected (the `./sync` subpath already carries
-    the port and primitives the driver consumes); README gains a pointer to the
-    new package
-  - wallet-core -- expected code-unaffected (its `sync/` engine is the non-RxDB
-    path and deliberately excludes the RxDB adapter); its ARCHITECTURE.md
-    references to "freewallet's RxDB driver/adapter" get re-pointed at the
-    extracted package
-  - wallet-attached-storage-spec -- unaffected (the wire contract is already
-    normative: Query Profile Registry appendix + Conditional Requests)
-
-Most of what this item originally deferred has since landed, in a different
-factoring than predicted. The `WasSyncPort` implementation and sync primitives
-moved into the client itself as the `@interop/was-client/sync` subpath (0.19.0:
-`createWasSyncPort`, whose pull path rides `Collection.changes()`), so
-freewallet's hand-rolled `was.request()` changes query is gone -- its
-`stores/syncController.ts` calls `createWasSyncPort` directly. `createdBy` is
-threaded into the local RxDB document (freewallet `syncedDocSchema` bumped to
-`version: 1` with a migration strategy; `epoch` followed at `version: 2`). And a
-framework-agnostic pull/push engine was extracted into `@interop/wallet-core`
-(`src/sync/`: `SyncEngine` with injected port/store/cipher seams, consumed by
-dcw), which deliberately does not include an RxDB adapter.
-
-What did not happen is the `was-rxdb-replication` extraction itself: the
-RxDB-specific driver (wire-doc to RxDB mapping, pull/push handlers,
-`replicateRxCollection` wiring, the `SyncedDoc` schema) now exists as two
-diverged copies -- freewallet `src/lib/sync/` and was-react `src/sync/`. That
-dedup is the only live residue of this item, and the second copy is also its
-strongest argument.

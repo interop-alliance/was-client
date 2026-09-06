@@ -24,6 +24,11 @@
  * plaintext-vs-encrypted fork. `putContent`/`deleteContent` return the server-
  * acked `version` (parsed from the write's `ETag`, re-read only if the backend
  * sent none), so a caller can record acked revisions immediately.
+ *
+ * Bypassing the codec is not bypassing the error mapper. Every failure caught
+ * here goes through the client's own `mapError` first, so the port's signals
+ * carry the server's `problem+json` fields and a `cause`, and a status the
+ * port has no signal for still leaves this subpath as a typed `WasError`.
  */
 import type { WasClient } from '../WasClient.js'
 import type { HttpResponse } from '@interop/http-client'
@@ -34,11 +39,14 @@ import {
 } from '../internal/conditional.js'
 import { resourceMeta, resourcePath } from '../internal/paths.js'
 import {
-  httpStatus,
+  mapError,
+  NotFoundError,
+  PreconditionFailedError,
   WasSyncAuthError,
   WasSyncConflictError,
   WasSyncNotFoundError
 } from '../errors.js'
+import type { WasError, WasErrorOptions } from '../errors.js'
 import type { IZcap } from '../types.js'
 import type { Json, MasterState, WasSyncPort } from './types.js'
 
@@ -72,18 +80,60 @@ function isAuthStatus(status: number | undefined): status is number {
 }
 
 /**
- * Maps a raw write error onto the port's typed signals, rethrowing anything
- * else unchanged: `412` becomes a {@link WasSyncConflictError} for every write.
- * `notFound` opts in to the `404` mapping, which only `deleteContent` performs
- * (an already-gone target is a settled outcome for a delete, but a hard error
- * for a content or metadata write). `authErrors` is the port's `mapAuthErrors`
- * option: it maps `401` / `403` / the masked `404` to a
- * {@link WasSyncAuthError}. `notFound` is checked first, so a port that asked
- * for both still gets the delete-specific signal.
+ * Carries a mapped error's `problem+json` fields onto the port signal built
+ * from it. The `cause` is the raw transport error `mapError` recorded, or the
+ * mapped error itself when there was none. A port signal is a narrowing of the
+ * classification `mapError` already made, so it must not lose what the server
+ * said.
+ *
+ * @param mapped {WasError}   the classified error
+ * @returns {WasErrorOptions}
+ */
+function signalOptions(mapped: WasError): WasErrorOptions {
+  return {
+    status: mapped.status,
+    type: mapped.type,
+    title: mapped.title,
+    details: mapped.details,
+    requestUrl: mapped.requestUrl,
+    cause: mapped.cause ?? mapped
+  }
+}
+
+/**
+ * Whether a mapped error is already one of the port's own signals, which a
+ * nested port call (the acked-version re-read inside a write) can raise
+ * through a write's catch block. Re-wrapping one would drop its cause for no
+ * gain.
+ *
+ * @param mapped {WasError}
+ * @returns {boolean}
+ */
+function isPortSignal(mapped: WasError): boolean {
+  return (
+    mapped instanceof WasSyncConflictError ||
+    mapped instanceof WasSyncNotFoundError ||
+    mapped instanceof WasSyncAuthError
+  )
+}
+
+/**
+ * Maps a caught write error onto the port's typed signals, rethrowing anything
+ * else as the classified {@link WasError} the client's own `mapError` builds
+ * (so a status outside this list -- a `500`, a `507` quota-exceeded -- still
+ * leaves the sync subpath typed and carrying the server's problem details).
+ * A rejected precondition becomes a {@link WasSyncConflictError} for every
+ * write. `notFound` opts in to the not-found mapping, which only
+ * `deleteContent` performs (an already-gone target is a settled outcome for a
+ * delete, but a hard error for a content or metadata write). `authErrors` is
+ * the port's `mapAuthErrors` option: it maps `401` / `403` / the masked `404`
+ * to a {@link WasSyncAuthError}. `notFound` is checked first, so a port that
+ * asked for both still gets the delete-specific signal.
  *
  * @param err {unknown}   the caught error
  * @param [options] {object}
- * @param [options.notFound] {boolean}   map `404` to {@link WasSyncNotFoundError}
+ * @param [options.notFound] {boolean}   map a not-found to
+ *   {@link WasSyncNotFoundError}
  * @param [options.authErrors] {boolean}   map `401`/`403`/`404` to
  *   {@link WasSyncAuthError}
  * @returns {never}   always throws
@@ -95,17 +145,20 @@ function mapWriteError(
     authErrors = false
   }: { notFound?: boolean; authErrors?: boolean } = {}
 ): never {
-  const status = httpStatus(err)
-  if (notFound && status === 404) {
-    throw new WasSyncNotFoundError()
+  const mapped = mapError(err)
+  if (isPortSignal(mapped)) {
+    throw mapped
   }
-  if (status === 412) {
-    throw new WasSyncConflictError()
+  if (notFound && mapped instanceof NotFoundError) {
+    throw new WasSyncNotFoundError(mapped.message, signalOptions(mapped))
   }
-  if (authErrors && isAuthStatus(status)) {
-    throw new WasSyncAuthError(status)
+  if (mapped instanceof PreconditionFailedError) {
+    throw new WasSyncConflictError(mapped.message, signalOptions(mapped))
   }
-  throw err
+  if (authErrors && isAuthStatus(mapped.status)) {
+    throw new WasSyncAuthError(mapped.status, signalOptions(mapped))
+  }
+  throw mapped
 }
 
 /**
@@ -202,17 +255,17 @@ export function createWasSyncPort({
         method: 'GET'
       })
     } catch (err) {
-      const status = httpStatus(err)
+      const mapped = mapError(err)
       // A read's `404` stays "absent or tombstoned" even under
       // `mapAuthErrors`: it is a modeled outcome here, and the callers read it
       // as deletion-wins.
-      if (status === 404) {
+      if (mapped instanceof NotFoundError) {
         return null
       }
-      if (mapAuthErrors && isAuthStatus(status)) {
-        throw new WasSyncAuthError(status)
+      if (mapAuthErrors && isAuthStatus(mapped.status)) {
+        throw new WasSyncAuthError(mapped.status, signalOptions(mapped))
       }
-      throw err
+      throw mapped
     }
     return {
       version: parseEtag(readEtag(response)) ?? 0,
@@ -241,11 +294,11 @@ export function createWasSyncPort({
         // The pull path is where revoked access surfaces reliably: unlike a
         // read or a delete, a `404` on the collection's own query endpoint has
         // no benign reading once the collection is known to exist.
-        const status = httpStatus(err)
-        if (mapAuthErrors && isAuthStatus(status)) {
-          throw new WasSyncAuthError(status)
+        const mapped = mapError(err)
+        if (mapAuthErrors && isAuthStatus(mapped.status)) {
+          throw new WasSyncAuthError(mapped.status, signalOptions(mapped))
         }
-        throw err
+        throw mapped
       }
     },
 
@@ -283,10 +336,11 @@ export function createWasSyncPort({
         // holds and the batch must not be retried forever. A masked
         // authorization `404` is swallowed with it -- indistinguishable by
         // design -- but revoked access still surfaces on the next `query`.
-        if (mapAuthErrors && httpStatus(err) === 404) {
+        const mapped = mapError(err)
+        if (mapAuthErrors && mapped instanceof NotFoundError) {
           return undefined
         }
-        mapWriteError(err, {
+        mapWriteError(mapped, {
           notFound: !mapAuthErrors,
           authErrors: mapAuthErrors
         })
@@ -336,17 +390,17 @@ export function createWasSyncPort({
       // yet 404s here; only a hard error propagates.
       const meta = await metaRead
       if (!meta.ok) {
-        const status = httpStatus(meta.err)
+        const mapped = mapError(meta.err)
         // A `/meta` `404` is routine (the resource has no metadata document
         // yet), so it stays benign under `mapAuthErrors` -- only `401`/`403`
         // map there.
-        if (status === 404) {
+        if (mapped instanceof NotFoundError) {
           return master
         }
-        if (mapAuthErrors && isAuthStatus(status)) {
-          throw new WasSyncAuthError(status)
+        if (mapAuthErrors && isAuthStatus(mapped.status)) {
+          throw new WasSyncAuthError(mapped.status, signalOptions(mapped))
         }
-        throw meta.err
+        throw mapped
       }
 
       const metaBody = meta.response.data as

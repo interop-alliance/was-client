@@ -30,8 +30,9 @@ src/edv/*.ts        Encryption subpath (sibling, opt-in)
   crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
 
 src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
-  port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState),
-  cid, plaintextCipher, envelope, provisioning
+  port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState,
+  SyncStatus), predicates (the four err.name classifiers), cid,
+  plaintextCipher, envelope, provisioning
   Imports core (WasClient, errors, internal/conditional) and one crypto-free
   constant module (src/edv/constants.ts, for EDV_SCHEME_VERSION), nothing
   else under src/edv/; src/edv/docCipher.ts imports its DocCipher/envelope
@@ -358,9 +359,31 @@ plaintext-vs-encrypted fork; each write returns the server-acked `version`. Two
 typed signals in `src/errors.ts` let a push loop catch exactly what it can
 handle: `WasSyncConflictError` (412, a subtype of `PreconditionFailedError`)
 triggers re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete, a
-subtype of `NotFoundError`) marks an already-gone target as a settled outcome.
-The port's `putContent` also stamps the `Key-Epoch` header so the server records
-which key epoch a body was encrypted under.
+subtype of `NotFoundError`) marks an already-gone target as a settled outcome. A
+third, `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
+`mapAuthErrors` and reports revoked access. The port's `putContent` also stamps
+the `Key-Epoch` header so the server records which key epoch a body was
+encrypted under.
+
+Bypassing the codec is not bypassing the error mapper. Every failure the port
+catches goes through `mapError` first, so its signals carry the server's
+`problem+json` fields (`type`, `title`, `details`, `requestUrl`) and a `cause`,
+and a status the port has no signal of its own for -- a 500, a 507
+quota-exceeded -- still leaves this subpath as a typed `WasError`.
+
+`./sync` also exports the four predicates that CLASSIFY those signals:
+`isSyncConflictError`, `isSyncNotFoundError`, `isSyncAuthError`, and
+`isUnknownEpochError` (`predicates.ts`). They match on `err.name` and never with
+`instanceof`, because each error is raised inside a seam the consuming app
+injects, and that seam can resolve to a second copy of this package
+(`decisions/0001-cross-package-errors-match-by-name.md`). Reading a property off
+the matched value, `status` on an auth error for the masked 404, is the intended
+shape. Consumers inside one resolved copy may still catch the classes. The
+closed status vocabulary a driver reports one feed's state through, `SyncStatus`
+(`'idle' | 'syncing' | 'synced' | 'error'`), is exported here as its one owner.
+The RxDB replication driver (`@interop/was-sync`) is the downstream consumer of
+all of this, through the port seam; it lives outside this package and this
+package never depends on it.
 
 Convergent identifiers make replicas agree without coordination (`cid.ts`): a
 content id is `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`, unpadded, so
@@ -549,6 +572,14 @@ it, and otherwise cover the client-side concepts this file names.
   (`src/sync/types.ts`), turning a JSON document into its stored body and back.
   Implementations: `createPlaintextDocCipher`, `createEdvDocCipher`,
   `createEdvEncryptOnlyDocCipher`. See The sync layer.
+- **Sync error predicate** -- one of `isSyncConflictError`,
+  `isSyncNotFoundError`, `isSyncAuthError`, `isUnknownEpochError`
+  (`src/sync/predicates.ts`): the cross-package way to recognize a sync signal,
+  matching `err.name` rather than the class. Avoid: instanceof check. See The
+  sync layer.
+- **`SyncStatus`** -- the closed vocabulary a replication driver reports one
+  feed's state through, `'idle' | 'syncing' | 'synced' | 'error'`
+  (`src/sync/types.ts`). See The sync layer.
 - **Content id** -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
   unpadded, so the same logical document mints the same resource id on every
   replica (`src/sync/cid.ts`). See The sync layer.

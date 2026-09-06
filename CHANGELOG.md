@@ -1,5 +1,34 @@
 # @interop/was-client Changelog
 
+## 0.49.0 - TBD
+
+### Added
+
+- `./sync` exports four `err.name` predicates for the errors a replication path
+  meets: `isSyncConflictError`, `isSyncNotFoundError`, `isSyncAuthError`, and
+  `isUnknownEpochError`. They match the name string rather than the class,
+  because each error is raised inside a seam the consuming app injects and that
+  seam can resolve to a second copy of this package. Reading a property off the
+  matched value, `err.status` on an auth error, is the intended shape
+  (`decisions/0001-cross-package-errors-match-by-name.md`). The first three of
+  the four move here from `@interop/wallet-core/sync`, beside the classes that
+  assign the names they match; `isSyncAuthError` is new.
+- `./sync` exports the `SyncStatus` type
+  (`'idle' | 'syncing' | 'synced' | 'error'`), the closed vocabulary a
+  replication driver reports one feed's state through. It moves here from
+  `@interop/wallet-core/sync` so the engine and the driver share one owner.
+
+### Changed
+
+- The sync port classifies through the client's own error mapper instead of
+  switching on raw HTTP status. `WasSyncConflictError` and
+  `WasSyncNotFoundError` now carry the server's `problem+json` fields (`type`,
+  `title`, `details`, `requestUrl`) and a `cause`, as does `WasSyncAuthError`,
+  and a status the port has no signal for (a 500, a 507 quota-exceeded) leaves
+  the subpath as the typed `WasError` subclass for that status rather than a raw
+  ky error. The port still moves stored bodies verbatim; it bypasses the codec,
+  not the error mapper.
+
 ## 0.48.1 - 2026-09-05
 
 ### Changed
