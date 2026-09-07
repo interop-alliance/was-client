@@ -39,12 +39,7 @@
  * boundary the predicates are the contract
  * (`decisions/0001-cross-package-errors-match-by-name.md`).
  */
-export {
-  createWasSyncPort,
-  KEY_EPOCH_HEADER,
-  formatEtag,
-  parseEtag
-} from './port.js'
+export { createWasSyncPort, KEY_EPOCH_HEADER, parseEtag } from './port.js'
 // The sync subpath's names for the client's own error accessors, so a
 // sync-only consumer reads a raw ky/ezcap failure without importing the core
 // entry.
@@ -74,6 +69,7 @@ export type {
   WireDoc,
   SyncPage,
   MasterState,
+  WriteAck,
   SyncStatus,
   WasSyncPort,
   DocCipher

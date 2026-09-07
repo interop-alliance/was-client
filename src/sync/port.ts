@@ -19,11 +19,16 @@
  * `POST /space/:s/:c/query` (profile `changes`) as a root invocation and, like
  * the raw writes, ships the stored bodies verbatim without decrypting.
  *
- * Conditional writes ride the server's monotonic content `version` (`ETag`),
- * enforced uniformly for plaintext and encrypted resources, so there is no
- * plaintext-vs-encrypted fork. `putContent`/`deleteContent` return the server-
- * acked `version` (parsed from the write's `ETag`, re-read only if the backend
- * sent none), so a caller can record acked revisions immediately.
+ * Conditional writes ride the server's `ETag`: an opaque quoted string
+ * (`"<generation>.<version>"`, a per-record generation marker ahead of the
+ * monotonic content `version` so a hard-deleted-and-recreated id can never
+ * collide with its predecessor's validators), enforced uniformly for
+ * plaintext and encrypted resources, so there is no plaintext-vs-encrypted
+ * fork. `putContent`/`deleteContent` return the server-acked {@link
+ * WriteAck} -- the write's raw `etag` (re-read only if the backend sent
+ * none) plus its `version` parsed out of it -- so a caller can record acked
+ * revisions immediately and echo `etag` back verbatim as a later write's
+ * `ifMatch`.
  *
  * Bypassing the codec is not bypassing the error mapper. Every failure caught
  * here goes through the client's own `mapError` first, so the port's signals
@@ -48,7 +53,7 @@ import {
 } from '../errors.js'
 import type { WasError, WasErrorOptions } from '../errors.js'
 import type { IZcap } from '../types.js'
-import type { Json, MasterState, WasSyncPort } from './types.js'
+import type { Json, MasterState, WasSyncPort, WriteAck } from './types.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -102,9 +107,8 @@ function signalOptions(mapped: WasError): WasErrorOptions {
 
 /**
  * Whether a mapped error is already one of the port's own signals, which a
- * nested port call (the acked-version re-read inside a write) can raise
- * through a write's catch block. Re-wrapping one would drop its cause for no
- * gain.
+ * nested port call (the write-ack re-read inside a write) can raise through a
+ * write's catch block. Re-wrapping one would drop its cause for no gain.
  *
  * @param mapped {WasError}
  * @returns {boolean}
@@ -162,20 +166,18 @@ function mapWriteError(
 }
 
 /**
- * Formats a numeric content `version` as the quoted strong `ETag` an
- * update-if-unchanged write passes as its `ifMatch` precondition (e.g. `3` to
- * `"3"`). Inverse of {@link parseEtag}.
+ * Parses a quoted strong `ETag` into its numeric revision: the trailing
+ * integer after the LAST `.` inside the quotes (`"3mJr7AoUXx2.3"` to `3`), or
+ * the whole digit run when there is no `.` (the pre-generation `"3"` shape).
+ * Returns `undefined` when the header is absent or the parsed segment is
+ * non-numeric (no such revision yet).
  *
- * @param version {number}
- * @returns {string}
- */
-export function formatEtag(version: number): string {
-  return `"${version}"`
-}
-
-/**
- * Parses a quoted strong `ETag` (`"3"`) into its numeric revision, or
- * `undefined` when the header is absent or non-numeric (no such revision yet).
+ * The quoted string as a whole is opaque -- it also carries a per-record
+ * generation marker ahead of the version, minted once and kept for the
+ * record's life, so this is one-way: there is no `formatEtag` to build a
+ * validator back out of a bare revision number. Always echo the `etag` a read
+ * or write returned back verbatim for `ifMatch`/`ifNoneMatch`; this helper
+ * only reads the revision out of it for comparison or display.
  *
  * @param etag {string | null | undefined}
  * @returns {number | undefined}
@@ -184,7 +186,13 @@ export function parseEtag(etag: string | null | undefined): number | undefined {
   if (!etag) {
     return undefined
   }
-  const revision = Number(etag.replace(/"/g, ''))
+  const unquoted = etag.replace(/"/g, '')
+  const lastDot = unquoted.lastIndexOf('.')
+  const versionPart = lastDot === -1 ? unquoted : unquoted.slice(lastDot + 1)
+  if (versionPart === '') {
+    return undefined
+  }
+  const revision = Number(versionPart)
   return Number.isFinite(revision) ? revision : undefined
 }
 
@@ -267,23 +275,27 @@ export function createWasSyncPort({
       }
       throw mapped
     }
+    const etag = readEtag(response)
     return {
-      version: parseEtag(readEtag(response)) ?? 0,
+      version: parseEtag(etag) ?? 0,
+      etag,
       updatedAt: UNKNOWN_UPDATED_AT,
       data: response.data as Json
     }
   }
 
-  /** Resolves the acked version from a write response, or via a content re-read. */
-  const ackedVersion = async (
+  /** Resolves the acked {@link WriteAck} from a write response, or via a content re-read. */
+  const writeAck = async (
     response: HttpResponse,
     id: string
-  ): Promise<number> => {
-    const version = parseEtag(readEtag(response))
+  ): Promise<WriteAck> => {
+    const etag = readEtag(response)
+    const version = parseEtag(etag)
     if (version !== undefined) {
-      return version
+      return { version, etag }
     }
-    return (await readContent(id))?.version ?? 0
+    const master = await readContent(id)
+    return { version: master?.version ?? 0, etag: master?.etag }
   }
 
   return {
@@ -314,7 +326,7 @@ export function createWasSyncPort({
             epoch
           })
         })
-        return await ackedVersion(response, id)
+        return await writeAck(response, id)
       } catch (err) {
         mapWriteError(err, { authErrors: mapAuthErrors })
       }
@@ -328,7 +340,7 @@ export function createWasSyncPort({
           method: 'DELETE',
           headers: writeHeaders({ precondition: { ifMatch } })
         })
-        return await ackedVersion(response, id)
+        return await writeAck(response, id)
       } catch (err) {
         // Under `mapAuthErrors` a delete's `404` is an idempotent success: the
         // resource is already gone (deleted locally before it was ever pushed,
@@ -361,7 +373,9 @@ export function createWasSyncPort({
           json: custom === undefined ? {} : { custom },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
-        return parseEtag(readEtag(response))
+        const etag = readEtag(response)
+        const version = parseEtag(etag)
+        return version !== undefined ? { version, etag } : undefined
       } catch (err) {
         mapWriteError(err, { authErrors: mapAuthErrors })
       }
@@ -386,8 +400,8 @@ export function createWasSyncPort({
 
       // Metadata (best-effort): the `/meta` body carries the server-managed
       // `updatedAt`, the creator DID, the key-epoch id, and the user-writable
-      // `custom`, plus its own `metaVersion` ETag. A resource with no metadata
-      // yet 404s here; only a hard error propagates.
+      // `custom`, plus its own `metaVersion`/`metaEtag` ETag. A resource with
+      // no metadata yet 404s here; only a hard error propagates.
       const meta = await metaRead
       if (!meta.ok) {
         const mapped = mapError(meta.err)
@@ -423,9 +437,11 @@ export function createWasSyncPort({
       if (metaBody?.custom !== undefined) {
         master.custom = metaBody.custom
       }
-      const metaVersion = parseEtag(readEtag(meta.response))
+      const metaEtag = readEtag(meta.response)
+      const metaVersion = parseEtag(metaEtag)
       if (metaVersion !== undefined) {
         master.metaVersion = metaVersion
+        master.metaEtag = metaEtag
       }
 
       return master

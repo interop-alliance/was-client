@@ -32,12 +32,16 @@ export type SyncCheckpoint = ChangesCheckpoint
 
 /**
  * One document as it travels on the `changes` feed wire: `id` is the WAS
- * resource id, `version` the content revision (the push `If-Match` ETag), and
- * the stored body is under `data`. A tombstone carries `_deleted: true` with no
- * `data`. This is the shared `ChangeDocument` from `@interop/storage-core`; on
- * an encrypted collection `data`/`custom` are the opaque stored envelope, moved
- * verbatim (decrypt is a projection-time concern the engine's `DocCipher`
- * handles, never the port).
+ * resource id, `version` its monotonic content revision number, and the
+ * stored body is under `data`. `version` is for comparison/ordering only --
+ * it is not a usable `ifMatch` string on its own (the server's `ETag` is an
+ * opaque string that embeds a per-record generation ahead of the version); a
+ * puller that wants to push a conditional update reads the current `etag`
+ * from {@link WasSyncPort.get} instead of reformatting this number. A
+ * tombstone carries `_deleted: true` with no `data`. This is the shared
+ * `ChangeDocument` from `@interop/storage-core`; on an encrypted collection
+ * `data`/`custom` are the opaque stored envelope, moved verbatim (decrypt is a
+ * projection-time concern the engine's `DocCipher` handles, never the port).
  */
 export type WireDoc = ChangeDocument
 
@@ -52,19 +56,41 @@ export type SyncPage = ChangesPage
  * The current master state of a single resource, read back for the 412-conflict
  * path ({@link WasSyncPort.get}). An absent or tombstoned resource surfaces as
  * `get` resolving `null`, never as a `MasterState`. `updatedAt`, `metaVersion`,
- * `custom`, `createdBy`, and `epoch` are populated from the resource's `/meta`
- * document when it exists; a resource with no metadata yet reports an
- * epoch-zero `updatedAt` placeholder (a valid, sortable timestamp -- the
- * change feed remains the authority on ordering).
+ * `metaEtag`, `custom`, `createdBy`, and `epoch` are populated from the
+ * resource's `/meta` document when it exists; a resource with no metadata yet
+ * reports an epoch-zero `updatedAt` placeholder (a valid, sortable timestamp --
+ * the change feed remains the authority on ordering).
+ *
+ * `etag` and `metaEtag` are the raw, opaque `ETag` validators the content and
+ * `/meta` reads returned (absent against a backend that does not version
+ * resources) -- pass one back verbatim as a later write's `ifMatch`. `version`
+ * and `metaVersion` are the revision numbers parsed out of them, for
+ * comparison or display only.
  */
 export interface MasterState {
   version: number
+  etag?: string
   updatedAt: string
   metaVersion?: number
+  metaEtag?: string
   data?: Json
   custom?: Json
   createdBy?: string
   epoch?: string
+}
+
+/**
+ * The acknowledgment a conditional write returns: the new `version` plus the
+ * opaque `etag` validator it lives behind, exactly as the server sent it.
+ * Pass `etag` back verbatim as a later write's `ifMatch` -- it can no longer
+ * be synthesized from `version` alone, since the server's `ETag` also embeds a
+ * per-record generation marker ahead of the version. `etag` is absent against
+ * a backend that does not version resources; read `version` only to compare
+ * or display a revision number.
+ */
+export interface WriteAck {
+  version: number
+  etag?: string
 }
 
 /**
@@ -89,10 +115,10 @@ export interface WasSyncPort {
 
   /**
    * Conditionally writes the content body verbatim (`PUT /:id`). Pass
-   * `ifNoneMatch: true` for create-if-absent, or `ifMatch` (a quoted ETag over
-   * the content `version`) for update-if-unchanged. `epoch` stamps the opaque
-   * key-epoch id the body was encrypted under (absent clears any prior stamp).
-   * Returns the new server `version` (parsed from the write's `ETag`). Throws
+   * `ifNoneMatch: true` for create-if-absent, or `ifMatch` (the opaque `ETag`
+   * from a prior read/write, echoed back verbatim) for update-if-unchanged.
+   * `epoch` stamps the opaque key-epoch id the body was encrypted under
+   * (absent clears any prior stamp). Returns the new {@link WriteAck}. Throws
    * {@link WasSyncConflictError} on `412`.
    */
   putContent(options: {
@@ -101,14 +127,15 @@ export interface WasSyncPort {
     ifMatch?: string
     ifNoneMatch?: boolean
     epoch?: string
-  }): Promise<number>
+  }): Promise<WriteAck>
 
   /**
    * Conditionally deletes a resource (writes a tombstone; `DELETE /:id`). Pass
-   * `ifMatch` (a quoted ETag over the content `version`) to delete only if
-   * unchanged. Returns the tombstone's new server `version`. Throws
-   * {@link WasSyncConflictError} on `412`, {@link WasSyncNotFoundError} on `404`
-   * (already gone -- a settled outcome for a delete).
+   * `ifMatch` (the opaque `ETag` from a prior read/write, echoed back
+   * verbatim) to delete only if unchanged. Returns the tombstone's new
+   * {@link WriteAck}. Throws {@link WasSyncConflictError} on `412`,
+   * {@link WasSyncNotFoundError} on `404` (already gone -- a settled outcome
+   * for a delete).
    *
    * Resolves `undefined` instead when the port was built with
    * `mapAuthErrors: true` and the target was already absent: there the delete
@@ -117,23 +144,23 @@ export interface WasSyncPort {
   deleteContent(options: {
     id: string
     ifMatch?: string
-  }): Promise<number | undefined>
+  }): Promise<WriteAck | undefined>
 
   /**
    * Conditionally writes the user-writable metadata `custom` (`PUT /:id/meta`).
    * Optional -- present only on a port that syncs metadata. The write fully
    * replaces `custom`, so omitting it writes the CLEARED state (the server
    * clears every property the body leaves out) -- that is how a metadata clear
-   * replicates. Returns the new `metaVersion` (parsed from the write's `ETag`),
-   * or `undefined` when the response carried none. Throws
-   * {@link WasSyncConflictError} on `412`.
+   * replicates. Returns the new metadata {@link WriteAck}, or `undefined` when
+   * the response carried no `ETag`. Throws {@link WasSyncConflictError} on
+   * `412`.
    */
   putMeta?(options: {
     id: string
     custom?: Json
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<number | undefined>
+  }): Promise<WriteAck | undefined>
 
   /**
    * Re-reads a single resource's current master state for the 412-conflict

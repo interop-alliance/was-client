@@ -190,26 +190,41 @@ connection states stays server-blocked.
 - status: todo
 - priority: medium
 - labels: encryption, log, integrity
-- blocked-by: freewallet FW-279 (the verifier's move into
-  `@interop/vh-resource-log`)
+- blocked-by: none (freewallet FW-279, the verifier's move into
+  `@interop/vh-resource-log`, landed 2026-08-22)
 - touches:
   - was-client: the encryption-descriptor read path (`EncryptionDescriptorStore`
     / `src/edv/descriptorStore.ts`) learns the log-governed case over
-    `@interop/vh-resource-log`'s `readResourceLog`; `src/log/` reduces to the
-    WAS adapter of the library's store port (that reduction is FW-279's
-    was-client entry and lands there, not here)
+    `@interop/vh-resource-log`'s `readResourceLog`, by EXTRACTION from
+    wallet-core (decided 2026-09-07, below) rather than a fresh build;
+    `src/log/` is already the WAS adapter of the library's store port
+    (FW-279's was-client entry)
   - vh-resource-log: hosts the verifier, the pin port, and the append path after
     FW-279; this item consumes them as published and adds nothing there
   - storage-core: unaffected (`resourceLog.ts` wire types and
     `CollectionEncryption.type`/`history` shipped; the verifier consumes them
     as-is) -- verify and waive
-  - wallet-core: unaffected by this item once FW-279 lands (its
-    `logGovernedDescriptorSource` already serves the roster; the
-    collection-descriptor wiring is FW-134's) -- verify and waive
+  - wallet-core: the SOURCE of the moved code. `readGovernedEpochConfiguration`
+    (`src/descriptors/logSource.ts`) and the generic halves of
+    `logGovernedDescriptorSource` / `logGovernedDescriptorStore`
+    (`src/keys/rosterLogStore.ts`: open the log, verify under an injected
+    controller port and pin store, refuse a head whose `state.type` is not
+    `WasEpochConfiguration`, strip `history` on the way in and stamp it on
+    the way out) move here; wallet-core keeps the did:webvh controller
+    adapter, the ceremony-tail license and its log class, the roster's
+    placement and wiring, and wraps this package's reader. The
+    collection-descriptor producer wiring stays FW-134's
   - app-connect-spec / encrypted-collections-spec: profile of record (ECS-3
     settles which spec hosts it); no text change expected -- verify
   - freewallet / dcw: consumers -- FW-134 and DCW-43 build the producing half on
     this read path
+  - was-client `src/log/`: `resourceLogStore` takes a Collection Resource
+    handle; the governing log is the sub-resource
+    `/space/{space_id}/{collection_id}/meta/log` (WASS-27, settled
+    2026-09-07), not a Resource, so the store gains a constructor over the
+    Collection handle (or a raw URL) that speaks the same three
+    operations. The roster's `key-map/user-key.jsonl` keeps the Resource
+    form
 - acceptance:
   - [x] Decision recorded first (2026-08-22): wallet-core's shipped verifier
         (`src/resourceLog/` -- verify, append, pin, seal) moves to a new
@@ -229,6 +244,13 @@ connection states stays server-blocked.
         `method` mismatch, extending past a terminal entry) ship in
         `@interop/vh-resource-log` under FW-279; this item does not reimplement
         any of them and adds only the projection-mismatch case below
+  - [ ] Built by extraction, the FW-279 shape: the generic governed read
+        moves down from wallet-core (the touches entry names the functions)
+        behind this package's descriptor-store seam, and wallet-core's
+        roster path is re-pointed at it with no behavior change. The user
+        key roster's existing tests in wallet-core, unchanged, are the
+        extraction's acceptance test. Building the reader fresh here and
+        re-plumbing wallet-core onto it afterwards is rejected
   - [ ] The log-governed descriptor read path: a descriptor carrying `history`
         is accepted only after refusing a `history.method` that is not
         `RESOURCE_LOG_METHOD` before any fetch, opening the log at
@@ -262,6 +284,25 @@ existing negative-path suite; this item builds the read path against it; FW-134
 / DCW-43 then produce real logs. Spec-side prerequisites WASS-22 (identifier)
 and ECS-3 (profile home) are editorial for this item -- the profile's normative
 content is already stable in the App Connect spec text.
+
+Re-scoped 2026-09-07 from the FW-134 design pass. Two things changed. First,
+who this reader is for. The wallets open a governed collection's log directly,
+by a placement constant, and never read the projection, so they need only
+what wallet-core already has; the pointer-following read here is for every
+reader that holds a descriptor but not the convention: a was-react app on a
+shared collection, the storage browser, an agent. Placement was settled with
+that audience in mind (the log sits under the collection's own URL subtree,
+so the read zcap those readers already hold covers it; FW-134 and DCW-43
+record it). Second, how it is built. wallet-core's governed read already does
+most of what the acceptance list describes, and was-client sits below
+wallet-core, so the reader is that code moved down a layer, with only the
+three things wallet-core never needed added here: the `history.method`
+refusal before any fetch, opening at `history.resource`, and the projection
+equality check. The item stays ahead of FW-134 for that layering reason, not
+because the wallet would otherwise write a log nobody checks. One spec
+reconciliation is pending beside it: encrypted-collections-spec ECS-7 settles
+that the projection this reader opens is a bound, non-authoritative copy of
+the head, and the equality check here is what makes that binding checkable.
 
 ---
 

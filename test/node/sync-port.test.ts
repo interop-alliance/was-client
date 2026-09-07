@@ -6,7 +6,7 @@
  * `WasClient` records the raw `was.request()` calls (and serves the
  * `Collection.changes()` feed), so these assert the exact request shapes -- path,
  * method, JSON body, conditional-write headers, and the `Key-Epoch` stamp --
- * plus the 412-conflict and 404-not-found error mapping and the acked-version
+ * plus the 412-conflict and 404-not-found error mapping and the write-ack
  * parsing, all without a live server.
  *
  * The port classifies through the client's own `mapError`, so the signals it
@@ -16,7 +16,7 @@
 import { describe, it, expect, vi } from 'vitest'
 
 import { createWasSyncPort } from '../../src/sync/index.js'
-import { formatEtag, parseEtag, errorStatus } from '../../src/sync/index.js'
+import { parseEtag, errorStatus } from '../../src/sync/index.js'
 import { errorMessage } from '../../src/sync/index.js'
 import {
   WasSyncAuthError,
@@ -102,11 +102,17 @@ function makeWas(options: {
 }
 
 describe('createWasSyncPort helpers', () => {
-  it('formatEtag / parseEtag round-trip a numeric version', () => {
-    expect(formatEtag(3)).toBe('"3"')
+  it('parseEtag reads the pre-generation bare-version shape', () => {
     expect(parseEtag('"3"')).toBe(3)
     expect(parseEtag(null)).toBeUndefined()
     expect(parseEtag('not-a-number')).toBeUndefined()
+  })
+
+  it('parseEtag reads the version after the final "." in a generation.version etag', () => {
+    expect(parseEtag('"3mJr7AoUXx2.3"')).toBe(3)
+    expect(parseEtag('"g.7.12"')).toBe(12)
+    expect(parseEtag('"3mJr7AoUXx2."')).toBeUndefined()
+    expect(parseEtag('"3mJr7AoUXx2.abc"')).toBeUndefined()
   })
 
   it('errorStatus reads flat and nested shapes', () => {
@@ -134,23 +140,23 @@ describe('createWasSyncPort.query', () => {
 })
 
 describe('createWasSyncPort.putContent', () => {
-  it('PUTs the body verbatim with if-none-match and returns the acked version', async () => {
+  it('PUTs the body verbatim with if-none-match and returns the acked write', async () => {
     const calls: RequestOptions[] = []
     const { was } = makeWas({
       onRequest: opts => {
         calls.push(opts)
-        return response(null, { etag: '"1"' })
+        return response(null, { etag: '"g1.1"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    const version = await port.putContent({
+    const ack = await port.putContent({
       id: 'res-1',
       data: { hello: 'world' },
       ifNoneMatch: true
     })
 
-    expect(version).toBe(1)
+    expect(ack).toEqual({ version: 1, etag: '"g1.1"' })
     expect(calls).toHaveLength(1)
     expect(calls[0]!.method).toBe('PUT')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1`)
@@ -181,7 +187,7 @@ describe('createWasSyncPort.putContent', () => {
     })
   })
 
-  it('re-reads the version when the write response carries no ETag', async () => {
+  it('re-reads the write ack when the write response carries no ETag', async () => {
     let putCount = 0
     const { was } = makeWas({
       onRequest: opts => {
@@ -190,14 +196,14 @@ describe('createWasSyncPort.putContent', () => {
           return response(null) // no etag on the write
         }
         // the fallback content GET
-        return response({ a: 1 }, { etag: '"9"' })
+        return response({ a: 1 }, { etag: '"g9.9"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    const version = await port.putContent({ id: 'res-1', data: { a: 1 } })
+    const ack = await port.putContent({ id: 'res-1', data: { a: 1 } })
     expect(putCount).toBe(1)
-    expect(version).toBe(9)
+    expect(ack).toEqual({ version: 9, etag: '"g9.9"' })
   })
 
   it('maps a 412 to WasSyncConflictError (a PreconditionFailedError)', async () => {
@@ -231,18 +237,18 @@ describe('createWasSyncPort.putContent', () => {
 })
 
 describe('createWasSyncPort.deleteContent', () => {
-  it('DELETEs with if-match and returns the tombstone version', async () => {
+  it('DELETEs with if-match and returns the tombstone write ack', async () => {
     const calls: RequestOptions[] = []
     const { was } = makeWas({
       onRequest: opts => {
         calls.push(opts)
-        return response(null, { etag: '"2"' })
+        return response(null, { etag: '"g2.2"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    const version = await port.deleteContent({ id: 'res-1', ifMatch: '"1"' })
-    expect(version).toBe(2)
+    const ack = await port.deleteContent({ id: 'res-1', ifMatch: '"1"' })
+    expect(ack).toEqual({ version: 2, etag: '"g2.2"' })
     expect(calls[0]!.method).toBe('DELETE')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1`)
     expect(calls[0]!.headers).toMatchObject({ 'if-match': '"1"' })
@@ -305,10 +311,10 @@ describe('createWasSyncPort.get', () => {
               epoch: 'epoch-3',
               custom: { name: 'Alice' }
             },
-            { etag: '"7"' }
+            { etag: '"gMeta.7"' }
           )
         }
-        return response({ a: 1 }, { etag: '"4"' })
+        return response({ a: 1 }, { etag: '"gContent.4"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
@@ -316,12 +322,14 @@ describe('createWasSyncPort.get', () => {
     const master = await port.get({ id: 'res-1' })
     expect(master).toEqual({
       version: 4,
+      etag: '"gContent.4"',
       updatedAt: '2026-01-01T00:00:00.000Z',
       data: { a: 1 },
       createdBy: 'did:key:zCreator',
       epoch: 'epoch-3',
       custom: { name: 'Alice' },
-      metaVersion: 7
+      metaVersion: 7,
+      metaEtag: '"gMeta.7"'
     })
   })
 
@@ -331,13 +339,14 @@ describe('createWasSyncPort.get', () => {
         if (opts.path?.endsWith('/meta')) {
           throw httpError(404)
         }
-        return response({ a: 1 }, { etag: '"4"' })
+        return response({ a: 1 }, { etag: '"g.4"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     const master = await port.get({ id: 'res-1' })
     expect(master?.version).toBe(4)
+    expect(master?.etag).toBe('"g.4"')
     // A valid, sortable epoch-zero timestamp (not an empty string).
     expect(new Date(master!.updatedAt).getTime()).toBe(0)
   })
@@ -414,13 +423,13 @@ describe('createWasSyncPort capability threading', () => {
   })
 })
 
-describe('createWasSyncPort.putMeta clear + version ack', () => {
+describe('createWasSyncPort.putMeta clear + write ack', () => {
   it('writes {} when custom is omitted (the cleared state)', async () => {
     const calls: RequestOptions[] = []
     const { was } = makeWas({
       onRequest: opts => {
         calls.push(opts)
-        return response(null, { etag: '"3"' })
+        return response(null, { etag: '"g3.3"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
@@ -434,13 +443,16 @@ describe('createWasSyncPort.putMeta clear + version ack', () => {
     )
   })
 
-  it('returns the new metaVersion parsed from the response ETag', async () => {
+  it('returns the new write ack parsed from the response ETag', async () => {
     const { was } = makeWas({
-      onRequest: () => response(null, { etag: '"3"' })
+      onRequest: () => response(null, { etag: '"g3.3"' })
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    expect(await port.putMeta!({ id: 'res-1', custom: { a: 1 } })).toBe(3)
+    expect(await port.putMeta!({ id: 'res-1', custom: { a: 1 } })).toEqual({
+      version: 3,
+      etag: '"g3.3"'
+    })
   })
 
   it('returns undefined when the response carries no ETag', async () => {
