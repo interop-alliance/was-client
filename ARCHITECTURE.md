@@ -40,9 +40,11 @@ src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
 
 src/log/*.ts        Resource-log subpath (sibling, opt-in)
   logStore: the WAS binding of @interop/vh-resource-log's ResourceLogStore
-  port (LOG_CONTENT_TYPE and the resourceLogStore adapter); a lost CAS race
-  rethrows as the library's ResourceLogConflictError with the transport's
-  PreconditionFailedError as cause
+  port (the resourceLogStore adapter, over a Resource's body or a
+  Collection's /meta/log history log via Collection.getHistoryLog /
+  putHistoryLog; LOG_CONTENT_TYPE re-exported from internal/content); a
+  lost CAS race rethrows as the library's ResourceLogConflictError with the
+  transport's PreconditionFailedError as cause
 ```
 
 The load-bearing rule: **core does not import `src/edv/`, and neither do

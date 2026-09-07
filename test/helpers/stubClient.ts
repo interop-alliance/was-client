@@ -18,6 +18,7 @@ export interface RequestArgs {
   method?: string
   action?: string
   json?: unknown
+  body?: unknown
   headers?: Record<string, string>
   capability?: {
     '@context'?: string

@@ -348,6 +348,8 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
   [problemFragment(ProblemTypes.ID_CONFLICT)]: ConflictError,
   [problemFragment(ProblemTypes.UNSUPPORTED_BACKEND)]: ConflictError,
   [problemFragment(ProblemTypes.ENCRYPTION_IMMUTABLE)]: ConflictError,
+  [problemFragment(ProblemTypes.ENCRYPTION_HISTORY_LOG_GOVERNED)]:
+    ConflictError,
   [problemFragment(ProblemTypes.PRECONDITION_FAILED)]: PreconditionFailedError,
   [problemFragment(ProblemTypes.PAYLOAD_TOO_LARGE)]: PayloadTooLargeError,
   [problemFragment(ProblemTypes.QUOTA_EXCEEDED)]: QuotaExceededError,

@@ -251,6 +251,7 @@ describe('the ./paths subpath barrel', () => {
     expect(Object.keys(barrel).sort()).toEqual(
       [
         'collectionItems',
+        'collectionLog',
         'collectionMeta',
         'collectionPath',
         'collectionQuery',

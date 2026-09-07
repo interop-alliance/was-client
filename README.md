@@ -520,6 +520,31 @@ sent, so `name` / `tags` are never stored as server-visible plaintext, and
 collection's name/tags surface: by convention the plaintext Description `name`
 is left unpopulated there.
 
+#### The governing history log
+
+Beside `/meta`, a Collection has a `/meta/log` sub-resource: its governing
+history log (the backend's `governed-history-logs` feature), a JSON Lines body
+the server derives the Collection's `encryption` descriptor from. The log is not
+a Resource of the Collection (it is absent from listings and the `changes` feed)
+and not part of the `/meta` object, and it carries its own ETag.
+
+```ts
+const log = await collection.getHistoryLog() // { body, etag } | null
+
+// The guarded create declares the Collection log-governed.
+await collection.putHistoryLog(genesisLine, { ifNoneMatch: true })
+// An append is a compare-and-swap: the prior bytes verbatim plus one line.
+await collection.putHistoryLog(log.body + nextLine, { ifMatch: log.etag })
+```
+
+From the create on, `describe()` serves `encryption` as the log head's `state`
+with `history: { method, resource }` stamped on, and a direct `encryption` write
+on the Description throws `ConflictError`. The create is refused the same way on
+a Collection whose Description already carries a client-written descriptor. A
+lost race throws `PreconditionFailedError` (412). These are the raw transport
+methods; the `/log` subpath's `resourceLogStore({ collection })` (below) drives
+them as the resource-log store port.
+
 ### Conditional writes (optimistic concurrency)
 
 Against a backend that advertises the `conditional-writes` feature (see below),
@@ -940,13 +965,17 @@ library: the JSON Lines codec, the `ResourceLogStore` port, the read-back
 (`ResourceLogEntry` et al.) live in `@interop/storage-core`. This subpath
 re-exports none of them.
 
-- **`resourceLogStore({ resource })`** -- the port over a WAS Resource (stored
-  as `text/jsonl`): read-with-etag of the full log, compare-and-swap append
-  conditioned on that etag, and the guarded create of a genesis entry. Appends
-  carry the prior lines' bytes forward verbatim. Both writes ride the backend's
-  `conditional-writes` feature, which the profile requires; a lost race rethrows
-  the library's `ResourceLogConflictError` with the transport's
-  `PreconditionFailedError` as `cause`.
+- **`resourceLogStore({ resource })`** / **`resourceLogStore({ collection })`**
+  -- the port over one of the two places a WAS server keeps a log, stored as
+  `text/jsonl` either way: a WAS Resource whose whole body is the log (a key
+  roster), or a Collection's governing history log at its `/meta/log`
+  sub-resource (the descriptor the server derives `encryption` from; see "The
+  governing history log" above). The store does read-with-etag of the full log,
+  compare-and-swap append conditioned on that etag, and the guarded create of a
+  genesis entry. Appends carry the prior lines' bytes forward verbatim. Both
+  writes ride the backend's `conditional-writes` feature, which the profile
+  requires; a lost race rethrows the library's `ResourceLogConflictError` with
+  the transport's `PreconditionFailedError` as `cause`.
 
 ### Export and import
 

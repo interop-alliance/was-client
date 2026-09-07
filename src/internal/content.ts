@@ -17,6 +17,15 @@ import type { Json, ResourceData } from '../types.js'
 const OCTET_STREAM = 'application/octet-stream'
 
 /**
+ * The content type a resource log is stored under (JSON Lines, not JSON --
+ * load-bearing: a JSON content type would have the request layer parse and
+ * re-serialize the body, losing the line framing). Defined in core so the
+ * Collection handle's history-log writes share it with the `/log` subpath
+ * without core importing that subpath.
+ */
+export const LOG_CONTENT_TYPE = 'text/jsonl'
+
+/**
  * The shared `TextEncoder` (stateless, so one instance serves the whole
  * library): serializing an explicitly-typed JSON write to bytes here,
  * re-serializing a pre-parsed JSON body in `Resource.getBytes()`, and encoding

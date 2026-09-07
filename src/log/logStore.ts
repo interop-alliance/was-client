@@ -2,15 +2,22 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The WAS binding of `@interop/vh-resource-log`'s store port: the log is a
- * WAS Resource's entire body, stored as `text/jsonl`, with the port's
- * read-with-etag, compare-and-swap append, and guarded genesis create mapped
- * onto the resource's conditional writes. The hosting collection may be
- * plaintext or encrypted: a conditional codec pins the write to the `ifMatch`
- * this store passes rather than to the ETag its own pre-read observed, so the
- * append profile's compare-and-swap holds either way. On an encrypted host
- * the resource id must be one the codec mints, since the EDV codec refuses to
- * create a document under a human-readable id.
+ * The WAS binding of `@interop/vh-resource-log`'s store port, over either of
+ * the two places a WAS server keeps a resource log. A log may be a WAS
+ * Resource's entire body (the user key roster's `key-map/user-key.jsonl`), or
+ * a Collection's governing history log at the `/meta/log` sub-resource (the
+ * backend's `governed-history-logs` feature, from which the server derives
+ * the Collection's served `encryption` member). Either way the log is stored
+ * as `text/jsonl`, with the port's read-with-etag, compare-and-swap append,
+ * and guarded genesis create mapped onto the target's conditional writes.
+ *
+ * A Resource-hosted log's collection may be plaintext or encrypted: a
+ * conditional codec pins the write to the `ifMatch` this store passes rather
+ * than to the ETag its own pre-read observed, so the append profile's
+ * compare-and-swap holds either way. On an encrypted host the resource id
+ * must be one the codec mints, since the EDV codec refuses to create a
+ * document under a human-readable id. A Collection's history log is never
+ * encrypted and runs no codec: the server reads its head itself.
  *
  * Both the append and the create ride the backend's `conditional-writes`
  * feature -- the profile requires it (without the precondition, concurrent
@@ -29,40 +36,37 @@ import {
   serializeResourceLogEntry,
   type ResourceLogStore
 } from '@interop/vh-resource-log'
+import type { Collection } from '../Collection.js'
 import type { Resource } from '../Resource.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
 import { blobText } from '../internal/blob.js'
-import { ENCODER, isBlob } from '../internal/content.js'
+import { ENCODER, LOG_CONTENT_TYPE, isBlob } from '../internal/content.js'
+
+export { LOG_CONTENT_TYPE }
 
 /**
- * The content type a resource log is stored under (JSON Lines, not JSON --
- * load-bearing: a JSON content type would have the request layer parse and
- * re-serialize the body, losing the line framing).
+ * The one shape the store drives, behind which the two hosts differ: a raw
+ * read of the log's text body with its validator, and a whole-body
+ * conditional write.
  */
-export const LOG_CONTENT_TYPE = 'text/jsonl'
+interface LogTarget {
+  read(): Promise<{ body: string; etag?: string } | null>
+  put(
+    body: string,
+    precondition: { ifMatch?: string; ifNoneMatch?: true }
+  ): Promise<void>
+}
 
 /**
- * The WAS Resource adapter implementing the library's `ResourceLogStore`
- * port. `read` keeps the Blob / text body handling (a React Native Blob has
- * no `text()`; `blobText` falls back to `FileReader`), `append` carries the
- * prior entries' bytes forward verbatim from the most recent read (an append
- * never re-serializes history), and both `append` and `create` translate the
- * transport's 412 into the library's conflict error.
+ * The Resource host: `getWithEtag` (so the codec runs and a text body is
+ * decoded as a Blob or a string) and `put` with the log content type.
+ * `read` keeps the Blob / text body handling (a React Native Blob has no
+ * `text()`; `blobText` falls back to `FileReader`).
  *
- * @param options {object}
- * @param options.resource {Resource}
- * @returns {ResourceLogStore}
+ * @param resource {Resource}
+ * @returns {LogTarget}
  */
-export function resourceLogStore({
-  resource
-}: {
-  resource: Resource
-}): ResourceLogStore {
-  // The raw body observed by the most recent read; an append extends these
-  // bytes verbatim instead of re-serializing the parsed entries. Safe to carry
-  // even if stale: the append is pinned to the same read's ETag, so a
-  // concurrent append fails the CAS instead.
-  let lastReadBody: string | undefined
+function resourceTarget(resource: Resource): LogTarget {
   return {
     async read() {
       const current = await resource.getWithEtag()
@@ -80,8 +84,69 @@ export function resourceLogStore({
             'hold a text body (is it stored as JSON instead of JSON Lines?).'
         )
       }
-      const entries = parseResourceLog(body)
-      lastReadBody = body
+      return { body, etag: current.etag }
+    },
+    async put(body, precondition) {
+      await resource.put(ENCODER.encode(body), {
+        contentType: LOG_CONTENT_TYPE,
+        ...precondition
+      })
+    }
+  }
+}
+
+/**
+ * The Collection host: the governing history log at `/meta/log`, read and
+ * written verbatim through the handle's own transport methods.
+ *
+ * @param collection {Collection}
+ * @returns {LogTarget}
+ */
+function collectionTarget(collection: Collection): LogTarget {
+  return {
+    read: () => collection.getHistoryLog(),
+    async put(body, precondition) {
+      await collection.putHistoryLog(body, precondition)
+    }
+  }
+}
+
+/**
+ * The WAS adapter implementing the library's `ResourceLogStore` port, over
+ * one of two hosts: `resource`, a WAS Resource whose whole body is the log,
+ * or `collection`, whose governing history log at `/meta/log` is the log.
+ * `append` carries the prior entries' bytes forward verbatim from the most
+ * recent read (an append never re-serializes history), and both `append` and
+ * `create` translate the transport's 412 into the library's conflict error.
+ *
+ * @param options {object}
+ * @param [options.resource] {Resource}       the Resource holding the log
+ * @param [options.collection] {Collection}   the Collection whose history log
+ *   is the log; exactly one of the two is given
+ * @returns {ResourceLogStore}
+ */
+export function resourceLogStore(
+  options:
+    | { resource: Resource; collection?: undefined }
+    | { collection: Collection; resource?: undefined }
+): ResourceLogStore {
+  const target =
+    options.resource !== undefined
+      ? resourceTarget(options.resource)
+      : collectionTarget(options.collection)
+  // The raw body observed by the most recent read; an append extends these
+  // bytes verbatim instead of re-serializing the parsed entries. Safe to carry
+  // even if stale: the append is pinned to the same read's ETag, so a
+  // concurrent append fails the CAS instead.
+  let lastReadBody: string | undefined
+  return {
+    async read() {
+      const current = await target.read()
+      if (current === null) {
+        return null
+      }
+      const entries = parseResourceLog(current.body)
+      lastReadBody = current.body
       return { entries, etag: current.etag }
     },
     async append(entry, { ifMatch }) {
@@ -96,7 +161,7 @@ export function resourceLogStore({
         lastReadBody + separator + serializeResourceLogEntry(entry) + '\n'
       await putOrConflict({
         body: extended,
-        options: { ifMatch },
+        precondition: { ifMatch },
         conflict:
           'Resource-log append lost its compare-and-swap: the validator ' +
           'is stale.'
@@ -107,7 +172,7 @@ export function resourceLogStore({
       const serialized = serializeResourceLog([entry])
       await putOrConflict({
         body: serialized,
-        options: { ifNoneMatch: true },
+        precondition: { ifNoneMatch: true },
         conflict:
           'Resource-log create lost its guarded-create race: the log ' +
           'already exists.'
@@ -125,18 +190,15 @@ export function resourceLogStore({
    */
   async function putOrConflict({
     body,
-    options,
+    precondition,
     conflict
   }: {
     body: string
-    options: { ifMatch?: string; ifNoneMatch?: true }
+    precondition: { ifMatch?: string; ifNoneMatch?: true }
     conflict: string
   }): Promise<void> {
     try {
-      await resource.put(ENCODER.encode(body), {
-        contentType: LOG_CONTENT_TYPE,
-        ...options
-      })
+      await target.put(body, precondition)
     } catch (err) {
       if (err instanceof PreconditionFailedError) {
         throw new ResourceLogConflictError(conflict, { cause: err })

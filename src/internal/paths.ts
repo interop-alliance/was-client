@@ -235,6 +235,15 @@ export function collectionMeta(spaceId: string, collectionId: string): string {
 }
 
 /**
+ * `/space/:spaceId/:collectionId/meta/log` -- the Collection's governing
+ * history log sub-resource (JSON Lines). Not a Resource of the Collection:
+ * absent from listings and the `changes` feed, and versioned by its own ETag.
+ */
+export function collectionLog(spaceId: string, collectionId: string): string {
+  return `${collectionMeta(spaceId, collectionId)}/log`
+}
+
+/**
  * `/space/:spaceId/:collectionId/query` -- the collection-level query endpoint,
  * whose body's `profile` selects the query (e.g. `changes`, `blinded-index`).
  */

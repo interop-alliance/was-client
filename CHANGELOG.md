@@ -1,5 +1,23 @@
 # @interop/was-client Changelog
 
+## 0.51.0 - TBD
+
+### Added
+
+- `Collection.getHistoryLog()` /
+  `putHistoryLog(body, { ifMatch | ifNoneMatch })`: the Collection's governing
+  history log at its `/meta/log` sub-resource (the backend's
+  `governed-history-logs` feature), read verbatim with its ETag and written
+  whole as `text/jsonl` under a precondition. The guarded create declares the
+  Collection log-governed; the server then derives its served `encryption`
+  member from the log head's `state`.
+- `./log`: `resourceLogStore({ collection })`, the store port over a
+  Collection's governing history log, beside the existing
+  `resourceLogStore({ resource })` form.
+- `./paths`: `collectionLog(spaceId, collectionId)`.
+- The `encryption-history-log-governed` problem type (409, a direct `encryption`
+  write on a log-governed Collection) maps to `ConflictError`.
+
 ## 0.50.0 - 2026-09-07
 
 ### Changed

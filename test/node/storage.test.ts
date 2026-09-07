@@ -20,6 +20,7 @@ import {
   WasClient,
   ValidationError,
   ConflictError,
+  PreconditionFailedError,
   WasServerError
 } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
@@ -385,6 +386,65 @@ describe('collection.setMeta()', () => {
       .collection('c')
       .setMeta({ custom: { name: 'Notes' } }, { ifMatch: '"2"' })
     expect(calls[0]?.headers?.['if-match']).toBe('"2"')
+  })
+})
+
+describe('collection.getHistoryLog() / putHistoryLog()', () => {
+  it('GETs the /meta/log sub-resource and returns the body verbatim with its etag', async () => {
+    const body = '{"versionId":"1-a","state":{"type":"X"}}\n'
+    const calls: RequestArgs[] = []
+    const client = clientWithStub(args => {
+      calls.push(args)
+      return {
+        status: 200,
+        headers: new Headers({ etag: '"g.1"', 'content-type': 'text/jsonl' }),
+        text: async () => body
+      } as unknown as HttpResponse
+    })
+    const result = await client.space('s').collection('c').getHistoryLog()
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta/log')
+    expect(calls[0]?.method).toBe('GET')
+    expect(result).toEqual({ body, etag: '"g.1"' })
+  })
+
+  it('returns null when there is no log, or the collection is not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').collection('c').getHistoryLog()).toBeNull()
+  })
+
+  it('PUTs the body as text/jsonl under the guarded-create precondition', async () => {
+    const body = '{"versionId":"1-a","state":{"type":"X"}}\n'
+    const { client, calls } = clientWithRequestSpy({ etag: '"g.1"' })
+    const result = await client
+      .space('s')
+      .collection('c')
+      .putHistoryLog(body, { ifNoneMatch: true })
+    expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta/log')
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.headers?.['content-type']).toBe('text/jsonl')
+    expect(calls[0]?.headers?.['if-none-match']).toBe('*')
+    expect(new TextDecoder().decode(calls[0]?.body as Uint8Array)).toBe(body)
+    expect(result).toEqual({ etag: '"g.1"' })
+  })
+
+  it('sends If-Match for a compare-and-swap append', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client
+      .space('s')
+      .collection('c')
+      .putHistoryLog('{}\n', { ifMatch: '"g.1"' })
+    expect(calls[0]?.headers?.['if-match']).toBe('"g.1"')
+    expect(calls[0]?.headers).not.toHaveProperty('if-none-match')
+  })
+
+  it('maps a 412 to PreconditionFailedError', async () => {
+    const { client } = clientWithRequestSpy({ fail: 412 })
+    await expect(
+      client
+        .space('s')
+        .collection('c')
+        .putHistoryLog('{}\n', { ifMatch: '"x"' })
+    ).rejects.toBeInstanceOf(PreconditionFailedError)
   })
 })
 

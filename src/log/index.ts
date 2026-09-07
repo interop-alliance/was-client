@@ -5,7 +5,8 @@
  * The `@interop/was-client/log` subpath entry: the WAS binding of
  * `@interop/vh-resource-log`'s store port -- `resourceLogStore` maps the
  * port's read-with-etag, compare-and-swap append, and guarded genesis create
- * onto one WAS Resource's conditional writes, rethrowing a lost race as the
+ * onto the conditional writes of one WAS Resource, or of a Collection's
+ * governing history log at `/meta/log`, rethrowing a lost race as the
  * library's `ResourceLogConflictError`. Everything else about resource logs
  * (the Resource Log Profile, encrypted-collections-spec
  * `#resource-log-profile`) lives in that library: the JSON Lines codec, the

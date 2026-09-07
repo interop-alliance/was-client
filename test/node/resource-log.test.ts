@@ -2,10 +2,11 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Tests for the `/log` subpath: the WAS Resource adapter of
+ * Tests for the `/log` subpath: the WAS adapter of
  * `@interop/vh-resource-log`'s store port (read-with-etag, CAS append,
  * guarded genesis create, and the 412-to-conflict-error translation) --
- * against an in-memory fake Resource (no network). The codec,
+ * against an in-memory fake Resource and an in-memory fake Collection whose
+ * governing history log is the target (no network). The codec,
  * `confirmAppend`, and verification suites live in the library.
  */
 import { describe, expect, it } from 'vitest'
@@ -14,6 +15,7 @@ import {
   ResourceLogConflictError,
   serializeResourceLog
 } from '@interop/vh-resource-log'
+import type { Collection } from '../../src/Collection.js'
 import type { Resource } from '../../src/Resource.js'
 import { PreconditionFailedError, ValidationError } from '../../src/errors.js'
 import { LOG_CONTENT_TYPE, resourceLogStore } from '../../src/log/index.js'
@@ -98,6 +100,49 @@ function fakeLogResource(initialBody?: string) {
     }
   }
   return { resource: resource as unknown as Resource, state }
+}
+
+/**
+ * An in-memory fake of the Collection surface the collection-hosted store
+ * drives: `getHistoryLog` serves the stored body as text with a
+ * version-counter ETag, and `putHistoryLog` records its options and enforces
+ * the `ifMatch` / `ifNoneMatch` preconditions like the server would.
+ *
+ * @param [initialBody] {string}   the stored log body; absent = no log yet
+ * @returns {object}
+ */
+function fakeLogCollection(initialBody?: string) {
+  const state = {
+    body: initialBody,
+    version: initialBody === undefined ? 0 : 1,
+    puts: [] as Array<{ ifMatch?: string; ifNoneMatch?: boolean }>
+  }
+  const collection = {
+    id: 'vault',
+    getHistoryLog: async () =>
+      state.body === undefined
+        ? null
+        : { body: state.body, etag: `"v${state.version}"` },
+    putHistoryLog: async (
+      body: string,
+      options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+    ) => {
+      state.puts.push(options)
+      if (options.ifNoneMatch && state.body !== undefined) {
+        throw new PreconditionFailedError('exists', { status: 412 })
+      }
+      if (
+        options.ifMatch !== undefined &&
+        options.ifMatch !== `"v${state.version}"`
+      ) {
+        throw new PreconditionFailedError('stale', { status: 412 })
+      }
+      state.body = body
+      state.version += 1
+      return { etag: `"v${state.version}"` }
+    }
+  }
+  return { collection: collection as unknown as Collection, state }
 }
 
 describe('resourceLogStore', () => {
@@ -202,5 +247,43 @@ describe('resourceLogStore', () => {
       'LOG_CONTENT_TYPE',
       'resourceLogStore'
     ])
+  })
+})
+
+describe('resourceLogStore over a Collection history log', () => {
+  it('reads null for an absent log, and creates the genesis guarded', async () => {
+    const { collection, state } = fakeLogCollection()
+    const store = resourceLogStore({ collection })
+    expect(await store.read()).toBeNull()
+
+    await store.create(entryAt(1))
+    expect(state.puts[0]).toEqual({ ifNoneMatch: true })
+    expect(state.body).toBe(serializeResourceLog([entryAt(1)]))
+  })
+
+  it('reads entries with the etag and appends the prior bytes plus one line', async () => {
+    const { collection, state } = fakeLogCollection(
+      serializeResourceLog([entryAt(1)])
+    )
+    const store = resourceLogStore({ collection })
+    const current = (await store.read())!
+    expect(current.entries).toEqual([entryAt(1)])
+    expect(current.etag).toBe('"v1"')
+
+    await store.append(entryAt(2), { ifMatch: current.etag! })
+    expect(state.puts[0]).toEqual({ ifMatch: '"v1"' })
+    expect(state.body).toBe(serializeResourceLog([entryAt(1), entryAt(2)]))
+  })
+
+  it('rethrows a lost race as the conflict error on both writes', async () => {
+    const { collection } = fakeLogCollection(serializeResourceLog([entryAt(1)]))
+    const store = resourceLogStore({ collection })
+    await store.read()
+    await expect(
+      store.append(entryAt(2), { ifMatch: '"v0"' })
+    ).rejects.toBeInstanceOf(ResourceLogConflictError)
+    await expect(store.create(entryAt(1))).rejects.toBeInstanceOf(
+      ResourceLogConflictError
+    )
   })
 })

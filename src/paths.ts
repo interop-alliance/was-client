@@ -30,6 +30,7 @@ export {
   collectionPath,
   collectionItems,
   collectionMeta,
+  collectionLog,
   collectionQuery,
   resourcePath,
   resourceMeta,

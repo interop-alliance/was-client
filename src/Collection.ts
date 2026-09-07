@@ -15,6 +15,7 @@ import {
   collectionQuota,
   collectionQuery,
   collectionMeta,
+  collectionLog,
   resourcePath,
   toUrl
 } from './internal/paths.js'
@@ -56,6 +57,8 @@ import {
   setPublicPolicy
 } from './internal/policy.js'
 import {
+  ENCODER,
+  LOG_CONTENT_TYPE,
   createdResource,
   dataOrNull,
   storedResponse
@@ -552,6 +555,84 @@ export class Collection {
    */
   async setTags(tags: Record<string, string>): Promise<void> {
     return patchCustom(this, { tags })
+  }
+
+  get #logPath(): string {
+    return collectionLog(this.spaceId, this.id)
+  }
+
+  /**
+   * Reads the Collection's governing history log (the backend's
+   * `governed-history-logs` feature): the JSON Lines body served at the
+   * `/meta/log` sub-resource, verbatim, together with its `ETag`. The log is
+   * not a Resource of the Collection (absent from listings and the `changes`
+   * feed) and not part of the `/meta` object; it is versioned by its own
+   * validator, which {@link putHistoryLog} takes as `ifMatch` for a
+   * compare-and-swap append. Returns `null` when the Collection has no log,
+   * or is missing or not visible to you (404 conflation caveat).
+   *
+   * This is the raw transport read. The `@interop/was-client/log` subpath's
+   * `resourceLogStore({ collection })` drives it as the store port of
+   * `@interop/vh-resource-log`, which parses and verifies the entries.
+   *
+   * @returns {Promise<{ body: string; etag?: string } | null>}
+   */
+  async getHistoryLog(): Promise<{ body: string; etag?: string } | null> {
+    const response = await send(this.#context, {
+      path: this.#logPath,
+      method: 'GET',
+      capability: this.#capability,
+      read: true
+    })
+    if (response === null) {
+      return null
+    }
+    const body = await response.text()
+    const etag = readEtag(response)
+    return etag !== undefined ? { body, etag } : { body }
+  }
+
+  /**
+   * Writes the Collection's governing history log as one JSON Lines body
+   * (`text/jsonl`), replacing it whole under a precondition: `ifNoneMatch:
+   * true` is the guarded create that declares the Collection log-governed
+   * (refused with `ConflictError` on a Collection whose Description already
+   * carries a client-written `encryption` descriptor), and `ifMatch` (the
+   * `etag` of a prior {@link getHistoryLog}) is the compare-and-swap append,
+   * whose body is the prior bytes verbatim plus the new line. A failed
+   * precondition throws `PreconditionFailedError` (412). A body that breaks
+   * the line contract, or whose head `state` violates an encryption
+   * transition against the prior head, throws `ValidationError` (400).
+   *
+   * From the guarded create on, the Collection's served `encryption` member
+   * is derived by the server from the log head's `state`, and a direct
+   * `encryption` write on the Description is refused with `ConflictError`.
+   * Returns the log's new `etag`.
+   *
+   * @param body {string}   the complete JSON Lines log
+   * @param options {object}
+   * @param [options.ifMatch] {string}       append only if the log ETag matches
+   * @param [options.ifNoneMatch] {boolean}  create only if no log exists
+   * @returns {Promise<{ etag?: string }>}   the log's new ETag
+   */
+  async putHistoryLog(
+    body: string,
+    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+  ): Promise<{ etag?: string }> {
+    const response = await send(this.#context, {
+      path: this.#logPath,
+      method: 'PUT',
+      capability: this.#capability,
+      body: ENCODER.encode(body),
+      headers: writeHeaders({
+        contentType: LOG_CONTENT_TYPE,
+        precondition: {
+          ifMatch: options.ifMatch,
+          ifNoneMatch: options.ifNoneMatch
+        }
+      })
+    })
+    return { etag: readEtag(response) }
   }
 
   /**
