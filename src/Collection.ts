@@ -562,6 +562,18 @@ export class Collection {
   }
 
   /**
+   * The absolute URL of the Collection's governing history log, the `/meta/log`
+   * sub-resource {@link getHistoryLog} reads. A log-governed descriptor's
+   * `history.resource` names this URL; a verifying reader compares the two
+   * before opening the log.
+   *
+   * @returns {string}
+   */
+  get historyLogUrl(): string {
+    return toUrl({ serverUrl: this.#context.serverUrl, path: this.#logPath })
+  }
+
+  /**
    * Reads the Collection's governing history log (the backend's
    * `governed-history-logs` feature): the JSON Lines body served at the
    * `/meta/log` sub-resource, verbatim, together with its `ETag`. The log is

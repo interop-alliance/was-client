@@ -79,6 +79,14 @@ export {
 } from './descriptorStore.js'
 export type { EncryptionDescriptorStore } from './descriptorStore.js'
 export {
+  EPOCH_CONFIGURATION_STATE_TYPE,
+  logGovernedCollectionDescriptorStore,
+  logGovernedDescriptorStore,
+  readGovernedEpochConfiguration,
+  toEpochConfigurationState
+} from './logGovernedDescriptorStore.js'
+export type { LogGovernedDescriptorStore } from './logGovernedDescriptorStore.js'
+export {
   mintEpoch,
   epochKeyIdFor,
   unwrapEpochSecret,

@@ -545,6 +545,29 @@ lost race throws `PreconditionFailedError` (412). These are the raw transport
 methods; the `/log` subpath's `resourceLogStore({ collection })` (below) drives
 them as the resource-log store port.
 
+A reader that holds the descriptor but not the convention follows its `history`
+pointer through the `/edv` subpath's `logGovernedCollectionDescriptorStore`, the
+`EncryptionDescriptorStore` the recipient primitives run over. Its `read()`
+refuses a `history.method` other than the profile's format identifier or a
+`history.resource` other than `collection.historyLogUrl` before any fetch,
+verifies the log through `@interop/vh-resource-log` under the controller port
+and chain-head pin store you supply, and refuses a served descriptor that does
+not match the verified head. Pass a `signer` to write; without one the store is
+read-only.
+
+```ts
+import { logGovernedCollectionDescriptorStore } from '@interop/was-client/edv'
+import { memoryResourceLogPinStore } from '@interop/vh-resource-log'
+
+const store = logGovernedCollectionDescriptorStore({
+  collection,
+  resolveController, // () => Promise<ResourceLogController>, your verified view
+  pinStore: memoryResourceLogPinStore(),
+  logId: 'space/s1/vault/meta/log' // the pin slot for this log
+})
+const { descriptor } = await store.read() // verified head state, `history` kept
+```
+
 ### Conditional writes (optimistic concurrency)
 
 Against a backend that advertises the `conditional-writes` feature (see below),

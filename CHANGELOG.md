@@ -1,5 +1,38 @@
 # @interop/was-client Changelog
 
+## 0.52.0 - TBD
+
+### Added
+
+- `./edv`:
+  `logGovernedDescriptorStore({ log, resolveController, pinStore, logId, signer? })`,
+  the generic `EncryptionDescriptorStore` over any `ResourceLogStore`, moved
+  down from `@interop/wallet-core`'s roster store: reads resolve to the log's
+  verified head state through `@interop/vh-resource-log` under the caller's
+  controller port and pin store; `replace` and `create` are signed appends
+  (verified-head build, the library's pre-write pass, compare-and-swap,
+  read-back and pin), with a lost race translated to `PreconditionFailedError`;
+  `seal()` is the library's sealing sweep, reusing the log this instance last
+  verified. Without `signer` the store is read-only (`create` absent, `replace`
+  and `seal` refuse).
+- `./edv`: `logGovernedCollectionDescriptorStore({ collection, ... })`, the
+  pointer-following store over a Collection whose served `encryption` member is
+  the point-state projection of its governing history log. A read fetches the
+  Description and dispatches on `encryption`: absent resolves `null` (a fresh
+  Collection that `create` makes log-governed with a signed genesis entry);
+  present without `history` keeps the plain Collection Description behavior;
+  present with `history` refuses a `history.method` other than
+  `RESOURCE_LOG_METHOD` and a `history.resource` other than the Collection's own
+  log URL before any fetch, reads through the generic store, and refuses a
+  projection that does not JCS-equal the verified head's `state` after stripping
+  `history`. Refusals are the library's `ResourceLogIntegrityError` /
+  `ResourceLogContinuityError`, passed through unwrapped.
+- `./edv`: `readGovernedEpochConfiguration`, `EPOCH_CONFIGURATION_STATE_TYPE`
+  (`WasEpochConfiguration`), and `toEpochConfigurationState`, moved down from
+  `@interop/wallet-core` with the store.
+- `Collection.historyLogUrl`: the absolute URL of the Collection's `/meta/log`
+  sub-resource, the value a log-governed descriptor's `history.resource` names.
+
 ## 0.51.0 - 2026-09-07
 
 ### Added
