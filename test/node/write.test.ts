@@ -159,6 +159,23 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
     expect(calls[1]?.headers?.['if-match']).toBe('"v2"')
   })
 
+  it("an empty caller precondition (the handle's default) keeps the codec's pin", async () => {
+    // `Resource.put` builds its precondition from optional arguments
+    // unconditionally, so a plain `put(id, data)` arrives here as `{}`. That
+    // names no baseline: the codec must still pin the update to the ETag its
+    // pre-read observed, or two racing updates would both land.
+    const { context, calls } = contextWithStatuses()
+    await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures,
+      precondition: { ifMatch: undefined, ifNoneMatch: undefined }
+    })
+    expect(calls[1]?.headers?.['if-match']).toBe('"v2"')
+  })
+
   it("pins a conditional codec's write to the caller's own baseline", async () => {
     // The caller named the same revision the pre-read observed, so the write
     // goes out pinned to the caller's validator rather than being silently

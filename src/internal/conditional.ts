@@ -42,6 +42,26 @@ export function encodedPrecondition(encoded: EncodedWrite): WritePrecondition {
 }
 
 /**
+ * The caller's precondition, or `undefined` when it names neither member. A
+ * handle's `put` builds its precondition object from optional arguments
+ * unconditionally, so an empty one means "no baseline named", not "pin to
+ * nothing": a conditional codec must then fall back to the pin its own
+ * pre-read supplies, or a racing update would go out with no `If-Match` at
+ * all.
+ *
+ * @param [precondition] {WritePrecondition}
+ * @returns {WritePrecondition | undefined}
+ */
+export function namedPrecondition(
+  precondition?: WritePrecondition
+): WritePrecondition | undefined {
+  return precondition !== undefined &&
+    (precondition.ifMatch !== undefined || precondition.ifNoneMatch)
+    ? precondition
+    : undefined
+}
+
+/**
  * Builds the headers for a write request: the content-type (when present) and
  * the conditional-write precondition headers (`If-Match` / `If-None-Match: *`).
  * Returns `undefined` when no header is needed, matching the request layer's

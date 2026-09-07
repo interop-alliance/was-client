@@ -33,7 +33,8 @@ import type { FeatureProbe } from './features.js'
 import {
   assertPreconditionAgainstPreRead,
   encodedPrecondition,
-  writeHeaders
+  writeHeaders,
+  namedPrecondition
 } from './conditional.js'
 import type { WritePrecondition } from './conditional.js'
 
@@ -270,7 +271,7 @@ export async function upsertResource(
     features,
     contentType,
     capability,
-    precondition
+    precondition: callerPrecondition
   }: {
     path: string
     codec: ResourceCodec
@@ -282,6 +283,8 @@ export async function upsertResource(
     precondition?: WritePrecondition
   }
 ): Promise<HttpResponse> {
+  // An empty precondition object (the handle's default) names no baseline.
+  const precondition = namedPrecondition(callerPrecondition)
   let current: HttpResponse | null | undefined
   if (codec.conditionalWrites) {
     current = await send(context, {

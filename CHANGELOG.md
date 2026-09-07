@@ -18,6 +18,15 @@
 - The `encryption-history-log-governed` problem type (409, a direct `encryption`
   write on a log-governed Collection) maps to `ConflictError`.
 
+### Fixed
+
+- An encrypted-collection `put(id, data)` with no `ifMatch` / `ifNoneMatch` went
+  out with no `If-Match` at all, so two updates racing off the same version both
+  landed instead of one getting 412. The handle's empty precondition object was
+  taken as the caller's baseline and displaced the pin the codec derives from
+  its pre-read; an empty precondition now names no baseline. Regressed in
+  0.42.0.
+
 ## 0.50.0 - 2026-09-07
 
 ### Changed
