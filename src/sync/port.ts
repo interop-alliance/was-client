@@ -166,11 +166,10 @@ function mapWriteError(
 }
 
 /**
- * Parses a quoted strong `ETag` into its numeric revision: the trailing
- * integer after the LAST `.` inside the quotes (`"3mJr7AoUXx2.3"` to `3`), or
- * the whole digit run when there is no `.` (the pre-generation `"3"` shape).
- * Returns `undefined` when the header is absent or the parsed segment is
- * non-numeric (no such revision yet).
+ * Parses a quoted strong `ETag` into its numeric revision: the decimal
+ * integer after the LAST `.` inside the quotes (`"3mJr7AoUXx2.3"` to `3`).
+ * Returns `undefined` when the header is absent, has no `.`, or the trailing
+ * segment is anything other than a run of digits.
  *
  * The quoted string as a whole is opaque -- it also carries a per-record
  * generation marker ahead of the version, minted once and kept for the
@@ -188,12 +187,33 @@ export function parseEtag(etag: string | null | undefined): number | undefined {
   }
   const unquoted = etag.replace(/"/g, '')
   const lastDot = unquoted.lastIndexOf('.')
-  const versionPart = lastDot === -1 ? unquoted : unquoted.slice(lastDot + 1)
-  if (versionPart === '') {
+  if (lastDot === -1) {
     return undefined
   }
-  const revision = Number(versionPart)
-  return Number.isFinite(revision) ? revision : undefined
+  const versionPart = unquoted.slice(lastDot + 1)
+  return /^\d+$/.test(versionPart) ? Number(versionPart) : undefined
+}
+
+/**
+ * Reads a response's `ETag` together with the revision parsed out of it, the
+ * one place the two are paired. `etag` is absent when the response carried no
+ * validator (a backend that does not version the resource); `version` is
+ * absent whenever `etag` is, and also when the validator does not end in a
+ * revision number. Callers decide what an absent value means for them.
+ *
+ * @param response {HttpResponse}
+ * @returns {{ etag?: string, version?: number }}
+ */
+function versionedEtag(response: HttpResponse): {
+  etag?: string
+  version?: number
+} {
+  const etag = readEtag(response)
+  const version = parseEtag(etag)
+  return {
+    ...(etag !== undefined && { etag }),
+    ...(version !== undefined && { version })
+  }
 }
 
 /**
@@ -275,27 +295,25 @@ export function createWasSyncPort({
       }
       throw mapped
     }
-    const etag = readEtag(response)
+    const { etag, version } = versionedEtag(response)
     return {
-      version: parseEtag(etag) ?? 0,
+      version: version ?? 0,
       etag,
       updatedAt: UNKNOWN_UPDATED_AT,
       data: response.data as Json
     }
   }
 
-  /** Resolves the acked {@link WriteAck} from a write response, or via a content re-read. */
-  const writeAck = async (
-    response: HttpResponse,
-    id: string
-  ): Promise<WriteAck> => {
-    const etag = readEtag(response)
-    const version = parseEtag(etag)
-    if (version !== undefined) {
-      return { version, etag }
-    }
-    const master = await readContent(id)
-    return { version: master?.version ?? 0, etag: master?.etag }
+  /**
+   * The acked {@link WriteAck} of a write response. Taken from the response's
+   * own `ETag` only: a re-read after the fact could return a concurrent
+   * writer's validator as this write's ack. A response with no `ETag` acks
+   * `version: 0` and no `etag`, the shape of a backend that does not version
+   * resources.
+   */
+  const writeAck = (response: HttpResponse): WriteAck => {
+    const { etag, version } = versionedEtag(response)
+    return { version: version ?? 0, etag }
   }
 
   return {
@@ -326,7 +344,7 @@ export function createWasSyncPort({
             epoch
           })
         })
-        return await writeAck(response, id)
+        return writeAck(response)
       } catch (err) {
         mapWriteError(err, { authErrors: mapAuthErrors })
       }
@@ -340,7 +358,7 @@ export function createWasSyncPort({
           method: 'DELETE',
           headers: writeHeaders({ precondition: { ifMatch } })
         })
-        return await writeAck(response, id)
+        return writeAck(response)
       } catch (err) {
         // Under `mapAuthErrors` a delete's `404` is an idempotent success: the
         // resource is already gone (deleted locally before it was ever pushed,
@@ -373,9 +391,8 @@ export function createWasSyncPort({
           json: custom === undefined ? {} : { custom },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
-        const etag = readEtag(response)
-        const version = parseEtag(etag)
-        return version !== undefined ? { version, etag } : undefined
+        const { etag, version } = versionedEtag(response)
+        return etag !== undefined ? { version: version ?? 0, etag } : undefined
       } catch (err) {
         mapWriteError(err, { authErrors: mapAuthErrors })
       }
@@ -437,11 +454,16 @@ export function createWasSyncPort({
       if (metaBody?.custom !== undefined) {
         master.custom = metaBody.custom
       }
-      const metaEtag = readEtag(meta.response)
-      const metaVersion = parseEtag(metaEtag)
+      // The validator is kept whenever the server sent one, so a later
+      // `putMeta` can pin on it even when no revision number parses out of it.
+      const { etag: metaEtag, version: metaVersion } = versionedEtag(
+        meta.response
+      )
+      if (metaEtag !== undefined) {
+        master.metaEtag = metaEtag
+      }
       if (metaVersion !== undefined) {
         master.metaVersion = metaVersion
-        master.metaEtag = metaEtag
       }
 
       return master

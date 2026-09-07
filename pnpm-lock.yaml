@@ -27,8 +27,8 @@ importers:
         specifier: ^7.10.0
         version: 7.10.0
       '@interop/storage-core':
-        specifier: ^0.10.0
-        version: 0.10.0
+        specifier: ^0.11.0
+        version: 0.11.0
       '@interop/vh-resource-log':
         specifier: ^0.4.1
         version: 0.4.1
@@ -279,8 +279,8 @@ packages:
     resolution: {integrity: sha512-p5Y7S7tt2qRhyXHtToQ/GTb4a/+vf0AGXX8N5h3978d1yyKb1wJ22sV6LFF8wMc7GQqCYqflLnI8aNubVAgV0g==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.10.0':
-    resolution: {integrity: sha512-I2XJAaUlT3rfFm6jthsDWCAcbgzpIyqx3556aiqLKFcFNYDEi4Mu2+PqMK3hI4nGGMPypNFdQPdTa4Wo+lsQSg==}
+  '@interop/storage-core@0.11.0':
+    resolution: {integrity: sha512-Kh9iyeUZXq6bY4rQdLrapOlab3gY8gH8YTMqam/IKfyJqaLe9NpE+ha/p5oDpwjnv5XPF4F6itIlu/GQu/wprw==}
     engines: {node: '>=22.0'}
 
   '@interop/storage-core@0.9.1':
@@ -1439,7 +1439,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/storage-core@0.10.0':
+  '@interop/storage-core@0.11.0':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
 

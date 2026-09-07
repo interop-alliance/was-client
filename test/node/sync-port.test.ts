@@ -102,10 +102,18 @@ function makeWas(options: {
 }
 
 describe('createWasSyncPort helpers', () => {
-  it('parseEtag reads the pre-generation bare-version shape', () => {
-    expect(parseEtag('"3"')).toBe(3)
+  it('parseEtag rejects a validator with no generation segment', () => {
+    expect(parseEtag('"3"')).toBeUndefined()
     expect(parseEtag(null)).toBeUndefined()
     expect(parseEtag('not-a-number')).toBeUndefined()
+  })
+
+  it('parseEtag accepts only a run of decimal digits as the revision', () => {
+    expect(parseEtag('"g.1e2"')).toBeUndefined()
+    expect(parseEtag('"g.0x10"')).toBeUndefined()
+    expect(parseEtag('"g.+5"')).toBeUndefined()
+    expect(parseEtag('"g. 5"')).toBeUndefined()
+    expect(parseEtag('"g.007"')).toBe(7)
   })
 
   it('parseEtag reads the version after the final "." in a generation.version etag', () => {
@@ -169,7 +177,7 @@ describe('createWasSyncPort.putContent', () => {
     const { was } = makeWas({
       onRequest: opts => {
         calls.push(opts)
-        return response(null, { etag: '"5"' })
+        return response(null, { etag: '"g.5"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
@@ -187,23 +195,19 @@ describe('createWasSyncPort.putContent', () => {
     })
   })
 
-  it('re-reads the write ack when the write response carries no ETag', async () => {
-    let putCount = 0
+  it('acks version 0 with no etag, and does not re-read, when the write response carries no ETag', async () => {
+    const methods: Array<string | undefined> = []
     const { was } = makeWas({
       onRequest: opts => {
-        if (opts.method === 'PUT') {
-          putCount += 1
-          return response(null) // no etag on the write
-        }
-        // the fallback content GET
-        return response({ a: 1 }, { etag: '"g9.9"' })
+        methods.push(opts.method)
+        return response(null) // no etag on the write
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     const ack = await port.putContent({ id: 'res-1', data: { a: 1 } })
-    expect(putCount).toBe(1)
-    expect(ack).toEqual({ version: 9, etag: '"g9.9"' })
+    expect(methods).toEqual(['PUT'])
+    expect(ack).toEqual({ version: 0, etag: undefined })
   })
 
   it('maps a 412 to WasSyncConflictError (a PreconditionFailedError)', async () => {
@@ -381,7 +385,7 @@ describe('createWasSyncPort capability threading', () => {
         if (opts.path?.endsWith('/meta') && opts.method === 'GET') {
           throw httpError(404)
         }
-        return response({ a: 1 }, { etag: '"1"' })
+        return response({ a: 1 }, { etag: '"g.1"' })
       }
     })
     const port = createWasSyncPort({
@@ -411,7 +415,7 @@ describe('createWasSyncPort capability threading', () => {
     const { was, collectionOptions } = makeWas({
       onRequest: opts => {
         calls.push(opts)
-        return response(null, { etag: '"1"' })
+        return response(null, { etag: '"g.1"' })
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
@@ -534,7 +538,7 @@ describe('createWasSyncPort mapAuthErrors', () => {
         if (opts.path?.endsWith('/meta')) {
           throw httpError(404)
         }
-        return response({ a: 1 }, { etag: '"4"' })
+        return response({ a: 1 }, { etag: '"g.4"' })
       }
     })
     const port = createWasSyncPort({

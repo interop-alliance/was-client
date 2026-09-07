@@ -1,5 +1,28 @@
 # @interop/was-client Changelog
 
+## 0.50.0 - TBD
+
+### Changed
+
+- `./sync`: `parseEtag` reads the revision as the integer after the last `.` in
+  the validator, since the server now emits `"<generation>.<version>"`. The
+  quoted `ETag` is opaque and is echoed verbatim for `If-Match` /
+  `If-None-Match` rather than rebuilt from a number.
+- `./sync`: `WireDoc` (the shared `ChangeDocument`) now carries the Resource's
+  current content `etag` and `/meta` `metaEtag`, quoted as the server emits
+  them, so a replication driver sends `If-Match` from feed state without a
+  `get()` per Resource. Requires `@interop/storage-core@0.11.0` and a server
+  that surfaces the validators on the `changes` feed.
+- `./sync`: a write whose response carries no `ETag` acks `{ version: 0 }` with
+  no `etag`, the shape of a backend that does not version resources. The port no
+  longer re-reads the resource to fill in the ack, since a re-read could hand
+  back a concurrent writer's validator as this write's own.
+- `./sync`: `get()` keeps `metaEtag` whenever the `/meta` read returned one,
+  even when no revision number parses out of it; `putMeta` likewise acks
+  whenever the response carried an `ETag`.
+- `./sync`: `parseEtag` requires a `.` and a run of decimal digits after it; a
+  bare `"3"`, `"g.1e2"`, or `"g.+5"` parses to `undefined`.
+
 ## 0.49.0 - 2026-09-05
 
 ### Added

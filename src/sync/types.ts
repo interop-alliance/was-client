@@ -33,11 +33,12 @@ export type SyncCheckpoint = ChangesCheckpoint
 /**
  * One document as it travels on the `changes` feed wire: `id` is the WAS
  * resource id, `version` its monotonic content revision number, and the
- * stored body is under `data`. `version` is for comparison/ordering only --
- * it is not a usable `ifMatch` string on its own (the server's `ETag` is an
- * opaque string that embeds a per-record generation ahead of the version); a
- * puller that wants to push a conditional update reads the current `etag`
- * from {@link WasSyncPort.get} instead of reformatting this number. A
+ * stored body is under `data`. `version` is for comparison/ordering only and
+ * is not an `ifMatch` value on its own; the server's `ETag` is an opaque
+ * string that embeds more than the version. The feed carries the validators
+ * themselves: `etag` (content) and `metaEtag` (the `/meta` object), quoted
+ * exactly as the server emits them, so a puller passes one back verbatim as a
+ * conditional write's `ifMatch` without a {@link WasSyncPort.get} first. A
  * tombstone carries `_deleted: true` with no `data`. This is the shared
  * `ChangeDocument` from `@interop/storage-core`; on an encrypted collection
  * `data`/`custom` are the opaque stored envelope, moved verbatim (decrypt is a
