@@ -142,14 +142,16 @@ export async function ensureSpaceAndCollection({
     const read = await collection.describeWithEtag()
     const current = read?.description ?? null
     if (current === null) {
+      // The create deliberately does not thread the `null` just read into
+      // `configure`: neither endpoint honors a create-if-absent precondition
+      // yet, so the re-read inside `configure` is the narrowest window
+      // available against a rival create landing in between (it would lose
+      // its `backend` to a merge from a stale `null`). This branch runs once
+      // per collection, so the extra request is a cold-path cost only.
       await collection.configure(
         encryption === 'edv'
-          ? {
-              name: collectionName,
-              current,
-              encryption: EDV_DESCRIPTOR
-            }
-          : { name: collectionName, current, force: true }
+          ? { name: collectionName, encryption: EDV_DESCRIPTOR }
+          : { name: collectionName, force: true }
       )
     } else if (encryption === 'edv' && current.encryption === undefined) {
       // The late in-place declaration: adding a descriptor to a collection
@@ -247,10 +249,13 @@ export async function ensureSpace({
     if (current !== null) {
       return current
     }
+    // The create does not thread the `null` just read into `configure` (same
+    // reasoning as the collection create in `ensureSpaceAndCollection`): a
+    // Space created concurrently in the window would lose its `type` array,
+    // which the server accepts at creation only. Once per Space, cold path.
     return await space.configure({
       name: spaceName,
-      controller: controllerDid,
-      current
+      controller: controllerDid
     })
   } catch (err) {
     rethrowProvisioningFailure(

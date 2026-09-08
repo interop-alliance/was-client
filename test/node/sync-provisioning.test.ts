@@ -166,16 +166,16 @@ describe('ensureSpaceAndCollection', () => {
     })
 
     expect(was.spaceArg).toBe(SPACE)
-    // The description this ensure read is threaded into its own configure,
-    // so the create costs one describe rather than two.
     expect(space.describeCalls).toBe(1)
+    // The create does not thread the `null` it read into configure, so the
+    // configure's own re-read is the last word before the PUT.
     expect(space.configureCalls).toEqual([
-      { name: 'WAS Space', controller: DID, current: null }
+      { name: 'WAS Space', controller: DID }
     ])
     expect(space.collectionIds).toEqual([COLL])
     expect(space.collectionObj.describeCalls).toBe(1)
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: COLL, encryption: EDV, current: null }
+      { name: COLL, encryption: EDV }
     ])
     expect(space.collectionObj.setPublicCalls).toBe(0)
   })
@@ -193,7 +193,7 @@ describe('ensureSpaceAndCollection', () => {
     })
 
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: 'public-credentials', force: true, current: null }
+      { name: 'public-credentials', force: true }
     ])
     expect(space.collectionObj.setPublicCalls).toBe(1)
   })
@@ -499,7 +499,7 @@ describe('ensureSpace', () => {
 
     expect(space.describeCalls).toBe(1)
     expect(space.configureCalls).toEqual([
-      { name: 'WAS Space', controller: DID, current: null }
+      { name: 'WAS Space', controller: DID }
     ])
     expect(description).toMatchObject({ id: SPACE, controller: DID })
   })
@@ -613,7 +613,7 @@ describe('ensureSpaceAndCollection with a supplied space description', () => {
     expect(space.describeCalls).toBe(0)
     expect(space.configureCalls).toEqual([])
     expect(space.collectionObj.configureCalls).toEqual([
-      { name: COLL, encryption: EDV, current: null }
+      { name: COLL, encryption: EDV }
     ])
   })
 

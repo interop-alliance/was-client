@@ -93,6 +93,14 @@
 
 ### Fixed
 
+- `ensureSpace` and `ensureSpaceAndCollection` no longer thread the `null` they
+  read into the create's `configure`, so the create merges against the re-read
+  inside `configure` rather than a read one round trip older. This narrows
+  (without closing) the window in which a concurrent create of the same Space or
+  collection lost its `type` array or `backend`; closing it needs a
+  create-if-absent precondition the server does not honor on those endpoints
+  yet. The update paths, and the Space ensure skipped via `spaceDescription`,
+  are unchanged.
 - `./edv`: `logGovernedCollectionDescriptorStore` read the Description and the
   log in two requests, so a concurrent append landing between them made the
   served projection mismatch the verified head and threw

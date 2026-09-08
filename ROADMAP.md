@@ -299,11 +299,12 @@ half is small once those land. The part to settle deliberately is the recovery
 behavior -- an ensure that throws when two clients boot at once is worse than
 one that races, so a 412 has to become a re-read rather than an error.
 
-Interim mitigation, if the window matters before the spec work: stop passing
-`current` on the two create branches. Both run once in a Space's or a
-collection's lifetime, so the cost is one request on a cold path, and the
-steady-state saving (one Space ensure for N collections, via `spaceDescription`)
-is untouched.
+Interim mitigation, applied 2026-09-07: the two create branches no longer pass
+`current`, so `configure` re-reads right before the `PUT`. Both run once in a
+Space's or a collection's lifetime, so the cost is one request on a cold path,
+and the steady-state saving (one Space ensure for N collections, via
+`spaceDescription`) is untouched. The window is narrowed, not closed. The server
+half is filed as was-teaching-server WAS-90.
 
 ### WCL-34: The integration tier never runs, and skips provisioning entirely
 
