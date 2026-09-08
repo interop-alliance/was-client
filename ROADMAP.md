@@ -304,36 +304,6 @@ above it: a `getText`-shaped read that also returns the validator, or letting
 `getWithEtag` hand back the `ResponseLike` so the caller picks its own
 projection. Then `logStore.read` is a destructure plus `parseResourceLog`.
 
-### WCL-25: Two compare-and-swap retry policies that can drift
-
-- status: todo
-- priority: low
-- labels: conditional-writes, reuse
-- acceptance:
-  - [ ] `Collection.declareIndex` and `casUpdateDescriptor` share one retry
-        implementation
-  - [ ] The attempt count and the exhaustion error are settled deliberately
-        rather than differing by accident
-
-`declareIndex` hand-rolls a `for (let attempt = 1; ; attempt++)` loop -- read
-current state, reconcile, conditional write, continue on
-`PreconditionFailedError` -- with its own local `maxAttempts = 4`.
-`casUpdateDescriptor` (`src/edv/recipients.ts`) is the same loop, generic over a
-read/replace store, with `MAX_CAS_ATTEMPTS = 3` and a null-means-no-op mutate
-contract.
-
-Two retry policies with two attempt counts and two exhaustion behaviors:
-`declareIndex` rethrows the raw 412 with no context, `casUpdateDescriptor`
-throws an explanatory `PreconditionFailedError` naming the race. A third caller
-wanting CAS has no obvious one to copy.
-
-Lifting the loop into `src/internal/` as a store-shaped generic makes
-`casUpdateDescriptor` a thin call and lets `declareIndex` drive it with a
-`/meta`-backed store. This is not behavior-preserving for `declareIndex` (3
-attempts instead of 4, and a contextual error instead of the raw 412) unless the
-helper takes `maxAttempts` as an option, which is the call to make when picking
-this up.
-
 ### WCL-26: Bare `Error` for `did:key` validation failures in the EDV recipient path
 
 - status: todo
@@ -462,8 +432,8 @@ today. So this one is closable now, independently of the spec work WCL-32 needs.
 `describeWithEtag()` in place of `describe()`, then
 `replaceDescription(fields, { ifMatch })` in place of `configure`. Note that
 `replaceDescription` does not merge, so the call has to pass every writable
-field forward. The retry on 412 belongs in whatever shared loop WCL-25 settles
-on rather than as a fourth hand-rolled one.
+field forward. The retry on 412 belongs in the shared `compareAndSwap` loop
+(`src/internal/cas.ts`, from WCL-25) rather than as a hand-rolled one.
 
 ---
 

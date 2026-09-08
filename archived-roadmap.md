@@ -1186,3 +1186,46 @@ changed what those tests exercise.
 Landed 2026-09-07, in the same unreleased was-client 0.52.0 as WCL-17, so the
 Collection store's rename cost nothing. wallet-core's full suite passes with its
 roster tests untouched, including the seal cases that count log fetches.
+
+### WCL-25: Two compare-and-swap retry policies that can drift
+
+- status: done
+- done: 2026-09-07
+- priority: low
+- labels: conditional-writes, reuse
+- acceptance:
+  - [x] `Collection.declareIndex` and `casUpdateDescriptor` share one retry
+        implementation
+  - [x] The attempt count and the exhaustion error are settled deliberately
+        rather than differing by accident
+
+`declareIndex` hand-rolls a `for (let attempt = 1; ; attempt++)` loop -- read
+current state, reconcile, conditional write, continue on
+`PreconditionFailedError` -- with its own local `maxAttempts = 4`.
+`casUpdateDescriptor` (`src/edv/recipients.ts`) is the same loop, generic over a
+read/replace store, with `MAX_CAS_ATTEMPTS = 3` and a null-means-no-op mutate
+contract. It has since grown a second branch the index loop lacks: when the
+store reports no descriptor yet, an optional `seed` is mutated in its place and
+written create-if-absent, and a lost create race re-enters the loop like a stale
+CAS.
+
+Two retry policies with two attempt counts and two exhaustion behaviors:
+`declareIndex` rethrows the raw 412 with no context, `casUpdateDescriptor`
+throws an explanatory `PreconditionFailedError` naming the race. A third caller
+wanting CAS has no obvious one to copy.
+
+Lifting the loop into `src/internal/` as a store-shaped generic makes
+`casUpdateDescriptor` a thin call and lets `declareIndex` drive it with a
+`/meta`-backed store. The generic has to carry the seed/create branch (with the
+"absent" refusal left to the caller, since its message is recipient-specific),
+or `casUpdateDescriptor` keeps that branch wrapped around the shared loop. This
+is not behavior-preserving for `declareIndex` (3 attempts instead of 4, and a
+contextual error instead of the raw 412) unless the helper takes `maxAttempts`
+as an option, which is the call to make when picking this up.
+
+Resolved 2026-09-07: `src/internal/cas.ts` exports `compareAndSwap` over a
+`CasStore` (read-with-validator, conditional replace, optional guarded create)
+with an `onAbsent` seed hook. One shared default of 3 attempts; the helper takes
+`maxAttempts` for a caller with a reason, and neither current caller has one, so
+`declareIndex` moved from 4 to 3 and now surfaces the contextual exhaustion
+error with the last 412 as its `cause`.

@@ -20,12 +20,7 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import {
-  PreconditionFailedError,
-  ValidationError,
-  WasServerError,
-  httpStatus
-} from './errors.js'
+import { ValidationError, WasServerError, httpStatus } from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
@@ -47,6 +42,7 @@ import {
   unreadableDescriptionError
 } from './internal/describe.js'
 import { readEtag, writeHeaders } from './internal/conditional.js'
+import { compareAndSwap } from './internal/cas.js'
 import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
 import { codecRequestContext, insertResource } from './internal/write.js'
 import {
@@ -770,67 +766,69 @@ export class Collection {
     const declared = normalizeAttribute(attribute)
     const key = attributeKey(declared)
     // Read, reconcile, conditionally write. A 412 means another client wrote
-    // the metadata between the read and the write, so re-read and re-apply
-    // rather than clobbering its declaration with ours.
-    const maxAttempts = 4
-    for (let attempt = 1; ; attempt++) {
-      // Attempt 1 reuses the metadata the codec resolution above already read
-      // (when this call is what triggered it); every retry re-reads, since a
-      // 412 means the document changed.
-      const current =
-        attempt === 1 && snapshot !== undefined ? snapshot : await this.meta()
-      const custom = (current?.custom ?? {}) as CustomWithIndexSchema
-      const schema = readIndexSchema(custom)
-      const existing = schema.indexes.find(
-        entry => attributeKey(entry.attribute) === key
-      )
-      if (existing) {
-        if ((existing.unique === true) !== (unique === true)) {
-          throw new ValidationError(
-            `Cannot declare index "${key}" as ` +
-              `${unique === true ? 'unique' : 'non-unique'}: this collection ` +
-              `already declares it as ` +
-              `${existing.unique === true ? 'unique' : 'non-unique'}. An ` +
-              'index cannot change uniqueness in place -- already-stored ' +
-              'documents were indexed under the old terms.'
-          )
-        }
-        indexing.applySchema(schema)
-        return schema
-      }
-      const revision = schema.revision + 1
-      const next: IndexSchema = {
-        revision,
-        indexes: [
-          ...schema.indexes,
-          {
-            attribute: declared,
-            ...(unique === true && { unique: true as const }),
-            addedIn: revision
+    // the metadata between the read and the write, so the shared loop re-reads
+    // and re-applies rather than clobbering its declaration with ours.
+    //
+    // The first read reuses the metadata the codec resolution above already
+    // read (when this call is what triggered it); every retry re-reads, since
+    // a 412 means the document changed.
+    let reusable = snapshot
+    const custom = await compareAndSwap<CustomWithIndexSchema>({
+      store: {
+        read: async () => {
+          const current = reusable !== undefined ? reusable : await this.meta()
+          reusable = undefined
+          return {
+            value: (current?.custom ?? {}) as CustomWithIndexSchema,
+            etag: current?.etag
           }
-        ]
-      }
-      try {
-        await this.setMeta(
-          {
-            // The schema shares the `custom` object with the user's own
-            // `name` / `tags`, which are carried forward untouched.
-            custom: {
-              ...custom,
-              [INDEX_SCHEMA_PROPERTY]: next
-            }
-          },
-          { ifMatch: current?.etag }
-        )
-      } catch (err) {
-        if (err instanceof PreconditionFailedError && attempt < maxAttempts) {
-          continue
+        },
+        // The schema shares the `custom` object with the user's own `name` /
+        // `tags`, which are carried forward untouched.
+        replace: async (next, { ifMatch }) => {
+          await this.setMeta({ custom: next }, { ifMatch })
         }
-        throw err
+      },
+      operation: 'Index declaration',
+      mutate: current => {
+        const schema = readIndexSchema(current)
+        const existing = schema.indexes.find(
+          entry => attributeKey(entry.attribute) === key
+        )
+        if (existing) {
+          if ((existing.unique === true) !== (unique === true)) {
+            throw new ValidationError(
+              `Cannot declare index "${key}" as ` +
+                `${unique === true ? 'unique' : 'non-unique'}: this ` +
+                'collection already declares it as ' +
+                `${existing.unique === true ? 'unique' : 'non-unique'}. An ` +
+                'index cannot change uniqueness in place -- already-stored ' +
+                'documents were indexed under the old terms.'
+            )
+          }
+          // Already declared: nothing to write.
+          return null
+        }
+        const revision = schema.revision + 1
+        return {
+          ...current,
+          [INDEX_SCHEMA_PROPERTY]: {
+            revision,
+            indexes: [
+              ...schema.indexes,
+              {
+                attribute: declared,
+                ...(unique === true && { unique: true as const }),
+                addedIn: revision
+              }
+            ]
+          }
+        }
       }
-      indexing.applySchema(next)
-      return next
-    }
+    })
+    const schema = readIndexSchema(custom)
+    indexing.applySchema(schema)
+    return schema
   }
 
   /**

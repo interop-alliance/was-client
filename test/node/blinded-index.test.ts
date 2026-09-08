@@ -22,7 +22,11 @@ import type {
 } from '@interop/data-integrity-core'
 import type { HttpResponse } from '@interop/http-client'
 
-import { WasClient, ValidationError } from '../../src/index.js'
+import {
+  WasClient,
+  ValidationError,
+  PreconditionFailedError
+} from '../../src/index.js'
 import type {
   CollectionDescription,
   CollectionEncryption
@@ -413,6 +417,32 @@ describe('Collection.declareIndex', () => {
     // The later attribute is marked as added later, so a querier knows matches
     // on it may be partial.
     expect(schema.indexes[1]!.addedIn).toBe(2)
+  })
+
+  it('gives up after the shared attempt count when it keeps losing the race', async () => {
+    const { client, state } = serverFor(await makeIndexableCollection())
+    // A rival bumps the validator before every write, so no attempt lands.
+    let writes = 0
+    const collide = () => {
+      writes++
+      state.collideOnce = collide
+      state.meta = {
+        custom: state.meta.custom,
+        version: state.meta.version + 1
+      }
+    }
+    state.collideOnce = collide
+    const failure = await client
+      .space('s')
+      .collection('c')
+      .declareIndex({ attribute: 'content.type' })
+      .catch(err => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect(String(failure.message)).toMatch(
+      /Index declaration lost the compare-and-swap race after 3 attempts/
+    )
+    expect(failure.cause).toBeInstanceOf(PreconditionFailedError)
+    expect(writes).toBe(3)
   })
 
   it('refuses to redeclare an index with different uniqueness', async () => {

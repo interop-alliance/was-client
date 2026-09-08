@@ -35,11 +35,8 @@ import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { Collection } from '../Collection.js'
 import type { Space } from '../Space.js'
 import { EDV_SCHEME_VERSION } from './constants.js'
-import {
-  EncryptionError,
-  PreconditionFailedError,
-  ValidationError
-} from '../errors.js'
+import { EncryptionError, ValidationError } from '../errors.js'
+import { compareAndSwap } from '../internal/cas.js'
 import { collectionDescriptorStore } from './descriptorStore.js'
 import type { EncryptionDescriptorStore } from './descriptorStore.js'
 import type {
@@ -61,12 +58,6 @@ import type { RecipientPublicKey } from './epochCrypto.js'
 import { mintHmacKey } from './hmacKey.js'
 
 export type { RecipientPublicKey } from './epochCrypto.js'
-
-/**
- * How many times a recipient CAS write retries a stale (`412`) description
- * before surfacing {@link PreconditionFailedError}.
- */
-const MAX_CAS_ATTEMPTS = 3
 
 /**
  * The recipient operation an escrow runs under: the name its error messages
@@ -1164,40 +1155,12 @@ function descriptorStoreFor({
 }
 
 /**
- * Whether `err` is the compare-and-swap conflict a descriptor store raises
- * (`PreconditionFailedError`, 412). Matched by `name` as well as `instanceof`:
- * a store implemented by a consumer (wallet-core's log-governed store) mints
- * the conflict from its own `@interop/was-client` import, and in a tree that
- * resolves was-client twice that class is a different object from ours, so an
- * `instanceof`-only check would turn every lost race into a hard failure
- * instead of a rebase.
- *
- * @param err {unknown}
- * @returns {boolean}
- */
-function isPreconditionFailed(err: unknown): boolean {
-  return (
-    err instanceof PreconditionFailedError ||
-    (err instanceof Error && err.name === 'PreconditionFailedError')
-  )
-}
-
-/**
  * Reads the store's descriptor, applies `mutate`, and writes the result back
- * with a compare-and-swap (`If-Match`). Retries on a stale (`412`) validator,
- * re-reading the fresh descriptor each time, up to {@link MAX_CAS_ATTEMPTS};
- * surfaces {@link PreconditionFailedError} if it keeps losing the race. A
- * `mutate` that resolves `null` signals "no change needed" (the descriptor
- * already reflects the desired state, e.g. an idempotent retry): nothing is
- * written and the current descriptor is returned as-is.
- *
- * When the store reports no descriptor yet (`read()` resolves `null`, e.g. the
- * resource adapter before the first `initRecipients`), the optional `seed` is
- * mutated instead and the result written with the store's create-if-absent
- * guard (`If-None-Match: *`). Only `initRecipients` passes a seed; without
- * one an absent descriptor is refused. Losing the create race (a concurrent
- * writer created the first descriptor) re-enters the loop and re-reads, like a
- * stale CAS.
+ * with a compare-and-swap: the shared {@link compareAndSwap} loop over an
+ * `EncryptionDescriptorStore`, with the recipient-specific handling of a store
+ * that holds no descriptor yet. Only `initRecipients` passes a `seed` (mutated
+ * in place of the absent descriptor and written create-if-absent); without one
+ * an absent descriptor is refused.
  *
  * @param options {object}
  * @param options.store {EncryptionDescriptorStore}
@@ -1218,60 +1181,29 @@ async function casUpdateDescriptor({
   ) => CollectionEncryption | null | Promise<CollectionEncryption | null>
   seed?: CollectionEncryption
 }): Promise<CollectionEncryption> {
-  let lastError: unknown
-  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-    const current = await store.read()
-    if (current === null) {
+  return compareAndSwap<CollectionEncryption>({
+    store: {
+      async read() {
+        const current = await store.read()
+        return current === null
+          ? null
+          : { value: current.descriptor, etag: current.etag }
+      },
+      replace: (descriptor, options) => store.replace(descriptor, options),
+      ...(store.create !== undefined && {
+        create: (descriptor: CollectionEncryption) => store.create!(descriptor)
+      })
+    },
+    mutate,
+    operation: 'Recipient change',
+    onAbsent: () => {
       if (seed === undefined) {
         throw new ValidationError(
           'Cannot manage recipients: this descriptor store holds no encryption ' +
             'descriptor yet. Call initRecipients first.'
         )
       }
-      if (store.create === undefined) {
-        throw new ValidationError(
-          'Cannot initialize recipients: this descriptor store holds no descriptor ' +
-            'and does not support creating one.'
-        )
-      }
-      const created = await mutate(seed)
-      if (created === null) {
-        return seed
-      }
-      try {
-        await store.create(created)
-        return created
-      } catch (err) {
-        if (isPreconditionFailed(err)) {
-          // A concurrent writer created the first descriptor: re-read and
-          // re-apply.
-          lastError = err
-          continue
-        }
-        throw err
-      }
+      return seed
     }
-    const next = await mutate(current.descriptor)
-    if (next === null) {
-      // The descriptor already reflects the desired state: nothing to write.
-      return current.descriptor
-    }
-    try {
-      await store.replace(next, { ifMatch: current.etag })
-      return next
-    } catch (err) {
-      if (isPreconditionFailed(err)) {
-        // A concurrent recipient change landed first: re-read and re-apply.
-        lastError = err
-        continue
-      }
-      throw err
-    }
-  }
-  throw new PreconditionFailedError(
-    `Recipient change lost the compare-and-swap race after ${MAX_CAS_ATTEMPTS} ` +
-      'attempts (another writer kept updating the stored descriptor). ' +
-      'Retry the operation.',
-    { cause: lastError as Error }
-  )
+  })
 }

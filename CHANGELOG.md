@@ -41,6 +41,11 @@
 
 ### Changed
 
+- `Collection.declareIndex` and the recipient primitives' descriptor
+  compare-and-swap now share one retry loop (`compareAndSwap` over a `CasStore`,
+  internal). Both retry a lost race 3 times (`declareIndex` previously 4) and
+  then throw a `PreconditionFailedError` naming the operation, with the last 412
+  as its `cause`, where `declareIndex` previously rethrew the raw 412.
 - `Collection.putHistoryLog` refuses (`ValidationError`, before any request) a
   call naming neither `ifMatch` nor `ifNoneMatch`: an unconditional PUT would
   replace the governing log wholesale, since the server checks the head-state
