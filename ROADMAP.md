@@ -413,30 +413,6 @@ collection's lifetime, so the cost is one request on a cold path, and the
 steady-state saving (one Space ensure for N collections, via `spaceDescription`)
 is untouched.
 
-### WCL-33: Late encryption declaration writes without a precondition
-
-- status: todo
-- priority: low
-- labels: conditional-writes, provisioning, encryption
-- acceptance:
-  - [ ] The in-place `encryption` declaration in `ensureSpaceAndCollection`
-        writes against the `ETag` it read, and a lost race retries instead of
-        overwriting the concurrent change
-
-discovered-from: WCL-32. The third `configure` call in
-`src/sync/provisioning.ts` -- adding an `encryption` descriptor to a collection
-that lacks one -- differs from the two create branches: it holds a real
-description, and `If-Match` on a Collection Description is honored by the server
-today. So this one is closable now, independently of the spec work WCL-32 needs.
-
-`describeWithEtag()` in place of `describe()`, then
-`replaceDescription(fields, { ifMatch })` in place of `configure`. Note that
-`replaceDescription` does not merge, so the call has to pass every writable
-field forward. The retry on 412 belongs in the shared `compareAndSwap` loop
-(`src/internal/cas.ts`, from WCL-25) rather than as a hand-rolled one.
-
----
-
 ### WCL-34: The integration tier never runs, and skips provisioning entirely
 
 - status: todo

@@ -16,12 +16,13 @@
  * (epoch-from-birth) -- is installed by the EDV-bearing second step,
  * `ensureFirstEpoch` in `@interop/was-client/edv`.
  */
-import type { SpaceDescription } from '../types.js'
+import type { CollectionDescription, SpaceDescription } from '../types.js'
 import type { WasClient } from '../WasClient.js'
 // A direct module import (not the `./edv` subpath entry), so the crypto-free
 // sync module does not pull the EDV crypto graph for one number.
 import { EDV_SCHEME_VERSION } from '../edv/constants.js'
 import { ValidationError, WasError } from '../errors.js'
+import { compareAndSwap } from '../internal/cas.js'
 
 /**
  * The Space display name applied at creation when the caller names none.
@@ -138,7 +139,8 @@ export async function ensureSpaceAndCollection({
 
   try {
     const collection = space.collection(collectionId)
-    const current = await collection.describe()
+    const read = await collection.describeWithEtag()
+    const current = read?.description ?? null
     if (current === null) {
       await collection.configure(
         encryption === 'edv'
@@ -153,11 +155,46 @@ export async function ensureSpaceAndCollection({
       // The late in-place declaration: adding a descriptor to a collection
       // that lacks one is allowed (set-once), while re-sending one over an
       // existing descriptor would drop its appended key epochs -- which is
-      // exactly why an existing descriptor is never touched.
-      await collection.configure({
-        name: current.name ?? collectionName,
-        current,
-        encryption: EDV_DESCRIPTOR
+      // exactly why an existing descriptor is never touched. The write is
+      // compare-and-swapped against the description just read, so a rival
+      // declaration landing in between is re-read and adopted as-is rather
+      // than tripping `encryption-immutable` or being overwritten.
+      let reusable: typeof read = read
+      await compareAndSwap<CollectionDescription>({
+        store: {
+          read: async () => {
+            const latest =
+              reusable !== null ? reusable : await collection.describeWithEtag()
+            reusable = null
+            if (latest === null) {
+              throw new ValidationError(
+                `Collection "${collectionId}" in space "${spaceId}" vanished ` +
+                  'while its encryption was being declared.'
+              )
+            }
+            return { value: latest.description, etag: latest.etag }
+          },
+          // Replace semantics: every writable field is carried forward.
+          replace: async (next, { ifMatch }) => {
+            await collection.replaceDescription(
+              {
+                name: next.name,
+                backend: next.backend,
+                encryption: next.encryption
+              },
+              { ifMatch }
+            )
+          }
+        },
+        operation: 'Encryption declaration',
+        mutate: latest =>
+          latest.encryption === undefined
+            ? {
+                ...latest,
+                name: latest.name ?? collectionName,
+                encryption: EDV_DESCRIPTOR
+              }
+            : null
       })
     }
     if (isPublic && !(await collection.isPublic())) {

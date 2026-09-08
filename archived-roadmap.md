@@ -1229,3 +1229,33 @@ with an `onAbsent` seed hook. One shared default of 3 attempts; the helper takes
 `maxAttempts` for a caller with a reason, and neither current caller has one, so
 `declareIndex` moved from 4 to 3 and now surfaces the contextual exhaustion
 error with the last 412 as its `cause`.
+
+### WCL-33: Late encryption declaration writes without a precondition
+
+- status: done
+- done: 2026-09-07
+- priority: low
+- labels: conditional-writes, provisioning, encryption
+- acceptance:
+  - [x] The in-place `encryption` declaration in `ensureSpaceAndCollection`
+        writes against the `ETag` it read, and a lost race retries instead of
+        overwriting the concurrent change
+
+discovered-from: WCL-32. The third `configure` call in
+`src/sync/provisioning.ts` -- adding an `encryption` descriptor to a collection
+that lacks one -- differs from the two create branches: it holds a real
+description, and `If-Match` on a Collection Description is honored by the server
+today. So this one is closable now, independently of the spec work WCL-32 needs.
+
+`describeWithEtag()` in place of `describe()`, then
+`replaceDescription(fields, { ifMatch })` in place of `configure`. Note that
+`replaceDescription` does not merge, so the call has to pass every writable
+field forward. The retry on 412 belongs in the shared `compareAndSwap` loop
+(`src/internal/cas.ts`, from WCL-25) rather than as a hand-rolled one.
+
+Resolved 2026-09-07: `ensureSpaceAndCollection` reads with `describeWithEtag`
+(one read still serves the create branch) and the late declaration is a
+`compareAndSwap` over `replaceDescription`, carrying `name` and `backend`
+forward. A lost race re-reads; a descriptor the rival declared is adopted
+untouched (mutate returns null), so the retry can no longer trip
+`encryption-immutable` or replace a rival's roster.

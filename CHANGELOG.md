@@ -46,6 +46,12 @@
   internal). Both retry a lost race 3 times (`declareIndex` previously 4) and
   then throw a `PreconditionFailedError` naming the operation, with the last 412
   as its `cause`, where `declareIndex` previously rethrew the raw 412.
+- `./sync`: `ensureSpaceAndCollection`'s late in-place `encryption` declaration
+  (an existing collection without a descriptor) is a compare-and-swap against
+  the description's `ETag`, via `describeWithEtag` and `replaceDescription`,
+  instead of an unconditional `configure`. A lost race re-reads, and a
+  descriptor a rival declared in between is adopted untouched rather than
+  tripping `encryption-immutable`.
 - `Collection.putHistoryLog` refuses (`ValidationError`, before any request) a
   call naming neither `ifMatch` nor `ifNoneMatch`: an unconditional PUT would
   replace the governing log wholesale, since the server checks the head-state
