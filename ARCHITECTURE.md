@@ -162,14 +162,19 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
 
 - `src/codec.ts` -- the contract: `ResourceCodec` (`encode`/`decode` for
   content, `encodeMeta`/`decodeMeta` for the custom name/tags metadata, plus a
-  `conditionalWrites` flag) and `EncryptionProvider` (one method, `codecFor`,
-  which is **keys-only**: it supplies key material but never decides whether a
-  collection is encrypted -- the Collection description's `encryption`
-  descriptor does). `encodeMeta`/`decodeMeta` serve both metadata levels: the
-  Resource `/meta` pair passes the resource `id` to bind, the Collection `/meta`
-  pair passes none. `encodeMeta` also surfaces the `epoch` its envelope sealed
-  under, which `Collection.setMeta` forwards as the PUT body's top-level stamp
-  (a plaintext codec surfaces none, and the server then clears the stamp).
+  `conditionalWrites` flag) and `EncryptionProvider` (`codecFor`, which is
+  **keys-only**: it supplies key material but never decides whether a collection
+  is encrypted -- the Collection description's `encryption` descriptor does;
+  plus the optional `canRoute`, the provider's pure answer to whether a
+  just-declared descriptor is one `codecFor` could route as it stands, which
+  `Space.createCollection` consults before pinning a new handle to that
+  descriptor as its override. A provider without it routes every descriptor.
+  Core never tests a scheme name itself). `encodeMeta`/`decodeMeta` serve both
+  metadata levels: the Resource `/meta` pair passes the resource `id` to bind,
+  the Collection `/meta` pair passes none. `encodeMeta` also surfaces the
+  `epoch` its envelope sealed under, which `Collection.setMeta` forwards as the
+  PUT body's top-level stamp (a plaintext codec surfaces none, and the server
+  then clears the stamp).
 - `src/internal/codec.ts` -- the identity codec and the resolver policy.
 - `src/edv/EdvCodec.ts` -- the encrypting implementation and the
   `createEdvEncryption` factory.
@@ -557,7 +562,9 @@ it, and otherwise cover the client-side concepts this file names.
   plaintext collection (`src/internal/codec.ts`). See The codec seam.
 - **`EncryptionProvider`** -- the keys-only injection point (`codecFor`) that
   supplies key material to a codec. It does not decide whether a collection is
-  encrypted; the encryption descriptor does. See The codec seam.
+  encrypted; the encryption descriptor does. Its optional `canRoute` owns the
+  scheme's routability rule (whether a declared descriptor can be routed as it
+  stands). See The codec seam.
 - **`CodecHolder`** -- the per-`Collection` memoized codec resolution, shared
   with child handles and invalidated by `reset()` when the encryption descriptor
   changes. See The handle model and Concurrency.

@@ -223,19 +223,18 @@ export async function resolveCodec(
     if (override === 'plaintext') {
       return { codec: identityCodec }
     }
+    // An override is a `CollectionEncryption` descriptor (plus optional inline
+    // keys), so it is forwarded whole: the provider's `codecFor` routes on the
+    // descriptor's epoch roster and refuses an override without one
+    // fail-closed, so dropping the descriptor here would break every read and
+    // write.
     return buildEncryptingCodec(context, {
       spaceId,
       collectionId,
       scheme: override.scheme,
       keys: override.keys,
       capability,
-      // A full `CollectionEncryption` descriptor is itself a valid override
-      // (Space.createCollection pre-seeds exactly this). Forward the whole
-      // override as the `encryption` descriptor so an epoch-bearing override
-      // resolves the epoch codec -- the provider's `codecFor` routes solely
-      // on the descriptor's epoch roster and refuses an override without one
-      // fail-closed, so dropping it here would break every read and write.
-      encryption: override as CollectionEncryption
+      encryption: override
     })
   }
   // 2. A plaintext-only client (no keystore) never encrypts; no round-trip.

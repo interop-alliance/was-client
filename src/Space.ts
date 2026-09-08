@@ -308,20 +308,24 @@ export class Space {
       capability: this.#capability,
       json: body
     })
-    // Pre-seed the handle with an override matching the just-declared
-    // descriptor so the first write encrypts immediately (keys come from the
-    // keystore); no describe() round-trip needed before the descriptor is
-    // locally known. A `CollectionEncryption` descriptor is itself a valid
-    // `EncryptionOverride` -- but only one that can actually route: a bare
-    // rosterless `'edv'` declaration is NOT pre-seeded, since an override is
-    // fixed at handle construction and would pin the handle to a permanently
-    // fail-closed codec. Such a handle falls back to descriptor discovery,
-    // which resolves the roster once `ensureFirstEpoch` installs it.
+    // Pre-seed the handle with the just-declared descriptor as its override so
+    // the first write encrypts immediately (keys come from the keystore); no
+    // describe() round-trip needed before the descriptor is locally known.
+    // Only a descriptor the provider says it can route is pre-seeded: an
+    // override is fixed at handle construction, so pinning one the provider
+    // would refuse (an `edv` declaration whose epoch roster is not installed
+    // yet) would leave the handle permanently fail-closed. Such a handle falls
+    // back to descriptor discovery instead, which resolves the roster once
+    // `ensureFirstEpoch` installs it. Whether a descriptor routes is the
+    // provider's fact, not core's; a provider without `canRoute` routes all.
     const declared = desc.encryption
     const canRoute =
       declared !== undefined &&
-      (declared.scheme !== 'edv' ||
-        (declared.epochs !== undefined && declared.epochs.length > 0))
+      (this.#context.encryption?.canRoute?.({
+        scheme: declared.scheme,
+        encryption: declared
+      }) ??
+        true)
     return this.collection(createdId(response), {
       encryption: canRoute ? declared : undefined
     })

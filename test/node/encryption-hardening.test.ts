@@ -612,6 +612,31 @@ describe('epoch-from-birth routing rule', () => {
     ).rejects.toThrow(/carries no key epochs/)
   })
 
+  it('canRoute answers the same rule the guard enforces, without throwing', async () => {
+    const { kak, keyResolver, publicKeyMultibase } = await makeKeys()
+    const { encryption } = await makeEpochDescriptor({
+      id: kak.id,
+      publicKeyMultibase
+    })
+    const provider = createEdvEncryption({
+      resolveKeys: async () => ({ keyAgreementKey: kak, keyResolver })
+    })
+    const canRoute = provider.canRoute!
+    expect(canRoute({ scheme: 'edv', encryption })).toBe(true)
+    // The routability rule: no roster, empty roster, a newer scheme version,
+    // or a scheme this provider does not handle.
+    expect(canRoute({ scheme: 'edv', encryption: { scheme: 'edv' } })).toBe(
+      false
+    )
+    expect(
+      canRoute({ scheme: 'edv', encryption: { scheme: 'edv', epochs: [] } })
+    ).toBe(false)
+    expect(
+      canRoute({ scheme: 'edv', encryption: { ...encryption, version: 999 } })
+    ).toBe(false)
+    expect(canRoute({ scheme: 'age', encryption })).toBe(false)
+  })
+
   it('refuses a descriptor whose epoch roster is empty', async () => {
     const { kak, keyResolver } = await makeKeys()
     const provider = createEdvEncryption({

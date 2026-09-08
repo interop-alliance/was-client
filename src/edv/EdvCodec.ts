@@ -1939,6 +1939,10 @@ export function createEdvEncryption({
   idDerivation?: 'random' | 'content'
 }): EncryptionProvider {
   return {
+    canRoute({ scheme, encryption }) {
+      return scheme === EDV_SCHEME && descriptorDefect(encryption) === null
+    },
+
     async codecFor({ spaceId, collectionId, scheme, encryption, keys }) {
       if (scheme !== EDV_SCHEME) {
         return null
@@ -2104,29 +2108,47 @@ function guardEncryptionDescriptor({
 }): CollectionEncryption & {
   epochs: NonNullable<CollectionEncryption['epochs']>
 } {
+  const defect = descriptorDefect(encryption)
+  if (defect !== null) {
+    throw new EncryptionError(`Collection ${label} ${defect}`)
+  }
+  return encryption as CollectionEncryption & {
+    epochs: NonNullable<CollectionEncryption['epochs']>
+  }
+}
+
+/**
+ * The one routability rule for an `edv` descriptor, shared by the throwing
+ * guard and the provider's `canRoute`: names why this client cannot route the
+ * descriptor as it stands (a scheme version newer than this client
+ * implements, or no key epochs), or `null` when it can. The reason reads as
+ * the predicate of a sentence whose subject is the collection.
+ *
+ * @param [encryption] {CollectionEncryption}
+ * @returns {string | null}
+ */
+function descriptorDefect(encryption?: CollectionEncryption): string | null {
   const descriptorVersion = encryption?.version
   if (
     typeof descriptorVersion === 'number' &&
     descriptorVersion > EDV_SCHEME_VERSION
   ) {
-    throw new EncryptionError(
-      `Collection ${label} declares EDV-over-WAS scheme version ` +
-        `${descriptorVersion}, which this client (version ` +
-        `${EDV_SCHEME_VERSION}) does not implement. Upgrade the client.`
+    return (
+      `declares EDV-over-WAS scheme version ${descriptorVersion}, which ` +
+      `this client (version ${EDV_SCHEME_VERSION}) does not implement. ` +
+      'Upgrade the client.'
     )
   }
   if (!encryption?.epochs || encryption.epochs.length === 0) {
-    throw new EncryptionError(
-      `Collection ${label} is declared encrypted but its descriptor carries ` +
-        "no key epochs. Every encrypted collection's descriptor carries an " +
-        'epoch roster from creation (install epoch[0] with ensureFirstEpoch ' +
-        'at provision time); a descriptor without one is refused rather than ' +
-        'encrypted straight to a key-agreement key.'
+    return (
+      'is declared encrypted but its descriptor carries no key epochs. ' +
+      "Every encrypted collection's descriptor carries an epoch roster from " +
+      'creation (install epoch[0] with ensureFirstEpoch at provision time); ' +
+      'a descriptor without one is refused rather than encrypted straight ' +
+      'to a key-agreement key.'
     )
   }
-  return encryption as CollectionEncryption & {
-    epochs: NonNullable<CollectionEncryption['epochs']>
-  }
+  return null
 }
 
 /**

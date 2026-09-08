@@ -189,21 +189,21 @@ export interface FindPage {
  * path that takes precedence over the Collection's declared `encryption`
  * descriptor AND skips the descriptor-discovery round-trip:
  *
- * - `{ scheme }` -- treat the collection as encrypted under `scheme`, pulling
- *   keys from the client's keystore. For the `edv` scheme, pass a full
- *   epoch-bearing `CollectionEncryption` descriptor as the override (a bare
- *   `{ scheme: 'edv' }` is refused fail-closed: routing needs the key-epoch
- *   roster).
- * - `{ scheme, keys }` -- additionally supply the key material inline (opaque to
- *   core; the encryption provider interprets it per `scheme`) instead of the
- *   keystore.
+ * - a `CollectionEncryption` descriptor -- treat the collection as encrypted
+ *   under it, pulling keys from the client's keystore. The descriptor is
+ *   forwarded whole to the provider, so pass the full epoch-bearing form (a
+ *   bare `{ scheme: 'edv' }` is refused fail-closed: routing needs the
+ *   key-epoch roster).
+ * - the same descriptor with `keys` -- additionally supply the key material
+ *   inline (opaque to core; the encryption provider interprets it per
+ *   `scheme`) instead of the keystore.
  * - `'plaintext'` -- force plaintext even if a descriptor / keystore would encrypt.
  *
  * The non-`'plaintext'` forms require the `WasClient` to be constructed with an
- * `encryption` provider (which turns a scheme + keys into a codec).
+ * `encryption` provider (which turns a descriptor + keys into a codec).
  */
 export type EncryptionOverride =
-  { scheme: string; keys?: unknown } | 'plaintext'
+  (CollectionEncryption & { keys?: unknown }) | 'plaintext'
 
 /**
  * Options accepted by every handle factory (`space()`, `collection()`,

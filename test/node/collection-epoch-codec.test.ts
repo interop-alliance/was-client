@@ -9,6 +9,10 @@
  *    provider's `codecFor` (routing is decided solely by the descriptor's
  *    epoch roster, and a descriptor without one is refused fail-closed, so a
  *    dropped roster would break every read and write);
+ *  - `Space.createCollection` pre-seeds the returned handle with the declared
+ *    descriptor only when the provider's `canRoute` accepts it (a provider
+ *    without `canRoute` accepts every descriptor); otherwise the handle
+ *    discovers the descriptor on first use;
  *  - rotating the `encryption` descriptor on a handle (via `replaceDescription`, the
  *    primitive the recipient operations build on) drops the memoized codec, so
  *    the next write on the SAME handle re-resolves under the new epoch rather
@@ -20,7 +24,6 @@ import type { HttpResponse } from '@interop/http-client'
 import { WasClient } from '../../src/index.js'
 import type {
   CollectionEncryption,
-  EncryptionOverride,
   EncryptionProvider,
   ResourceCodec,
   ResourceMetadataCustom
@@ -79,8 +82,8 @@ describe('epoch-bearing encryption override', () => {
     await resolveCodec(context, {
       spaceId: 's',
       collectionId: 'c',
-      // A full CollectionEncryption descriptor is a valid EncryptionOverride.
-      override: descriptor as unknown as EncryptionOverride
+      // A CollectionEncryption descriptor is itself an EncryptionOverride.
+      override: descriptor
     })
     expect(seen).toHaveLength(1)
     expect(seen[0]!.encryption?.epochs?.length).toBe(1)
@@ -205,5 +208,125 @@ describe('rotate-then-write on the same handle', () => {
     await collection.put('r2', { b: 2 })
     expect(builtEpochs).toEqual(['epoch-1', 'epoch-2'])
     expect(encodeLog).toEqual(['encode:epoch-1', 'encode:epoch-2'])
+  })
+})
+
+describe('createCollection pre-seed consults the provider', () => {
+  /**
+   * A `WasClient` whose collection create POST answers with the created id
+   * and whose description GET serves the declared descriptor, counting those
+   * GETs: a pre-seeded handle never issues one, a discovering handle does.
+   *
+   * @param canRoute {function | undefined}   the provider's `canRoute`, or
+   *   none
+   * @returns {object}
+   */
+  function creatingClient(canRoute: EncryptionProvider['canRoute']): {
+    client: WasClient
+    describeGets: () => number
+    asked: unknown[]
+  } {
+    const asked: unknown[] = []
+    let describeGets = 0
+    let descriptor: CollectionEncryption | undefined
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return identityCodec
+      },
+      ...(canRoute !== undefined && {
+        canRoute(input: { scheme: string; encryption: CollectionEncryption }) {
+          asked.push(input)
+          return canRoute(input)
+        }
+      })
+    }
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: {
+        url?: string
+        method?: string
+        json?: { encryption?: CollectionEncryption }
+      }) {
+        const method = (args.method ?? 'GET').toUpperCase()
+        const segments = new URL(args.url ?? '').pathname
+          .split('/')
+          .filter(Boolean)
+        if (method === 'POST' && segments.length === 2) {
+          descriptor = args.json?.encryption
+          const created = { id: 'c', type: ['Collection'] }
+          return {
+            status: 201,
+            headers: new Headers({ location: 'https://was.example/space/s/c' }),
+            data: created,
+            async json() {
+              return created
+            }
+          } as unknown as HttpResponse
+        }
+        if (method === 'GET' && segments.length === 3) {
+          describeGets++
+          const description = {
+            id: 'c',
+            type: ['Collection'],
+            encryption: descriptor
+          }
+          return {
+            status: 200,
+            headers: new Headers({
+              'content-type': 'application/json',
+              etag: '"v1"'
+            }),
+            data: description,
+            async json() {
+              return description
+            }
+          } as unknown as HttpResponse
+        }
+        return {
+          status: 200,
+          headers: new Headers({ etag: '"r1"' }),
+          data: {},
+          async json() {
+            return {}
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient,
+      encryption
+    })
+    return { client, describeGets: () => describeGets, asked }
+  }
+
+  const declared: CollectionEncryption = { scheme: 'edv' }
+
+  it('pre-seeds (no describe round-trip) when the provider can route it', async () => {
+    const { client, describeGets, asked } = creatingClient(() => true)
+    const collection = await client
+      .space('s')
+      .createCollection({ id: 'c', encryption: declared })
+    await collection.put('r1', { a: 1 })
+    expect(asked).toEqual([{ scheme: 'edv', encryption: declared }])
+    expect(describeGets()).toBe(0)
+  })
+
+  it('falls back to descriptor discovery when the provider cannot', async () => {
+    const { client, describeGets } = creatingClient(() => false)
+    const collection = await client
+      .space('s')
+      .createCollection({ id: 'c', encryption: declared })
+    await collection.put('r1', { a: 1 })
+    expect(describeGets()).toBe(1)
+  })
+
+  it('a provider without canRoute is assumed to route every descriptor', async () => {
+    const { client, describeGets } = creatingClient(undefined)
+    const collection = await client
+      .space('s')
+      .createCollection({ id: 'c', encryption: declared })
+    await collection.put('r1', { a: 1 })
+    expect(describeGets()).toBe(0)
   })
 })

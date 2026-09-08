@@ -454,4 +454,24 @@ export interface EncryptionProvider {
     encryption?: CollectionEncryption
     keys?: unknown
   }): Promise<ResourceCodec | null>
+
+  /**
+   * Answers whether a just-declared descriptor is one `codecFor` could route
+   * as it stands, without consulting any keystore. Core asks this before
+   * pinning a new handle to the descriptor as its per-handle override (an
+   * override is fixed for the handle's life, so pinning one `codecFor` would
+   * refuse leaves the handle permanently fail-closed); a `false` answer makes
+   * the handle fall back to descriptor discovery instead. Pure and
+   * synchronous. Optional: a provider without it is assumed to route every
+   * descriptor it is handed.
+   *
+   * @param input {object}
+   * @param input.scheme {string}   the declared encryption scheme
+   * @param input.encryption {CollectionEncryption}   the declared descriptor
+   * @returns {boolean}
+   */
+  canRoute?(input: {
+    scheme: string
+    encryption: CollectionEncryption
+  }): boolean
 }

@@ -41,6 +41,19 @@
 
 ### Changed
 
+- `EncryptionProvider` gains an optional `canRoute({ scheme, encryption })`: the
+  provider's pure answer to whether a declared descriptor can be routed as it
+  stands. `Space.createCollection` consults it before pre-seeding the returned
+  handle with the declared descriptor, instead of testing the scheme name in
+  core; a provider without it routes every descriptor. The `edv` provider
+  answers with the same rule its descriptor guard enforces (epoch roster
+  present, scheme version supported). A client with no provider now pre-seeds a
+  rosterless `edv` declaration too, so a write through that handle fails closed
+  rather than discovering the descriptor and writing plaintext.
+- `EncryptionOverride` is now
+  `(CollectionEncryption & { keys?: unknown }) | 'plaintext'`: a descriptor,
+  optionally with inline keys, rather than a bare `{ scheme, keys? }`. The
+  pre-seeded and forwarded descriptor no longer needs a cast.
 - `Collection.declareIndex` and the recipient primitives' descriptor
   compare-and-swap now share one retry loop (`compareAndSwap` over a `CasStore`,
   internal). Both retry a lost race 3 times (`declareIndex` previously 4) and

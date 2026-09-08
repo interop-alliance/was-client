@@ -1259,3 +1259,40 @@ Resolved 2026-09-07: `ensureSpaceAndCollection` reads with `describeWithEtag`
 forward. A lost race re-reads; a descriptor the rival declared is adopted
 untouched (mutate returns null), so the retry can no longer trip
 `encryption-immutable` or replace a rival's roster.
+
+### WCL-21: `Space.createCollection` hardcodes the EDV routability rule
+
+- status: done
+- done: 2026-09-07
+- priority: medium
+- labels: encryption, layering, altitude
+- touches:
+  - was-client: `Space.createCollection` (`src/Space.ts`), the
+    `EncryptionProvider` seam (`src/codec.ts`), `EncryptionOverride`
+    (`src/types.ts`), and the blind cast in `buildEncryptingCodec`
+    (`src/internal/codec.ts`)
+- acceptance:
+  - [x] Core (`src/*.ts`) contains no `scheme !== 'edv'` test
+  - [x] The "can this descriptor route" predicate has exactly one owner
+  - [x] `EncryptionOverride` admits a full `CollectionEncryption`, so
+        `encryption: override as CollectionEncryption` drops its cast
+
+`Space.createCollection` decides whether to pre-seed the returned handle with a
+codec using
+`declared.scheme !== 'edv' || (declared.epochs !== undefined && declared.epochs.length > 0)`.
+That is a scheme-specific fact living in core, which ARCHITECTURE.md says never
+knows about `src/edv/`, and the same fact is already owned by
+`guardEncryptionDescriptor` in `EdvCodec.ts`.
+
+Two places now decide the same thing, so they can drift. Tighten the edv rule
+(require `currentEpoch` to be listed, which the guard already does) and core
+still pre-seeds a handle pinned to a permanently fail-closed codec. Add a second
+scheme and core silently pre-seeds it as routable, because the test is written
+as "not edv".
+
+The fix puts the predicate behind the seam: an optional
+`EncryptionProvider.canRoute({ scheme, encryption })` that `createCollection`
+consults, or dropping the pre-seed decision so `resolveCodec` falls back to
+descriptor discovery when an override cannot build. Widening
+`EncryptionOverride` to `{ scheme, keys? } | CollectionEncryption` removes the
+related cast. Behavior-preserving for the current single scheme.
