@@ -41,6 +41,10 @@
 
 ### Changed
 
+- `./edv`: `EdvCodec.decode` treats a decrypted document's `meta.encoding` as a
+  closed set. Absent is JSON, `utf-8` and `base64` decode as before, and
+  `chunked` keeps its route; any other present value (an unknown string, or a
+  non-string) throws `EncryptionError` instead of returning `content` as JSON.
 - `EncryptionProvider` gains an optional `canRoute({ scheme, encryption })`: the
   provider's pure answer to whether a declared descriptor can be routed as it
   stands. `Space.createCollection` consults it before pre-seeding the returned

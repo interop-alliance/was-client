@@ -1721,9 +1721,13 @@ export class EdvCodec implements ResourceCodec {
    * - `'base64'` to a `Blob` typed `meta.contentType` from `content.bytes`.
    * - absent (or `meta` absent) to `content` returned verbatim as JSON.
    *
-   * A malformed inner shape (an encoding that does not match its container key's
-   * type) throws {@link EncryptionError} -- the decrypted-document analogue of
-   * `_assertEnvelope`'s outer guard.
+   * The set is closed. Any other present value (the chunked discriminator is
+   * routed before this point by `decode`) throws {@link EncryptionError}
+   * rather than being read as JSON: the profile's extensibility rule is that a
+   * reader refuses an encoding it does not recognize instead of picking an
+   * interpretation of `content`. A malformed inner shape (an encoding that
+   * does not match its container key's type) throws the same error -- the
+   * decrypted-document analogue of `_assertEnvelope`'s outer guard.
    *
    * @param content {unknown}
    * @param [meta] {Record<string, unknown>}
@@ -1756,6 +1760,14 @@ export class EdvCodec implements ResourceCodec {
       return new Blob([base64.decode(base64Text) as BlobPart], {
         type: contentType
       })
+    }
+    if (encoding !== undefined) {
+      throw new EncryptionError(
+        'Unrecognized encrypted document encoding: meta.encoding is ' +
+          `${JSON.stringify(encoding)}, which this client does not implement ` +
+          '(recognized: absent for JSON, "utf-8", "base64", "chunked"). ' +
+          'Refusing to read the content under any other interpretation.'
+      )
     }
     return content as Json
   }

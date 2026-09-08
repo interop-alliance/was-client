@@ -1165,6 +1165,26 @@ describe('EdvCodec: malformed inner document', () => {
     )
     await expect(codec.decode(response)).rejects.toThrow(EncryptionError)
   })
+
+  it('refuses an unrecognized string encoding instead of reading content as JSON', async () => {
+    // `meta.encoding` is a closed set: a value this client does not implement
+    // is a scheme refusal, not a fallthrough to "return content verbatim".
+    const { codec, response } = await encodedDocWith(
+      { looks: 'like json' },
+      { contentType: 'application/json', encoding: 'gzip' }
+    )
+    const err = await codec.decode(response).catch(caught => caught)
+    expect(err).toBeInstanceOf(EncryptionError)
+    expect((err as Error).message).toMatch(/"gzip"/)
+  })
+
+  it('refuses a non-string encoding value', async () => {
+    const { codec, response } = await encodedDocWith(
+      { looks: 'like json' },
+      { contentType: 'application/json', encoding: 7 }
+    )
+    await expect(codec.decode(response)).rejects.toThrow(EncryptionError)
+  })
 })
 
 describe('EdvCodec: non-envelope guard', () => {
