@@ -468,6 +468,7 @@ export class Collection {
       metaPath: this.#metaPath,
       codec: Promise.resolve(codec),
       subject: `collection "${this.id}"`,
+      slot: { kind: 'collection' },
       capability: this.#capability
     })
   }
@@ -513,6 +514,7 @@ export class Collection {
       // The Collection metadata stamp describes the `custom` envelope itself,
       // so it travels as a top-level member of this PUT body.
       sendEpoch: true,
+      slot: { kind: 'collection' },
       ifMatch: options.ifMatch,
       ifNoneMatch: options.ifNoneMatch,
       capability: this.#capability

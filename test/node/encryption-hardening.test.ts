@@ -402,25 +402,25 @@ describe('was binding: metadata envelope', () => {
     const { codec, epoch } = await makeCodec()
     const { custom } = await codec.encodeMeta({
       custom: { name: 'Secret' },
-      id: 'zResourceId'
+      slot: { kind: 'resource', id: 'zResourceId' }
     })
     // A metadata envelope seals to the current epoch key and binds `was.epoch`
     // like every other write, so it satisfies the unconditional decode check.
     expect(wasOf(custom)).toEqual({ v: 1, resource: 'zResourceId', epoch })
-    await expect(codec.decodeMeta({ custom }, 'zResourceId')).resolves.toEqual({
-      name: 'Secret'
-    })
+    await expect(
+      codec.decodeMeta({ custom }, { kind: 'resource', id: 'zResourceId' })
+    ).resolves.toEqual({ name: 'Secret' })
   })
 
   it('fails with IntegrityError when metadata is swapped between resources', async () => {
     const { codec } = await makeCodec()
     const { custom } = await codec.encodeMeta({
       custom: { name: 'For A' },
-      id: 'zResourceA'
+      slot: { kind: 'resource', id: 'zResourceA' }
     })
     // The server serves resource A's metadata envelope for resource B.
     await expect(
-      codec.decodeMeta({ custom }, 'zResourceB')
+      codec.decodeMeta({ custom }, { kind: 'resource', id: 'zResourceB' })
     ).rejects.toBeInstanceOf(IntegrityError)
   })
 
@@ -428,31 +428,65 @@ describe('was binding: metadata envelope', () => {
     const { codec } = await makeCodec()
     const { custom } = await codec.encodeMeta({
       custom: { name: 'For A' },
-      id: 'zResourceA'
+      slot: { kind: 'resource', id: 'zResourceA' }
     })
-    // A `decodeMeta` with no expected id IS the Collection metadata slot (a
-    // Resource read always passes its id). A resource-bound envelope served
-    // there is a swap, whatever the resource id, so it is refused outright.
-    await expect(codec.decodeMeta({ custom })).rejects.toBeInstanceOf(
-      IntegrityError
-    )
+    // A resource-bound envelope served in the Collection metadata slot is a
+    // swap, whatever the resource id, so it is refused outright.
+    await expect(
+      codec.decodeMeta({ custom }, { kind: 'collection' })
+    ).rejects.toBeInstanceOf(IntegrityError)
   })
 
   it('fails with IntegrityError when the Collection envelope is served for a resource', async () => {
     const { codec } = await makeCodec()
     // A Collection metadata envelope binds `was.collection`, which a resource's
     // slot never carries: it is refused there before any id comparison.
-    const { custom } = await codec.encodeMeta({ custom: { name: 'Shared' } })
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'Shared' },
+      slot: { kind: 'collection' }
+    })
     await expect(
-      codec.decodeMeta({ custom }, 'zResourceA')
+      codec.decodeMeta({ custom }, { kind: 'resource', id: 'zResourceA' })
     ).rejects.toBeInstanceOf(IntegrityError)
+  })
+
+  it('refuses the Collection envelope in a resource slot whose id is unknown', async () => {
+    const { codec } = await makeCodec()
+    // A reader that does not know the resource id still states a resource
+    // slot, so it gets resource-slot validation (the Collection envelope is
+    // refused) rather than silently falling into Collection-slot validation.
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'Shared' },
+      slot: { kind: 'collection' }
+    })
+    await expect(
+      codec.decodeMeta({ custom }, { kind: 'resource' })
+    ).rejects.toBeInstanceOf(IntegrityError)
+  })
+
+  it('accepts a resource envelope in a resource slot whose id is unknown', async () => {
+    const { codec } = await makeCodec()
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'For A' },
+      slot: { kind: 'resource', id: 'zResourceA' }
+    })
+    // Without an id there is nothing to compare against; the slot check alone
+    // applies.
+    await expect(
+      codec.decodeMeta({ custom }, { kind: 'resource' })
+    ).resolves.toEqual({ name: 'For A' })
   })
 
   it('binds the collection id into the Collection metadata envelope and round-trips', async () => {
     const { codec, epoch } = await makeCodec()
-    const { custom } = await codec.encodeMeta({ custom: { name: 'Shared' } })
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'Shared' },
+      slot: { kind: 'collection' }
+    })
     expect(wasOf(custom)).toEqual({ v: 1, collection: 'c', epoch })
-    await expect(codec.decodeMeta({ custom })).resolves.toEqual({
+    await expect(
+      codec.decodeMeta({ custom }, { kind: 'collection' })
+    ).resolves.toEqual({
       name: 'Shared'
     })
   })
@@ -467,20 +501,23 @@ describe('was binding: metadata envelope', () => {
         await craftEnvelope({ keyPair, was: { v: 1, epoch } })
       )
     )
-    await expect(codec.decodeMeta({ custom })).rejects.toBeInstanceOf(
-      IntegrityError
-    )
+    await expect(
+      codec.decodeMeta({ custom }, { kind: 'collection' })
+    ).rejects.toBeInstanceOf(IntegrityError)
   })
 
   it("fails with IntegrityError when one Collection's metadata is served as another's", async () => {
     const { codec, siblingCodec } = await makeCodec()
-    const { custom } = await codec.encodeMeta({ custom: { name: 'For C' } })
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'For C' },
+      slot: { kind: 'collection' }
+    })
     // The same reader, the same epoch keys, a different collection: the read
     // decrypts fine and is caught by the binding, not by a key miss.
     const other = await siblingCodec('other-collection')
-    await expect(other.decodeMeta({ custom })).rejects.toBeInstanceOf(
-      IntegrityError
-    )
+    await expect(
+      other.decodeMeta({ custom }, { kind: 'collection' })
+    ).rejects.toBeInstanceOf(IntegrityError)
   })
 })
 

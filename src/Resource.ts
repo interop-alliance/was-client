@@ -376,7 +376,7 @@ export class Resource {
       metaPath: this.#metaPath,
       codec: this.#codec(),
       subject: `"${this.id}"`,
-      id: this.id,
+      slot: { kind: 'resource', id: this.id },
       capability: this.#capability
     })
   }
@@ -418,7 +418,7 @@ export class Resource {
       // A Resource's key epoch stamps its content write via the `Key-Epoch`
       // header, so the one the codec surfaces here is deliberately dropped.
       sendEpoch: false,
-      id: this.id,
+      slot: { kind: 'resource', id: this.id },
       ifMatch: options.ifMatch,
       ifNoneMatch: options.ifNoneMatch,
       capability: this.#capability

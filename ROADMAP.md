@@ -164,47 +164,6 @@ landed in 0.42.0; everything here was deliberately left out of it because the
 fix changes observable behavior, crosses the codec seam, or needs a maintainer
 decision first. Each carries `discovered-from: 2026-08-21 cleanup review`.
 
-### WCL-22: Metadata binding slot is inferred from an absent argument
-
-- status: todo
-- priority: medium
-- labels: encryption, codec-seam, integrity
-- touches:
-  - was-client: `ResourceCodec.encodeMeta` / `decodeMeta` (`src/codec.ts`) -- a
-    public seam, so third-party codec implementations are affected; both
-    implementations plus the `Resource` / `Collection` / `docCipher` call sites
-  - wallet-attached-storage-spec / encrypted-collections spec: no wire change
-    intended, but the `was.collection` vs `was.resource` binding this selects is
-    normative text, so confirm the seam change does not imply one
-- acceptance:
-  - [ ] The metadata slot is stated by the caller rather than deduced from
-        whether `expectedId` was passed
-  - [ ] A caller that legitimately does not know a resource id can still decode
-        metadata without silently getting collection-slot validation
-  - [ ] Stored envelope bytes are unchanged
-
-`EdvCodec` selects the AEAD binding slot with
-`collectionSlot: expectedId === undefined` on the read side and
-`resourceId === undefined ? { collection } : { resource }` on the write side.
-The seam documents `expectedId` as an optional hint that "the identity codec
-ignores", and says a caller that does not know the id omits it. In the EDV
-implementation its absence is instead the mode selector between two mutually
-exclusive bindings that `#verifyBinding` then refuses each other.
-
-Today's two callers happen to be correct (`Resource.meta` passes `this.id`,
-`Collection.meta` passes none), so this is latent rather than broken. The
-failure it invites is asymmetric: a decode path that does not know the id gets
-collection-slot validation quietly, while a write path that forgets to thread
-`id` stamps a collection-bound envelope into a resource's `/meta`, and that only
-surfaces later on some other reader as an `IntegrityError` naming server
-tampering.
-
-The fix is to make the slot explicit in the seam --
-`encodeMeta({ custom, slot: { kind: 'resource', id } | { kind: 'collection' } })`
-and the same on `decodeMeta` -- so the binding is stated, not deduced, and "id
-unknown" stays expressible. Behavior-preserving, but it changes a published
-interface, so it needs sign-off before it is coded.
-
 ### WCL-23: `logStore` re-derives the body shape the content layer owns
 
 - status: todo

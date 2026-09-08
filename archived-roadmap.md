@@ -1328,3 +1328,51 @@ interpretation of `content`. `#fromDocument` today handles `"utf-8"` and
 `"base64"` and returns `content` verbatim for everything else, so an unknown
 encoding silently decodes as JSON. Reading is unaffected for every envelope a
 conforming writer produces; the change only closes the fallthrough.
+
+### WCL-22: Metadata binding slot is inferred from an absent argument
+
+- status: done
+- done: 2026-09-07
+- priority: medium
+- labels: encryption, codec-seam, integrity
+- touches:
+  - was-client: `ResourceCodec.encodeMeta` / `decodeMeta` (`src/codec.ts`) -- a
+    public seam, so third-party codec implementations are affected; both
+    implementations (`src/internal/codec.ts` identity, `src/edv/EdvCodec.ts`)
+    plus the call sites: `readMeta` / `writeMeta` in `src/internal/meta.ts` (the
+    single chokepoint the `Resource` and `Collection` handles go through) and
+    the direct `decodeMeta` in `src/edv/docCipher.ts`
+  - wallet-attached-storage-spec / encrypted-collections spec: no wire change
+    intended, but the `was.collection` vs `was.resource` binding this selects is
+    normative text, so confirm the seam change does not imply one
+- acceptance:
+  - [x] The metadata slot is stated by the caller rather than deduced from
+        whether `expectedId` was passed
+  - [x] A caller that legitimately does not know a resource id can still decode
+        metadata without silently getting collection-slot validation
+  - [x] Stored envelope bytes are unchanged
+
+`EdvCodec` selects the AEAD binding slot with
+`collectionSlot: expectedId === undefined` on the read side and
+`resourceId === undefined ? { collection } : { resource }` on the write side.
+The seam types both ids as optional. The `decodeMeta` JSDoc does say that an
+omitted id means a Collection-level read, but the interface shape still makes
+the absence of an optional argument the mode selector between two mutually
+exclusive bindings that `#verifyBinding` then refuses each other.
+
+Today's callers happen to be correct (`Resource` threads `this.id` through
+`readMeta` / `writeMeta`, `Collection` and `docCipher` pass none), so this is
+latent rather than broken. The failure it invites is asymmetric: a decode path
+that does not know the id gets collection-slot validation quietly, while a write
+path that forgets to thread `id` stamps a collection-bound envelope into a
+resource's `/meta`, and that only surfaces later on some other reader as an
+`IntegrityError` naming server tampering.
+
+The fix is to make the slot explicit in the seam --
+`encodeMeta({ custom, slot: { kind: 'resource', id } | { kind: 'collection' } })`
+and the same on `decodeMeta` -- so the binding is stated, not deduced, and "id
+unknown" stays expressible. Behavior-preserving, but it changes a published
+interface, so it needs sign-off before it is coded.
+
+Landed 2026-09-07: `MetaWriteSlot` / `MetaReadSlot` on the seam, both codec
+implementations, `readMeta` / `writeMeta`, and the `docCipher` schema read.

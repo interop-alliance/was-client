@@ -86,6 +86,8 @@ import type {
   CodecWrite,
   EncryptionProvider,
   IndexSchema,
+  MetaReadSlot,
+  MetaWriteSlot,
   ResourceCodec,
   ResponseLike
 } from '../codec.js'
@@ -1115,8 +1117,8 @@ export class EdvCodec implements ResourceCodec {
    * @param [options.collectionSlot] {boolean}   the read addressed the
    *   Collection metadata slot, which belongs to no resource: an envelope bound
    *   to a resource id is refused there, and one bound to this Collection's id
-   *   is required (see {@link _verifyBinding}). Set only by the
-   *   Collection-level metadata read
+   *   is required (see {@link _verifyBinding}). Set only by a
+   *   {@link decodeMeta} whose caller states the Collection slot
    * @returns {Promise<object>}   the decrypted document (`content`, `meta`, the
    *   AEAD-authenticated `stream` state where one was sealed, `keyId`, and the
    *   AEAD-bound `resourceId` the envelope declares, where it binds one)
@@ -1475,10 +1477,10 @@ export class EdvCodec implements ResourceCodec {
    */
   async encodeMeta({
     custom,
-    id: resourceId
+    slot
   }: {
     custom: ResourceMetadataCustomInput
-    id?: string
+    slot: MetaWriteSlot
   }): Promise<{ custom: object; epoch: string }> {
     const { documentCipher } = this.#edv
     // The document needs an EDV id (the cipher asserts one on decrypt). It is
@@ -1486,21 +1488,21 @@ export class EdvCodec implements ResourceCodec {
     // minted fresh each write, since the metadata envelope is never updated in
     // place (concurrency is the server's plaintext `metaVersion`, Decision 3).
     const id = (await this.#edv.generateId()) as string
-    // Bind the `was` parameter to the RESOURCE id (not the metadata envelope's
-    // own random EDV id), so a server-side swap of two resources' metadata is
-    // AEAD-detected on decode. A Resource-level write always knows that id at
-    // encrypt time (it is never content-derived here); a Collection-level write
-    // has no resource to bind and binds this collection's id instead, so its
-    // slot is declared positively -- a content envelope (which binds neither
-    // marker) served in the Collection metadata slot is then detected too. It
-    // seals to the current epoch key like every write, so it binds `was.epoch`
-    // like every write.
+    // Bind the `was` parameter to the caller's stated slot (not the metadata
+    // envelope's own random EDV id): a resource slot binds the RESOURCE id, so
+    // a server-side swap of two resources' metadata is AEAD-detected on decode
+    // (a Resource-level write always knows that id at encrypt time; it is
+    // never content-derived here); the Collection slot has no resource to bind
+    // and binds this collection's id instead, so it too is declared
+    // positively -- a content envelope (which binds neither marker) served in
+    // the Collection metadata slot is then detected. It seals to the current
+    // epoch key like every write, so it binds `was.epoch` like every write.
     const encrypted = await documentCipher.encrypt({
       doc: { id, content: custom as Record<string, unknown> },
       ...this.#sealParams({
-        ...(resourceId === undefined
+        ...(slot.kind === 'collection'
           ? { collection: this.#collectionId }
-          : { resource: resourceId }),
+          : { resource: slot.id }),
         // Deliberately un-blinded, even on a searchable collection: this
         // envelope is the WAS `/meta` value, not part of the resource's content
         // document, and it is stored in a different slot the search endpoint
@@ -1527,10 +1529,11 @@ export class EdvCodec implements ResourceCodec {
    * present value must be an EDV envelope (else {@link EncryptionError}, the
    * `_assertEnvelope` guard), so a foreign plaintext `custom` fails closed.
    *
-   * An omitted `expectedId` means the Collection-level metadata slot (a
-   * Resource metadata read always passes its resource id), so an envelope bound
-   * to a resource is refused there as a server-side swap, and one that does not
-   * bind this Collection's own id is refused as an envelope of some other slot.
+   * The caller states the slot. In the Collection slot an envelope bound to a
+   * resource is refused as a server-side swap, and one that does not bind this
+   * Collection's own id is refused as an envelope of some other slot. In a
+   * resource slot the Collection's own envelope is refused, and the bound
+   * resource id is checked against `slot.id` when the caller knows it.
    */
   async decodeMeta(
     {
@@ -1538,15 +1541,16 @@ export class EdvCodec implements ResourceCodec {
     }: {
       custom?: unknown
     },
-    expectedId?: string
+    slot: MetaReadSlot
   ): Promise<ResourceMetadataCustom> {
     if (custom === undefined || custom === null) {
       return {}
     }
     const decrypted = await this.#openEnvelope({
       doc: custom,
-      expectedId,
-      collectionSlot: expectedId === undefined
+      ...(slot.kind === 'collection'
+        ? { collectionSlot: true }
+        : { expectedId: slot.id })
     })
     return (decrypted.content ?? {}) as ResourceMetadataCustom
   }

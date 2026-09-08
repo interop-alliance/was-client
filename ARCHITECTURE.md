@@ -170,11 +170,14 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
   `Space.createCollection` consults before pinning a new handle to that
   descriptor as its override. A provider without it routes every descriptor.
   Core never tests a scheme name itself). `encodeMeta`/`decodeMeta` serve both
-  metadata levels: the Resource `/meta` pair passes the resource `id` to bind,
-  the Collection `/meta` pair passes none. `encodeMeta` also surfaces the
-  `epoch` its envelope sealed under, which `Collection.setMeta` forwards as the
-  PUT body's top-level stamp (a plaintext codec surfaces none, and the server
-  then clears the stamp).
+  metadata levels, and the caller states which slot it is on: the Resource
+  `/meta` pair passes `{ kind: 'resource', id }`, the Collection `/meta` pair
+  `{ kind: 'collection' }` (a reader that does not know the resource id passes
+  `{ kind: 'resource' }` and still gets resource-slot validation). Both go
+  through `readMeta` / `writeMeta` in `src/internal/meta.ts`. `encodeMeta` also
+  surfaces the `epoch` its envelope sealed under, which `Collection.setMeta`
+  forwards as the PUT body's top-level stamp (a plaintext codec surfaces none,
+  and the server then clears the stamp).
 - `src/internal/codec.ts` -- the identity codec and the resolver policy.
 - `src/edv/EdvCodec.ts` -- the encrypting implementation and the
   `createEdvEncryption` factory.

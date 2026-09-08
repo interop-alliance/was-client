@@ -41,6 +41,15 @@
 
 ### Changed
 
+- `ResourceCodec.encodeMeta` / `decodeMeta` now take an explicit metadata slot
+  instead of an optional resource id: `encodeMeta({ custom, slot })` with
+  `slot: { kind: 'resource', id } | { kind: 'collection' }` (`MetaWriteSlot`),
+  and `decodeMeta(stored, slot)` where a resource slot's `id` may be omitted by
+  a reader that does not know it (`MetaReadSlot`). The EDV codec binds and
+  verifies the same `was.resource` / `was.collection` markers as before, so
+  stored envelopes are unchanged; the slot is now stated by the caller rather
+  than deduced from an absent argument. Third-party codecs implementing the seam
+  must adopt the new signatures.
 - `./edv`: `EdvCodec.decode` treats a decrypted document's `meta.encoding` as a
   closed set. Absent is JSON, `utf-8` and `base64` decode as before, and
   `chunked` keeps its route; any other present value (an unknown string, or a

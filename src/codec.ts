@@ -280,6 +280,23 @@ export interface CodecIndexing {
 }
 
 /**
+ * The `/meta` slot a metadata `custom` value is written to. A Resource's
+ * metadata slot always knows its resource id at write time; the Collection's
+ * own metadata slot belongs to no resource. Stated by the caller so an
+ * encrypting codec never deduces the binding from an absent argument.
+ */
+export type MetaWriteSlot =
+  { kind: 'resource'; id: string } | { kind: 'collection' }
+
+/**
+ * The `/meta` slot a stored `custom` value was read from. A resource slot
+ * whose id the reader does not know is expressible (`{ kind: 'resource' }`),
+ * and still gets resource-slot validation rather than the Collection slot's.
+ */
+export type MetaReadSlot =
+  { kind: 'resource'; id?: string } | { kind: 'collection' }
+
+/**
  * A pluggable encode/decode transform bound to a single collection handle.
  * Implementations must be stateless with respect to a given call (a resolved
  * codec is reused across every read/write on the handle).
@@ -374,12 +391,12 @@ export interface ResourceCodec {
    *   Collection-level `custom` carries the persisted `indexSchema` alongside
    *   them) while `name` / `tags` themselves stay checked at their stored
    *   types
-   * @param [input.id] {string}   the resource id the metadata belongs to. An
-   *   encrypting codec binds it into the metadata envelope's AEAD-authenticated
-   *   protected header (so a server-side swap of two resources' metadata is
-   *   detected on decode); the identity codec ignores it. Absent for a
-   *   Collection-level metadata write, which belongs to no resource -- an
-   *   encrypting codec then binds its own collection id instead.
+   * @param input.slot {MetaWriteSlot}   the `/meta` slot the value is written
+   *   to. An encrypting codec binds the slot into the envelope's
+   *   AEAD-authenticated protected header: a resource slot binds the resource
+   *   id (so a server-side swap of two resources' metadata is detected on
+   *   decode), the Collection slot binds the codec's own collection id. The
+   *   identity codec ignores it.
    * @returns {Promise<{ custom: object; epoch?: string }>}   the value to store
    *   under `custom`, plus -- for an encrypting codec -- `epoch`, the key-epoch
    *   id the metadata envelope sealed under. A Collection-level `/meta` write
@@ -389,7 +406,7 @@ export interface ResourceCodec {
    */
   encodeMeta(input: {
     custom: ResourceMetadataCustomInput
-    id?: string
+    slot: MetaWriteSlot
   }): Promise<{ custom: object; epoch?: string }>
 
   /**
@@ -400,16 +417,16 @@ export interface ResourceCodec {
    *
    * @param stored {object}
    * @param [stored.custom] {unknown}   the stored `custom` value from `/meta`
-   * @param [expectedId] {string}   the resource id the metadata belongs to. An
+   * @param slot {MetaReadSlot}   the `/meta` slot the value was read from. An
    *   encrypting codec verifies the envelope's AEAD-authenticated binding
-   *   against it; the identity codec ignores it. Omitted for a Collection-level
-   *   read, where an encrypting codec instead requires the envelope to be bound
-   *   to that collection.
+   *   against it: a resource slot requires a resource-bound envelope (and
+   *   checks the id when the caller knows it), the Collection slot requires
+   *   one bound to that collection. The identity codec ignores it.
    * @returns {Promise<ResourceMetadataCustom>}
    */
   decodeMeta(
     stored: { custom?: unknown },
-    expectedId?: string
+    slot: MetaReadSlot
   ): Promise<ResourceMetadataCustom>
 }
 

@@ -237,7 +237,9 @@ export async function createEdvDocCipher({
     if (!indexing) {
       return EMPTY_INDEX_SCHEMA
     }
-    const schema = readIndexSchema(await codec.decodeMeta(stored))
+    const schema = readIndexSchema(
+      await codec.decodeMeta(stored, { kind: 'collection' })
+    )
     indexing.applySchema(schema)
     return schema
   }

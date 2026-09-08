@@ -527,7 +527,8 @@ describe('createEdvDocCipher (blinded index schema)', () => {
     })
     direct.indexing!.applySchema(SCHEMA)
     const { custom } = await direct.encodeMeta({
-      custom: { indexSchema: SCHEMA }
+      custom: { indexSchema: SCHEMA },
+      slot: { kind: 'collection' }
     })
     const encoded = await direct.encode({ data: { type: 'note' } })
     const expected = indexedOf(
@@ -568,7 +569,8 @@ describe('createEdvDocCipher (blinded index schema)', () => {
     const { encryption, ...keys } = await makeIndexableReader()
     const direct = await directCodecFor({ collectionId: 'c', encryption, keys })
     const { custom } = await direct.encodeMeta({
-      custom: { indexSchema: SCHEMA }
+      custom: { indexSchema: SCHEMA },
+      slot: { kind: 'collection' }
     })
 
     const cipher = await createEdvDocCipher({
@@ -592,7 +594,8 @@ describe('createEdvDocCipher (blinded index schema)', () => {
     const { encryption, ...keys } = await makeIndexableReader()
     const direct = await directCodecFor({ collectionId: 'c', encryption, keys })
     const { custom } = await direct.encodeMeta({
-      custom: { indexSchema: SCHEMA }
+      custom: { indexSchema: SCHEMA },
+      slot: { kind: 'collection' }
     })
     const cipher = await createEdvDocCipher({
       ...keys,
@@ -636,7 +639,8 @@ describe('createEdvDocCipher (blinded index schema)', () => {
       keys
     })
     const { custom } = await foreign.encodeMeta({
-      custom: { indexSchema: SCHEMA }
+      custom: { indexSchema: SCHEMA },
+      slot: { kind: 'collection' }
     })
     const cipher = await createEdvDocCipher({
       ...keys,

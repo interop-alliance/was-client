@@ -46,6 +46,8 @@ export type {
   ChunkedWrite,
   CodecRequestContext,
   CodecWrite,
+  MetaReadSlot,
+  MetaWriteSlot,
   EncodedWrite,
   ResponseLike,
   BlindedQuery,

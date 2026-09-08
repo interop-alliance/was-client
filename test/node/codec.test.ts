@@ -24,6 +24,7 @@ import type {
   EncryptionProvider,
   ResourceCodec,
   EncodedWrite,
+  MetaReadSlot,
   ResourceMetadataCustom
 } from '../../src/index.js'
 import { CodecHolder, identityCodec } from '../../src/internal/codec.js'
@@ -150,6 +151,13 @@ function clientWithRouter({
 }
 
 /**
+ * Renders a metadata slot for the fake codec's call log.
+ */
+function slotLabel(slot: MetaReadSlot): string {
+  return slot.kind === 'collection' ? 'collection' : `resource:${slot.id}`
+}
+
+/**
  * A fake encrypting codec that records its calls and mints a fixed id, so the
  * tests can assert routing without any real crypto. `encodeMeta` wraps `custom`
  * in a fake `{ jwe }` envelope and `decodeMeta` unwraps it, mirroring how a real
@@ -169,17 +177,17 @@ function fakeCodec(log: string[], epoch?: string): ResourceCodec {
       log.push('decode')
       return { decrypted: true }
     },
-    async encodeMeta({ custom, id }): Promise<{ custom: object }> {
+    async encodeMeta({ custom, slot }): Promise<{ custom: object }> {
       log.push('encodeMeta')
-      log.push(`encodeMeta:id=${id ?? 'none'}`)
+      log.push(`encodeMeta:slot=${slotLabel(slot)}`)
       return {
         custom: { jwe: custom },
         ...(epoch !== undefined && { epoch })
       }
     },
-    async decodeMeta({ custom }, expectedId): Promise<ResourceMetadataCustom> {
+    async decodeMeta({ custom }, slot): Promise<ResourceMetadataCustom> {
       log.push('decodeMeta')
-      log.push(`decodeMeta:id=${expectedId ?? 'none'}`)
+      log.push(`decodeMeta:slot=${slotLabel(slot)}`)
       return ((custom as { jwe?: unknown })?.jwe ??
         {}) as ResourceMetadataCustom
     }
@@ -737,8 +745,8 @@ describe('codec seam: Collection-level metadata routes through the codec', () =>
       custom: { jwe: { name: 'x', tags: { a: 'b' } } }
     })
     // The Collection metadata slot belongs to no resource, so the codec is
-    // called with no id.
-    expect(log).toContain('encodeMeta:id=none')
+    // told the Collection slot, not a resource id.
+    expect(log).toContain('encodeMeta:slot=collection')
   })
 
   it('meta decrypts the stored custom envelope back to plaintext', async () => {
@@ -760,7 +768,7 @@ describe('codec seam: Collection-level metadata routes through the codec', () =>
       .collection('c', { encryption: { scheme: 'edv' } })
       .meta()
     expect(meta?.custom).toEqual({ name: 'decoded' })
-    expect(log).toContain('decodeMeta:id=none')
+    expect(log).toContain('decodeMeta:slot=collection')
   })
 
   it('carries the codec epoch as a top-level body member on the PUT', async () => {
@@ -940,13 +948,26 @@ describe('conditional writes: conditional codec wiring', () => {
 describe('identityCodec: metadata identity (byte-for-byte)', () => {
   it('encodeMeta returns custom unchanged; decodeMeta inverts it', async () => {
     const custom = { name: 'Hello', tags: { project: 'demo' } }
-    expect(await identityCodec.encodeMeta({ custom })).toEqual({ custom })
-    expect(await identityCodec.decodeMeta({ custom })).toEqual(custom)
+    expect(
+      await identityCodec.encodeMeta({ custom, slot: { kind: 'collection' } })
+    ).toEqual({
+      custom
+    })
+    expect(
+      await identityCodec.decodeMeta({ custom }, { kind: 'collection' })
+    ).toEqual(custom)
   })
 
   it('decodeMeta returns {} for an absent custom', async () => {
-    expect(await identityCodec.decodeMeta({})).toEqual({})
-    expect(await identityCodec.decodeMeta({ custom: undefined })).toEqual({})
+    expect(await identityCodec.decodeMeta({}, { kind: 'collection' })).toEqual(
+      {}
+    )
+    expect(
+      await identityCodec.decodeMeta(
+        { custom: undefined },
+        { kind: 'collection' }
+      )
+    ).toEqual({})
   })
 })
 

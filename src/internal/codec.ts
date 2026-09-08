@@ -401,6 +401,7 @@ async function loadIndexSchema(
       metaPath: collectionMeta(spaceId, collectionId),
       codec: Promise.resolve(codec),
       subject: `collection "${collectionId}"`,
+      slot: { kind: 'collection' },
       capability
     })
   } catch (err) {

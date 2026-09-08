@@ -1647,7 +1647,8 @@ describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
   it('encrypts custom into an EDV Document envelope (no plaintext leak)', async () => {
     const codec = await makeCodec()
     const { custom } = await codec.encodeMeta({
-      custom: { name: 'Secret Name', tags: { project: 'x' } }
+      custom: { name: 'Secret Name', tags: { project: 'x' } },
+      slot: { kind: 'resource', id: 'zResourceId' }
     })
     // The stored `custom` is an EDV Document envelope (`{ jwe, ... }`), not the
     // plaintext name/tags.
@@ -1658,35 +1659,41 @@ describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
   it('round-trips custom through encodeMeta then decodeMeta', async () => {
     const codec = await makeCodec()
     const original = { name: 'Hello', tags: { a: 'b', c: 'd' } }
-    const { custom } = await codec.encodeMeta({ custom: original })
-    expect(await codec.decodeMeta({ custom })).toEqual(original)
+    const slot = { kind: 'resource', id: 'zResourceId' } as const
+    const { custom } = await codec.encodeMeta({ custom: original, slot })
+    expect(await codec.decodeMeta({ custom }, slot)).toEqual(original)
   })
 
   it('round-trips an empty custom (envelope on the wire, {} decoded)', async () => {
     const codec = await makeCodec()
-    const { custom } = await codec.encodeMeta({ custom: {} })
+    const slot = { kind: 'resource', id: 'zResourceId' } as const
+    const { custom } = await codec.encodeMeta({ custom: {}, slot })
     expect((custom as { jwe?: unknown }).jwe).toBeTruthy()
-    expect(await codec.decodeMeta({ custom })).toEqual({})
+    expect(await codec.decodeMeta({ custom }, slot)).toEqual({})
   })
 
   it('decodeMeta returns {} for an absent custom (no metadata written)', async () => {
     const codec = await makeCodec()
-    expect(await codec.decodeMeta({})).toEqual({})
-    expect(await codec.decodeMeta({ custom: undefined })).toEqual({})
+    const slot = { kind: 'resource', id: 'zResourceId' } as const
+    expect(await codec.decodeMeta({}, slot)).toEqual({})
+    expect(await codec.decodeMeta({ custom: undefined }, slot)).toEqual({})
   })
 
   it('decodeMeta fails closed on a foreign plaintext custom (no `jwe`)', async () => {
     const codec = await makeCodec()
     await expect(
-      codec.decodeMeta({ custom: { name: 'plaintext' } })
+      codec.decodeMeta(
+        { custom: { name: 'plaintext' } },
+        { kind: 'resource', id: 'zResourceId' }
+      )
     ).rejects.toThrow(EncryptionError)
   })
 
-  it('encodeMeta with an id binds `was.resource` and reports the write epoch', async () => {
+  it('encodeMeta in a resource slot binds `was.resource` and reports the write epoch', async () => {
     const { codec, epochId } = await makeFixture()
     const { custom, epoch } = await codec.encodeMeta({
       custom: { name: 'Secret' },
-      id: 'zResourceId'
+      slot: { kind: 'resource', id: 'zResourceId' }
     })
     expect(wasOf(custom)).toEqual({
       v: 1,
@@ -1696,10 +1703,11 @@ describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
     expect(epoch).toBe(epochId)
   })
 
-  it('encodeMeta without an id binds `was.collection`, not `was.resource`', async () => {
+  it('encodeMeta in the Collection slot binds `was.collection`, not `was.resource`', async () => {
     const { codec, epochId } = await makeFixture()
     const { custom, epoch } = await codec.encodeMeta({
-      custom: { name: 'Collection Label' }
+      custom: { name: 'Collection Label' },
+      slot: { kind: 'collection' }
     })
     // A Collection's metadata belongs to no resource, so instead of a resource
     // id the envelope binds the collection it was written for -- which is what
@@ -1710,10 +1718,11 @@ describe('EdvCodec: metadata (encodeMeta / decodeMeta)', () => {
     expect(epoch).toBe(epochId)
   })
 
-  it('round-trips Collection-level custom without an expected id', async () => {
+  it('round-trips Collection-level custom through the Collection slot', async () => {
     const codec = await makeCodec()
     const original = { name: 'Collection Label', tags: { a: 'b' } }
-    const { custom } = await codec.encodeMeta({ custom: original })
-    expect(await codec.decodeMeta({ custom })).toEqual(original)
+    const slot = { kind: 'collection' } as const
+    const { custom } = await codec.encodeMeta({ custom: original, slot })
+    expect(await codec.decodeMeta({ custom }, slot)).toEqual(original)
   })
 })

@@ -4,12 +4,12 @@
 /**
  * Shared `/meta` I/O for the Collection and Resource handles. The two read and
  * write the same metadata document shape and differ only in the metadata type,
- * whether the `custom` envelope is bound to a resource id, and whether the
- * codec's key epoch travels in the PUT body. Each handle wraps these with its
+ * the `/meta` slot the `custom` envelope is bound to, and whether the codec's
+ * key epoch travels in the PUT body. Each handle wraps these with its
  * own JSDoc.
  */
 import { WasServerError } from '../errors.js'
-import type { ResourceCodec } from '../codec.js'
+import type { MetaReadSlot, MetaWriteSlot, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
 import { readEtag, writeHeaders } from './conditional.js'
@@ -32,8 +32,8 @@ import type {
  *   concurrently with the read
  * @param options.subject {string}   the metadata's owner as it reads in the
  *   malformed-response error message
- * @param [options.id] {string}   the resource id the metadata belongs to, for
- *   an encrypting codec's envelope-binding check. Omitted at Collection level.
+ * @param options.slot {MetaReadSlot}   the `/meta` slot being read, for an
+ *   encrypting codec's envelope-binding check
  * @param [options.capability] {IZcap}
  * @returns {Promise<(Metadata & { etag?: string }) | null>}
  */
@@ -45,13 +45,13 @@ export async function readMeta<
     metaPath,
     codec: codecPromise,
     subject,
-    id,
+    slot,
     capability
   }: {
     metaPath: string
     codec: Promise<ResourceCodec>
     subject: string
-    id?: string
+    slot: MetaReadSlot
     capability?: IZcap
   }
 ): Promise<(Metadata & { etag?: string }) | null> {
@@ -85,11 +85,10 @@ export async function readMeta<
   }
   const metadata = response.data as Metadata
   // Decode the user-writable `custom` (decrypting it on an encrypted
-  // collection) so callers uniformly see plaintext `{ name, tags }`. With no
-  // resource id -- the Collection-level read -- the slot belongs to the
-  // collection itself, and the encrypting codec refuses a resource-bound
-  // envelope served there.
-  const custom = await codec.decodeMeta({ custom: metadata.custom }, id)
+  // collection) so callers uniformly see plaintext `{ name, tags }`. The
+  // stated slot drives the encrypting codec's binding check: in the
+  // Collection slot it refuses a resource-bound envelope served there.
+  const custom = await codec.decodeMeta({ custom: metadata.custom }, slot)
   const decoded = { ...metadata, custom }
   const etag = readEtag(response)
   return etag !== undefined ? { ...decoded, etag } : decoded
@@ -111,8 +110,8 @@ export async function readMeta<
  *   stamp describes the `custom` envelope itself; false at Resource level,
  *   where a Resource's epoch instead stamps its content write via the
  *   `Key-Epoch` header, so an epoch surfaced here is deliberately dropped.
- * @param [options.id] {string}   the resource id to bind the envelope to.
- *   Omitted at Collection level.
+ * @param options.slot {MetaWriteSlot}   the `/meta` slot being written, which
+ *   an encrypting codec binds into the envelope
  * @param [options.ifMatch] {string}       update only if the `/meta` ETag matches
  * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
  * @param [options.capability] {IZcap}
@@ -125,7 +124,7 @@ export async function writeMeta(
     codec: codecPromise,
     custom,
     sendEpoch,
-    id,
+    slot,
     ifMatch,
     ifNoneMatch,
     capability
@@ -134,16 +133,14 @@ export async function writeMeta(
     codec: Promise<ResourceCodec>
     custom: ResourceMetadataCustomInput
     sendEpoch: boolean
-    id?: string
+    slot: MetaWriteSlot
     ifMatch?: string
     ifNoneMatch?: boolean
     capability?: IZcap
   }
 ): Promise<{ etag?: string }> {
   const codec = await codecPromise
-  const { custom: encoded, epoch } = await codec.encodeMeta(
-    id !== undefined ? { custom, id } : { custom }
-  )
+  const { custom: encoded, epoch } = await codec.encodeMeta({ custom, slot })
   const response = await send(context, {
     path: metaPath,
     method: 'PUT',

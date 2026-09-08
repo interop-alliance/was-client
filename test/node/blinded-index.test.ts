@@ -201,7 +201,10 @@ describe('indexed emission at the content encrypt seam', () => {
       revision: 1,
       indexes: [{ attribute: 'content.name', addedIn: 1 }]
     })
-    const { custom } = await codec.encodeMeta({ custom: { name: 'secret' } })
+    const { custom } = await codec.encodeMeta({
+      custom: { name: 'secret' },
+      slot: { kind: 'collection' }
+    })
     // No blinded entries even though `content.name` IS declared: the metadata
     // envelope is a different slot, which the search endpoint never reads.
     expect((custom as { indexed?: unknown }).indexed).toEqual([])
