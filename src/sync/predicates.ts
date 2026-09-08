@@ -51,8 +51,10 @@ export function isSyncConflictError(err: unknown): boolean {
 
 /**
  * Whether an error is the replication port's absent-target signal
- * (`WasSyncNotFoundError`, HTTP 404). On a delete that is a settled outcome
- * -- already gone, or the write never reached the server -- not a conflict.
+ * (`WasSyncNotFoundError`, HTTP 404), raised by the default port's
+ * `deleteContent` and `putMeta`. On a delete that is a settled outcome --
+ * already gone, or the write never reached the server -- not a conflict. On a
+ * metadata write it marks a race with a remote delete.
  *
  * @param err {unknown}
  * @returns {boolean}

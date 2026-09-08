@@ -154,7 +154,10 @@ export interface WasSyncPort {
    * clears every property the body leaves out) -- that is how a metadata clear
    * replicates. Returns the new metadata {@link WriteAck}, or `undefined` when
    * the response carried no `ETag`. Throws {@link WasSyncConflictError} on
-   * `412`.
+   * `412`, and {@link WasSyncNotFoundError} on `404` (the resource is gone: a
+   * delete race the caller corroborates). A port built with
+   * `mapAuthErrors: true` raises {@link WasSyncAuthError} with `status: 404`
+   * there instead, since the masked `404` is ambiguous.
    */
   putMeta?(options: {
     id: string

@@ -905,11 +905,11 @@ plugs into:
   `ETag`. The port moves stored bodies **verbatim** -- for an encrypted
   collection that means the opaque EDV envelope, never plaintext, and the port
   itself never touches keys. A rejected precondition throws
-  `WasSyncConflictError` (412); a delete of an already-gone resource throws
-  `WasSyncNotFoundError` (404) -- both catchable subtypes of the core
-  `PreconditionFailedError` / `NotFoundError`. Every other failure arrives as
-  the typed `WasError` subclass for its status, carrying the server's
-  `problem+json` fields.
+  `WasSyncConflictError` (412); a delete of an already-gone resource or a
+  `putMeta` against one throws `WasSyncNotFoundError` (404) -- both catchable
+  subtypes of the core `PreconditionFailedError` / `NotFoundError`. Every other
+  failure arrives as the typed `WasError` subclass for its status, carrying the
+  server's `problem+json` fields.
 - **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
   `isUnknownEpochError`** classify those signals by `err.name`. Use them rather
   than `instanceof`: the port and the `DocCipher` are seams your app injects,

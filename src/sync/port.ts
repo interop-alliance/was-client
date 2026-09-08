@@ -127,12 +127,13 @@ function isPortSignal(mapped: WasError): boolean {
  * (so a status outside this list -- a `500`, a `507` quota-exceeded -- still
  * leaves the sync subpath typed and carrying the server's problem details).
  * A rejected precondition becomes a {@link WasSyncConflictError} for every
- * write. `notFound` opts in to the not-found mapping, which only
- * `deleteContent` performs (an already-gone target is a settled outcome for a
- * delete, but a hard error for a content or metadata write). `authErrors` is
+ * write. `notFound` opts in to the not-found mapping, which `deleteContent`
+ * and `putMeta` perform on the default port (an already-gone target is a
+ * settled outcome for a delete and a delete race for a metadata write, but a
+ * hard error for a content write). `authErrors` is
  * the port's `mapAuthErrors` option: it maps `401` / `403` / the masked `404`
  * to a {@link WasSyncAuthError}. `notFound` is checked first, so a port that
- * asked for both still gets the delete-specific signal.
+ * asked for both still gets the not-found signal.
  *
  * @param err {unknown}   the caught error
  * @param [options] {object}
@@ -234,7 +235,11 @@ function versionedEtag(response: HttpResponse): {
  * `404` is a modeled outcome rather than an anomaly: `deleteContent` resolves
  * (the tombstone's goal state already holds -- an idempotent delete), and `get`
  * resolves `null` (absent or tombstoned -- the deletion-wins input its callers
- * depend on). Revoked access still surfaces within one poll on `query` and on
+ * depend on). A `putMeta` `404` is ambiguous by design: it is either the
+ * masked authorization failure or a delete race (the resource was deleted by
+ * another replica after this one read it), and the option maps it to a
+ * {@link WasSyncAuthError} whose `status` a push loop can corroborate against
+ * a re-read. Revoked access still surfaces within one poll on `query` and on
  * the content/metadata writes.
  *
  * @param options {object}
@@ -316,6 +321,11 @@ export function createWasSyncPort({
     return { version: version ?? 0, etag }
   }
 
+  // The signals `deleteContent` and `putMeta` ask `mapWriteError` for: the
+  // not-found mapping on the default port, the auth mapping under
+  // `mapAuthErrors`.
+  const writeSignals = { notFound: !mapAuthErrors, authErrors: mapAuthErrors }
+
   return {
     async query({ checkpoint, limit }) {
       try {
@@ -370,10 +380,7 @@ export function createWasSyncPort({
         if (mapAuthErrors && mapped instanceof NotFoundError) {
           return undefined
         }
-        mapWriteError(mapped, {
-          notFound: !mapAuthErrors,
-          authErrors: mapAuthErrors
-        })
+        mapWriteError(mapped, writeSignals)
       }
     },
 
@@ -394,7 +401,12 @@ export function createWasSyncPort({
         const { etag, version } = versionedEtag(response)
         return etag !== undefined ? { version: version ?? 0, etag } : undefined
       } catch (err) {
-        mapWriteError(err, { authErrors: mapAuthErrors })
+        // A `/meta` write against a nonexistent resource legitimately `404`s
+        // (the resource was deleted by another replica after this one read
+        // it), so the default port raises the not-found signal a push loop
+        // can corroborate. Under `mapAuthErrors` the masked `404` stays the
+        // auth signal, `status` telling the two apart.
+        mapWriteError(err, writeSignals)
       }
     },
 

@@ -217,9 +217,10 @@ export class WasSyncConflictError extends PreconditionFailedError {
 }
 
 /**
- * The replication-port signal for a delete whose target resource is absent
- * (HTTP 404). For a delete this is a settled outcome (already gone, or the write
- * never reached the server), not a conflict, so a `WasSyncPort`
+ * The replication-port signal for a delete or a metadata write whose target
+ * resource is absent (HTTP 404). For a delete this is a settled outcome
+ * (already gone, or the write never reached the server); for a metadata write
+ * it is a race with a remote delete. Neither is a conflict, so a `WasSyncPort`
  * (`@interop/was-client/sync`) raises this distinct type rather than
  * {@link WasSyncConflictError}. A subtype of {@link NotFoundError}.
  */

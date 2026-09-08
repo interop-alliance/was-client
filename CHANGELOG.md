@@ -1,5 +1,17 @@
 # @interop/was-client Changelog
 
+## 0.54.0 - TBD
+
+### Changed
+
+- `./sync`: on the default port (`mapAuthErrors` off) `putMeta` now raises
+  `WasSyncNotFoundError` on a `404`, the signal `deleteContent` already raised,
+  so a metadata-only edit against a resource another replica deleted is
+  classifiable by `isSyncNotFoundError` and a push loop can corroborate it
+  rather than retrying the batch forever. Under `mapAuthErrors: true` the masked
+  `404` stays `WasSyncAuthError` with `status: 404`. The new signal is a subtype
+  of `NotFoundError`, so an `instanceof NotFoundError` match still holds.
+
 ## 0.53.0 - 2026-09-08
 
 ### Added

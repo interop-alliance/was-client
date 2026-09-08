@@ -401,8 +401,9 @@ the new `etag`, and every feed document carries its current `etag` and
 `metaEtag`, so a push loop pins its writes from feed state alone. Two typed
 signals in `src/errors.ts` let a push loop catch exactly what it can handle:
 `WasSyncConflictError` (412, a subtype of `PreconditionFailedError`) triggers
-re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete, a subtype of
-`NotFoundError`) marks an already-gone target as a settled outcome. A third,
+re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete or on a `/meta`
+write, a subtype of `NotFoundError`) marks an already-gone target: a settled
+outcome for a delete, a delete race for a metadata write. A third,
 `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
 `mapAuthErrors` and reports revoked access. The port's `putContent` also stamps
 the `Key-Epoch` header so the server records which key epoch a body was

@@ -550,6 +550,19 @@ describe('createWasSyncPort mapAuthErrors', () => {
     expect((await port.get({ id: 'res-1' }))?.version).toBe(4)
   })
 
+  it('raises the not-found signal on a /meta 404 when off', async () => {
+    // A metadata-only edit against a resource another replica deleted: the
+    // push loop corroborates the signal off the feed instead of retrying.
+    const err = await failingPort(404, false).putMeta!({
+      id: 'res-1',
+      custom: { a: 1 }
+    }).catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasSyncNotFoundError)
+    expect(err).toBeInstanceOf(NotFoundError)
+    expect(err).not.toBeInstanceOf(WasSyncAuthError)
+    expect(err).toMatchObject({ name: 'WasSyncNotFoundError', status: 404 })
+  })
+
   it('preserves today behavior when off', async () => {
     // 404 keeps the delete-specific not-found signal ...
     await expect(
