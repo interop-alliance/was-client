@@ -164,38 +164,6 @@ landed in 0.42.0; everything here was deliberately left out of it because the
 fix changes observable behavior, crosses the codec seam, or needs a maintainer
 decision first. Each carries `discovered-from: 2026-08-21 cleanup review`.
 
-### WCL-23: `logStore` re-derives the body shape the content layer owns
-
-- status: todo
-- priority: low
-- labels: log, layering, altitude
-- touches:
-  - was-client: a new read shape on `Resource` (additive), consumed by
-    `resourceLogStore.read` (`src/log/logStore.ts`)
-- acceptance:
-  - [ ] `resourceLogStore.read` obtains text plus the ETag validator without
-        re-implementing the content-type to value mapping
-  - [ ] The store no longer needs to know that a `text/jsonl` body comes back as
-        a `Blob`
-
-`resourceLogStore.read` needs text plus the validator, and no single read gives
-it both: `Resource.getText()` produces the right text but no validator, and
-`getWithEtag()` returns the validator with the `Json | Blob` shape
-`parseResource` chose from the content type. So the store re-implements the
-mapping with
-`isBlob(current.data) ? await blobText(...) : typeof current.data === 'string' ? ... : undefined`.
-
-That mapping lives in `parseResource` (`src/internal/content.ts`), and this is a
-second partial copy of it in a consumer. If the content layer ever returns text
-directly for `text/*` -- plausible, since the EDV codec already stores
-text-family payloads as legible strings -- this branch quietly goes dead and the
-`ValidationError` below it starts firing on healthy logs.
-
-The fix adds the missing capability one layer down rather than compensating
-above it: a `getText`-shaped read that also returns the validator, or letting
-`getWithEtag` hand back the `ResponseLike` so the caller picks its own
-projection. Then `logStore.read` is a destructure plus `parseResourceLog`.
-
 ### WCL-26: Bare `Error` for `did:key` validation failures in the EDV recipient path
 
 - status: todo

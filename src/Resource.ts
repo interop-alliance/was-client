@@ -17,7 +17,7 @@ import type { FeatureProbe } from './internal/features.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
 import { withCodec } from './internal/withCodec.js'
 import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
-import { ENCODER } from './internal/content.js'
+import { ENCODER, decodedText } from './internal/content.js'
 import { codecRequestContext, upsertResource } from './internal/write.js'
 import {
   readPolicy,
@@ -212,14 +212,30 @@ export class Resource {
    * resource is missing or not visible to you (404 conflation caveat); `etag`
    * is absent against a backend that does not version resources.
    *
+   * With `{ as: 'text' }` the decoded value is projected to its text body
+   * instead: a text-family or binary body reads as UTF-8 text, a JSON body is
+   * re-serialized (the {@link getText} contract). Unlike `getText`, this read
+   * runs the codec, so on an encrypted collection it decrypts -- it is the
+   * read for a text-bodied resource (a JSON Lines log) whose next write is
+   * conditional on the validator.
+   *
+   * @param [options] {object}
+   * @param [options.as] {'text'}   project the decoded value to text
    * @returns {Promise<{ data: Json | Blob; etag?: string } | null>}
    */
-  async getWithEtag(): Promise<{ data: Json | Blob; etag?: string } | null> {
+  async getWithEtag(): Promise<{ data: Json | Blob; etag?: string } | null>
+  async getWithEtag(options: {
+    as: 'text'
+  }): Promise<{ data: string; etag?: string } | null>
+  async getWithEtag(options?: {
+    as?: 'text'
+  }): Promise<{ data: Json | Blob | string; etag?: string } | null> {
     const [codec, response] = await withCodec(this.#codec(), this.#read())
     if (response === null) {
       return null
     }
-    const data = await codec.decode(response, this.id, this.#codecContext())
+    const decoded = await codec.decode(response, this.id, this.#codecContext())
+    const data = options?.as === 'text' ? await decodedText(decoded) : decoded
     const etag = readEtag(response)
     return etag !== undefined ? { data, etag } : { data }
   }

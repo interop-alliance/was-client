@@ -149,7 +149,10 @@ Taking `resource.put(data)` as the canonical path:
 Reads mirror this: signed GET, then
 `codec.decode(response, expectedId, context)`, where `context` is the same
 signed-request escape hatch a chunked write runs on. `getText`/`getBytes`
-deliberately bypass the codec (they never decrypt).
+deliberately bypass the codec (they never decrypt);
+`getWithEtag({ as: 'text' })` is the codec-aware text read, projecting the
+decoded value through the content layer's `decodedText` (the inverse of
+`parseResource`'s content-type rule).
 
 ### The 404-vs-null convention
 

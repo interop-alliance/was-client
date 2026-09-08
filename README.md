@@ -332,6 +332,9 @@ await resource.getBytes() // Uint8Array
 
 Reads auto-parse: `get()` returns a parsed object for a JSON content-type and a
 `Blob` otherwise; `getText()` / `getBytes()` are explicit escape hatches.
+`getWithEtag()` pairs the decoded value with its ETag validator, and
+`getWithEtag({ as: 'text' })` projects it to text (decrypting where `getText()`
+would not).
 
 A write value is a JSON object/array or binary (`Blob`/`Uint8Array`) -- the
 `ResourceData` type. A top-level JSON primitive (a bare `string`, `number`,

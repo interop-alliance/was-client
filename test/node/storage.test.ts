@@ -25,6 +25,7 @@ import {
 } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
 import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
+import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 
 /**
  * Builds a `WasClient` over a stub `ZcapClient` that records every
@@ -1074,6 +1075,72 @@ describe('resource.getText() / getBytes() on a JSON-typed resource', () => {
     const resource = client.space('s').collection('c').resource('r')
     expect(await resource.getText()).toBe(body)
     expect(await resource.getBytes()).toEqual(new TextEncoder().encode(body))
+  })
+})
+
+describe("resource.getWithEtag({ as: 'text' })", () => {
+  /**
+   * Builds a client whose GET answers with the given response fields under
+   * an `ETag`, so the text projection is checked with its validator.
+   *
+   * @param response {object}   the response body surface (`headers`, `data`,
+   *   `text` / `blob` / `json` as the content type needs)
+   * @returns {WasClient}
+   */
+  function clientWith(response: Record<string, unknown>): WasClient {
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request() {
+        return { status: 200, ...response } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  }
+
+  it('reads a text-family body as text with its etag', async () => {
+    const body = '{"a":1}\n{"b":2}\n'
+    const client = clientWith({
+      headers: new Headers({ 'content-type': 'text/jsonl', etag: '"v1"' }),
+      data: undefined,
+      blob: async () => new Blob([body], { type: 'text/jsonl' })
+    })
+    const resource = client.space('s').collection('c').resource('r')
+    expect(await resource.getWithEtag({ as: 'text' })).toEqual({
+      data: body,
+      etag: '"v1"'
+    })
+  })
+
+  it('re-serializes a JSON body (the getText contract)', async () => {
+    const client = clientWith({
+      headers: new Headers({ 'content-type': 'application/json' }),
+      data: { a: 1 }
+    })
+    const resource = client.space('s').collection('c').resource('r')
+    expect(await resource.getWithEtag({ as: 'text' })).toEqual({
+      data: '{"a":1}'
+    })
+  })
+
+  it('reads a React Native Blob body (no text(), FileReader fallback)', async () => {
+    // On device a body arrives as an RN `Blob`, which implements no
+    // `text()`; the projection reads it through the `FileReader` fallback.
+    const restore = installFileReader()
+    try {
+      const body = 'hello, raw text'
+      const client = clientWith({
+        headers: new Headers({ 'content-type': 'text/plain', etag: '"v1"' }),
+        data: undefined,
+        blob: async () => rnBlob([body], { type: 'text/plain' })
+      })
+      const resource = client.space('s').collection('c').resource('r')
+      expect(await resource.getWithEtag({ as: 'text' })).toEqual({
+        data: body,
+        etag: '"v1"'
+      })
+    } finally {
+      restore()
+    }
   })
 })
 

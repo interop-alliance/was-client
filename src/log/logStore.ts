@@ -39,8 +39,7 @@ import {
 import type { Collection } from '../Collection.js'
 import type { Resource } from '../Resource.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
-import { blobText } from '../internal/blob.js'
-import { ENCODER, LOG_CONTENT_TYPE, isBlob } from '../internal/content.js'
+import { ENCODER, LOG_CONTENT_TYPE } from '../internal/content.js'
 
 export { LOG_CONTENT_TYPE }
 
@@ -58,10 +57,9 @@ interface LogTarget {
 }
 
 /**
- * The Resource host: `getWithEtag` (so the codec runs and a text body is
- * decoded as a Blob or a string) and `put` with the log content type.
- * `read` keeps the Blob / text body handling (a React Native Blob has no
- * `text()`; `blobText` falls back to `FileReader`).
+ * The Resource host: `getWithEtag({ as: 'text' })` (so the codec runs and
+ * the content layer projects the decoded body to text) and `put` with the
+ * log content type.
  *
  * @param resource {Resource}
  * @returns {LogTarget}
@@ -69,22 +67,10 @@ interface LogTarget {
 function resourceTarget(resource: Resource): LogTarget {
   return {
     async read() {
-      const current = await resource.getWithEtag()
-      if (current === null) {
-        return null
-      }
-      const body = isBlob(current.data)
-        ? await blobText(current.data)
-        : typeof current.data === 'string'
-          ? current.data
-          : undefined
-      if (body === undefined) {
-        throw new ValidationError(
-          `Cannot read resource log: the resource "${resource.id}" does not ` +
-            'hold a text body (is it stored as JSON instead of JSON Lines?).'
-        )
-      }
-      return { body, etag: current.etag }
+      const current = await resource.getWithEtag({ as: 'text' })
+      return current === null
+        ? null
+        : { body: current.data, etag: current.etag }
     },
     async put(body, precondition) {
       await resource.put(ENCODER.encode(body), {

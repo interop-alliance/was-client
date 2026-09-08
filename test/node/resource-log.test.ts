@@ -19,7 +19,6 @@ import type { Collection } from '../../src/Collection.js'
 import type { Resource } from '../../src/Resource.js'
 import { PreconditionFailedError, ValidationError } from '../../src/errors.js'
 import { LOG_CONTENT_TYPE, resourceLogStore } from '../../src/log/index.js'
-import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 
 /**
  * Builds a minimal syntactically valid entry at ordinal `n`. The wire types
@@ -49,10 +48,9 @@ function entryAt(n: number): ResourceLogEntry {
 
 /**
  * An in-memory fake of the WAS Resource surface the log store drives:
- * `getWithEtag` serves the stored body as a `Blob` (the shape a `text/jsonl`
- * read decodes to) with a version-counter ETag, and `put` records its options
- * and enforces the `ifMatch` / `ifNoneMatch` preconditions like the server
- * would.
+ * `getWithEtag({ as: 'text' })` serves the stored body as text with a
+ * version-counter ETag, and `put` records its options and enforces the
+ * `ifMatch` / `ifNoneMatch` preconditions like the server would.
  *
  * @param [initialBody] {string}   the stored log body; absent = no resource
  * @returns {object}
@@ -69,13 +67,12 @@ function fakeLogResource(initialBody?: string) {
   }
   const resource = {
     id: 'user-key.jsonl',
-    getWithEtag: async () =>
-      state.body === undefined
+    getWithEtag: async (options?: { as?: 'text' }) => {
+      expect(options).toEqual({ as: 'text' })
+      return state.body === undefined
         ? null
-        : {
-            data: new Blob([state.body], { type: LOG_CONTENT_TYPE }),
-            etag: `"v${state.version}"`
-          },
+        : { data: state.body, etag: `"v${state.version}"` }
+    },
     put: async (
       data: Uint8Array,
       options: {
@@ -207,36 +204,6 @@ describe('resourceLogStore', () => {
     await expect(
       store.append(entryAt(2), { ifMatch: '"v1"' })
     ).rejects.toBeInstanceOf(ValidationError)
-  })
-
-  it('reads a React Native Blob body (no text(), FileReader fallback)', async () => {
-    // On device the log body arrives as an RN `Blob`, which implements no
-    // `text()`; the store reads it through the `FileReader` fallback.
-    const restore = installFileReader()
-    try {
-      const body = serializeResourceLog([entryAt(1)])
-      const resource = {
-        id: 'user-key.jsonl',
-        getWithEtag: async () => ({
-          data: rnBlob([body], { type: LOG_CONTENT_TYPE }),
-          etag: '"v1"'
-        })
-      } as unknown as Resource
-      const store = resourceLogStore({ resource })
-      const current = (await store.read())!
-      expect(current.entries).toEqual([entryAt(1)])
-    } finally {
-      restore()
-    }
-  })
-
-  it('refuses a resource that does not hold a text body', async () => {
-    const resource = {
-      id: 'r',
-      getWithEtag: async () => ({ data: { not: 'a log' }, etag: '"v1"' })
-    } as unknown as Resource
-    const store = resourceLogStore({ resource })
-    await expect(store.read()).rejects.toBeInstanceOf(ValidationError)
   })
 
   it('the subpath exposes exactly the adapter and its content type', async () => {

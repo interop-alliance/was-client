@@ -1,5 +1,24 @@
 # @interop/was-client Changelog
 
+## 0.53.0 - TBD
+
+### Added
+
+- `Resource.getWithEtag({ as: 'text' })`: the read that returns a resource's
+  text body together with its ETag validator. Unlike `getText()` it runs the
+  codec (so it decrypts on an encrypted collection); a text-family or binary
+  body reads as UTF-8 text and a JSON body is re-serialized, the `getText()`
+  contract.
+
+### Changed
+
+- `./log`: `resourceLogStore` over a Resource reads the log through
+  `getWithEtag({ as: 'text' })` instead of mapping the decoded `Json | Blob`
+  value to text itself. The content-type to value rule and its text projection
+  now both live in the content layer. A log stored as JSON instead of JSON Lines
+  is no longer refused with a `ValidationError` at read; it reads as a one-line
+  log the library's verification then rejects.
+
 ## 0.52.0 - 2026-09-07
 
 ### Added

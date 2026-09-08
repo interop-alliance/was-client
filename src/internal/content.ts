@@ -11,6 +11,7 @@
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { ResponseLike } from '../codec.js'
+import { blobText } from './blob.js'
 import { ValidationError, WasServerError } from '../errors.js'
 import type { Json, ResourceData } from '../types.js'
 
@@ -396,4 +397,20 @@ export async function parseResource(
     return (await readJsonData(response)) as Json
   }
   return response.blob()
+}
+
+/**
+ * Projects a decoded resource value (the `Json | Blob` a codec's `decode`
+ * produces, shaped by {@link parseResource}'s content-type rule) to its text
+ * body -- the inverse of that rule, kept beside it so the two change together.
+ * A `Blob` (any non-JSON content type, or an encrypted text-family payload)
+ * reads as UTF-8 text; a parsed JSON value is re-serialized, matching the
+ * `Resource.getText()` contract (semantically identical JSON, not guaranteed
+ * byte-identical).
+ *
+ * @param value {Json | Blob}
+ * @returns {Promise<string>}
+ */
+export async function decodedText(value: Json | Blob): Promise<string> {
+  return isBlob(value) ? blobText(value) : JSON.stringify(value)
 }
