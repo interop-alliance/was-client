@@ -40,18 +40,26 @@ export type SyncCheckpoint = ChangesCheckpoint
  * exactly as the server emits them, so a puller passes one back verbatim as a
  * conditional write's `ifMatch` without a {@link WasSyncPort.get} first. A
  * tombstone carries `_deleted: true` with no `data`. This is the shared
- * `ChangeDocument` from `@interop/storage-core`; on an encrypted collection
- * `data`/`custom` are the opaque stored envelope, moved verbatim (decrypt is a
- * projection-time concern the engine's `DocCipher` handles, never the port).
+ * `ChangeDocument` from `@interop/storage-core` with its two bodies typed as
+ * `Json`, the parsed JSON they always are on the wire (the shared type leaves
+ * them `unknown`); on an encrypted collection `data`/`custom` are the opaque
+ * stored envelope, moved verbatim (decrypt is a projection-time concern the
+ * engine's `DocCipher` handles, never the port).
  */
-export type WireDoc = ChangeDocument
+export interface WireDoc extends Omit<ChangeDocument, 'data' | 'custom'> {
+  data?: Json
+  custom?: Json
+}
 
 /**
  * One page of the `changes` feed -- the return shape of {@link
- * WasSyncPort.query} (the shared `ChangesPage`): the page's `documents` and its
- * resume `checkpoint`, or `checkpoint: null` for an empty (no-change) page.
+ * WasSyncPort.query} (the shared `ChangesPage`, its documents typed as
+ * {@link WireDoc}): the page's `documents` and its resume `checkpoint`, or
+ * `checkpoint: null` for an empty (no-change) page.
  */
-export type SyncPage = ChangesPage
+export interface SyncPage extends Omit<ChangesPage, 'documents'> {
+  documents: WireDoc[]
+}
 
 /**
  * The current master state of a single resource, read back for the 412-conflict
@@ -98,10 +106,8 @@ export interface WriteAck {
  * The injected WAS-access seam. `createWasSyncPort` implements this over
  * `@interop/was-client`'s `was.request()` and the `Collection.changes()` feed;
  * a change engine depends only on this interface. Every method moves the stored
- * body verbatim -- no codec, no key handling.
- *
- * `putMeta` is optional: a replica that syncs only content (never the user-
- * writable `/meta` `custom`) may omit it. All other methods are required.
+ * body verbatim -- no codec, no key handling. Every method is required,
+ * `putMeta` included: a replica that syncs content only simply never calls it.
  */
 export interface WasSyncPort {
   /**
@@ -149,7 +155,7 @@ export interface WasSyncPort {
 
   /**
    * Conditionally writes the user-writable metadata `custom` (`PUT /:id/meta`).
-   * Optional -- present only on a port that syncs metadata. The write fully
+   * The write fully
    * replaces `custom`, so omitting it writes the CLEARED state (the server
    * clears every property the body leaves out) -- that is how a metadata clear
    * replicates. Returns the new metadata {@link WriteAck}, or `undefined` when
@@ -159,7 +165,7 @@ export interface WasSyncPort {
    * `mapAuthErrors: true` raises {@link WasSyncAuthError} with `status: 404`
    * there instead, since the masked `404` is ambiguous.
    */
-  putMeta?(options: {
+  putMeta(options: {
     id: string
     custom?: Json
     ifMatch?: string

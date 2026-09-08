@@ -356,8 +356,10 @@ plugs into:
 - **`WasSyncPort`** (`types.ts`) is the injected WAS-access seam: `query` (one
   page of the change feed), `putContent`/`deleteContent`/`putMeta` (conditional
   writes), and `get` (single-resource master-state re-read for the 412-conflict
-  path). `createWasSyncPort` (`port.ts`) implements it, bound to one Space +
-  Collection.
+  path). Every member is required, so the port type states exactly what
+  `createWasSyncPort` (`port.ts`, bound to one Space + Collection) implements
+  and a consumer needs no cast or runtime probe at the seam; the feed page it
+  returns types the stored bodies as `Json`.
 - **`DocCipher`** (`types.ts`) is the per-collection encrypt/decrypt seam: it
   turns a JSON document into its stored body (minting the resource id) and back.
   `createPlaintextDocCipher` is the crypto-free identity implementation for a

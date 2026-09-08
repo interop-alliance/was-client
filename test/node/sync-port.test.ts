@@ -296,7 +296,7 @@ describe('createWasSyncPort.putMeta', () => {
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    await port.putMeta!({ id: 'res-1', custom: { name: 'Alice' } })
+    await port.putMeta({ id: 'res-1', custom: { name: 'Alice' } })
     expect(calls[0]!.method).toBe('PUT')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1/meta`)
     expect(calls[0]!.json).toEqual({ custom: { name: 'Alice' } })
@@ -397,7 +397,7 @@ describe('createWasSyncPort capability threading', () => {
 
     await port.query({ limit: 10 })
     await port.putContent({ id: 'res-1', data: { a: 1 } })
-    await port.putMeta!({ id: 'res-1', custom: { name: 'Alice' } })
+    await port.putMeta({ id: 'res-1', custom: { name: 'Alice' } })
     await port.deleteContent({ id: 'res-1' })
     await port.get({ id: 'res-1' })
 
@@ -438,7 +438,7 @@ describe('createWasSyncPort.putMeta clear + write ack', () => {
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    await port.putMeta!({ id: 'res-1' })
+    await port.putMeta({ id: 'res-1' })
 
     expect(calls[0]!.json).toEqual({})
     // Wire-identical to the `{ custom: undefined }` body this used to send.
@@ -453,7 +453,7 @@ describe('createWasSyncPort.putMeta clear + write ack', () => {
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    expect(await port.putMeta!({ id: 'res-1', custom: { a: 1 } })).toEqual({
+    expect(await port.putMeta({ id: 'res-1', custom: { a: 1 } })).toEqual({
       version: 3,
       etag: '"g3.3"'
     })
@@ -464,7 +464,7 @@ describe('createWasSyncPort.putMeta clear + write ack', () => {
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     expect(
-      await port.putMeta!({ id: 'res-1', custom: { a: 1 } })
+      await port.putMeta({ id: 'res-1', custom: { a: 1 } })
     ).toBeUndefined()
   })
 })
@@ -494,7 +494,7 @@ describe('createWasSyncPort mapAuthErrors', () => {
       for (const attempt of [
         () => port.query({ limit: 10 }),
         () => port.putContent({ id: 'res-1', data: { a: 1 } }),
-        () => port.putMeta!({ id: 'res-1', custom: { a: 1 } })
+        () => port.putMeta({ id: 'res-1', custom: { a: 1 } })
       ]) {
         const err = await attempt().catch((caught: unknown) => caught)
         expect(err).toBeInstanceOf(WasSyncAuthError)
@@ -553,10 +553,12 @@ describe('createWasSyncPort mapAuthErrors', () => {
   it('raises the not-found signal on a /meta 404 when off', async () => {
     // A metadata-only edit against a resource another replica deleted: the
     // push loop corroborates the signal off the feed instead of retrying.
-    const err = await failingPort(404, false).putMeta!({
-      id: 'res-1',
-      custom: { a: 1 }
-    }).catch((caught: unknown) => caught)
+    const err = await failingPort(404, false)
+      .putMeta({
+        id: 'res-1',
+        custom: { a: 1 }
+      })
+      .catch((caught: unknown) => caught)
     expect(err).toBeInstanceOf(WasSyncNotFoundError)
     expect(err).toBeInstanceOf(NotFoundError)
     expect(err).not.toBeInstanceOf(WasSyncAuthError)
@@ -575,7 +577,7 @@ describe('createWasSyncPort mapAuthErrors', () => {
       for (const attempt of [
         () => port.query({ limit: 10 }),
         () => port.putContent({ id: 'res-1', data: { a: 1 } }),
-        () => port.putMeta!({ id: 'res-1', custom: { a: 1 } })
+        () => port.putMeta({ id: 'res-1', custom: { a: 1 } })
       ]) {
         const err = await attempt().catch((caught: unknown) => caught)
         expect(err).not.toBeInstanceOf(WasSyncAuthError)

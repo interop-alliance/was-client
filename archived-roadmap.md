@@ -1436,3 +1436,31 @@ log, and `'edv'` (the client-written descriptor) could never become that. The
 mode is the container half only; declaring the governance is the caller's next
 step, `logGovernedDescriptorStore(...).create` or
 `resourceLogStore({ collection }).create`.
+
+### WCL-39: The sync port type states what `createWasSyncPort` implements
+
+- status: done (2026-09-08)
+- priority: low
+- labels: sync, types
+- touches:
+  - was-sync: shipped -- `src/controller.ts` drops the `unknown` cast and the
+    runtime `putMeta` probe; `WireDoc` aliases this package's (WS-10)
+  - was-react: shipped -- `src/storage/wasSyncPort.ts` drops the probe and the
+    feed-page cast (WS-10)
+- acceptance:
+  - [x] `WasSyncPort.putMeta` is required
+  - [x] `WireDoc` types `data` and `custom` as `Json`, and `SyncPage` carries
+        those documents, so `query`'s return type matches the parsed JSON the
+        port hands back
+  - [x] The only cast left is inside `createWasSyncPort.query`, where the shared
+        `ChangesPage`'s `unknown` bodies narrow to `Json`
+
+Context: `putMeta` was typed optional while `createWasSyncPort` always supplied
+it, and `query` returned the shared `ChangesPage`, whose bodies are `unknown`.
+Neither matched what the port hands back, so both consumers of the port
+(was-sync's controller and was-react's port wrapper) cast the whole port through
+`unknown` and probed for `putMeta` at runtime. That cast hid every future
+divergence in the other members as well, surfacing a rename only inside a push
+or pull cycle. Two consumers carrying the same workaround was the signal the fix
+belonged here; with the type complete, a divergence is a compile error at the
+seam.

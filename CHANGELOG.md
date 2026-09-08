@@ -2,8 +2,24 @@
 
 ## 0.54.0 - TBD
 
+### Added
+
+- `./sync`: `ensureSpaceAndCollection` and `ensureSpace` take an optional
+  `capability`, the invocation capability every request rides (built into the
+  `Space` handle the way `was.space(id, { capability })` does), so a client
+  holding a delegated Space-subtree zcap rather than the root capability can
+  provision a collection through them. A capability scoped below the bare Space
+  URL cannot reach the Space half, so such a caller supplies `spaceDescription`.
+  Absent, the root capability is invoked as before.
+
 ### Changed
 
+- `./sync`: `WasSyncPort.putMeta` is required, as `createWasSyncPort` has always
+  implemented it, and `WireDoc` types its `data` and `custom` bodies as `Json`
+  (the shared `ChangeDocument` leaves them `unknown`), with `SyncPage` carrying
+  those documents. A consumer that cast the port through `unknown` and probed
+  for `putMeta` at runtime can drop both; a port implementation that omitted
+  `putMeta` no longer type-checks. (WCL-39)
 - `./sync`: on the default port (`mapAuthErrors` off) `putMeta` now raises
   `WasSyncNotFoundError` on a `404`, the signal `deleteContent` already raised,
   so a metadata-only edit against a resource another replica deleted is

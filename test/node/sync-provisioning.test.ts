@@ -196,9 +196,13 @@ class FakeSpace {
 
 class FakeWas {
   spaceArg?: string
+  // The handle options of every `space()` call, so a test can assert which
+  // capability the handle was built with (or that none was).
+  readonly spaceOptions: { capability?: unknown }[] = []
   constructor(private readonly spaceObj: FakeSpace) {}
-  space = (id: string): FakeSpace => {
+  space = (id: string, options: { capability?: unknown } = {}): FakeSpace => {
     this.spaceArg = id
+    this.spaceOptions.push(options)
     return this.spaceObj
   }
   asClient(): WasClient {
@@ -809,6 +813,51 @@ describe('ensureSpace', () => {
       ),
       cause
     })
+  })
+})
+
+describe('ensureSpaceAndCollection with an invocation capability', () => {
+  const CAPABILITY = { id: 'urn:zcap:delegated' }
+
+  it('builds every Space handle with the capability, on both ensures', async () => {
+    const was = new FakeWas(new FakeSpace())
+    await ensureSpaceAndCollection({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      encryption: 'governed',
+      capability: CAPABILITY as never
+    })
+    // One handle for the collection half, one inside `ensureSpace`.
+    expect(was.spaceOptions).toHaveLength(2)
+    for (const options of was.spaceOptions) {
+      expect(options.capability).toBe(CAPABILITY)
+    }
+  })
+
+  it('rides the capability past a supplied space description', async () => {
+    const was = new FakeWas(new FakeSpace({ current: null }))
+    await ensureSpaceAndCollection({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      encryption: 'governed',
+      spaceDescription: { id: SPACE, type: ['Space'], controller: DID },
+      capability: CAPABILITY as never
+    })
+    expect(was.spaceOptions).toEqual([{ capability: CAPABILITY }])
+  })
+
+  it('builds the handle with no capability when none is given', async () => {
+    const was = new FakeWas(new FakeSpace())
+    await ensureSpace({
+      was: was.asClient(),
+      spaceId: SPACE,
+      controllerDid: DID
+    })
+    expect(was.spaceOptions).toEqual([{ capability: undefined }])
   })
 })
 

@@ -22,7 +22,11 @@
  * collection is created descriptor-less here and declared governed afterwards,
  * by the caller's guarded create of the log.
  */
-import type { CollectionDescription, SpaceDescription } from '../types.js'
+import type {
+  CollectionDescription,
+  IZcap,
+  SpaceDescription
+} from '../types.js'
 import type { WasClient } from '../WasClient.js'
 // A direct module import (not the `./edv` subpath entry), so the crypto-free
 // sync module does not pull the EDV crypto graph for one number.
@@ -153,8 +157,8 @@ async function readOrCreate<T>({
  * `ValidationError` here rather than letting the caller's log create fail
  * with the server's 409. A public collection gets the collection-level
  * world-read grant (`setPublic`, what makes a resource URL in it resolve for
- * anyone) only when its policy does not already say so. Runs full-tier -- the
- * client invokes its own root authority.
+ * anyone) only when its policy does not already say so. Every request invokes
+ * the root capability, or `capability` when the caller holds a delegated one.
  *
  * @param options {object}
  * @param options.was {WasClient}
@@ -183,6 +187,10 @@ async function readOrCreate<T>({
  *   be `spaceId` -- a description of some other Space throws
  *   `ValidationError`, since skipping the ensure would leave that Space
  *   unprovisioned
+ * @param [options.capability] {IZcap}   an invocation capability every
+ *   request rides (a delegated Space-subtree zcap, say); the root capability
+ *   is invoked otherwise. A capability scoped below the bare Space URL cannot
+ *   reach the Space half, so a caller holding one supplies `spaceDescription`
  * @returns {Promise<void>}
  */
 export async function ensureSpaceAndCollection({
@@ -194,7 +202,8 @@ export async function ensureSpaceAndCollection({
   isPublic = false,
   spaceName = DEFAULT_SPACE_NAME,
   collectionName = collectionId,
-  spaceDescription
+  spaceDescription,
+  capability
 }: {
   was: WasClient
   spaceId: string
@@ -205,11 +214,12 @@ export async function ensureSpaceAndCollection({
   spaceName?: string
   collectionName?: string
   spaceDescription?: SpaceDescription
+  capability?: IZcap
 }): Promise<void> {
-  const space = was.space(spaceId)
+  const space = was.space(spaceId, { capability })
 
   if (spaceDescription === undefined) {
-    await ensureSpace({ was, spaceId, controllerDid, spaceName })
+    await ensureSpace({ was, spaceId, controllerDid, spaceName, capability })
   } else if (spaceDescription.id !== spaceId) {
     // Supplying a description skips the Space half entirely, so a caller
     // holding descriptions for several Spaces that passes the wrong one
@@ -330,6 +340,8 @@ export async function ensureSpaceAndCollection({
  *   `did:key`); used only when the Space does not exist yet
  * @param [options.spaceName] {string}   the Space display name, applied only at
  *   Space creation; defaults to `'WAS Space'`
+ * @param [options.capability] {IZcap}   an invocation capability both
+ *   requests ride; the root capability is invoked otherwise
  * @returns {Promise<SpaceDescription>}   the Space's description, existing or
  *   just written -- pass it to {@link ensureSpaceAndCollection} as
  *   `spaceDescription` so each collection skips the Space ensure
@@ -338,14 +350,16 @@ export async function ensureSpace({
   was,
   spaceId,
   controllerDid,
-  spaceName = DEFAULT_SPACE_NAME
+  spaceName = DEFAULT_SPACE_NAME,
+  capability
 }: {
   was: WasClient
   spaceId: string
   controllerDid: string
   spaceName?: string
+  capability?: IZcap
 }): Promise<SpaceDescription> {
-  const space = was.space(spaceId)
+  const space = was.space(spaceId, { capability })
   try {
     const { value } = await readOrCreate({
       read: () => space.describe(),

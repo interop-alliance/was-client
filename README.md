@@ -940,7 +940,9 @@ plugs into:
   Space, configure the collection (`edv`, `plaintext`, or `governed`, optionally
   world-readable). Safe to re-run on every connect. A `governed` collection is
   created with no `encryption` member, the caller declaring governance
-  afterwards through the history log's guarded create.
+  afterwards through the history log's guarded create. An optional `capability`
+  is the invocation capability every request rides, for a client holding a
+  delegated zcap rather than the Space's root authority.
 
 ```ts
 import {

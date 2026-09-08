@@ -53,7 +53,13 @@ import {
 } from '../errors.js'
 import type { WasError, WasErrorOptions } from '../errors.js'
 import type { IZcap } from '../types.js'
-import type { Json, MasterState, WasSyncPort, WriteAck } from './types.js'
+import type {
+  Json,
+  MasterState,
+  SyncPage,
+  WasSyncPort,
+  WriteAck
+} from './types.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -329,7 +335,12 @@ export function createWasSyncPort({
   return {
     async query({ checkpoint, limit }) {
       try {
-        return await changesCollection.changes({ checkpoint, limit })
+        // The feed's bodies are parsed JSON, so the shared page's `unknown`
+        // bodies narrow to the `Json` the port contract promises.
+        return (await changesCollection.changes({
+          checkpoint,
+          limit
+        })) as SyncPage
       } catch (err) {
         // The pull path is where revoked access surfaces reliably: unlike a
         // read or a delete, a `404` on the collection's own query endpoint has
