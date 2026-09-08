@@ -5,8 +5,9 @@
  * The `err.name` predicates that classify the errors a replication path can
  * meet: the port's two wire signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), its opt-in revoked-access signal
- * (`WasSyncAuthError`), and the cipher's stale-descriptor signal
- * (`UnknownEpochError`).
+ * (`WasSyncAuthError`), and the cipher's two no-key signals: the
+ * stale-descriptor one (`UnknownEpochError`) and the not-a-recipient one
+ * (`KeyUnwrapError`).
  *
  * They live beside the classes that assign the names they match (`errors.ts`)
  * because every one of those errors is raised inside a seam the consuming app
@@ -88,4 +89,21 @@ export function isSyncAuthError(err: unknown): boolean {
  */
 export function isUnknownEpochError(err: unknown): boolean {
   return nameOf(err) === 'UnknownEpochError'
+}
+
+/**
+ * Whether an error is the cipher's not-a-recipient signal (`KeyUnwrapError`):
+ * the envelope's epoch IS on the descriptor this reader holds, but the reader
+ * has no key for it -- never a recipient of that epoch, or removed and the
+ * epoch rotated since. Real data, unreadable by this reader, and never
+ * garbage: a caller scanning rows skips such a row and leaves it in place,
+ * where a scan that missed the class would drop it into an undecryptable
+ * bucket a host is entitled to purge. Re-reading the descriptor cannot help,
+ * which is what tells it from `isUnknownEpochError`.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {boolean}
+ */
+export function isKeyUnwrapError(err: unknown): boolean {
+  return nameOf(err) === 'KeyUnwrapError'
 }

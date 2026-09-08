@@ -52,6 +52,7 @@ export {
   isSyncAuthError,
   isSyncConflictError,
   isSyncNotFoundError,
+  isKeyUnwrapError,
   isUnknownEpochError
 } from './predicates.js'
 export {

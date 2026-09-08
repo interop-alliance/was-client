@@ -4,6 +4,21 @@
 
 ### Added
 
+- `./edv`: the descriptor acquisition and unknown-epoch refresh policy, moved
+  here from `@interop/wallet-core/descriptors` so every consumer running an
+  encrypted collection shares one rule for which epoch it encrypts under and
+  when to ask again. `EncryptionDescriptorSource` / `EncryptionDescriptorCache`
+  are the two seams a host implements, `wasDescriptorSource` is the source over
+  a `WasClient` handle, `acquireDescriptor` / `acquireDescriptors` fetch and
+  cache with the cached fallback whenever the fetch yields no descriptor
+  (rethrowing a resource-log refusal past the cache, a continuity `rollback`
+  excepted), `DescriptorRefreshPolicy` is the once-per-collection-per-session
+  refresh guard, and `createRefreshingEdvDocCipher` is `createEdvDocCipher`
+  bound to both, refusing fail-closed to build without a descriptor.
+- `isKeyUnwrapError`, the `err.name` matcher for the cipher's not-a-recipient
+  signal, beside `isUnknownEpochError` in `./sync` and exported from `./edv`
+  too, beside the cipher that raises the class.
+
 - `./sync`: `ensureSpaceAndCollection` and `ensureSpace` take an optional
   `capability`, the invocation capability every request rides (built into the
   `Space` handle the way `was.space(id, { capability })` does), so a client

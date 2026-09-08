@@ -50,8 +50,36 @@
  * cannot help). Both ship from this subpath beside the cipher that raises
  * them, so a consumer classifying what a cipher threw need not reach for the
  * package root. Both assign their `name` explicitly, and a consumer whose
- * cipher arrives through an injected seam should match on that name rather
- * than `instanceof`: the seam may resolve to a second copy of this package.
+ * cipher arrives through an injected seam matches on that name rather than
+ * `instanceof`, since the seam may resolve to a second copy of this package:
+ * `isKeyUnwrapError` here, and `isUnknownEpochError` on `./sync`, are those
+ * matchers.
+ *
+ * Which epoch a collection encrypts under, and when to ask again, is the
+ * descriptor acquisition and refresh policy every consumer running an
+ * encrypted collection must share (a drift between two replicas does not fail
+ * loudly; it fails as a resource one of them cannot decrypt):
+ *
+ * - `EncryptionDescriptorSource` / `EncryptionDescriptorCache` -- the narrow
+ *   seams a host implements: one signed Collection Description read, and a
+ *   client-local get/put pre-scoped to one Space. `wasDescriptorSource` is the
+ *   source over a `WasClient` handle.
+ * - `acquireDescriptor` / `acquireDescriptors` -- fetch + cache with the
+ *   cached fallback whenever the fetch yields no descriptor, thrown or empty
+ *   (offline, a collection keeps encrypting under its current epoch; an empty
+ *   description is ambiguous, since WAS masks an unauthorized read as an
+ *   absent one). No descriptor anywhere means a plaintext collection, or an
+ *   encrypted one whose epoch[0] install has not landed -- which a caller that
+ *   has declared the collection encrypted must refuse fail-closed. A
+ *   log-governed source's refusal classes rethrow instead of falling back
+ *   (except a continuity rollback, which is reconcilable divergence).
+ * - `DescriptorRefreshPolicy` -- the once-per-collection-per-session
+ *   unknown-epoch refresh guard, plus the refresh-and-re-read-once wrapper
+ *   for hosts whose reads scan rows and count unknown-epoch skips.
+ * - `createRefreshingEdvDocCipher` -- `createEdvDocCipher` bound to both: a
+ *   cipher that acquires its own descriptor and, on an unknown-epoch decrypt,
+ *   re-reads the description, swaps itself, and retries exactly once per
+ *   instance.
  */
 export {
   createEdvEncryption,
@@ -112,3 +140,15 @@ export {
   isEncryptedEnvelope
 } from './docCipher.js'
 export type { DocCipher, EdvDocCipher } from './docCipher.js'
+export {
+  acquireDescriptor,
+  acquireDescriptors,
+  wasDescriptorSource
+} from './acquire.js'
+export type {
+  EncryptionDescriptorCache,
+  EncryptionDescriptorSource
+} from './acquire.js'
+export { DescriptorRefreshPolicy } from './refresh.js'
+export { createRefreshingEdvDocCipher } from './refreshingDocCipher.js'
+export { isKeyUnwrapError } from '../sync/predicates.js'

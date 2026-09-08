@@ -911,11 +911,15 @@ plugs into:
   failure arrives as the typed `WasError` subclass for its status, carrying the
   server's `problem+json` fields.
 - **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
-  `isUnknownEpochError`** classify those signals by `err.name`. Use them rather
-  than `instanceof`: the port and the `DocCipher` are seams your app injects,
-  and a tree that resolves two copies of this package makes an `instanceof`
-  check quietly false. Read what you need off the matched value, such as
-  `err.status` on an auth error to tell a 401 from the masked 404.
+  `isUnknownEpochError` / `isKeyUnwrapError`** classify those signals by
+  `err.name`. Use them rather than `instanceof`: the port and the `DocCipher`
+  are seams your app injects, and a tree that resolves two copies of this
+  package makes an `instanceof` check quietly false. Read what you need off the
+  matched value, such as `err.status` on an auth error to tell a 401 from the
+  masked 404. The last two tell a decrypt's two no-key outcomes apart: an epoch
+  the reader's descriptor does not list (a re-read may fix it) and an epoch it
+  lists but this reader holds no key for (real data, permanently unreadable
+  here, never garbage).
 - **`SyncStatus`** (`'idle' | 'syncing' | 'synced' | 'error'`) is the closed
   vocabulary a replication driver reports one feed's state through.
 - **`DocCipher`** is the per-collection encrypt/decrypt seam sitting above the
@@ -932,6 +936,21 @@ plugs into:
   counterpart, built from the descriptor alone with no key-agreement secret
   (writes seal to the current epoch's public key, reconstructed from the epoch
   id); `decrypt` on it refuses with the typed `EncryptOnlyCipherError`.
+- **`createRefreshingEdvDocCipher(...)`** (from `@interop/was-client/edv`) is
+  `createEdvDocCipher` bound to descriptor acquisition and the unknown-epoch
+  refresh rule: it acquires the collection's descriptor through the
+  `EncryptionDescriptorSource` / `EncryptionDescriptorCache` seams
+  (`wasDescriptorSource` is the source over a `WasClient`; the cache is a
+  client-local get/put your app scopes to one Space), refuses fail-closed to
+  build without one, and on an `UnknownEpochError` decrypt re-reads the
+  descriptor, swaps itself, and retries exactly once per instance. An epoch
+  rotation emits no change-feed entry, so this is how a replica meets an
+  envelope sealed under an epoch it has never seen without a refetch per
+  resource. `acquireDescriptor` / `acquireDescriptors` are the acquisition alone
+  (fetch, cache the success, fall back to the cache whenever the fetch yields no
+  descriptor), and `DescriptorRefreshPolicy` is the
+  once-per-collection-per-session guard for a host whose reads scan rows instead
+  of going through a cipher.
 - **`contentCid(doc)`** and **`deriveSpaceId(controllerDid)`** derive
   content-addressed ids -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
   unpadded -- so the same logical document (and the same controller) lands on

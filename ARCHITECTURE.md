@@ -294,6 +294,35 @@ wrapped inside each epoch: adding or removing a reader leaves every epoch id and
 the write epoch alone, so a cipher opened from the older descriptor stays valid,
 and only a rotation reads as a change.
 
+Descriptor acquisition and the unknown-epoch refresh (`acquire.ts`,
+`refresh.ts`, `refreshingDocCipher.ts`) are the read side of that roster: which
+epoch a collection encrypts under, and when a reader asks again. Every consumer
+running an encrypted collection must share one rule, since a drift between two
+replicas fails as a resource one of them cannot decrypt rather than loudly. The
+two seams are narrow on purpose: an `EncryptionDescriptorSource` is one signed
+read of the Description (`wasDescriptorSource` over a `WasClient`, or a
+consumer's own reader over a governed log), and an `EncryptionDescriptorCache`
+is a client-local get/put the host has scoped to one Space. `acquireDescriptor`
+fetches, caches a success, and falls back to the cached copy whenever the fetch
+yields no descriptor -- thrown or empty, since WAS masks an unauthorized read as
+an absent one -- so `undefined` means nothing anywhere describes the
+collection's encryption, and a caller that declared it encrypted refuses
+fail-closed. A resource-log refusal from a governed source is a security signal,
+not an outage: `@interop/vh-resource-log`'s `isResourceLogRefusal` rethrows it
+past a warm cache, with the continuity `rollback` as the one carve-out. An epoch
+rotation emits no change-feed entry, so a cipher built from a cached descriptor
+can meet envelopes under an unseen epoch; the remedy is one re-read plus a
+cipher rebuild plus one retry, guarded to once per collection per session so a
+genuinely foreign envelope cannot drive a refetch loop.
+`DescriptorRefreshPolicy` is that guard for a host that scans rows, and
+`createRefreshingEdvDocCipher` binds `createEdvDocCipher` to both for a host
+whose decrypt seam is the cipher itself. The two no-key signals are what the
+policy dispatches on: only `UnknownEpochError` drives a refresh, and
+`KeyUnwrapError` propagates untouched, since re-reading the same descriptor
+cannot produce a key the reader was never given. Their `err.name` matchers,
+`isUnknownEpochError` and `isKeyUnwrapError`, live in `sync/predicates.ts`
+beside the other injected-seam signals.
+
 Descriptor mutations go through a CAS loop (read descriptor + validator, mutate,
 conditional write, bounded retries) over the **descriptor-store seam**
 (`descriptorStore.ts`): the Collection Description adapter (`describeWithEtag` /
@@ -655,14 +684,15 @@ it, and otherwise cover the client-side concepts this file names.
 
 ## Where to add what
 
-| Change                            | Start in                                                                   |
-| --------------------------------- | -------------------------------------------------------------------------- |
-| New public API method             | The relevant handle class in `src/*.ts`                                    |
-| New server endpoint or path shape | `src/internal/paths.ts` (+ wire types upstream in `@interop/storage-core`) |
-| Request/transport behavior        | `src/internal/request.ts`                                                  |
-| Write preconditions, ETags        | `src/internal/conditional.ts`, `src/internal/write.ts`                     |
-| New server feature gate           | `src/internal/features.ts` + the call sites it gates                       |
-| New error kind                    | `src/errors.ts` (`ERROR_CLASS_BY_KIND`), problem type upstream             |
-| Encryption format or key handling | `src/edv/` (never in core; keep the seam interface-only)                   |
-| Codec resolution policy           | `src/internal/codec.ts`                                                    |
-| Cross-replica sync behavior       | `src/sync/` (port stays verbatim/keyless; ciphers implement `DocCipher`)   |
+| Change                            | Start in                                                                     |
+| --------------------------------- | ---------------------------------------------------------------------------- |
+| New public API method             | The relevant handle class in `src/*.ts`                                      |
+| New server endpoint or path shape | `src/internal/paths.ts` (+ wire types upstream in `@interop/storage-core`)   |
+| Request/transport behavior        | `src/internal/request.ts`                                                    |
+| Write preconditions, ETags        | `src/internal/conditional.ts`, `src/internal/write.ts`                       |
+| New server feature gate           | `src/internal/features.ts` + the call sites it gates                         |
+| New error kind                    | `src/errors.ts` (`ERROR_CLASS_BY_KIND`), problem type upstream               |
+| Encryption format or key handling | `src/edv/` (never in core; keep the seam interface-only)                     |
+| Descriptor read or refresh policy | `src/edv/acquire.ts`, `src/edv/refresh.ts`, `src/edv/refreshingDocCipher.ts` |
+| Codec resolution policy           | `src/internal/codec.ts`                                                      |
+| Cross-replica sync behavior       | `src/sync/` (port stays verbatim/keyless; ciphers implement `DocCipher`)     |

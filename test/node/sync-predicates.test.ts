@@ -3,11 +3,13 @@
  */
 /**
  * The `./sync` subpath's error classification (`isSyncConflictError` /
- * `isSyncNotFoundError` / `isSyncAuthError` / `isUnknownEpochError`,
- * `src/sync/predicates.ts`).
+ * `isSyncNotFoundError` / `isSyncAuthError` / `isUnknownEpochError` /
+ * `isKeyUnwrapError`, `src/sync/predicates.ts`; the last also ships from
+ * `./edv`, beside the cipher that raises it).
  *
- * All four signals are raised inside app-injected seams -- the `WasSyncPort`
- * for the three wire signals, the caller's `DocCipher` for the unknown epoch --
+ * All five signals are raised inside app-injected seams -- the `WasSyncPort`
+ * for the three wire signals, the caller's `DocCipher` for the two no-key
+ * signals --
  * and a consumer's tree can resolve a SECOND copy of this package (a `link:`
  * dev setup, a dedupe miss through a dependency tree). So every case here also
  * raises the foreign-realm shape: a value carrying only the `name` string,
@@ -18,11 +20,14 @@
  */
 import { describe, it, expect } from 'vitest'
 
+import { isKeyUnwrapError as isKeyUnwrapErrorFromEdv } from '../../src/edv/index.js'
 import {
+  isKeyUnwrapError,
   isSyncAuthError,
   isSyncConflictError,
   isSyncNotFoundError,
   isUnknownEpochError,
+  KeyUnwrapError,
   UnknownEpochError,
   WasSyncAuthError,
   WasSyncConflictError,
@@ -133,5 +138,28 @@ describe('the sync error predicates', () => {
       isSyncConflictError(foreignRealmError('PreconditionFailedError'))
     ).toBe(false)
     expect(isSyncNotFoundError(foreignRealmError('NotFoundError'))).toBe(false)
+  })
+
+  it('classifies the not-a-recipient signal, own class and foreign realm alike', () => {
+    const own = new KeyUnwrapError('no key for this epoch')
+    const foreign = foreignRealmError('KeyUnwrapError')
+
+    expect(foreign instanceof KeyUnwrapError).toBe(false)
+    expect(isKeyUnwrapError(own)).toBe(true)
+    expect(isKeyUnwrapError(foreign)).toBe(true)
+    // The `./edv` export is the same predicate, one owner per name.
+    expect(isKeyUnwrapErrorFromEdv).toBe(isKeyUnwrapError)
+  })
+
+  it('keeps the two no-key signals apart, and rejects a nullish rejection', () => {
+    // Re-reading the descriptor may fix an unknown epoch and cannot fix a
+    // missing key, so a row scan must never conflate them.
+    expect(isKeyUnwrapError(foreignRealmError('UnknownEpochError'))).toBe(false)
+    expect(
+      isUnknownEpochError(new KeyUnwrapError('no key for this epoch'))
+    ).toBe(false)
+    expect(isKeyUnwrapError(new Error('socket hang up'))).toBe(false)
+    expect(isKeyUnwrapError(undefined)).toBe(false)
+    expect(isKeyUnwrapError(null)).toBe(false)
   })
 })
