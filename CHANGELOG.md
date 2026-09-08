@@ -32,6 +32,52 @@
   `@interop/wallet-core` with the store.
 - `Collection.historyLogUrl`: the absolute URL of the Collection's `/meta/log`
   sub-resource, the value a log-governed descriptor's `history.resource` names.
+- `./edv`: `logGovernedCollectionDescriptorStore` returns a
+  `LogGovernedDescriptorStore`, forwarding `seal()` to the generic store, so a
+  governed Collection's log can be sealed past a membership change that no
+  rotation appended for. `readGovernedEpochConfiguration` also returns the
+  `controller` view the log was verified under, and the generic store's `read`
+  carries the `verified` log beside the descriptor.
+
+### Changed
+
+- `Collection.putHistoryLog` refuses (`ValidationError`, before any request) a
+  call naming neither `ifMatch` nor `ifNoneMatch`: an unconditional PUT would
+  replace the governing log wholesale, since the server checks the head-state
+  transition and not chain continuity. `options` is no longer optional.
+- `./log`: `resourceLogStore` throws `ValidationError` at construction when
+  given neither `resource` nor `collection`, or both, instead of failing on the
+  first read or silently preferring the Resource. A served log with an empty
+  body reads as absent (`null`) rather than throwing the library's parse
+  refusal; under a held pin the library still refuses it as a rollback.
+- `./edv`: the generic store's `create` is `@interop/vh-resource-log`'s
+  `createResourceLog` (a lost race, however it was lost, is reported as
+  `PreconditionFailedError` 412), instead of a local restatement of it.
+
+### Fixed
+
+- `./edv`: `logGovernedCollectionDescriptorStore` read the Description and the
+  log in two requests, so a concurrent append landing between them made the
+  served projection mismatch the verified head and threw
+  `ResourceLogIntegrityError`, which the recipient CAS loops do not rebase on. A
+  projection equal to an earlier entry's state is now `PreconditionFailedError`
+  (412); only a projection matching no entry is an integrity refusal.
+- `./edv`: a `replace` on the same `logGovernedCollectionDescriptorStore`
+  instance right after its own `create` took the plain Description write path
+  (the Collection was now log-governed), which the server refuses with
+  `ConflictError`. A create clears the observed Description, so the next replace
+  re-reads and appends.
+- `./edv`: both Collection descriptor stores forward `generator` and
+  `generatorOrigin` on a point-state replace, beside `name` and `backend`, so a
+  key rotation no longer drops the app attribution under replace semantics.
+- `./edv`: `logGovernedCollectionDescriptorStore.read` resolves `null` for a
+  served `"encryption": null` instead of throwing a `TypeError`.
+- `./edv`: `seal()` recorded the current controller view beside a log the sweep
+  handed back unverified (nothing to seal), pairing the two; the view is now
+  recorded only for a log the sweep read or appended.
+- `Collection.getHistoryLog` throws `ValidationError` for a log served under a
+  JSON content type (whose body the HTTP client has already parsed) instead of
+  an opaque "Body is unusable" `TypeError`.
 
 ## 0.51.0 - 2026-09-07
 

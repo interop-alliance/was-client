@@ -412,6 +412,34 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
     expect(await client.space('s').collection('c').getHistoryLog()).toBeNull()
   })
 
+  it('refuses a log served as JSON, whose body the HTTP client pre-parsed', async () => {
+    const client = clientWithStub(
+      () =>
+        ({
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          data: { versionId: '1-a' },
+          text: async () => {
+            throw new TypeError('Body is unusable')
+          }
+        }) as unknown as HttpResponse
+    )
+    await expect(
+      client.space('s').collection('c').getHistoryLog()
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('refuses an unconditional write before any request', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await expect(
+      client
+        .space('s')
+        .collection('c')
+        .putHistoryLog('{}\n', { ifMatch: undefined })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(calls).toHaveLength(0)
+  })
+
   it('PUTs the body as text/jsonl under the guarded-create precondition', async () => {
     const body = '{"versionId":"1-a","state":{"type":"X"}}\n'
     const { client, calls } = clientWithRequestSpy({ etag: '"g.1"' })

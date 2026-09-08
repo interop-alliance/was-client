@@ -26,8 +26,8 @@
  * create against a log that already exists -- is rethrown as the library's
  * `ResourceLogConflictError` with the transport's `PreconditionFailedError`
  * as `cause`, which is the port's one conflict signal and what the library's
- * rebase loop catches (by `name`, never `instanceof` -- the error crosses the
- * adapter-to-library package boundary).
+ * rebase loop catches (by `name` rather than `instanceof`, since the error
+ * crosses the adapter-to-library package boundary).
  */
 import {
   ResourceLogConflictError,
@@ -116,13 +116,16 @@ function collectionTarget(collection: Collection): LogTarget {
  * one of two hosts: `resource`, a WAS Resource whose whole body is the log,
  * or `collection`, whose governing history log at `/meta/log` is the log.
  * `append` carries the prior entries' bytes forward verbatim from the most
- * recent read (an append never re-serializes history), and both `append` and
- * `create` translate the transport's 412 into the library's conflict error.
+ * recent read (an append does not re-serialize history), and both `append`
+ * and `create` translate the transport's 412 into the library's conflict
+ * error. A served log with an empty body reads as absent (the pre-genesis
+ * `null`), the state a host that has no log for the slot should report as
+ * 404; under a held pin the library still refuses it as a rollback.
  *
  * @param options {object}
  * @param [options.resource] {Resource}       the Resource holding the log
  * @param [options.collection] {Collection}   the Collection whose history log
- *   is the log; exactly one of the two is given
+ *   is the log; exactly one of the two is given, or `ValidationError`
  * @returns {ResourceLogStore}
  */
 export function resourceLogStore(
@@ -130,19 +133,32 @@ export function resourceLogStore(
     | { resource: Resource; collection?: undefined }
     | { collection: Collection; resource?: undefined }
 ): ResourceLogStore {
+  if (options.resource !== undefined && options.collection !== undefined) {
+    throw new ValidationError(
+      'Pass either `resource` (the Resource holding the log) or ' +
+        '`collection` (the Collection whose history log is the log), not both.'
+    )
+  }
+  if (options.resource === undefined && options.collection === undefined) {
+    throw new ValidationError(
+      'A resource log store needs its host: pass `resource` or `collection`.'
+    )
+  }
   const target =
     options.resource !== undefined
       ? resourceTarget(options.resource)
-      : collectionTarget(options.collection)
-  // The raw body observed by the most recent read; an append extends these
-  // bytes verbatim instead of re-serializing the parsed entries. Safe to carry
-  // even if stale: the append is pinned to the same read's ETag, so a
-  // concurrent append fails the CAS instead.
+      : collectionTarget(options.collection as Collection)
+  /**
+   * The raw body observed by the most recent read; an append extends these
+   * bytes verbatim instead of re-serializing the parsed entries. Safe to carry
+   * even if stale: the append is pinned to the same read's ETag, so a
+   * concurrent append fails the CAS instead.
+   */
   let lastReadBody: string | undefined
   return {
     async read() {
       const current = await target.read()
-      if (current === null) {
+      if (current === null || current.body === '') {
         return null
       }
       const entries = parseResourceLog(current.body)

@@ -31,8 +31,8 @@ import { canonicalize } from 'json-canonicalize'
 import { RESOURCE_LOG_METHOD } from '@interop/storage-core'
 import {
   buildResourceLogEntry,
-  buildResourceLogGenesis,
   confirmAppend,
+  createResourceLog,
   isResourceLogConflictError,
   readResourceLog,
   ResourceLogClosedError,
@@ -95,7 +95,9 @@ export function toEpochConfigurationState(
  *   pin for this log
  * @param options.logId {string}   the pin-slot key for this log, from
  *   `resourceLogPinId`
- * @returns {Promise<{ verified: VerifiedResourceLog; descriptor: CollectionEncryption; etag?: string } | null>}
+ * @returns {Promise<{ verified: VerifiedResourceLog; descriptor: CollectionEncryption; controller: ResourceLogController; etag?: string } | null>}
+ *   the verified log, its head state as the descriptor, the controller view
+ *   it was verified under, and the log's validator
  */
 export async function readGovernedEpochConfiguration({
   store,
@@ -110,6 +112,7 @@ export async function readGovernedEpochConfiguration({
 }): Promise<{
   verified: VerifiedResourceLog
   descriptor: CollectionEncryption
+  controller: ResourceLogController
   etag?: string
 } | null> {
   const controller = await resolveController()
@@ -133,6 +136,7 @@ export async function readGovernedEpochConfiguration({
   return {
     verified: current.verified,
     descriptor: state as CollectionEncryption,
+    controller,
     etag: current.etag
   }
 }
@@ -148,6 +152,18 @@ export async function readGovernedEpochConfiguration({
  * signer has no `create` and refuses `replace` and `seal`.
  */
 export interface LogGovernedDescriptorStore extends EncryptionDescriptorStore {
+  /**
+   * The port's read, plus the verified log the descriptor is the head state
+   * of, for a caller that needs the log's history beside its head (the
+   * Collection store uses it to tell a stale served projection from a forged
+   * one). Absent only from the Collection store's read of a Collection that
+   * is not log-governed, whose descriptor comes from no log.
+   */
+  read(): Promise<{
+    descriptor: CollectionEncryption
+    verified?: VerifiedResourceLog
+    etag?: string
+  } | null>
   seal(): Promise<'sealed' | 'noop'>
 }
 
@@ -180,9 +196,9 @@ function asDescriptorStoreConflict(err: unknown): unknown {
  * without knowing it: a lost race on the log is translated back to the
  * `PreconditionFailedError` those loops rebase on.
  *
- * The controller view is resolved per operation, never held, so a caller
- * that just edited its controller document hands every subsequent write the
- * view it now verifies. A replace builds its entry on the head the most
+ * The controller view is resolved per operation rather than held, so a
+ * caller that just edited its controller document hands every subsequent
+ * write the view it now verifies. A replace builds its entry on the head the most
  * recent read on this instance verified, pinned to that read's `etag`, so a
  * stale head loses the compare-and-swap instead of forking; the library's
  * pre-write pass verifies the candidate as a reader would before it lands,
@@ -254,13 +270,9 @@ export function logGovernedDescriptorStore({
 
   const store: LogGovernedDescriptorStore = {
     async read() {
-      let view: ResourceLogController | null = null
       const current = await readGovernedEpochConfiguration({
         store: log,
-        resolveController: async () => {
-          view = await resolveController()
-          return view
-        },
+        resolveController,
         pinStore,
         logId
       })
@@ -270,8 +282,12 @@ export function logGovernedDescriptorStore({
         return null
       }
       lastVerified = current.verified
-      lastVerifiedView = view
-      return { descriptor: current.descriptor, etag: current.etag }
+      lastVerifiedView = current.controller
+      return {
+        descriptor: current.descriptor,
+        verified: current.verified,
+        etag: current.etag
+      }
     },
 
     async replace(descriptor, { ifMatch }) {
@@ -282,11 +298,13 @@ export function logGovernedDescriptorStore({
             'validator, and the profile forbids an unconditional write.'
         )
       }
-      // An append builds on the head this instance last verified. A replace
-      // that no read on this instance precedes -- a caller seeding the
-      // compare-and-swap from a read another instance made -- acquires that
-      // head now; the caller's validator still guards the append, so a seed
-      // behind the served log loses the compare-and-swap as it would anywhere.
+      /**
+       * An append builds on the head this instance last verified. A replace
+       * that no read on this instance precedes (a caller seeding the
+       * compare-and-swap from a read another instance made) acquires that
+       * head now. The caller's validator still guards the append, so a seed
+       * behind the served log loses the compare-and-swap as it would anywhere.
+       */
       if (lastVerified === null) {
         await store.read()
       }
@@ -299,13 +317,15 @@ export function logGovernedDescriptorStore({
         throw new ResourceLogClosedError({ nextLog: lastVerified.terminal })
       }
       const controller = await resolveController()
-      // The pre-write pass's precondition, enforced rather than assumed: the
-      // view that verified `lastVerified` must be a prefix of this one (the
-      // controller log is append-only, so carrying its head version is
-      // enough). A resolver that regressed is reported as the port's conflict
-      // class, so the edv machinery re-reads under the current view and
-      // rebases instead of the pass refusing on a bound that indexes another
-      // list.
+      /**
+       * The pre-write pass's precondition, enforced rather than assumed: the
+       * view that verified `lastVerified` must be a prefix of this one (the
+       * controller log is append-only, so carrying its head version is
+       * enough). A resolver that regressed is reported as the port's conflict
+       * class, so the edv machinery re-reads under the current view and
+       * rebases instead of the pass refusing on a bound that indexes another
+       * list.
+       */
       const verifiedHead =
         lastVerifiedView?.versionIds[lastVerifiedView.versionIds.length - 1]
       if (
@@ -337,11 +357,13 @@ export function logGovernedDescriptorStore({
     async seal() {
       const logSigner = requireSigner('seal')
       const controller = await resolveController()
-      // Reuse the log view the most recent read or confirmed append on this
-      // store instance verified: a rotation that just appended carries a
-      // version past the removal, so the sweep resolves noop with no
-      // re-fetch, and a stale view is safe (sealResourceLog's append path
-      // re-reads before writing).
+      /**
+       * Reuse the log view the most recent read or confirmed append on this
+       * store instance verified: a rotation that just appended carries a
+       * version past the removal, so the sweep resolves noop with no
+       * re-fetch, and a stale view is safe (sealResourceLog's append path
+       * re-reads before writing).
+       */
       const { sealed, verified } = await sealResourceLog({
         store: log,
         controller,
@@ -351,7 +373,10 @@ export function logGovernedDescriptorStore({
         signer: logSigner,
         ...(lastVerified === null ? {} : { verified: lastVerified })
       })
-      if (verified !== null) {
+      // The sweep hands back the caller's own view untouched when it had
+      // nothing to write; only a log it read or appended was verified under
+      // this call's controller view.
+      if (verified !== null && verified !== lastVerified) {
         lastVerified = verified
         lastVerifiedView = controller
       }
@@ -362,70 +387,35 @@ export function logGovernedDescriptorStore({
   if (signer !== undefined) {
     const logSigner = signer
     store.create = async descriptor => {
-      // A held pin means this client has already verified a log in this slot,
-      // so there is nothing to create. The pinned read refuses an absent log
-      // as a rollback (a host hiding the pinned log must not be answered with
-      // a fresh genesis over it); a served one is the lost create race,
-      // translated so the edv machinery re-reads and adopts it.
-      if ((await pinStore.read({ logId })) !== null) {
-        await readGovernedEpochConfiguration({
-          store: log,
-          resolveController,
-          pinStore,
-          logId
-        })
+      /**
+       * The library's guarded create: under a held pin it adopts the pinned
+       * slot's served log (refusing an absent one as a rollback) and builds
+       * nothing; otherwise it verifies the built genesis pre-write, creates it
+       * guarded, and confirms by read-back and pin. Either way of losing the
+       * race (a refused genesis against a log that already exists, or a lost
+       * guarded create) adopts the winner's log, and is reported as the
+       * port's conflict class so the edv machinery re-reads and adopts the
+       * winner's descriptor.
+       */
+      const controller = await resolveController()
+      const { verified, created } = await createResourceLog({
+        store: log,
+        controller,
+        method: RESOURCE_LOG_METHOD,
+        pinStore,
+        logId,
+        signer: logSigner,
+        state: toEpochConfigurationState(descriptor)
+      })
+      lastVerified = verified
+      lastVerifiedView = controller
+      if (!created) {
         throw new PreconditionFailedError(
           'The resource log create lost its guarded-create race: a log is ' +
-            'already pinned and served; re-read and adopt it.',
+            'already served; re-read and adopt it.',
           { status: 412 }
         )
       }
-      const controller = await resolveController()
-      const genesis = await buildResourceLogGenesis({
-        state: toEpochConfigurationState(descriptor),
-        method: RESOURCE_LOG_METHOD,
-        controller,
-        signer: logSigner
-      })
-      // The pre-write pass for a genesis: verified as a one-entry log before
-      // anything is created, so a non-member signer never leaves behind a
-      // log no reader accepts. `pin: null` is deliberate: the candidate is
-      // not served history, and continuity belongs to the read-back.
-      try {
-        await verifyResourceLog({
-          entries: [genesis],
-          controller,
-          expectedMethod: RESOURCE_LOG_METHOD,
-          pin: null
-        })
-      } catch (err) {
-        // A refused genesis against a log that already exists is a lost
-        // create race (matched by name: the class may come from another
-        // library copy), translated to the port's conflict class so the edv
-        // machinery re-reads and adopts the winner's descriptor. With no log
-        // served, or on any other class (a port bug), the error propagates
-        // with nothing adopted.
-        if (!(
-          err instanceof Error && err.name === 'ResourceLogIntegrityError'
-        )) {
-          throw err
-        }
-        if ((await log.read()) === null) {
-          throw err
-        }
-        throw new PreconditionFailedError(
-          'The resource log create lost its guarded-create race: the genesis ' +
-            `was refused pre-write (${err.message}) and a log is already ` +
-            'served; re-read and adopt it.',
-          { status: 412, cause: err }
-        )
-      }
-      try {
-        await log.create(genesis)
-      } catch (err) {
-        throw asDescriptorStoreConflict(err)
-      }
-      await settle({ entry: genesis, controller })
     }
   }
 
@@ -442,15 +432,20 @@ export function logGovernedDescriptorStore({
  * the store refuses a `history.method` other than the profile's format
  * identifier before any fetch, refuses a `history.resource` that is not this
  * Collection's own log URL, opens the log through `resourceLogStore`, reads
- * it through the generic {@link logGovernedDescriptorStore}, and refuses a
- * projection that does not JCS-equal the verified head's state after
- * stripping `history`. The descriptor handed out is that verified state with
- * the served `history` pointer kept on it.
+ * it through the generic {@link logGovernedDescriptorStore}, and holds the
+ * projection to the verified head's state after stripping `history`. The
+ * Description and the log are two reads, so a projection that equals an
+ * EARLIER entry's state is a concurrent append landing between them and is
+ * reported as `PreconditionFailedError` (412), which the recipient loops
+ * rebase on; a projection matching no entry at all is refused as
+ * `ResourceLogIntegrityError`. The descriptor handed out is the verified head
+ * state with the served `history` pointer kept on it.
  *
  * Writes on a governed Collection are the generic store's signed appends and
  * need `signer`; without one the store is read-only for governed collections
- * (`replace` refuses, `create` is absent). A lost race surfaces as
- * `PreconditionFailedError` (412), the port's documented class.
+ * (`replace` and `seal` refuse, `create` is absent). A lost race surfaces as
+ * `PreconditionFailedError` (412), the port's documented class. `seal()` is
+ * the generic store's sealing sweep over the Collection's log.
  *
  * @param options {object}
  * @param options.collection {Collection}
@@ -463,7 +458,7 @@ export function logGovernedDescriptorStore({
  *   `resourceLogPinId`
  * @param [options.signer] {ResourceLogSigner}   this client's enrolled
  *   signing key, for the appends this store writes
- * @returns {EncryptionDescriptorStore}
+ * @returns {LogGovernedDescriptorStore}
  */
 export function logGovernedCollectionDescriptorStore({
   collection,
@@ -477,7 +472,7 @@ export function logGovernedCollectionDescriptorStore({
   pinStore: ResourceLogPinStore
   logId: string
   signer?: ResourceLogSigner
-}): EncryptionDescriptorStore {
+}): LogGovernedDescriptorStore {
   const governed = logGovernedDescriptorStore({
     log: resourceLogStore({ collection }),
     resolveController,
@@ -485,11 +480,14 @@ export function logGovernedCollectionDescriptorStore({
     logId,
     signer
   })
-  // The description observed by the most recent read: its sibling fields are
-  // forwarded by a point-state replace (the server's replace semantics would
-  // otherwise drop them), and its `encryption` member decides which write path
-  // a replace takes. Safe to carry even if stale: every write is pinned to the
-  // same read's validator, so a concurrent change fails the CAS instead.
+  /**
+   * The description observed by the most recent read: its sibling fields are
+   * forwarded by a point-state replace (the server's replace semantics would
+   * otherwise drop them), and its `encryption` member decides which write path
+   * a replace takes. Safe to carry even if stale: every write is pinned to the
+   * same read's validator, so a concurrent change fails the CAS instead. A
+   * create clears it, since the Collection it described is now log-governed.
+   */
   let described: CollectionDescription | undefined
 
   async function readGoverned(
@@ -517,7 +515,25 @@ export function logGovernedCollectionDescriptorStore({
       )
     }
     // The generic store's descriptor IS the verified head's state.
-    if (canonicalize(pointState) !== canonicalize(current.descriptor)) {
+    const served = canonicalize(pointState)
+    if (served !== canonicalize(current.descriptor)) {
+      /**
+       * The Description was read before the log. A projection that equals an
+       * earlier entry's state is the head the server derived it from before a
+       * concurrent append moved the log on: a lost race, not a forgery, so
+       * the port's conflict class lets the caller re-read and rebase.
+       */
+      const entries = current.verified?.entries ?? []
+      const stale = entries
+        .slice(0, -1)
+        .some(entry => canonicalize(entry.state) === served)
+      if (stale) {
+        throw new PreconditionFailedError(
+          'The served descriptor is behind the verified head of its ' +
+            'governing log (a concurrent append landed); re-read and retry.',
+          { status: 412 }
+        )
+      }
       throw new ResourceLogIntegrityError(
         'The served descriptor does not match the verified head of its ' +
           'governing log.'
@@ -529,7 +545,7 @@ export function logGovernedCollectionDescriptorStore({
     }
   }
 
-  const store: EncryptionDescriptorStore = {
+  const store: LogGovernedDescriptorStore = {
     async read() {
       const current = await collection.describeWithEtag()
       if (current === null) {
@@ -540,7 +556,7 @@ export function logGovernedCollectionDescriptorStore({
       }
       described = current.description
       const descriptor = current.description.encryption
-      if (descriptor === undefined) {
+      if (!descriptor) {
         return null
       }
       if (descriptor.scheme !== 'edv') {
@@ -571,16 +587,23 @@ export function logGovernedCollectionDescriptorStore({
         {
           name: described?.name,
           backend: described?.backend,
+          generator: described?.generator,
+          generatorOrigin: described?.generatorOrigin,
           encryption: descriptor
         },
         { ifMatch }
       )
-    }
+    },
+
+    seal: () => governed.seal()
   }
 
   if (governed.create !== undefined) {
     const create = governed.create
-    store.create = descriptor => create(descriptor)
+    store.create = async descriptor => {
+      await create(descriptor)
+      described = undefined
+    }
   }
 
   return store

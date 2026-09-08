@@ -138,6 +138,8 @@ export function collectionDescriptorStore({
         {
           name: described?.name,
           backend: described?.backend,
+          generator: described?.generator,
+          generatorOrigin: described?.generatorOrigin,
           encryption: descriptor
         },
         { ifMatch }

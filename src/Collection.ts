@@ -581,7 +581,9 @@ export class Collection {
    * feed) and not part of the `/meta` object; it is versioned by its own
    * validator, which {@link putHistoryLog} takes as `ifMatch` for a
    * compare-and-swap append. Returns `null` when the Collection has no log,
-   * or is missing or not visible to you (404 conflation caveat).
+   * or is missing or not visible to you (404 conflation caveat). A log served
+   * under a JSON content type (whose body the HTTP client has already parsed)
+   * is not a JSON Lines log and throws `ValidationError`.
    *
    * This is the raw transport read. The `@interop/was-client/log` subpath's
    * `resourceLogStore({ collection })` drives it as the store port of
@@ -598,6 +600,12 @@ export class Collection {
     })
     if (response === null) {
       return null
+    }
+    if (response.data !== undefined) {
+      throw new ValidationError(
+        `Cannot read the history log of collection "${this.id}": the server ` +
+          'served it as JSON, not as a JSON Lines text body.'
+      )
     }
     const body = await response.text()
     const etag = readEtag(response)
@@ -616,6 +624,12 @@ export class Collection {
    * the line contract, or whose head `state` violates an encryption
    * transition against the prior head, throws `ValidationError` (400).
    *
+   * The write is always conditional: the profile forbids replacing a log
+   * unguarded (the server checks the head-state transition, not chain
+   * continuity, so an unconditional PUT could replace a longer verified log
+   * wholesale). A call naming neither `ifMatch` nor `ifNoneMatch` throws
+   * `ValidationError` before any request.
+   *
    * From the guarded create on, the Collection's served `encryption` member
    * is derived by the server from the log head's `state`, and a direct
    * `encryption` write on the Description is refused with `ConflictError`.
@@ -629,8 +643,15 @@ export class Collection {
    */
   async putHistoryLog(
     body: string,
-    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+    options: { ifMatch?: string; ifNoneMatch?: boolean }
   ): Promise<{ etag?: string }> {
+    if (options.ifMatch === undefined && !options.ifNoneMatch) {
+      throw new ValidationError(
+        `Cannot write the history log of collection "${this.id}": pass ` +
+          '`ifMatch` (the prior log ETag) or `ifNoneMatch: true`; an ' +
+          'unconditional write is forbidden.'
+      )
+    }
     const response = await send(this.#context, {
       path: this.#logPath,
       method: 'PUT',

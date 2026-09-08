@@ -308,15 +308,19 @@ other than the profile's format identifier or a `history.resource` other than
 port and pin store, wrapped by `readGovernedEpochConfiguration`, which also
 refuses a head whose `state.type` is not `WasEpochConfiguration`) and refuses a
 projection that does not JCS-equal the verified head's `state` after stripping
-`history`. Writes on a governed Collection are the generic store's appends
-(`toEpochConfigurationState` strips `history` and stamps `type`). The controller
-port is injected: this package does no DID-method resolution. The hosting
-collection may be plaintext or encrypted; an encrypted host must be created
-under an id the codec mints. A `mutate` resolving `null` means "the store
-already reflects the desired state" and ends the loop without a write;
-`initRecipients` uses it to adopt the winner's descriptor after losing the
-first-create race, while still refusing (`ValidationError`) a descriptor that
-already carried epochs on its first read.
+`history`. The Description and the log are two reads, so a projection equal to
+an earlier entry's state (a concurrent append landed between them) is the port's
+`PreconditionFailedError` and the CAS loop rebases; only a projection matching
+no entry is an integrity refusal. Writes on a governed Collection are the
+generic store's appends (`toEpochConfigurationState` strips `history` and stamps
+`type`), and `seal()` is forwarded to the generic store. The controller port is
+injected: this package does no DID-method resolution. The hosting collection may
+be plaintext or encrypted; an encrypted host must be created under an id the
+codec mints. A `mutate` resolving `null` means "the store already reflects the
+desired state" and ends the loop without a write; `initRecipients` uses it to
+adopt the winner's descriptor after losing the first-create race, while still
+refusing (`ValidationError`) a descriptor that already carried epochs on its
+first read.
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on

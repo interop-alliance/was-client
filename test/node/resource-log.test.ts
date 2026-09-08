@@ -261,6 +261,24 @@ describe('resourceLogStore over a Collection history log', () => {
     expect(state.body).toBe(serializeResourceLog([entryAt(1)]))
   })
 
+  it('reads an empty served body as an absent log', async () => {
+    const { collection } = fakeLogCollection('')
+    expect(await resourceLogStore({ collection }).read()).toBeNull()
+  })
+
+  it('refuses neither host or both hosts at construction', async () => {
+    const { collection } = fakeLogCollection()
+    const { resource } = fakeLogResource()
+    expect(() =>
+      resourceLogStore({} as unknown as { collection: Collection })
+    ).toThrow(ValidationError)
+    expect(() =>
+      resourceLogStore({ collection, resource } as unknown as {
+        collection: Collection
+      })
+    ).toThrow(ValidationError)
+  })
+
   it('reads entries with the etag and appends the prior bytes plus one line', async () => {
     const { collection, state } = fakeLogCollection(
       serializeResourceLog([entryAt(1)])

@@ -8,11 +8,12 @@
  * the plain-descriptor passthrough (a projection without `history` behaves
  * as the Collection Description adapter does), the governed lifecycle driven
  * by the recipient primitives (genesis create, verified read, signed append,
- * chain-head pin), the read-only store, and the refusals: `history.method`
- * and `history.resource` mismatches before any fetch, a projection that does
- * not match the verified head, a head of the wrong state type, an absent log
- * under a projection, and the library's own integrity and continuity refusals
- * passing through unwrapped.
+ * chain-head pin), the read-only store, the forwarded seal, and the refusals:
+ * `history.method` and `history.resource` mismatches before any fetch, a
+ * projection that does not match the verified head (a stale one is the port's
+ * conflict, a forged one an integrity refusal), a head of the wrong state
+ * type, an absent log under a projection, and the library's own integrity and
+ * continuity refusals passing through unwrapped.
  */
 import { describe, it, expect } from 'vitest'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -157,6 +158,8 @@ function fakeGovernedCollection(
       description: {
         type: ['Collection'],
         name: 'Vault',
+        generator: 'did:key:zApp',
+        generatorOrigin: 'https://app.example',
         encryption: served()
       },
       etag: etag()
@@ -271,11 +274,15 @@ describe('logGovernedCollectionDescriptorStore over a plain descriptor', () => {
     expect(fake._state.logReads).toBe(0)
 
     await store.replace({ ...initial, currentEpoch: 'e1' }, { ifMatch: '"v0"' })
+    // The sibling fields ride along: the server's replace semantics would
+    // otherwise drop the app attribution on a key rotation.
     expect(fake._state.descriptionPuts).toEqual([
       {
         description: {
           name: 'Vault',
           backend: undefined,
+          generator: 'did:key:zApp',
+          generatorOrigin: 'https://app.example',
           encryption: { ...initial, currentEpoch: 'e1' }
         },
         ifMatch: '"v0"'
@@ -283,6 +290,20 @@ describe('logGovernedCollectionDescriptorStore over a plain descriptor', () => {
     ])
     expect(fake._state.logReads).toBe(0)
     expect(store.create).toBeUndefined()
+  })
+
+  it('reads a null encryption member as no descriptor', async () => {
+    const { collection } = fakeGovernedCollection({
+      encryption: null as unknown as CollectionEncryption
+    })
+    const writer = await makeWriter()
+    const store = logGovernedCollectionDescriptorStore({
+      collection,
+      resolveController: async () => writer.controller,
+      pinStore: memoryResourceLogPinStore(),
+      logId: LOG_ID
+    })
+    expect(await store.read()).toBeNull()
   })
 })
 
@@ -333,6 +354,72 @@ describe('logGovernedCollectionDescriptorStore over a governed collection', () =
     expect(await pinStore.read({ logId: LOG_ID })).toMatchObject({
       head: entries[1]!.versionId
     })
+  })
+
+  it('takes the governed write path on a replace right after its own create', async () => {
+    const reader = await makeReader()
+    const writer = await makeWriter()
+    const { fake, collection } = fakeGovernedCollection()
+    const store = logGovernedCollectionDescriptorStore({
+      collection,
+      resolveController: async () => writer.controller,
+      pinStore: memoryResourceLogPinStore(),
+      logId: LOG_ID,
+      signer: writer.signer
+    })
+    // initRecipients reads (no descriptor yet) and then creates the genesis.
+    const descriptor = await initRecipients({
+      store,
+      recipients: [reader.recipient]
+    })
+    // No read in between: the store must not act on the pre-create
+    // description it observed, which named no governing log.
+    await store.replace(descriptor, { ifMatch: '"v1"' })
+    expect(fake._state.descriptionPuts).toEqual([])
+    expect(fake._state.logPuts).toEqual([
+      { ifNoneMatch: true },
+      { ifMatch: '"v1"' }
+    ])
+    expect(fake._entries()).toHaveLength(2)
+  })
+
+  it('reports a projection behind the verified head as the port conflict class', async () => {
+    const { reader, writer, fake, storeOptions } = await governedFixture()
+    const other = await makeReader()
+    await addRecipient({
+      store: logGovernedCollectionDescriptorStore({
+        ...storeOptions,
+        signer: writer.signer
+      }),
+      recipient: other.recipient,
+      owner: { keyAgreementKey: reader.kak }
+    })
+    // The Description was read at the genesis head, then a concurrent append
+    // landed before the log read: the projection equals the earlier entry's
+    // state, a lost race rather than a forgery.
+    const [genesis] = fake._entries()
+    fake._state.projection = {
+      ...(genesis!.state as unknown as CollectionEncryption),
+      history: { method: RESOURCE_LOG_METHOD, resource: LOG_URL }
+    }
+    const err = await logGovernedCollectionDescriptorStore(storeOptions)
+      .read()
+      .catch(err => err)
+    expect(err).toBeInstanceOf(PreconditionFailedError)
+    expect((err as Error).message).toMatch(/behind the verified head/)
+  })
+
+  it('forwards seal() to the generic store', async () => {
+    const { writer, storeOptions } = await governedFixture()
+    const store = logGovernedCollectionDescriptorStore({
+      ...storeOptions,
+      signer: writer.signer
+    })
+    // Nothing to seal against a one-version controller.
+    expect(await store.seal()).toBe('noop')
+    await expect(
+      logGovernedCollectionDescriptorStore(storeOptions).seal()
+    ).rejects.toBeInstanceOf(ValidationError)
   })
 
   it('reports a stale validator on replace as the port conflict class', async () => {
