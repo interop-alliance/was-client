@@ -1408,3 +1408,31 @@ The fix adds the missing capability one layer down rather than compensating
 above it: a `getText`-shaped read that also returns the validator, or letting
 `getWithEtag` hand back the `ResponseLike` so the caller picks its own
 projection. Then `logStore.read` is a destructure plus `parseResourceLog`.
+
+### WCL-38: `ensureSpaceAndCollection` gains the `'governed'` collection mode
+
+- status: done (2026-09-07)
+- priority: medium
+- labels: provisioning, encryption, log
+- discovered-from: WCL-32
+- touches:
+  - wallet-core: `src/space/provisioning.ts` maps a roster `'edv'` collection to
+    `'governed'` and declares the governance through the log's guarded create
+- acceptance:
+  - [x] `encryption: 'governed'` creates an absent collection with no
+        `encryption` member, the same descriptor-less guarded create as
+        `'plaintext'`
+  - [x] An existing collection is never written to under that mode, whether
+        already governed (the served `encryption` carries `history`) or
+        descriptor-less
+  - [x] An existing collection carrying a client-written descriptor (no
+        `history`) is refused with `ValidationError`, since the server keeps a
+        declared descriptor immutable and the caller's log create would fail
+        with `encryption-immutable`
+
+Discovered while landing WCL-32's guarded creates: wallet-core's provisioning
+needs a collection whose `encryption` member the server derives from its history
+log, and `'edv'` (the client-written descriptor) could never become that. The
+mode is the container half only; declaring the governance is the caller's next
+step, `logGovernedDescriptorStore(...).create` or
+`resourceLogStore({ collection }).create`.

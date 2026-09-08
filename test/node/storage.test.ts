@@ -911,6 +911,94 @@ describe('Space.configure() unreadable-description guard', () => {
   })
 })
 
+describe('Space.describeWithEtag() / replaceDescription()', () => {
+  const current = {
+    id: 's',
+    type: ['Space'],
+    name: 'Home',
+    controller: 'did:example:alice'
+  }
+
+  it('reads the description with its ETag', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: current,
+      etag: '"7"'
+    })
+    const read = await client.space('s').describeWithEtag()
+    expect(calls[0]?.url).toBe('https://was.example/space/s')
+    expect(calls[0]?.method).toBe('GET')
+    expect(read).toEqual({ description: current, etag: '"7"' })
+  })
+
+  it('returns null when the space is missing or not visible (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(await client.space('s').describeWithEtag()).toBeNull()
+  })
+
+  it('PUTs the given fields under If-Match, with no read or merge first', async () => {
+    const { client, calls } = clientWithRequestSpy({ etag: '"8"' })
+    const result = await client
+      .space('s')
+      .replaceDescription(
+        { name: 'Renamed', controller: 'did:example:alice' },
+        { ifMatch: '"7"' }
+      )
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.url).toBe('https://was.example/space/s')
+    expect(calls[0]?.json).toEqual({
+      id: 's',
+      name: 'Renamed',
+      controller: 'did:example:alice'
+    })
+    expect(calls[0]?.headers).toEqual({ 'if-match': '"7"' })
+    // An update answers with no body, so only the ETag comes back.
+    expect(result).toEqual({ etag: '"8"' })
+  })
+
+  it('PUTs under If-None-Match: * for a guarded create and echoes the created description', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: current,
+      etag: '"1"'
+    })
+    const result = await client
+      .space('s')
+      .replaceDescription(
+        { name: 'Home', controller: 'did:example:alice', type: ['Space'] },
+        { ifNoneMatch: true }
+      )
+    expect(calls[0]?.headers).toEqual({ 'if-none-match': '*' })
+    expect(calls[0]?.json).toEqual({
+      id: 's',
+      name: 'Home',
+      controller: 'did:example:alice',
+      type: ['Space']
+    })
+    expect(result).toEqual({ description: current, etag: '"1"' })
+  })
+
+  it('sends no precondition header when neither option is given', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await client
+      .space('s')
+      .replaceDescription({ controller: 'did:example:alice' })
+    expect(calls[0]?.headers).toBeUndefined()
+    expect(calls[0]?.json).toEqual({ id: 's', controller: 'did:example:alice' })
+  })
+
+  it('surfaces a failed precondition as PreconditionFailedError', async () => {
+    const { client } = clientWithRequestSpy({ fail: 412 })
+    await expect(
+      client
+        .space('s')
+        .replaceDescription(
+          { controller: 'did:example:alice' },
+          { ifNoneMatch: true }
+        )
+    ).rejects.toThrow(PreconditionFailedError)
+  })
+})
+
 describe('configure() with a supplied current description', () => {
   it('Space.configure merges from `current` without reading it back', async () => {
     const current = {

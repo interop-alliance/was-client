@@ -9,8 +9,45 @@
   codec (so it decrypts on an encrypted collection); a text-family or binary
   body reads as UTF-8 text and a JSON body is re-serialized, the `getText()`
   contract.
+- `./sync`: `ensureSpaceAndCollection`'s `encryption` option accepts
+  `'governed'` beside `'edv'` and `'plaintext'`. An absent collection is created
+  with no `encryption` member (the descriptor-less `'plaintext'` create), and an
+  existing one is never written to -- the late in-place `edv` declaration does
+  not fire. The caller declares the governance afterwards, through the history
+  log's guarded create.
+- `Space.describeWithEtag()` and
+  `Space.replaceDescription(fields, { ifMatch?, ifNoneMatch? })`, the pair
+  `Collection` already had: the read returns the Space Description with its
+  `ETag`, and the write sends the given fields with no client-side read or
+  merge, under an optional compare-and-swap (`ifMatch`) or guarded create
+  (`ifNoneMatch`), a failed precondition surfacing as `PreconditionFailedError`.
+  `controller` is required (no default to the signer's DID). The result carries
+  the new `etag`, plus the server's echoed `description` on a create only. Needs
+  a server that versions the Space Description (was-teaching-server 0.29.0).
+- `Collection.replaceDescription` accepts `ifNoneMatch: true`, the guarded
+  create-if-absent, beside `ifMatch`.
 
 ### Changed
+
+- `./sync`: `ensureSpace` and `ensureSpaceAndCollection` create an absent Space
+  or collection with the guarded create (`If-None-Match: *`) through
+  `replaceDescription` instead of a merging `configure`. Two clients booting at
+  once can no longer both create; the loser re-reads the winner's description
+  and continues from it (the late `edv` declaration still runs over a
+  descriptor-less winner), so a lost race does not surface to the caller. The
+  lost race is detected by that re-read, whatever status the server answered the
+  loser with (a 412, or a 400 / 409 from the descriptor rules when the winner
+  already installed key epochs). Against a server that ignores the precondition
+  the create is an unconditional upsert with no pre-read: the loser of a race
+  can overwrite the winner's display name, and the server merges the rest of the
+  winner's description forward.
+- `./sync`: `ensureSpaceAndCollection({ encryption: 'governed' })` over an
+  existing collection whose `encryption` descriptor is client-written (no
+  `history` member) throws `ValidationError`: such a collection cannot become
+  log-governed, and the caller's log create would otherwise fail later with the
+  server's `encryption-immutable` 409.
+- `ensureSpaceAndCollection` skips the policy read on a collection it just
+  created (nothing to heal), so a public create costs one request less.
 
 - `./log`: `resourceLogStore` over a Resource reads the log through
   `getWithEtag({ as: 'text' })` instead of mapping the decoded `Json | Blob`

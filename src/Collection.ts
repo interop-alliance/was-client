@@ -23,7 +23,7 @@ import { assertNotReserved } from './internal/reserved.js'
 import { ValidationError, WasServerError, httpStatus } from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
-import { send, readData } from './internal/request.js'
+import { send, readData, readDataWithEtag } from './internal/request.js'
 import { collectionCodecHolder } from './internal/codec.js'
 import type { CodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
@@ -38,7 +38,6 @@ import type { PageWalk } from './internal/pagination.js'
 import {
   collectionWritableFields,
   describeCollection,
-  describeCollectionResponse,
   unreadableDescriptionError
 } from './internal/describe.js'
 import { readEtag, writeHeaders } from './internal/conditional.js'
@@ -344,31 +343,22 @@ export class Collection {
     description: CollectionDescription
     etag?: string
   } | null> {
-    // The same GET as `describe()` (via the shared request shape), keeping the
-    // raw response so the ETag header can be read alongside the body.
-    const response = await describeCollectionResponse(this.#context, {
-      spaceId: this.spaceId,
-      collectionId: this.id,
+    const read = await readDataWithEtag<CollectionDescription>(this.#context, {
+      path: this.#path,
       capability: this.#capability
     })
-    const description = dataOrNull<CollectionDescription>(response)
-    if (response === null || description === null) {
-      return null
-    }
-    return {
-      description,
-      etag: readEtag(response)
-    }
+    return read === null ? null : { description: read.data, etag: read.etag }
   }
 
   /**
-   * Writes (replaces) the Collection Description, optionally as a
-   * compare-and-swap against a prior `ETag` (`ifMatch`, from {@link
-   * describeWithEtag}) so a concurrent writer cannot be silently clobbered -- a
-   * stale validator surfaces as `PreconditionFailedError` (412). Sends the
-   * writable fields as the full body; omit a field to drop it (replace
-   * semantics), so callers doing CAS pass every field forward. Returns the new
-   * `ETag` and the fields written.
+   * Writes (replaces) the Collection Description, optionally under a
+   * precondition: `ifMatch` (the `ETag` from {@link describeWithEtag}) makes
+   * it a compare-and-swap so a concurrent writer cannot be silently clobbered,
+   * and `ifNoneMatch: true` makes it a guarded create that proceeds only while
+   * no Collection exists under this id. A failed precondition surfaces as
+   * `PreconditionFailedError` (412). Sends the writable fields as the full
+   * body; omit a field to drop it (replace semantics), so callers doing CAS
+   * pass every field forward. Returns the new `ETag` and the fields written.
    *
    * This is the generic description-CAS primitive the key-epoch recipient
    * operations build on (add/remove a reader is a CAS of the `encryption`
@@ -378,11 +368,13 @@ export class Collection {
    * @param options {object}
    * @param [options.ifMatch] {string}   the prior `ETag`; the write applies only
    *   if the description is unchanged
+   * @param [options.ifNoneMatch] {boolean}   write only if the Collection does
+   *   not exist yet
    * @returns {Promise<{ description: CollectionDescription; etag?: string }>}
    */
   async replaceDescription(
     description: CollectionWritableFields,
-    options: { ifMatch?: string } = {}
+    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ description: CollectionDescription; etag?: string }> {
     const fields = collectionWritableFields(description)
     const response = await send(this.#context, {
@@ -390,7 +382,12 @@ export class Collection {
       method: 'PUT',
       capability: this.#capability,
       json: { id: this.id, ...fields },
-      headers: writeHeaders({ precondition: { ifMatch: options.ifMatch } })
+      headers: writeHeaders({
+        precondition: {
+          ifMatch: options.ifMatch,
+          ifNoneMatch: options.ifNoneMatch
+        }
+      })
     })
     // Writing the `encryption` descriptor can rotate the key epoch (the
     // recipient operations CAS this field) or flip the collection from

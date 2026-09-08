@@ -48,7 +48,10 @@ import {
 } from '@interop/vh-resource-log'
 import type { Collection } from '../Collection.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
-import { unreadableDescriptionError } from '../internal/describe.js'
+import {
+  isGovernedDescriptor,
+  unreadableDescriptionError
+} from '../internal/describe.js'
 import { resourceLogStore } from '../log/logStore.js'
 import type { CollectionDescription, CollectionEncryption } from '../types.js'
 import type { EncryptionDescriptorStore } from './descriptorStore.js'
@@ -565,21 +568,20 @@ export function logGovernedCollectionDescriptorStore({
             "encrypted with the 'edv' scheme."
         )
       }
-      if (descriptor.history === undefined) {
+      if (!isGovernedDescriptor(descriptor)) {
         return { descriptor, etag: current.etag }
       }
-      return readGoverned(
-        descriptor as CollectionEncryption & {
-          history: { method: string; resource: string }
-        }
-      )
+      return readGoverned(descriptor)
     },
 
     async replace(descriptor, { ifMatch }) {
       if (described === undefined) {
         await store.read()
       }
-      if (described?.encryption?.history !== undefined) {
+      if (
+        described?.encryption !== undefined &&
+        isGovernedDescriptor(described.encryption)
+      ) {
         await governed.replace(descriptor, { ifMatch })
         return
       }

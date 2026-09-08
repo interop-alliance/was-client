@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 38
+nextAvailableId: 39
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -219,29 +219,30 @@ than filed as work.
 
 ### WCL-32: Provisioning creates cannot be made race-safe (no create-if-absent precondition)
 
-- status: todo
+- status: in-progress
 - priority: low
 - labels: conditional-writes, provisioning, spec
 - touches:
-  - wallet-attached-storage-spec: the Update (or Create By Id) Collection
-    operation documents `If-Match` and its 412 but no `If-None-Match`; the Space
-    Data Model carries no version property, and Update Space documents no
-    preconditions at all
-  - was-teaching-server: `assertCollectionWritePrecondition` takes no
-    `ifNoneMatch` and `CollectionRequest.put` discards the parsed one;
-    `SpaceRequest.put` reads no preconditions, and the Space read emits no
-    `ETag`
-  - was-client: `Collection.replaceDescription` accepts `ifMatch` only, and
-    `Space` has no `describeWithEtag` / `replaceDescription` pair
-  - freewallet, dcw: callers relying on `ensureSpace` and
-    `ensureSpaceAndCollection` not throwing when two clients boot at once
+  - wallet-attached-storage-spec: WASS-31 (shipped 2026-09-07: Update Collection
+    documents `If-None-Match: *` and its 412; the Space Data Model gains the
+    server-managed validator, Read Space the `ETag`, Update Space both
+    preconditions)
+  - was-teaching-server: WAS-90 (shipped 2026-09-07 for 0.29.0: both
+    preconditions on Update Space and Update Collection, the Space `ETag`;
+    publish pending)
+  - was-client: `Space.describeWithEtag` / `replaceDescription` and
+    `Collection.replaceDescription`'s `ifNoneMatch` (shipped 2026-09-07 for
+    0.53.0)
+  - freewallet, dcw: waived -- `ensureSpace` and `ensureSpaceAndCollection` keep
+    their contract (a lost race is absorbed rather than thrown), so callers need
+    no change
 - acceptance:
-  - [ ] A concurrent create of the same Space or collection loses at the server
+  - [x] A concurrent create of the same Space or collection loses at the server
         instead of silently replacing the winner's description
-  - [ ] `ensureSpace` and `ensureSpaceAndCollection` stay idempotent under that
+  - [x] `ensureSpace` and `ensureSpaceAndCollection` stay idempotent under that
         race: a lost create is recovered by re-reading the winner rather than
         surfacing to the caller as a `PreconditionFailedError`
-  - [ ] `Space` gains the `describeWithEtag` / `replaceDescription` pair
+  - [x] `Space` gains the `describeWithEtag` / `replaceDescription` pair
         `Collection` already has
 
 discovered-from: the review of the `ensureSpace` split. Both create branches in
@@ -254,25 +255,25 @@ concurrently loses its `backend`. The window predates the split: the second
 `describe()` that used to run inside `configure` narrowed it without closing it,
 and threading the description widened it again by one request.
 
-No client-side change closes it. `If-None-Match: *` is the only precondition
-that states create-if-absent, and neither endpoint honors it -- the collection
-handler parses the header and drops it, and the Space handler reads no
-preconditions at all. Neither one rejects it either, so a client sending it gets
-no 412 and no protection, which is worse than sending nothing.
+As filed, no client-side change could close it: `If-None-Match: *` is the only
+precondition that states create-if-absent, and at the time neither endpoint
+honored it (the collection handler parsed the header and dropped it, and the
+Space handler read no preconditions at all). Closing it was spec work first
+(WASS-31), then server work (WAS-90), then the client half.
 
-Closing it is spec work first: the Update Collection operation needs
-`If-None-Match` and its 412, and Space Descriptions need a version property plus
-an `ETag` on the read before they can carry any precondition at all. The client
-half is small once those land. The part to settle deliberately is the recovery
-behavior -- an ensure that throws when two clients boot at once is worse than
-one that races, so a 412 has to become a re-read rather than an error.
-
-Interim mitigation, applied 2026-09-07: the two create branches no longer pass
-`current`, so `configure` re-reads right before the `PUT`. Both run once in a
-Space's or a collection's lifetime, so the cost is one request on a cold path,
-and the steady-state saving (one Space ensure for N collections, via
-`spaceDescription`) is untouched. The window is narrowed, not closed. The server
-half is filed as was-teaching-server WAS-90.
+Resolution, 2026-09-07: both create branches in `src/sync/provisioning.ts` now
+create through `replaceDescription` under `ifNoneMatch`, and a failed create is
+recovered by re-reading and adopting the winner. The recovery keys on the
+re-read rather than on a 412, because the server evaluates the
+encryption-descriptor transition rules before the precondition: a rival that
+already installed key epochs makes the loser's create fail with a 400 or 409
+instead. The earlier interim mitigation (a `configure` re-read right before the
+`PUT`) is superseded; `configure` is no longer on the provisioning path. Open
+only for the server publish in `touches`. Against a server that ignores the
+precondition the create is an unconditional upsert, and the loser of a race can
+overwrite the winner's display name (the server merges the rest forward); no
+client-side gate can detect that server, since the precondition is a property of
+the description endpoints rather than a backend feature token.
 
 ### WCL-34: The integration tier never runs, and skips provisioning entirely
 

@@ -12,18 +12,34 @@
  * lives here too: it is the one inclusion rule for the writable description
  * fields, shared by every path that builds a description body.
  */
-import type { HttpResponse } from '@interop/http-client'
 import type { ClientContext } from './request.js'
-import { send } from './request.js'
-import { dataOrNull } from './content.js'
+import { readData } from './request.js'
 import { collectionPath } from './paths.js'
 import { ValidationError } from '../errors.js'
 import type { WasError } from '../errors.js'
 import type {
   CollectionDescription,
+  CollectionEncryption,
   CollectionWritableFields,
   IZcap
 } from '../types.js'
+
+/**
+ * Whether a served encryption descriptor is the server-derived projection of
+ * a Collection governed by its history log (it carries the `history` pointer)
+ * rather than a client-written descriptor. The one place this distinction is
+ * drawn, shared by provisioning and the log-governed descriptor store.
+ *
+ * @param descriptor {CollectionEncryption}
+ * @returns {boolean}
+ */
+export function isGovernedDescriptor(
+  descriptor: CollectionEncryption
+): descriptor is CollectionEncryption & {
+  history: { method: string; resource: string }
+} {
+  return descriptor.history !== undefined
+}
 
 /**
  * Picks the writable Collection Description fields that are set. The one
@@ -50,36 +66,6 @@ export function collectionWritableFields(
 }
 
 /**
- * Sends the Collection Description GET, returning the raw response -- or
- * `null` if the collection is missing or not visible to you (WAS returns 404
- * for both not-found and unauthorized). The one request shape shared by
- * {@link describeCollection} and `Collection.describeWithEtag` (which also
- * needs the response's `ETag` header).
- *
- * @param context {ClientContext}
- * @param options {object}
- * @param options.spaceId {string}
- * @param options.collectionId {string}
- * @param [options.capability] {IZcap}   capability attached to the request
- * @returns {Promise<HttpResponse | null>}
- */
-export async function describeCollectionResponse(
-  context: ClientContext,
-  {
-    spaceId,
-    collectionId,
-    capability
-  }: { spaceId: string; collectionId: string; capability?: IZcap }
-): Promise<HttpResponse | null> {
-  return send(context, {
-    path: collectionPath(spaceId, collectionId),
-    method: 'GET',
-    capability,
-    read: true
-  })
-}
-
-/**
  * Reads the Collection Description. Returns `null` if the collection is missing
  * or not visible to you (WAS returns 404 for both not-found and unauthorized).
  *
@@ -94,9 +80,10 @@ export async function describeCollection(
   context: ClientContext,
   options: { spaceId: string; collectionId: string; capability?: IZcap }
 ): Promise<CollectionDescription | null> {
-  return dataOrNull<CollectionDescription>(
-    await describeCollectionResponse(context, options)
-  )
+  return readData<CollectionDescription>(context, {
+    path: collectionPath(options.spaceId, options.collectionId),
+    capability: options.capability
+  })
 }
 
 /**

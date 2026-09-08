@@ -13,6 +13,7 @@ import type { HttpResponse } from '@interop/http-client'
 import { mapError, httpStatus } from '../errors.js'
 import { toUrl } from './paths.js'
 import { dataOrNull } from './content.js'
+import { readEtag } from './conditional.js'
 import type { EncryptionProvider } from '../codec.js'
 import type { IZcap, RequestInput } from '../types.js'
 
@@ -183,4 +184,33 @@ export async function readData<T>(
     read: true
   })
   return dataOrNull<T>(response)
+}
+
+/**
+ * {@link readData} keeping the response's `ETag` validator beside the body:
+ * the read-with-validator shape a description compare-and-swap starts from.
+ * `null` on the same conditions as `readData`; `etag` is absent against a
+ * server that does not version the target.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.path {string}          the path to read
+ * @param [options.capability] {IZcap}   capability attached to the request
+ * @returns {Promise<{ data: T; etag?: string } | null>}
+ */
+export async function readDataWithEtag<T>(
+  context: ClientContext,
+  { path, capability }: { path: string; capability?: IZcap }
+): Promise<{ data: T; etag?: string } | null> {
+  const response = await send(context, {
+    path,
+    method: 'GET',
+    capability,
+    read: true
+  })
+  const data = dataOrNull<T>(response)
+  if (data === null) {
+    return null
+  }
+  return { data, etag: readEtag(response) }
 }

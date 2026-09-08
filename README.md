@@ -199,6 +199,22 @@ const desc = await space.describe() // { id, type: ['Space'], name, controller }
 // Upsert: merges the given fields over the current description.
 await space.configure({ name: 'Home (renamed)' })
 
+// Lost-update-safe writes: read the description with its ETag, then write
+// it under `ifMatch` (412 `PreconditionFailedError` if it changed), or
+// create-if-absent under `ifNoneMatch` (412 if the Space already exists).
+// Nothing is read or merged on the client, so `controller` is required.
+const read = await space.describeWithEtag() // { description, etag? } | null
+await space.replaceDescription(
+  { name: 'Home', controller: read!.description.controller },
+  { ifMatch: read!.etag }
+) // { etag? }
+await was
+  .space('fresh-id')
+  .replaceDescription(
+    { name: 'Fresh', controller: 'did:key:z6Mk...' },
+    { ifNoneMatch: true }
+  ) // { description, etag? }: a create echoes the description
+
 await space.delete() // idempotent
 
 // Need to know whether the DELETE actually removed anything, rather than
@@ -921,8 +937,10 @@ plugs into:
   unpadded -- so the same logical document (and the same controller) lands on
   the same id on every replica, with no coordination or mapping table.
 - **`ensureSpaceAndCollection(...)`** is idempotent provisioning: upsert the
-  Space, configure the collection (`edv` or `plaintext`, optionally
-  world-readable). Safe to re-run on every connect.
+  Space, configure the collection (`edv`, `plaintext`, or `governed`, optionally
+  world-readable). Safe to re-run on every connect. A `governed` collection is
+  created with no `encryption` member, the caller declaring governance
+  afterwards through the history log's guarded create.
 
 ```ts
 import {

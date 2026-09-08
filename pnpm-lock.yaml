@@ -30,8 +30,8 @@ importers:
         specifier: ^0.11.0
         version: 0.11.0
       '@interop/vh-resource-log':
-        specifier: ^0.4.1
-        version: 0.4.1
+        specifier: ^0.4.2
+        version: 0.4.2
       '@interop/x25519-key-agreement-key':
         specifier: ^5.3.0
         version: 5.3.0
@@ -287,8 +287,8 @@ packages:
     resolution: {integrity: sha512-YF+qMjuBn+ehqqY+dKNRF6k34f0uvWh+ojzg+mC71TPtJ6B/7+Qjm8MTYPFRfoW8wekEoSB525a1uto+mMfoKQ==}
     engines: {node: '>=22.0'}
 
-  '@interop/vh-resource-log@0.4.1':
-    resolution: {integrity: sha512-wP7/x9+TOo0DF9OmKgAhSRgOnvQrJlWReL3IsxX3/9jxyFEbdIZ+CV62uoplM3VbjYPSX9VJCzd0LZtHhNOPlQ==}
+  '@interop/vh-resource-log@0.4.2':
+    resolution: {integrity: sha512-ppy+NBi23kMCPJeIEh+LmbR2U88qZaoiEZ42rxWoFBtejYteq4/5IuwgrZCcDytgqkxRSBDDHqu3hwZuPMIMig==}
     engines: {node: '>=24.0'}
 
   '@interop/x25519-key-agreement-key@5.3.0':
@@ -1325,9 +1325,9 @@ snapshots:
   '@interop/did-method-webvh@5.5.1':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
-      '@noble/curves': 2.3.0
-      '@noble/hashes': 2.3.0
-      '@scure/base': 2.3.0
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
+      '@scure/base': 2.4.0
       json-canonicalize: 3.0.0
 
   '@interop/ecdsa-multikey@2.4.0':
@@ -1447,7 +1447,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.7.1
 
-  '@interop/vh-resource-log@0.4.1':
+  '@interop/vh-resource-log@0.4.2':
     dependencies:
       '@interop/did-method-webvh': 5.5.1
       '@interop/storage-core': 0.9.1

@@ -456,9 +456,21 @@ simply not a recipient of that epoch (it never was, or it was removed and the
 epoch rotated), so a refresh cannot help.
 
 `ensureSpaceAndCollection` (`provisioning.ts`) is the idempotent setup step:
-upsert the Space, configure the collection (declaring the `{ scheme: 'edv' }`
-encryption descriptor, or plaintext with `force`), optionally grant world read.
-Re-running it against an existing account is a no-op upgrade.
+create the Space and the collection when absent, each through the guarded create
+(`replaceDescription` under `ifNoneMatch`, so a rival create wins at the server
+and is re-read rather than replaced), declaring the `{ scheme: 'edv' }`
+encryption descriptor or none for plaintext, then optionally grant world read. A
+lost race is detected by the re-read, not by the failure's status: a rival that
+already installed key epochs makes the server answer the loser with the
+descriptor rules' 400 or 409 rather than the precondition's 412. Re-running it
+against an existing account is a no-op upgrade. Its third mode,
+`encryption: 'governed'`, creates the collection with no `encryption` member and
+writes nothing to an existing one: that member is the server's to derive from
+the collection's history log, and the caller declares the governance afterwards
+through the log's guarded create. An existing collection whose descriptor is
+client-written (no `history` member) can never become governed, so that mode
+refuses it with `ValidationError` instead of leaving the caller's log create to
+fail at the server.
 
 ## Concurrency
 

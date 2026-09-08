@@ -29,7 +29,8 @@ import {
 import { delegateGrantAt } from './internal/grant.js'
 import { submitRevocation } from './internal/revoke.js'
 import type { ClientContext } from './internal/request.js'
-import { send, readData } from './internal/request.js'
+import { send, readData, readDataWithEtag } from './internal/request.js'
+import { readEtag, writeHeaders } from './internal/conditional.js'
 import {
   collectWalk,
   signedPageWalk,
@@ -63,6 +64,38 @@ import type {
   SpaceDescription,
   SpaceQuotaReport
 } from './types.js'
+
+/**
+ * The Space Description PUT body: the one inclusion rule for its writable
+ * fields, shared by `configure` and `replaceDescription`. `name` and `type`
+ * are sent only when set, since the server keeps the stored value for an
+ * omitted member; `controller` is always sent.
+ *
+ * @param fields {object}
+ * @param fields.id {string}
+ * @param [fields.name] {string}
+ * @param fields.controller {string}
+ * @param [fields.type] {string[]}
+ * @returns {{ id: string; name?: string; controller: string; type?: string[] }}
+ */
+function spaceDescriptionBody({
+  id,
+  name,
+  controller,
+  type
+}: {
+  id: string
+  name?: string
+  controller: string
+  type?: string[]
+}) {
+  return {
+    id,
+    ...(name !== undefined && { name }),
+    controller,
+    ...(type !== undefined && { type })
+  }
+}
 
 export class Space {
   readonly id: string
@@ -109,6 +142,79 @@ export class Space {
       path: this.#path,
       capability: this.#capability
     })
+  }
+
+  /**
+   * Reads the Space Description together with its `ETag` validator (the
+   * server's `conditional-writes` support). The `ETag` is the opaque validator
+   * to pass to {@link replaceDescription}'s `ifMatch` for a lost-update-safe
+   * (compare-and-swap) description write. Returns `null` if the space is
+   * missing or not visible to you (404 conflation caveat); `etag` is absent
+   * against a server that does not version the Space Description.
+   *
+   * @returns {Promise<{ description: SpaceDescription; etag?: string } | null>}
+   */
+  async describeWithEtag(): Promise<{
+    description: SpaceDescription
+    etag?: string
+  } | null> {
+    const read = await readDataWithEtag<SpaceDescription>(this.#context, {
+      path: this.#path,
+      capability: this.#capability
+    })
+    return read === null ? null : { description: read.data, etag: read.etag }
+  }
+
+  /**
+   * Writes the Space Description under an optional precondition: `ifMatch`
+   * (the `ETag` from {@link describeWithEtag}) makes it a compare-and-swap so
+   * a concurrent writer cannot be silently clobbered, and `ifNoneMatch: true`
+   * makes it a guarded create that proceeds only while no Space exists under
+   * this id. A failed precondition surfaces as `PreconditionFailedError`
+   * (412). Unlike {@link configure}, nothing is read or merged on the client:
+   * the body is sent as given, so `controller` is required (a default to the
+   * signer's DID would let a delegated writer reassign ownership by omission).
+   * The server applies the body over the stored description: an omitted
+   * `name` keeps the stored name, and `type` is accepted at creation only and
+   * immutable afterwards.
+   *
+   * Returns the new `ETag`, and on a create the description the server
+   * answered with; an update answers with no body, so `description` is absent
+   * there and the caller re-reads if it needs the merged result.
+   *
+   * @param description {object}
+   * @param [description.name] {string}
+   * @param description.controller {string}
+   * @param [description.type] {string[]}   accepted by the server at creation
+   *   only
+   * @param options {object}
+   * @param [options.ifMatch] {string}   the prior `ETag`; the write applies only
+   *   if the description is unchanged
+   * @param [options.ifNoneMatch] {boolean}   write only if the Space does not
+   *   exist yet
+   * @returns {Promise<{ description?: SpaceDescription; etag?: string }>}
+   */
+  async replaceDescription(
+    description: { name?: string; controller: string; type?: string[] },
+    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+  ): Promise<{ description?: SpaceDescription; etag?: string }> {
+    const response = await send(this.#context, {
+      path: this.#path,
+      method: 'PUT',
+      capability: this.#capability,
+      json: spaceDescriptionBody({ id: this.id, ...description }),
+      headers: writeHeaders({
+        precondition: {
+          ifMatch: options.ifMatch,
+          ifNoneMatch: options.ifNoneMatch
+        }
+      })
+    })
+    const created = dataOrNull<SpaceDescription>(response)
+    return {
+      ...(created !== null && { description: created }),
+      etag: readEtag(response)
+    }
   }
 
   /**
@@ -178,12 +284,7 @@ export class Space {
       path: this.#path,
       method: 'PUT',
       capability: this.#capability,
-      json: {
-        id: this.id,
-        name,
-        controller,
-        ...(type !== undefined ? { type } : {})
-      }
+      json: spaceDescriptionBody({ id: this.id, name, controller, type })
     })
     return {
       id: this.id,
