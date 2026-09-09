@@ -11,7 +11,7 @@
  * test. `@interop/wallet-core` runs the same fixture against this subpath.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
-import { CapabilityAgent } from '@interop/webkms-client'
+import { CapabilityAgent } from '@interop/capability-agent'
 
 import {
   BOOTSTRAP_HANDLE,

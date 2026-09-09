@@ -5,7 +5,7 @@
  * The `@interop/was-client/identity` subpath: the did:key data-identity
  * derivation (`agents.ts`, which documents the derivation itself) and the
  * one-key resolver it pairs with (`keyResolver.ts`). Kept off the core entry
- * because it pulls the webkms-client / x25519-key-agreement-key dependency
+ * because it pulls the capability-agent / x25519-key-agreement-key dependency
  * graph. `zcapClientForSigner` is a core export; import it from the package
  * root.
  */

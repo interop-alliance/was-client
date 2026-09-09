@@ -17,7 +17,7 @@
  * DocCipher encrypts and decrypts with. Everything is deterministic: a
  * returning user, on any client, decrypts the same envelopes.
  */
-import { CapabilityAgent } from '@interop/webkms-client'
+import { CapabilityAgent } from '@interop/capability-agent'
 import { ZcapClient } from '@interop/ezcap'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type {

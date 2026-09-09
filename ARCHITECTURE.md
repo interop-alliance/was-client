@@ -32,7 +32,7 @@ src/identity/*.ts   Data-identity subpath (sibling, opt-in)
   to a did:key CapabilityAgent, a ZcapClient (built through
   zcapClientForSigner), and the X25519 key agreement key an encrypted
   collection decrypts with. Imports core (zcapClient.ts) and
-  @interop/webkms-client + @interop/x25519-key-agreement-key.
+  @interop/capability-agent + @interop/x25519-key-agreement-key.
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
   EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochRoster,
@@ -67,11 +67,11 @@ package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
 client. `./edv` and `./identity` are the two that leave core: `./edv` pulls the
 encrypted-collection graph (`@interop/edv-client`, `@interop/minimal-cipher`,
 `@interop/x25519-key-agreement-key`), and `./identity` pulls
-`@interop/webkms-client` and `@interop/x25519-key-agreement-key` for its did:key
-derivation. `./log` is the one core entry with a crypto dependency of its own:
-it is the WAS binding of `@interop/vh-resource-log`'s store port, and that
-library's graph includes `@interop/did-method-webvh` and `@noble/curves` -- the
-hashing and proof kernel only, with no DID resolution. `src/codec.ts` and
+`@interop/capability-agent` and `@interop/x25519-key-agreement-key` for its
+did:key derivation. `./log` is the one core entry with a crypto dependency of
+its own: it is the WAS binding of `@interop/vh-resource-log`'s store port, and
+that library's graph includes `@interop/did-method-webvh` and `@noble/curves` --
+the hashing and proof kernel only, with no DID resolution. `src/codec.ts` and
 `src/sync/types.ts` define their seams as pure interfaces, so plaintext
 consumers never load the crypto dependency graph. The dependency between the
 `edv` and `sync` opt-in subpaths points one way: `src/edv/docCipher.ts`

@@ -20,7 +20,7 @@
  * kernel only, with no DID resolution. The edv rule above still binds it.
  *
  * `./identity` is a second non-core entry, alongside `./edv`: it pulls
- * `@interop/webkms-client` and `@interop/x25519-key-agreement-key` for its
+ * `@interop/capability-agent` and `@interop/x25519-key-agreement-key` for its
  * did:key derivation, and like `./edv` it is not walked by this test.
  */
 import fs from 'node:fs'
