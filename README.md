@@ -12,6 +12,7 @@
 - [Install](#install)
 - [Usage](#usage)
   - [Creating a client (signer + zcapClient)](#creating-a-client-signer--zcapclient)
+    - [Deriving a client from a secret or seed (`./identity`)](#deriving-a-client-from-a-secret-or-seed-identity)
   - [The handle model](#the-handle-model)
   - [Spaces](#spaces)
   - [Collections](#collections)
@@ -131,13 +132,43 @@ const was = WasClient.fromSigner({
 
 The `seed` is where a passphrase-, stored-secret-, or KMS-derived key plugs in:
 deriving the same 32-byte seed yields the same DID, and therefore access to the
-same spaces. (Apps with user accounts often derive the signer from a passphrase
-via `CapabilityAgent.fromSecret()` from `@digitalbazaar/webkms-client` -- not
-required, just a common alternative.)
+same spaces.
 
 `serverUrl` is the base for both URL building and zcap `invocationTarget`s, so
 the "server URL must equal the invocation target host:port" constraint holds by
 construction.
+
+#### Deriving a client from a secret or seed (`./identity`)
+
+Apps with user accounts usually do not hold a `did:key` signer directly -- they
+hold a passphrase, or a stored secret, and need to derive the same client from
+it every time. The `./identity` subpath does that derivation:
+
+```ts
+import { agentsFromSecret } from '@interop/was-client/identity'
+import { WasClient } from '@interop/was-client'
+
+const agents = await agentsFromSecret({ secret: 'the account secret' })
+
+const was = WasClient.fromSigner({
+  serverUrl: 'https://was.example',
+  signer: agents.keyAgent.getSigner()
+})
+```
+
+`agents.zcapClient` is the same client `fromSigner` builds, for callers that
+need it directly.
+
+The derivation is type-sensitive, so the secret is always a string: a
+passphrase, or the base64url text of random bytes, not the decoded bytes. To
+derive from an already-derived 32-byte seed instead, use
+`agentsFromSeed({ seed })`.
+
+The derivation is deterministic and permanent: the same secret, on any client,
+derives the same `did:key` and joins the same account. `agents.keyAgreementKey`
+and `agents.keyResolver` are the key-agreement key and resolver the `./edv`
+cipher takes, so a caller building an encrypted collection has both halves from
+one call.
 
 ### The delegation-proof suite
 
@@ -146,6 +177,10 @@ canonicalizes with JCS (RFC 8785), which is plain JSON, so delegating runs no
 JSON-LD canonicalization and needs no document loader to serve the suite's
 context at signing time. Invocations are unaffected -- those ride HTTP
 signatures, not proofs.
+
+`zcapClientForSigner({ signer })`, exported from the package root, is the one
+`ZcapClient` construction site that hard-codes this suite; `fromSigner()` above
+builds its client through it, and so does every `./identity` derivation.
 
 The server has to verify `eddsa-jcs-2022` for grants from this client to be
 accepted. A server that verifies both it and the older `Ed25519Signature2020`

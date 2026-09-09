@@ -13,6 +13,7 @@ Three layers with a strict downward dependency rule:
 src/*.ts            Public handle classes + contracts
   WasClient, Space, Collection, Resource
   codec.ts (interfaces only), errors.ts, types.ts, index.ts
+  zcapClient.ts (zcapClientForSigner, the one ZcapClient construction site)
         |
         v
 src/internal/*.ts   Transport and orchestration
@@ -22,6 +23,16 @@ src/internal/*.ts   Transport and orchestration
         v
 external deps       @interop/ezcap, @interop/storage-core,
                     @interop/http-client, ...
+
+src/identity/*.ts   Data-identity subpath (sibling, opt-in)
+  agents (agentsFromSecret, agentsFromSeed, agentsFromKeyAgent,
+  ProfileAgents, BOOTSTRAP_HANDLE, BOOTSTRAP_KEY_NAME), keyResolver
+  (singleKeyResolver)
+  The did:key data-identity derivation: a controller secret or 32-byte seed
+  to a did:key CapabilityAgent, a ZcapClient (built through
+  zcapClientForSigner), and the X25519 key agreement key an encrypted
+  collection decrypts with. Imports core (zcapClient.ts) and
+  @interop/webkms-client + @interop/x25519-key-agreement-key.
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
   EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochRoster,
@@ -51,20 +62,31 @@ src/log/*.ts        Resource-log subpath (sibling, opt-in)
 
 The load-bearing rule: **core does not import `src/edv/`, and neither do
 `src/sync/` or `src/log/`** (the one exception is `src/edv/constants.ts`, which
-itself reaches only core). The package ships five entry points in the
+itself reaches only core). The package ships six entry points in the
 package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
-client, and `./edv` is the only one that pulls the encrypted-collection graph
-(`@interop/edv-client`, `@interop/minimal-cipher`,
-`@interop/x25519-key-agreement-key`). `./log` is the one core entry with a
-crypto dependency of its own: it is the WAS binding of
-`@interop/vh-resource-log`'s store port, and that library's graph includes
-`@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof kernel
-only, with no DID resolution. `src/codec.ts` and `src/sync/types.ts` define
-their seams as pure interfaces, so plaintext consumers never load the crypto
-dependency graph. The dependency between the two opt-in subpaths points one way:
-`src/edv/docCipher.ts` implements the `DocCipher` interface that
-`src/sync/types.ts` declares. `test/node/import-graph.test.ts` walks the static
-imports of each core entry and fails on any reach past this rule.
+client. `./edv` and `./identity` are the two that leave core: `./edv` pulls the
+encrypted-collection graph (`@interop/edv-client`, `@interop/minimal-cipher`,
+`@interop/x25519-key-agreement-key`), and `./identity` pulls
+`@interop/webkms-client` and `@interop/x25519-key-agreement-key` for its did:key
+derivation. `./log` is the one core entry with a crypto dependency of its own:
+it is the WAS binding of `@interop/vh-resource-log`'s store port, and that
+library's graph includes `@interop/did-method-webvh` and `@noble/curves` -- the
+hashing and proof kernel only, with no DID resolution. `src/codec.ts` and
+`src/sync/types.ts` define their seams as pure interfaces, so plaintext
+consumers never load the crypto dependency graph. The dependency between the
+`edv` and `sync` opt-in subpaths points one way: `src/edv/docCipher.ts`
+implements the `DocCipher` interface that `src/sync/types.ts` declares.
+`test/node/import-graph.test.ts` walks the static imports of each core entry and
+fails on any reach past this rule; `./identity`, like `./edv`, is not walked,
+since neither is a core entry.
+
+Every `ZcapClient` this package builds -- for invocations and delegations alike
+-- comes from one construction site, `zcapClientForSigner` in
+`src/zcapClient.ts`, hard-coded to `eddsa-jcs-2022`. `WasClient.fromSigner` and
+every `./identity` derivation build their client there, so within this package
+there is exactly one place that could disagree with the suite the server
+verifies. A `ZcapClient` the caller constructs and passes to the `WasClient`
+constructor is the caller's responsibility.
 
 ### Subpaths, not packages
 

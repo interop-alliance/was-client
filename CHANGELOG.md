@@ -1,5 +1,23 @@
 # @interop/was-client Changelog
 
+## 0.55.0 - TBD
+
+### Added
+
+- `zcapClientForSigner({ signer })`, the one `ZcapClient` construction site,
+  exported from the root `.` entry. It is hard-coded to `eddsa-jcs-2022` and is
+  what `WasClient.fromSigner` now builds its client through.
+- `./identity`, a new opt-in subpath carrying the did:key data-identity
+  derivation moved here from `@interop/wallet-core/identity`, byte-for-byte:
+  `agentsFromSecret`, `agentsFromSeed`, `agentsFromKeyAgent`, `ProfileAgents`,
+  `BOOTSTRAP_HANDLE` (`'bootstrap'`) / `BOOTSTRAP_KEY_NAME` (`'boostrap-key'` --
+  the typo is load-bearing and permanent), and `singleKeyResolver`. It pulls
+  `@interop/webkms-client` (new dependency) and
+  `@interop/x25519-key-agreement-key`, so it is not a core entry. Two checks
+  tightened in the move: `agentsFromSeed` throws `ValidationError` on a seed
+  that is not 32 bytes, and `singleKeyResolver` rejects an undefined id instead
+  of matching it against an id-less key.
+
 ## 0.54.0 - 2026-09-08
 
 ### Added

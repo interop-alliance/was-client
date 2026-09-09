@@ -9,6 +9,7 @@ export { WasClient } from './WasClient.js'
 export { Space } from './Space.js'
 export { Collection } from './Collection.js'
 export { Resource } from './Resource.js'
+export { zcapClientForSigner } from './zcapClient.js'
 
 export { parseSpaceTarget } from './internal/paths.js'
 export type { ParsedSpacePath } from './internal/paths.js'

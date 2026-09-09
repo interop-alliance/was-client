@@ -32,6 +32,9 @@ importers:
       '@interop/vh-resource-log':
         specifier: ^0.5.0
         version: 0.5.0
+      '@interop/webkms-client':
+        specifier: ^14.7.5
+        version: 14.7.5
       '@interop/x25519-key-agreement-key':
         specifier: ^5.3.0
         version: 5.3.0
@@ -289,6 +292,10 @@ packages:
 
   '@interop/vh-resource-log@0.5.0':
     resolution: {integrity: sha512-lI2pLNU3Kxm8o1Y7trKBJLi8tCvpr83gMpVkhUq0RIclNtL7fQAxsI1a6zCuFY6qtGZfgwdBJK+Zzsbz3ASxxw==}
+    engines: {node: '>=24.0'}
+
+  '@interop/webkms-client@14.7.5':
+    resolution: {integrity: sha512-MrLmQH6BNBn4qWFV+Xl6nn2A2KKzFhJ6c83kgXS35B5r+LjuIHWEmf8eJQWh7w07A64hlU1Z3UUx03x8WT7EsQ==}
     engines: {node: '>=24.0'}
 
   '@interop/x25519-key-agreement-key@5.3.0':
@@ -1451,6 +1458,18 @@ snapshots:
     dependencies:
       '@interop/did-method-webvh': 5.5.1
       '@interop/storage-core': 0.9.1
+
+  '@interop/webkms-client@14.7.5':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+      '@interop/ed25519-verification-key': 8.1.0
+      '@interop/http-client': 1.0.5
+      '@interop/http-signature-zcap-invoke': 6.2.6
+      '@interop/lru-memoize': 4.0.3
+      '@scure/base': 2.4.0
+    transitivePeerDependencies:
+      - expo-crypto
+      - react-native-get-random-values
 
   '@interop/x25519-key-agreement-key@5.3.0':
     dependencies:

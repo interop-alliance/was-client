@@ -9,8 +9,7 @@
  * (`grant`), capability-rebuilding (`fromCapability`), and the signed
  * escape-hatch (`request`).
  */
-import { ZcapClient } from '@interop/ezcap'
-import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
+import type { ZcapClient } from '@interop/ezcap'
 import type { HttpResponse } from '@interop/http-client'
 import {
   collectionItemsUrl,
@@ -33,6 +32,7 @@ import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
 import { spaceIdOf, submitRevocation } from './internal/revoke.js'
 import { ValidationError } from './errors.js'
+import { zcapClientForSigner } from './zcapClient.js'
 import type { EncryptionProvider } from './codec.js'
 import { Space } from './Space.js'
 import { Collection } from './Collection.js'
@@ -106,12 +106,11 @@ export class WasClient {
     signer: ISigner
     encryption?: EncryptionProvider
   }): WasClient {
-    const zcapClient = new ZcapClient({
-      SuiteClass: EddsaJcs2022,
-      invocationSigner: signer,
-      delegationSigner: signer
+    return new WasClient({
+      serverUrl,
+      zcapClient: zcapClientForSigner({ signer }),
+      encryption
     })
-    return new WasClient({ serverUrl, zcapClient, encryption })
   }
 
   /**
