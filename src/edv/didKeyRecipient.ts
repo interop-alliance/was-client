@@ -64,13 +64,10 @@ export function x25519RecipientFromDidKey({
       `Cannot derive a recipient key: "${did}" is not an Ed25519 did:key DID.`
     )
   }
-  const keyAgreementKey =
-    X25519KeyAgreementKey2020.fromEd25519VerificationKey2020({
-      keyPair: {
-        controller: did,
-        publicKeyMultibase: did.slice(DID_KEY_PREFIX.length)
-      }
-    })
+  const keyAgreementKey = X25519KeyAgreementKey2020.fromEd25519({
+    controller: did,
+    publicKeyMultibase: did.slice(DID_KEY_PREFIX.length)
+  })
   const { id, publicKeyMultibase, type } = keyAgreementKey
   if (typeof id !== 'string' || typeof publicKeyMultibase !== 'string') {
     throw new Error(

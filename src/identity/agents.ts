@@ -123,10 +123,9 @@ export function agentsFromKeyAgent({
   // grants).
   const zcapClient = zcapClientForSigner({ signer })
 
-  const keyAgreementKey =
-    X25519KeyAgreementKey2020.fromEd25519VerificationKey2020({
-      keyPair: keyAgent.getVerificationKeyPair()
-    })
+  const keyAgreementKey = X25519KeyAgreementKey2020.fromEd25519(
+    keyAgent.getVerificationKeyPair()
+  )
   const keyResolver = singleKeyResolver({ keyAgreementKey })
 
   return {

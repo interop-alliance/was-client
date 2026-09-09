@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.56.1 - TBD
+
+### Changed
+
+- Update to latest x25519 dep.
+
 ## 0.56.0 - 2026-09-09
 
 ### Changed

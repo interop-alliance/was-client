@@ -47,9 +47,7 @@ describe('x25519RecipientFromDidKey', () => {
     const did = `did:key:${keyPair.publicKeyMultibase}`
     keyPair.controller = did
     // What the grantee computes on its own side, holding the private key.
-    const own = X25519KeyAgreementKey2020.fromEd25519VerificationKey2020({
-      keyPair
-    })
+    const own = X25519KeyAgreementKey2020.fromEd25519(keyPair)
 
     const recipient = x25519RecipientFromDidKey({ did })
 
