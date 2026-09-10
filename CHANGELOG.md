@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.57.1 - TBD
+
+### Fixed
+
+- Drop storage-core workspace overrides.
+
 ## 0.57.0 - 2026-09-10
 
 ### Added
