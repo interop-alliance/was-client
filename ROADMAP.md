@@ -328,24 +328,24 @@ FW-392.
 - labels: errors, zcap
 - touches:
   - storage-core: SC-3 minted `ProblemTypes.CAPABILITY_REVOKED` and
-    `CAPABILITY_EXPIRED` (`#capability-revoked` / `#capability-expired`, 404)
-    on 2026-09-09; unpublished, 0.13.0
+    `CAPABILITY_EXPIRED` (`#capability-revoked` / `#capability-expired`, 404) on
+    2026-09-09; unpublished, 0.13.0
   - was-teaching-server: WAS-57 emits them from the capability-invocation
     verification path
 - acceptance:
-  - [x] `ERROR_CLASS_BY_KIND` maps the two kinds to `CapabilityRevokedError`
-        and `CapabilityExpiredError`, `NotFoundError` subclasses (the wire
-        status stays 404) told apart by `name`, exported from the package root
+  - [x] `ERROR_CLASS_BY_KIND` maps the two kinds to `CapabilityRevokedError` and
+        `CapabilityExpiredError`, `NotFoundError` subclasses (the wire status
+        stays 404) told apart by `name`, exported from the package root
   - [x] A plain `not-found` 404 still maps to `NotFoundError` named
         `NotFoundError`
   - [x] Tests pin both mappings from a `problem+json` body
   - [x] CHANGELOG entry
 
 Discovered 2026-09-09 from was-teaching-server WAS-57. A holder whose grant
-stops working could not tell a revocation from an expiry or a plain denial;
-the server now names the first two by `type`, and this maps that onto the one
-signal a consumer can match across package copies. Lands with 0.57.0; stays
-open until storage-core 0.13.0 is published and the link override dropped.
+stops working could not tell a revocation from an expiry or a plain denial; the
+server now names the first two by `type`, and this maps that onto the one signal
+a consumer can match across package copies. Lands with 0.57.0; stays open until
+storage-core 0.13.0 is published and the link override dropped.
 
 ### WCL-39: Map the already-revoked problem type to its own error name
 

@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.57.2 - TBD
+
+### Fixed
+
+- Fix pnpm lock.
+
 ## 0.57.1 - 2026-09-10
 
 ### Fixed

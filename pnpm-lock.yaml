@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@interop/storage-core': link:../storage-core
-
 importers:
 
   .:
@@ -33,8 +30,8 @@ importers:
         specifier: ^7.10.1
         version: 7.10.1
       '@interop/storage-core':
-        specifier: link:../storage-core
-        version: link:../storage-core
+        specifier: ^0.13.0
+        version: 0.13.0
       '@interop/vh-resource-log':
         specifier: ^0.5.0
         version: 0.5.0
@@ -294,6 +291,14 @@ packages:
   '@interop/minimal-cipher@7.10.1':
     resolution: {integrity: sha512-/qpVpUzJQXagW1KkgXxuHjO8Nvp1C74gs+peYuf0YDktXXH9Ydw5lJtwIWmP30e50K02RTKVGJCBTWQ0uHCkhw==}
     engines: {node: '>=24.0'}
+
+  '@interop/storage-core@0.13.0':
+    resolution: {integrity: sha512-LrH09nIaLjz+Y4inQO6fgA6cSuv1CypX8p/bNRFKC0EpG36Cp2A24abEmV4jL+HW4Vi4cD0Q3yOaH7WViBkJwg==}
+    engines: {node: '>=22.0'}
+
+  '@interop/storage-core@0.9.1':
+    resolution: {integrity: sha512-YF+qMjuBn+ehqqY+dKNRF6k34f0uvWh+ojzg+mC71TPtJ6B/7+Qjm8MTYPFRfoW8wekEoSB525a1uto+mMfoKQ==}
+    engines: {node: '>=22.0'}
 
   '@interop/vh-resource-log@0.5.0':
     resolution: {integrity: sha512-lI2pLNU3Kxm8o1Y7trKBJLi8tCvpr83gMpVkhUq0RIclNtL7fQAxsI1a6zCuFY6qtGZfgwdBJK+Zzsbz3ASxxw==}
@@ -1471,10 +1476,18 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
+  '@interop/storage-core@0.13.0':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+
+  '@interop/storage-core@0.9.1':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+
   '@interop/vh-resource-log@0.5.0':
     dependencies:
       '@interop/did-method-webvh': 5.8.0
-      '@interop/storage-core': link:../storage-core
+      '@interop/storage-core': 0.9.1
 
   '@interop/x25519-key-agreement-key@5.4.0':
     dependencies:
