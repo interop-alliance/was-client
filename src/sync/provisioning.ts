@@ -24,6 +24,7 @@
  */
 import type {
   CollectionDescription,
+  IDID,
   IZcap,
   SpaceDescription
 } from '../types.js'
@@ -191,6 +192,16 @@ async function readOrCreate<T>({
  *   request rides (a delegated Space-subtree zcap, say); the root capability
  *   is invoked otherwise. A capability scoped below the bare Space URL cannot
  *   reach the Space half, so a caller holding one supplies `spaceDescription`
+ * @param [options.generator] {string}   the DID of the application the
+ *   collection is provisioned for -- controller-asserted attribution the
+ *   server persists but never verifies. It is stamped on the guarded create
+ *   only: a collection that already stands keeps whatever attribution it
+ *   carries (or none), so a later ensure naming a different application
+ *   cannot rename the creator. A caller that wants to re-attribute a standing
+ *   collection writes its Description itself
+ * @param [options.generatorOrigin] {string}   the Web origin the `generator`
+ *   DID was bound to at provisioning time (e.g. `https://app.example`).
+ *   Meaningless on its own, so it is dropped when `generator` is absent
  * @returns {Promise<void>}
  */
 export async function ensureSpaceAndCollection({
@@ -203,7 +214,9 @@ export async function ensureSpaceAndCollection({
   spaceName = DEFAULT_SPACE_NAME,
   collectionName = collectionId,
   spaceDescription,
-  capability
+  capability,
+  generator,
+  generatorOrigin
 }: {
   was: WasClient
   spaceId: string
@@ -215,6 +228,8 @@ export async function ensureSpaceAndCollection({
   collectionName?: string
   spaceDescription?: SpaceDescription
   capability?: IZcap
+  generator?: string
+  generatorOrigin?: string
 }): Promise<void> {
   const space = was.space(spaceId, { capability })
 
@@ -234,6 +249,18 @@ export async function ensureSpaceAndCollection({
 
   try {
     const collection = space.collection(collectionId)
+    // The app-attribution pair as it goes on the wire. `generatorOrigin` says
+    // which origin the `generator` DID was bound to, so it carries no meaning
+    // without one and is left off when the caller supplied only the origin.
+    // The DID arrives as a plain string (that is how callers hold DIDs) and
+    // the server is the one that validates its shape.
+    const attribution =
+      generator === undefined
+        ? {}
+        : {
+            generator: generator as IDID,
+            ...(generatorOrigin !== undefined && { generatorOrigin })
+          }
     // A `'governed'` or `'plaintext'` collection takes the descriptor-less
     // create: a governed `encryption` member is the server's to derive.
     const { value: read, created } = await readOrCreate({
@@ -241,8 +268,12 @@ export async function ensureSpaceAndCollection({
       create: () =>
         collection.replaceDescription(
           encryption === 'edv'
-            ? { name: collectionName, encryption: EDV_DESCRIPTOR }
-            : { name: collectionName },
+            ? {
+                name: collectionName,
+                encryption: EDV_DESCRIPTOR,
+                ...attribution
+              }
+            : { name: collectionName, ...attribution },
           { ifNoneMatch: true }
         ),
       unreadable:
@@ -284,13 +315,17 @@ export async function ensureSpaceAndCollection({
             }
             return { value: latest.description, etag: latest.etag }
           },
-          // Replace semantics: every writable field is carried forward.
+          // Replace semantics: every writable field is carried forward,
+          // the app attribution included -- a body omitting it would drop a
+          // stored `generator` on the server's replace.
           replace: async (next, { ifMatch }) => {
             await collection.replaceDescription(
               {
                 name: next.name,
                 backend: next.backend,
-                encryption: next.encryption
+                encryption: next.encryption,
+                generator: next.generator,
+                generatorOrigin: next.generatorOrigin
               },
               { ifMatch }
             )

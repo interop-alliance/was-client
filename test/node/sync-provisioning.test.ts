@@ -31,6 +31,8 @@ interface CollectionDesc {
     epochs?: { id: string }[]
     history?: { method: string; resource: string }
   }
+  generator?: string
+  generatorOrigin?: string
 }
 
 class FakeCollection {
@@ -737,6 +739,175 @@ describe('ensureSpaceAndCollection', () => {
         'Failed to configure collection "private-credentials" in space "space-abc"'
       ),
       cause
+    })
+  })
+})
+
+describe('ensureSpaceAndCollection app attribution', () => {
+  const APP = 'did:key:zApp'
+  const ORIGIN = 'https://app.example'
+
+  it('stamps the generator pair on the guarded create', async () => {
+    const space = new FakeSpace()
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      generator: APP,
+      generatorOrigin: ORIGIN
+    })
+
+    expect(space.collectionObj.replaceCalls).toEqual([
+      {
+        fields: {
+          name: COLL,
+          encryption: EDV,
+          generator: APP,
+          generatorOrigin: ORIGIN
+        },
+        ifNoneMatch: true
+      }
+    ])
+  })
+
+  it('stamps the generator pair on a descriptor-less create', async () => {
+    const space = new FakeSpace()
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      encryption: 'governed',
+      generator: APP,
+      generatorOrigin: ORIGIN
+    })
+
+    expect(space.collectionObj.replaceCalls).toEqual([
+      {
+        fields: { name: COLL, generator: APP, generatorOrigin: ORIGIN },
+        ifNoneMatch: true
+      }
+    ])
+  })
+
+  it('does not send generatorOrigin without a generator', async () => {
+    const space = new FakeSpace()
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      generatorOrigin: ORIGIN
+    })
+
+    // The origin says which origin the DID was bound to, so it carries no
+    // meaning alone: the create body is the unattributed one.
+    expect(space.collectionObj.replaceCalls).toEqual([
+      { fields: { name: COLL, encryption: EDV }, ifNoneMatch: true }
+    ])
+  })
+
+  it('writes nothing when the standing collection already carries the pair', async () => {
+    const collection = new FakeCollection({
+      current: {
+        name: COLL,
+        encryption: EDV,
+        generator: APP,
+        generatorOrigin: ORIGIN
+      }
+    })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      generator: APP,
+      generatorOrigin: ORIGIN
+    })
+
+    expect(collection.replaceCalls).toEqual([])
+    expect(collection.describeCalls).toBe(1)
+  })
+
+  it("leaves a standing attributed collection's pair unchanged when a different generator is supplied", async () => {
+    // Attribution is stamped on the create only: the creator of a standing
+    // collection is never renamed by a later ensure.
+    const collection = new FakeCollection({
+      current: {
+        name: COLL,
+        encryption: EDV,
+        generator: APP,
+        generatorOrigin: ORIGIN
+      }
+    })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      generator: 'did:key:zOtherApp',
+      generatorOrigin: 'https://other.example'
+    })
+
+    expect(collection.replaceCalls).toEqual([])
+    expect(collection.current()).toMatchObject({
+      generator: APP,
+      generatorOrigin: ORIGIN
+    })
+  })
+
+  it('does not backfill the pair onto a standing unattributed collection', async () => {
+    const collection = new FakeCollection({
+      current: { name: COLL, encryption: EDV }
+    })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      generator: APP,
+      generatorOrigin: ORIGIN
+    })
+
+    expect(collection.replaceCalls).toEqual([])
+  })
+
+  it('carries a stored pair through the late encryption declaration', async () => {
+    // Replace semantics: a body that omitted the attribution would drop it.
+    const collection = new FakeCollection({
+      current: { name: COLL, generator: APP, generatorOrigin: ORIGIN }
+    })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL
+    })
+
+    expect(collection.replaceCalls).toHaveLength(1)
+    expect(collection.current()).toEqual({
+      name: COLL,
+      backend: undefined,
+      encryption: EDV,
+      generator: APP,
+      generatorOrigin: ORIGIN
     })
   })
 })

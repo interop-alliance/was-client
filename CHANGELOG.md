@@ -1,5 +1,20 @@
 # @interop/was-client Changelog
 
+## 0.59.0 - TBD
+
+### Added
+
+- `generator` and `generatorOrigin` options on `ensureSpaceAndCollection`. The
+  controller-asserted app attribution is stamped on the guarded create only; a
+  collection that already stands keeps its attribution. `generatorOrigin` is
+  dropped when `generator` is absent.
+
+### Fixed
+
+- The late encryption declaration in `ensureSpaceAndCollection` now carries a
+  stored `generator` / `generatorOrigin` forward, so a replace-semantics server
+  no longer drops the attribution.
+
 ## 0.58.0 - 2026-09-10
 
 ### Added
