@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.59.1 - TBD
+
+### Changed
+
+- Update to latest ed25519 key dep (`didKeySigner()`).
+
 ## 0.59.0 - 2026-09-10
 
 ### Added
