@@ -2,3 +2,6 @@ allowBuilds:
   core-js: false
 minimumReleaseAgeExclude:
   - '@interop/*'
+# TEMP: local link until @interop/storage-core 0.13.0 is published.
+overrides:
+  '@interop/storage-core': link:../storage-core

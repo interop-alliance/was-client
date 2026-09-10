@@ -58,6 +58,27 @@ export class NotFoundError extends WasError {
 }
 
 /**
+ * The invocation was refused because a capability in its delegation chain
+ * has been revoked (`capability-revoked`). Still a 404 on the wire, and still
+ * a `NotFoundError`, since the server keeps the merged not-found status for
+ * every denial; the `name` is the one signal a consumer matches across
+ * package copies. The server sends it only to a caller whose request
+ * signature and chain verified, so it always means "your grant was revoked".
+ */
+export class CapabilityRevokedError extends NotFoundError {
+  override name = 'CapabilityRevokedError'
+}
+
+/**
+ * The invocation was refused because the invoked capability, or one in its
+ * delegation chain, has expired (`capability-expired`). Same terms as
+ * `CapabilityRevokedError`: a 404 and a `NotFoundError`, told apart by name.
+ */
+export class CapabilityExpiredError extends NotFoundError {
+  override name = 'CapabilityExpiredError'
+}
+
+/**
  * The request was malformed or rejected as invalid (HTTP 400).
  */
 export class ValidationError extends WasError {
@@ -338,6 +359,8 @@ function problemFragment(problemType: string): string {
  */
 const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
   [problemFragment(ProblemTypes.NOT_FOUND)]: NotFoundError,
+  [problemFragment(ProblemTypes.CAPABILITY_REVOKED)]: CapabilityRevokedError,
+  [problemFragment(ProblemTypes.CAPABILITY_EXPIRED)]: CapabilityExpiredError,
   [problemFragment(ProblemTypes.INVALID_ID)]: ValidationError,
   [problemFragment(ProblemTypes.INVALID_REQUEST_BODY)]: ValidationError,
   [problemFragment(ProblemTypes.MISSING_CONTENT_TYPE)]: ValidationError,

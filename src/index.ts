@@ -19,6 +19,8 @@ export type { WritePrecondition } from './internal/conditional.js'
 export {
   WasError,
   NotFoundError,
+  CapabilityRevokedError,
+  CapabilityExpiredError,
   ValidationError,
   AuthRequiredError,
   NotImplementedError,

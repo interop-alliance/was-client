@@ -1,5 +1,20 @@
 # @interop/was-client Changelog
 
+## 0.57.0 - TBD
+
+### Added
+
+- `CapabilityRevokedError` and `CapabilityExpiredError`, `NotFoundError`
+  subclasses `mapError` produces for the server's `capability-revoked` and
+  `capability-expired` problem types. Both stay 404 on the wire and still match
+  a `NotFoundError` catch; the `name` tells a holder that its grant was revoked
+  or has expired rather than left ambiguous. Requires `@interop/storage-core`
+  0.13.0.
+
+### Changed
+
+- `@interop/storage-core` dependency range raised to `^0.13.0`.
+
 ## 0.56.1 - 2026-09-09
 
 ### Changed

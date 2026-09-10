@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 39
+nextAvailableId: 41
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -320,6 +320,65 @@ than a default.
 
 Siblings, each owning its own repo's half: wallet-core WC-152, freewallet
 FW-392.
+
+### WCL-40: Map the typed capability denial reasons to their own error names
+
+- status: in-progress
+- priority: low
+- labels: errors, zcap
+- touches:
+  - storage-core: SC-3 minted `ProblemTypes.CAPABILITY_REVOKED` and
+    `CAPABILITY_EXPIRED` (`#capability-revoked` / `#capability-expired`, 404)
+    on 2026-09-09; unpublished, 0.13.0
+  - was-teaching-server: WAS-57 emits them from the capability-invocation
+    verification path
+- acceptance:
+  - [x] `ERROR_CLASS_BY_KIND` maps the two kinds to `CapabilityRevokedError`
+        and `CapabilityExpiredError`, `NotFoundError` subclasses (the wire
+        status stays 404) told apart by `name`, exported from the package root
+  - [x] A plain `not-found` 404 still maps to `NotFoundError` named
+        `NotFoundError`
+  - [x] Tests pin both mappings from a `problem+json` body
+  - [x] CHANGELOG entry
+
+Discovered 2026-09-09 from was-teaching-server WAS-57. A holder whose grant
+stops working could not tell a revocation from an expiry or a plain denial;
+the server now names the first two by `type`, and this maps that onto the one
+signal a consumer can match across package copies. Lands with 0.57.0; stays
+open until storage-core 0.13.0 is published and the link override dropped.
+
+### WCL-39: Map the already-revoked problem type to its own error name
+
+- status: todo
+- priority: medium
+- labels: errors, revocation
+- blocked-by: storage-core SC-2
+- touches:
+  - storage-core: SC-2 minted `ProblemTypes.CAPABILITY_ALREADY_REVOKED`
+    (`#capability-already-revoked`, 400) on 2026-09-09; unpublished, 0.12.0
+  - was-teaching-server: WAS-91 emits it on the revocation route
+  - wallet-core: WC-135 dispatches on the new `err.name`
+- acceptance:
+  - [ ] `mapError`'s kind table (`src/errors.ts`, `ERROR_CLASS_BY_KIND`) maps
+        `ProblemTypes.CAPABILITY_ALREADY_REVOKED` to a new `WasError` subclass
+        `AlreadyRevokedError` (`name` `'AlreadyRevokedError'`, the wire-level
+        contract wallet-core dispatches on; settled 2026-09-09), exported from
+        the package root beside `ValidationError`
+  - [ ] Every other revocation-route 400, and the two client-side refusals in
+        `src/internal/revoke.ts` (root capability, target not on this server),
+        still surface as `ValidationError`
+  - [ ] The "`revoke()` is not idempotent, deliberately" decision below is
+        amended: the client still swallows nothing, but a caller can now make
+        revoking twice a no-op by catching the new name alone rather than all of
+        `ValidationError`
+  - [ ] Tests pin the mapping from a `problem+json` body carrying the new type,
+        and pin that a body carrying `INVALID_REQUEST_BODY` on the same route
+        still maps to `ValidationError`
+
+Discovered 2026-09-09 from wallet-core WC-135. The mapper keeps `status`,
+`type`, `title`, and `details` on the error, so the information already crosses
+the wire; only the class name is lossy, and `err.name` is the one signal a
+consumer can match across package copies.
 
 ## Recorded decisions (kept so they are not re-litigated)
 

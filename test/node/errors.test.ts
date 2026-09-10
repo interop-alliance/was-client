@@ -11,6 +11,8 @@ import { describe, it, expect } from 'vitest'
 import {
   WasError,
   NotFoundError,
+  CapabilityRevokedError,
+  CapabilityExpiredError,
   ValidationError,
   AuthRequiredError,
   NotImplementedError,
@@ -136,6 +138,34 @@ describe('mapError', () => {
         data: { type: typeUri('quota-exceeded') }
       })
       expect(mapped.type).toBe(typeUri('quota-exceeded'))
+    })
+
+    it('dispatches capability-revoked to CapabilityRevokedError, a NotFoundError by name', () => {
+      const mapped = mapError({
+        status: 404,
+        data: { type: typeUri('capability-revoked') }
+      })
+      expect(mapped).toBeInstanceOf(CapabilityRevokedError)
+      expect(mapped).toBeInstanceOf(NotFoundError)
+      expect(mapped.name).toBe('CapabilityRevokedError')
+    })
+
+    it('dispatches capability-expired to CapabilityExpiredError, a NotFoundError by name', () => {
+      const mapped = mapError({
+        status: 404,
+        data: { type: typeUri('capability-expired') }
+      })
+      expect(mapped).toBeInstanceOf(CapabilityExpiredError)
+      expect(mapped).toBeInstanceOf(NotFoundError)
+      expect(mapped.name).toBe('CapabilityExpiredError')
+    })
+
+    it('keeps a plain not-found 404 a NotFoundError named NotFoundError', () => {
+      const mapped = mapError({
+        status: 404,
+        data: { type: typeUri('not-found') }
+      })
+      expect(mapped.name).toBe('NotFoundError')
     })
 
     it('falls back to status when the type kind is unrecognized', () => {
