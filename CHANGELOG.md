@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.58.0 - TBD
+
+### Added
+
+- `AlreadyRevokedError`, a `ValidationError` subclass `mapError` produces for
+  the server's `capability-already-revoked` problem type, so a caller can make
+  revoking twice a no-op by catching that name alone. Every other
+  revocation-route 400 still surfaces as `ValidationError`.
+
 ## 0.57.2 - 2026-09-10
 
 ### Fixed

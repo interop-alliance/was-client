@@ -1464,3 +1464,61 @@ divergence in the other members as well, surfacing a rename only inside a push
 or pull cycle. Two consumers carrying the same workaround was the signal the fix
 belonged here; with the type complete, a divergence is a compile error at the
 seam.
+
+### WCL-39: Map the already-revoked problem type to its own error name
+
+- status: done 2026-09-10
+- priority: medium
+- labels: errors, revocation
+- touches:
+  - storage-core: SC-2 minted `ProblemTypes.CAPABILITY_ALREADY_REVOKED`
+    (`#capability-already-revoked`, 400) on 2026-09-09; published in 0.13.0
+  - was-teaching-server: WAS-91 emits it on the revocation route
+  - wallet-core: WC-135 dispatches on the new `err.name`
+- acceptance:
+  - [x] `mapError`'s kind table (`src/errors.ts`, `ERROR_CLASS_BY_KIND`) maps
+        `ProblemTypes.CAPABILITY_ALREADY_REVOKED` to a new `WasError` subclass
+        `AlreadyRevokedError` (`name` `'AlreadyRevokedError'`, the wire-level
+        contract wallet-core dispatches on; settled 2026-09-09), exported from
+        the package root beside `ValidationError`
+  - [x] Every other revocation-route 400, and the two client-side refusals in
+        `src/internal/revoke.ts` (root capability, target not on this server),
+        still surface as `ValidationError`
+  - [x] The "`revoke()` is not idempotent, deliberately" decision below is
+        amended: the client still swallows nothing, but a caller can now make
+        revoking twice a no-op by catching the new name alone rather than all of
+        `ValidationError`
+  - [x] Tests pin the mapping from a `problem+json` body carrying the new type,
+        and pin that a body carrying `INVALID_REQUEST_BODY` on the same route
+        still maps to `ValidationError`
+
+Discovered 2026-09-09 from wallet-core WC-135. The mapper keeps `status`,
+`type`, `title`, and `details` on the error, so the information already crosses
+the wire; only the class name is lossy, and `err.name` is the one signal a
+consumer can match across package copies.
+
+### WCL-40: Map the typed capability denial reasons to their own error names
+
+- status: done 2026-09-10
+- priority: low
+- labels: errors, zcap
+- touches:
+  - storage-core: SC-3 minted `ProblemTypes.CAPABILITY_REVOKED` and
+    `CAPABILITY_EXPIRED` (`#capability-revoked` / `#capability-expired`, 404) on
+    2026-09-09; published in 0.13.0
+  - was-teaching-server: WAS-57 emits them from the capability-invocation
+    verification path
+- acceptance:
+  - [x] `ERROR_CLASS_BY_KIND` maps the two kinds to `CapabilityRevokedError` and
+        `CapabilityExpiredError`, `NotFoundError` subclasses (the wire status
+        stays 404) told apart by `name`, exported from the package root
+  - [x] A plain `not-found` 404 still maps to `NotFoundError` named
+        `NotFoundError`
+  - [x] Tests pin both mappings from a `problem+json` body
+  - [x] CHANGELOG entry
+
+Discovered 2026-09-09 from was-teaching-server WAS-57. A holder whose grant
+stops working could not tell a revocation from an expiry or a plain denial; the
+server now names the first two by `type`, and this maps that onto the one signal
+a consumer can match across package copies. Lands with 0.57.0; stays open until
+storage-core 0.13.0 is published and the link override dropped.

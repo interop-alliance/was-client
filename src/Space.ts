@@ -635,11 +635,11 @@ export class Space {
    * already fetched.
    *
    * **Not idempotent.** Revoking an already-revoked capability throws
-   * `ValidationError` (the server's 400), because its chain now contains a
-   * revoked link. The server reports that with the same problem type it uses for
-   * a tampered, expired, or foreign-rooted capability, so this method cannot
-   * distinguish them and does not swallow any of them. Catch `ValidationError`
-   * if you want revoking twice to be a no-op.
+   * `AlreadyRevokedError` (the server's 400, a `ValidationError` subclass
+   * named for the `capability-already-revoked` problem type). A tampered,
+   * expired, or foreign-rooted capability stays a plain `ValidationError`.
+   * This method swallows none of them; catch `AlreadyRevokedError` if you want
+   * revoking twice to be a no-op.
    *
    * @param zcap {IDelegatedZcap}   the delegated capability to revoke
    * @returns {Promise<void>}

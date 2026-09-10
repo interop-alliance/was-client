@@ -450,10 +450,11 @@ Three properties are easy to get wrong:
   the revoked zcap's read still succeeds while its write does not.
 - **It is prospective, and not idempotent.** A revoked reader of an encrypted
   Collection keeps the keys for ciphertext it already fetched. And revoking an
-  already-revoked capability throws `ValidationError`: the server reports it
-  with the same 400 it uses for a tampered or expired capability, so the client
-  cannot tell them apart and does not swallow any of them. Catch
-  `ValidationError` if you want revoking twice to be a no-op.
+  already-revoked capability throws `AlreadyRevokedError`, a `ValidationError`
+  subclass named for the server's `capability-already-revoked` problem type. A
+  tampered or expired capability stays a plain `ValidationError`, and the client
+  swallows none of them. Catch `AlreadyRevokedError` if you want revoking twice
+  to be a no-op.
 
 ### Public sharing and access-control policies
 

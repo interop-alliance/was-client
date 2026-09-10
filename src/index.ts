@@ -22,6 +22,7 @@ export {
   CapabilityRevokedError,
   CapabilityExpiredError,
   ValidationError,
+  AlreadyRevokedError,
   AuthRequiredError,
   NotImplementedError,
   NotSupportedError,

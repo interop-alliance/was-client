@@ -13,6 +13,7 @@ import {
   NotFoundError,
   CapabilityRevokedError,
   CapabilityExpiredError,
+  AlreadyRevokedError,
   ValidationError,
   AuthRequiredError,
   NotImplementedError,
@@ -158,6 +159,25 @@ describe('mapError', () => {
       expect(mapped).toBeInstanceOf(CapabilityExpiredError)
       expect(mapped).toBeInstanceOf(NotFoundError)
       expect(mapped.name).toBe('CapabilityExpiredError')
+    })
+
+    it('dispatches capability-already-revoked to AlreadyRevokedError, a ValidationError by name', () => {
+      const mapped = mapError({
+        status: 400,
+        data: { type: typeUri('capability-already-revoked') }
+      })
+      expect(mapped).toBeInstanceOf(AlreadyRevokedError)
+      expect(mapped).toBeInstanceOf(ValidationError)
+      expect(mapped.name).toBe('AlreadyRevokedError')
+    })
+
+    it('keeps an invalid-request-body 400 a ValidationError named ValidationError', () => {
+      const mapped = mapError({
+        status: 400,
+        data: { type: typeUri('invalid-request-body') }
+      })
+      expect(mapped).toBeInstanceOf(ValidationError)
+      expect(mapped.name).toBe('ValidationError')
     })
 
     it('keeps a plain not-found 404 a NotFoundError named NotFoundError', () => {

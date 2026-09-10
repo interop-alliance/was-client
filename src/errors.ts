@@ -86,6 +86,19 @@ export class ValidationError extends WasError {
 }
 
 /**
+ * A revocation was refused because the capability is already revoked
+ * (`capability-already-revoked`). Still a 400 on the wire, and still a
+ * `ValidationError`, so a caller that treats every revocation-route 400 as a
+ * refusal keeps doing so; the `name` is the one signal a consumer matches
+ * across package copies. Catch this name alone to make revoking twice a
+ * no-op without also swallowing a tampered, expired, or foreign-rooted
+ * capability, which stay plain `ValidationError`s.
+ */
+export class AlreadyRevokedError extends ValidationError {
+  override name = 'AlreadyRevokedError'
+}
+
+/**
  * Authorization headers were missing or could not be verified (HTTP 401), or
  * the caller is authenticated but not permitted to act on the target (HTTP
  * 403).
@@ -367,6 +380,8 @@ const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
   [problemFragment(ProblemTypes.INVALID_AUTHORIZATION_HEADER)]: ValidationError,
   [problemFragment(ProblemTypes.CONTROLLER_MISMATCH)]: ValidationError,
   [problemFragment(ProblemTypes.INVALID_IMPORT)]: ValidationError,
+  [problemFragment(ProblemTypes.CAPABILITY_ALREADY_REVOKED)]:
+    AlreadyRevokedError,
   [problemFragment(ProblemTypes.MISSING_AUTHORIZATION)]: AuthRequiredError,
   [problemFragment(ProblemTypes.RESERVED_ID)]: ConflictError,
   [problemFragment(ProblemTypes.ID_CONFLICT)]: ConflictError,
