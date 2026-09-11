@@ -296,6 +296,17 @@ describe('changes feed shape guards', () => {
     )
   })
 
+  it('refuses a page with a non-object entry in its documents array', async () => {
+    // `[null]` passes the `Array.isArray` guard, so the per-entry check is
+    // what keeps this a `WasServerError` rather than a raw `TypeError`.
+    const client = clientWithStub(() =>
+      jsonResponse({ data: { documents: [null], checkpoint: null } })
+    )
+    await expect(client.space('s').collection('c').changes()).rejects.toThrow(
+      WasServerError
+    )
+  })
+
   it('treats an omitted checkpoint as the end of the walk', async () => {
     // A terminal page that omits `checkpoint` entirely rather than sending an
     // explicit `null` must end the walk, not throw a TypeError.
