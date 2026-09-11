@@ -308,7 +308,20 @@ export function createdResource(response: HttpResponse | null): {
         .pop()
     : undefined
   if (segment) {
-    return { id: decodeURIComponent(segment), location }
+    // A stray or malformed percent escape in the segment (`100%discount`,
+    // `%zz`) makes `decodeURIComponent` throw a raw `URIError`. That is a
+    // malformed create response like any other, so it leaves here as the
+    // `WasServerError` this function exists to produce.
+    try {
+      return { id: decodeURIComponent(segment), location }
+    } catch (err) {
+      throw new WasServerError(
+        `Create response carried a malformed resource id: the \`Location\` ` +
+          `header "${location}" ends in a segment ("${segment}") that is not ` +
+          'valid percent-encoding.',
+        { cause: err }
+      )
+    }
   }
   throw new WasServerError(
     'Create response carried no resource id: the body has no `id` and there ' +

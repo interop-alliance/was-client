@@ -297,7 +297,7 @@ export async function upsertResource(
     // pre-read just observed, so a lost race fails here rather than being
     // encoded into a sequence advance the server would then reject.
     assertPreconditionAgainstPreRead({ path, current, precondition })
-    if (current === null && !(await features.has('conditional-writes'))) {
+    if (current === null && !(await conditionalWrites({ path, features }))) {
       // The write would be encoded as a fresh insert guarded only by
       // `If-None-Match: *`, which this backend ignores -- so if the document in
       // fact exists but is unreadable with this capability (the masked-404
@@ -374,5 +374,43 @@ export async function upsertResource(
       )
     }
     throw err
+  }
+}
+
+/**
+ * Whether the backend advertises `conditional-writes`, with a probe failure
+ * reported as the fail-closed refusal it leads to rather than raw.
+ *
+ * The probe rethrows transient failures on purpose (a network error, a `401`,
+ * a `429`, a non-`501` `5xx`), so a blip on `GET .../backend` would otherwise
+ * surface on a first write as an unrelated `WasServerError` or
+ * `AuthRequiredError`. The write is refused either way -- an unprobed backend
+ * is one whose guard cannot be relied on -- but the refusal says which
+ * question went unanswered, and keeps the probe's own error as its `cause`.
+ *
+ * @param options {object}
+ * @param options.path {string}   the resource path being written
+ * @param options.features {FeatureProbe}
+ * @returns {Promise<boolean>}
+ */
+async function conditionalWrites({
+  path,
+  features
+}: {
+  path: string
+  features: FeatureProbe
+}): Promise<boolean> {
+  try {
+    return await features.has('conditional-writes')
+  } catch (err) {
+    throw new ValidationError(
+      `Cannot create the document at "${path}": no current document is ` +
+        "readable there, and the collection's backend descriptor could not " +
+        'be read, so whether the backend enforces the `If-None-Match: *` ' +
+        'guard is unknown. Retry once the backend descriptor is reachable, ' +
+        'use a capability that can read it, or add() to mint a fresh ' +
+        'document id.',
+      { cause: err }
+    )
   }
 }

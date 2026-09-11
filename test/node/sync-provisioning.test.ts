@@ -54,6 +54,10 @@ class FakeCollection {
       alreadyPublic?: boolean
       failReplace?: Error
       failDescribe?: Error
+      // With `failDescribeAfter`, `failDescribe` applies only from that call
+      // number on, so a test can let the first read succeed and fail the
+      // confirming re-read.
+      failDescribeAfter?: number
       collideOnce?: (state: { current: CollectionDesc | null }) => void
     } = {}
   ) {
@@ -64,7 +68,10 @@ class FakeCollection {
     etag: string
   } | null> => {
     this.describeCalls += 1
-    if (this.opts.failDescribe) {
+    if (
+      this.opts.failDescribe &&
+      this.describeCalls > (this.opts.failDescribeAfter ?? 0)
+    ) {
       throw this.opts.failDescribe
     }
     return this.state.current === null
@@ -331,6 +338,31 @@ describe('ensureSpaceAndCollection', () => {
     // its type.
     const cause = new ConflictError('backend unknown', { status: 409 })
     const collection = new FakeCollection({ failReplace: cause })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    await expect(
+      ensureSpaceAndCollection({
+        was: new FakeWas(space).asClient(),
+        spaceId: SPACE,
+        controllerDid: DID,
+        collectionId: COLL
+      })
+    ).rejects.toBe(cause)
+    expect(collection.describeCalls).toBe(2)
+  })
+
+  it('keeps the create failure when the confirming re-read fails too', async () => {
+    // Both halves failing is usually one outage. The create's own error is
+    // the actionable one and the typed error this path exists to preserve, so
+    // it must win over the re-read's generic failure.
+    const cause = new ConflictError('encryption-immutable', { status: 409 })
+    const collection = new FakeCollection({
+      failReplace: cause,
+      failDescribe: new Error('connection reset'),
+      failDescribeAfter: 1
+    })
     const space = new FakeSpace({
       current: { name: 'Wallet Space' },
       collection

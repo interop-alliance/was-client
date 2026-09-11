@@ -13,7 +13,13 @@ import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 
-import { WasClient, ValidationError } from '../../src/index.js'
+import {
+  WasClient,
+  ValidationError,
+  WasServerError,
+  EncryptionError,
+  EncryptOnlyCipherError
+} from '../../src/index.js'
 import type { CollectionEncryption } from '../../src/index.js'
 import { Space } from '../../src/Space.js'
 import { Collection } from '../../src/Collection.js'
@@ -24,6 +30,10 @@ import {
   epochKeyIdFor
 } from '../../src/edv/epochCrypto.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
+import { DescriptorRefreshPolicy } from '../../src/edv/refresh.js'
+import { compareAndSwap } from '../../src/internal/cas.js'
+import { createdResource } from '../../src/internal/content.js'
+import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
 
 /**
  * Builds a `WasClient` over a stub `ZcapClient` (no signer, no I/O -- only the
@@ -151,14 +161,15 @@ describe('resolveEpochKeys write-epoch selection', () => {
     expect(resolved!.readKeys.length).toBe(2)
   })
 
-  it('falls back deterministically to the last named epoch when not in currentEpoch', async () => {
+  it('writes to currentEpoch through a stand-in when rotated off it', async () => {
     const bob = await makeReader()
     const inX = await epochEntryFor([bob])
     const inY = await epochEntryFor([bob])
     const notInZ = await epochEntryFor([await makeReader()])
-    // Bob is a recipient of X and Y (in that descriptor order) but not of the
-    // current epoch Z: the fallback picks the LAST epoch in the descriptor's
-    // order that names Bob -- Y -- deterministically.
+    // Bob is a recipient of X and Y but not of the current epoch Z. He must
+    // NOT fall back to Y: writing under an epoch he was rotated off of would
+    // seal fresh plaintext to a key every removed recipient of Y still holds.
+    // The write epoch stays Z, sealed through a public-only stand-in.
     const encryption = {
       scheme: 'edv',
       epochs: [inX, inY, notInZ],
@@ -168,8 +179,130 @@ describe('resolveEpochKeys write-epoch selection', () => {
       encryption,
       keyAgreementKey: bob.kak
     })
-    expect(resolved!.writeEpoch).toBe(inY.id)
-    expect(resolved!.writeKey.id).toBe(epochKeyIdFor(inY.id))
-    expect(resolved!.readKeys.length).toBe(2)
+    expect(resolved!.writeEpoch).toBe(notInZ.id)
+    expect(resolved!.writeKey.id).toBe(epochKeyIdFor(notInZ.id))
+    expect(resolved!.namedInWriteEpoch).toBe(false)
+    // The stand-in seals to Z and unseals nothing under it.
+    await expect(
+      resolved!.writeKey.deriveSecret({
+        publicKey: { type: 'X25519KeyAgreementKey2020' }
+      } as never)
+    ).rejects.toThrow(EncryptOnlyCipherError)
+    // Bob's history stays readable: X and Y, and never Z.
+    expect(resolved!.readKeys.map(key => key.id).sort()).toEqual(
+      [epochKeyIdFor(inX.id), epochKeyIdFor(inY.id)].sort()
+    )
+  })
+
+  it('refuses a currentEpoch the roster does not list', async () => {
+    const alice = await makeReader()
+    const listed = await epochEntryFor([alice])
+    const encryption = {
+      scheme: 'edv',
+      epochs: [listed],
+      currentEpoch: 'urn:epoch:never-listed'
+    } as unknown as CollectionEncryption
+    await expect(
+      resolveEpochKeys({ encryption, keyAgreementKey: alice.kak })
+    ).rejects.toThrow(EncryptionError)
+  })
+})
+
+describe('compareAndSwap on an absent store', () => {
+  it('creates the seed even when mutate reports nothing to change', async () => {
+    // `null` from `mutate` means "already in the desired state". On the
+    // replace path that value is stored; on the absent path nothing is, so
+    // returning the seed unwritten would resolve a value that exists nowhere.
+    const stored: string[] = []
+    const written = await compareAndSwap<string>({
+      store: {
+        async read() {
+          return null
+        },
+        async create(value: string) {
+          stored.push(value)
+        },
+        async replace() {
+          throw new Error('not reached')
+        }
+      },
+      mutate: () => null,
+      operation: 'Seed',
+      onAbsent: () => 'seed'
+    })
+    expect(written).toBe('seed')
+    expect(stored).toEqual(['seed'])
+  })
+})
+
+describe('createdResource with a malformed Location', () => {
+  it('reports a bad percent escape as a server fault, not a URIError', () => {
+    const response = {
+      headers: new Headers({ location: '/space/s/c/bad%zz' }),
+      url: 'https://was.example/space/s/c'
+    } as unknown as Parameters<typeof createdResource>[0]
+    let thrown: unknown
+    try {
+      createdResource(response)
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(WasServerError)
+    expect((thrown as Error).message).toContain('percent-encoding')
+    expect((thrown as Error).cause).toBeInstanceOf(URIError)
+  })
+})
+
+describe('DescriptorRefreshPolicy', () => {
+  it('does not spend the refresh when the refresh itself fails', async () => {
+    let attempts = 0
+    const policy = new DescriptorRefreshPolicy({
+      refresh: async () => {
+        attempts += 1
+        if (attempts === 1) {
+          throw new Error('transient descriptor re-read failure')
+        }
+      }
+    })
+    const read = async (): Promise<{ value: string; unknownEpoch: boolean }> =>
+      Promise.resolve({ value: 'rows', unknownEpoch: true })
+    // The failed refresh returns the read that DID succeed, and leaves the
+    // collection's one refresh unspent.
+    await expect(
+      policy.readWithRefresh({ collectionId: 'c', read })
+    ).resolves.toBe('rows')
+    expect(policy.shouldRefresh({ collectionId: 'c' })).toBe(true)
+    // The next unknown-epoch read retries it, and that one sticks.
+    await policy.readWithRefresh({ collectionId: 'c', read })
+    expect(attempts).toBe(2)
+    expect(policy.shouldRefresh({ collectionId: 'c' })).toBe(false)
+  })
+})
+
+describe('listSpaces against a body that is not a listing', () => {
+  it('reports a server fault rather than destructuring null', async () => {
+    const client = clientWithStub(() => jsonResponse({ status: 200 }))
+    await expect(client.listSpaces()).rejects.toThrow(WasServerError)
+  })
+})
+
+describe('changes feed shape guards', () => {
+  it('refuses a page whose documents member is not an array', async () => {
+    const client = clientWithStub(() =>
+      jsonResponse({ data: { checkpoint: null } })
+    )
+    await expect(client.space('s').collection('c').changes()).rejects.toThrow(
+      WasServerError
+    )
+  })
+
+  it('treats an omitted checkpoint as the end of the walk', async () => {
+    // A terminal page that omits `checkpoint` entirely rather than sending an
+    // explicit `null` must end the walk, not throw a TypeError.
+    const client = clientWithStub(() =>
+      jsonResponse({ data: { documents: [{ id: 'a', data: { x: 1 } }] } })
+    )
+    const documents = await client.space('s').collection('c').documents()
+    expect(documents?.map(doc => doc.id)).toEqual(['a'])
   })
 })

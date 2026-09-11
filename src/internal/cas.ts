@@ -132,10 +132,13 @@ export async function compareAndSwap<T>({
             'does not support creating one.'
         )
       }
-      const created = await mutate(seed)
-      if (created === null) {
-        return seed
-      }
+      // `null` from `mutate` means "the value already reflects the desired
+      // state, nothing to write". On the replace path that is true of a value
+      // the store already holds; here nothing is stored yet, so the seed
+      // itself still has to be created -- returning it unwritten would resolve
+      // a value that exists nowhere, and the next `read()` would still be
+      // `null`.
+      const created = (await mutate(seed)) ?? seed
       try {
         await store.create(created)
         return created

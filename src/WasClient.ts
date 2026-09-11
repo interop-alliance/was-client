@@ -31,7 +31,7 @@ import {
 import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
 import { spaceIdOf, submitRevocation } from './internal/revoke.js'
-import { ValidationError } from './errors.js'
+import { ValidationError, WasServerError } from './errors.js'
 import { zcapClientForSigner } from './zcapClient.js'
 import type { EncryptionProvider } from './codec.js'
 import { Space } from './Space.js'
@@ -212,9 +212,17 @@ export class WasClient {
       firstUrl: toUrl({ serverUrl: this.serverUrl, path: spacesRoot() })
     })
     // The first page always carries the listing body (an unauthorized caller
-    // still gets an empty `items` list, not an error), so the walk -- and thus
-    // `collectPages` -- returns a `SpaceListing`, never `null`.
-    const listing = await collectPages(walk!)
+    // still gets an empty `items` list, not an error), so a `null` walk is a
+    // server fault -- a 404 from a `serverUrl` whose base path does not reach
+    // the repository, or a 2xx whose body did not parse as JSON. Report it as
+    // one, rather than as a `TypeError` from destructuring `null`.
+    if (walk === null) {
+      throw new WasServerError(
+        `The space listing at "${this.serverUrl}" answered with no JSON ` +
+          'body. Check that `serverUrl` names the WAS repository root.'
+      )
+    }
+    const listing = await collectPages(walk)
     // A paginating server omits `totalItems` on truncated pages; the walk has
     // now collected the complete listing, so recompute it from the items.
     listing.totalItems = listing.items.length

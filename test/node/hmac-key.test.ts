@@ -165,6 +165,7 @@ describe('blinded-index key wrap/unwrap round-trip', () => {
       }
     }
     const resolved = await resolveHmacKey({
+      required: true,
       encryption,
       keyAgreementKey: alice.kak
     })
@@ -201,6 +202,7 @@ describe('blinded-index key wrap/unwrap round-trip', () => {
   it('resolves null when the descriptor declares no blinded index', async () => {
     const alice = await makeReader()
     const resolved = await resolveHmacKey({
+      required: true,
       encryption: { scheme: 'edv' },
       keyAgreementKey: alice.kak
     })
@@ -212,8 +214,21 @@ describe('blinded-index key wrap/unwrap round-trip', () => {
     const bob = await makeReader()
     const { encryption } = await makeDescriptor([alice])
     await expect(
-      resolveHmacKey({ encryption, keyAgreementKey: bob.kak })
+      resolveHmacKey({ required: true, encryption, keyAgreementKey: bob.kak })
     ).rejects.toThrow(EncryptionError)
+  })
+
+  it('resolves null instead for a reader rotated off the current epoch', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const { encryption } = await makeDescriptor([alice])
+    // A removal drops the departing reader's blinding entry along with its
+    // epoch key. Throwing here would leave that reader unable to build any
+    // cipher at all, taking away the history reads rotation is meant to leave
+    // untouched -- so it gets an unindexed cipher instead.
+    await expect(
+      resolveHmacKey({ required: false, encryption, keyAgreementKey: bob.kak })
+    ).resolves.toBeNull()
   })
 })
 
@@ -239,10 +254,12 @@ describe('ensureFirstEpoch with a blinded index', () => {
     )
     // Both readers really hold the same key.
     const forAlice = await resolveHmacKey({
+      required: true,
       encryption: descriptor,
       keyAgreementKey: alice.kak
     })
     const forBob = await resolveHmacKey({
+      required: true,
       encryption: descriptor,
       keyAgreementKey: bob.kak
     })
@@ -304,6 +321,7 @@ describe('roster operations carry the blinded-index key', () => {
     expect(added.hmac!.id).toBe(hmacId)
     expect(added.hmac!.recipients.length).toBe(2)
     const forBob = await resolveHmacKey({
+      required: true,
       encryption: added,
       keyAgreementKey: bob.kak
     })
@@ -334,6 +352,7 @@ describe('roster operations carry the blinded-index key', () => {
     ])
     // Alice's own blinding key is unchanged by the removal.
     const stillAlice = await resolveHmacKey({
+      required: true,
       encryption: removed,
       keyAgreementKey: alice.kak
     })
@@ -379,6 +398,7 @@ describe('roster operations carry the blinded-index key', () => {
       replaced.hmac!.recipients.map(entry => entry.header.kid).sort()
     ).toEqual([alice.kak.id, carol.kak.id].sort())
     const forCarol = await resolveHmacKey({
+      required: true,
       encryption: replaced,
       keyAgreementKey: carol.kak
     })
@@ -411,6 +431,7 @@ describe('roster operations carry the blinded-index key', () => {
     ).toEqual([alice.kak.id, carol.kak.id, dave.kak.id].sort())
     for (const reader of [carol, dave]) {
       const resolved = await resolveHmacKey({
+        required: true,
         encryption: replaced,
         keyAgreementKey: reader.kak
       })

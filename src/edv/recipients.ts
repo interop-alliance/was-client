@@ -639,7 +639,7 @@ export async function addRecipient({
       // The blinded-index key rides the same compare-and-swap write as the
       // epoch escrow -- never a second write. `null` means unchanged (no key,
       // or this recipient already has an entry).
-      const [{ epochs: nextEpochs }, nextHmac] = await Promise.all([
+      const [{ epochs: nextEpochs, changed }, nextHmac] = await Promise.all([
         escrowIntoEpochs({
           epochs,
           recipients: [recipient],
@@ -653,9 +653,17 @@ export async function addRecipient({
           operation: 'addRecipient'
         })
       ])
+      // Nothing to write when this reader was already a recipient of every
+      // epoch and of the blinding key: an idempotent re-add, or a retry after
+      // a lost response. Writing anyway would append a redundant signed entry
+      // (and, on a governed collection, a pin write) to the history per
+      // attempt.
+      if (!changed && nextHmac === null) {
+        return null
+      }
       return {
         ...current,
-        epochs: nextEpochs,
+        ...(changed && { epochs: nextEpochs }),
         ...(nextHmac !== null && { hmac: nextHmac })
       }
     }

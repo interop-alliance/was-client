@@ -231,11 +231,13 @@ export class Collection {
    *
    * The merge needs a readable current description to be lost-update-safe, and
    * `describe()` cannot distinguish "absent" from "unreadable" (WAS masks
-   * unauthorized reads as 404). When it returns `null` and neither `backend`
-   * nor `encryption` is supplied, this fails closed rather than sending a PUT
+   * unauthorized reads as 404). When it returns `null` and either `backend`
+   * or `encryption` is left out, this fails closed rather than sending a PUT
    * body that would silently drop an existing collection's `backend` (a
    * data-placement change) or trip `encryption-immutable` by clearing its
-   * descriptor on a replace-semantics server. Pass `force: true` to proceed
+   * descriptor on a replace-semantics server. Supplying only one of the two
+   * does not cover the other: with nothing readable to merge from, the
+   * omitted field is dropped either way. Pass `force: true` to proceed
    * anyway
    * -- e.g. when creating a new collection through a handle (or use
    * `space.createCollection()`, which does not merge).
@@ -266,10 +268,16 @@ export class Collection {
   ): Promise<CollectionDescription> {
     const current =
       desc.current !== undefined ? desc.current : await this.describe()
+    // Each protected field is checked on its own terms. Supplying one does
+    // not make the other safe to omit: with no readable current description
+    // there is nothing to merge the omitted one forward from, so
+    // `configure({ backend })` on an EDV collection would send a body with no
+    // `encryption` -- clearing the descriptor, or tripping
+    // `encryption-immutable` on a replace-semantics server -- which is the
+    // harm this guard exists to prevent.
     if (
       current === null &&
-      desc.backend === undefined &&
-      desc.encryption === undefined &&
+      (desc.backend === undefined || desc.encryption === undefined) &&
       !desc.force
     ) {
       throw unreadableDescriptionError({
@@ -278,9 +286,9 @@ export class Collection {
           "merging forward could silently drop an existing collection's " +
           'backend or encryption descriptor',
         advice:
-          'Supply `backend`/`encryption` explicitly, use a read-capable ' +
-          'capability, or pass `force: true` if you are creating a new ' +
-          'collection.'
+          'Supply BOTH `backend` and `encryption` explicitly, use a ' +
+          'read-capable capability, or pass `force: true` if you are ' +
+          'creating a new collection.'
       })
     }
     // Merge every current field forward (mirror `Space.configure`): a
@@ -660,6 +668,17 @@ export class Collection {
         }
       })
     })
+    // From the guarded create on, the served `encryption` member IS a
+    // projection of this log's head state, so every write here can rotate the
+    // key epoch or flip the collection from plaintext to encrypted -- exactly
+    // what `replaceDescription` resets for, reached by the other route. Drop
+    // the memoized codec so the next read/write re-resolves it against the
+    // new head; otherwise a `put` on this handle after a `removeRecipient`
+    // would keep encrypting under the rotated-out epoch (whose key the
+    // just-removed reader still holds), and a `put` after a guarded create
+    // would write server-visible plaintext through the identity codec the
+    // pre-governed description resolved.
+    this.#codecHolder.reset()
     return { etag: readEtag(response) }
   }
 
@@ -1203,6 +1222,15 @@ export class Collection {
           `"${response?.headers.get('content-type') ?? 'unknown'}").`
       )
     }
+    // A 2xx body that parsed but carries no `documents` array is the same
+    // class of server fault as a bodiless one: reported as a typed
+    // `WasServerError`, not as a `TypeError` from iterating `undefined`.
+    if (!Array.isArray(page.documents)) {
+      throw new WasServerError(
+        `The changes feed of collection "${this.id}" answered with no ` +
+          '`documents` array.'
+      )
+    }
     for (const doc of page.documents) {
       if (!doc._deleted && doc.data === undefined) {
         throw new WasServerError(
@@ -1268,7 +1296,9 @@ export class Collection {
           latest.set(doc.id, doc)
         }
       }
-      if (page.checkpoint === null) {
+      // A terminal page is one with no checkpoint to resume from, whether the
+      // server spelled that as an explicit `null` or by omitting the member.
+      if (!page.checkpoint) {
         return [...latest.values()]
       }
       const position = `${page.checkpoint.updatedAt}\u0000${page.checkpoint.id}`

@@ -100,7 +100,7 @@ describe('rotate-then-write on the same handle', () => {
    *
    * @returns {object}
    */
-  function rotatingClient() {
+  function rotatingClient(logRotatesTo?: CollectionEncryption) {
     const builtEpochs: string[] = []
     const encodeLog: string[] = []
     let descriptor: CollectionEncryption = {
@@ -128,6 +128,24 @@ describe('rotate-then-write on the same handle', () => {
           .filter(Boolean)
         const isCollectionDesc =
           segments.length === 3 && segments[0] === 'space'
+        const isHistoryLog =
+          segments.length === 5 &&
+          segments[0] === 'space' &&
+          segments[3] === 'meta' &&
+          segments[4] === 'log'
+        if (method === 'PUT' && isHistoryLog && logRotatesTo !== undefined) {
+          // On a governed collection the served `encryption` member IS a
+          // projection of the log head, so writing the log rotates it.
+          descriptor = logRotatesTo
+          return {
+            status: 200,
+            headers: new Headers({ etag: '"log-2"' }),
+            data: {},
+            async json() {
+              return {}
+            }
+          } as unknown as HttpResponse
+        }
         if (method === 'PUT' && isCollectionDesc && args.json?.encryption) {
           // Rotate the served descriptor (what replaceDescription does
           // server-side).
@@ -205,6 +223,33 @@ describe('rotate-then-write on the same handle', () => {
 
     // Second write on the SAME handle must encrypt under epoch-2, not the stale
     // memoized epoch-1 codec.
+    await collection.put('r2', { b: 2 })
+    expect(builtEpochs).toEqual(['epoch-1', 'epoch-2'])
+    expect(encodeLog).toEqual(['encode:epoch-1', 'encode:epoch-2'])
+  })
+
+  it('re-resolves the codec after a history-log write rotates the epoch', async () => {
+    const rotated: CollectionEncryption = {
+      scheme: 'edv',
+      epochs: [
+        { id: 'epoch-1', recipients: [] },
+        { id: 'epoch-2', recipients: [] }
+      ],
+      currentEpoch: 'epoch-2'
+    }
+    const { client, builtEpochs, encodeLog } = rotatingClient(rotated)
+    const collection = client.space('s').collection('c')
+
+    await collection.put('r1', { a: 1 })
+    expect(encodeLog).toEqual(['encode:epoch-1'])
+
+    // A governed collection rotates through its history log, not through a
+    // direct `encryption` write -- the route every `removeRecipient` on a
+    // governed collection takes. It must drop the memoized codec just as
+    // `replaceDescription` does, or the next write on this handle would seal
+    // to the epoch the rotation just retired.
+    await collection.putHistoryLog('{"entry":1}\n', { ifMatch: '"log-1"' })
+
     await collection.put('r2', { b: 2 })
     expect(builtEpochs).toEqual(['epoch-1', 'epoch-2'])
     expect(encodeLog).toEqual(['encode:epoch-1', 'encode:epoch-2'])

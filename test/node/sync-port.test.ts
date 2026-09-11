@@ -355,6 +355,26 @@ describe('createWasSyncPort.get', () => {
     expect(new Date(master!.updatedAt).getTime()).toBe(0)
   })
 
+  it('refuses a stored body the port cannot carry as JSON', async () => {
+    // `@interop/http-client` populates `.data` only for a JSON media type, so
+    // a resource stored as `text/jsonl` (or any opaque bytes) arrives with a
+    // real `version`/`etag` and no body. Reporting that as live-but-empty
+    // state would have a replica push an empty document over real content.
+    const { was } = makeWas({
+      onRequest: opts => {
+        if (opts.path?.endsWith('/meta')) {
+          throw httpError(404)
+        }
+        return response(undefined, {
+          etag: '"g.4"',
+          'content-type': 'text/jsonl'
+        })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+    await expect(port.get({ id: 'res-1' })).rejects.toThrow(WasServerError)
+  })
+
   it('returns null when the content is absent (404)', async () => {
     const { was } = makeWas({
       onRequest: () => {

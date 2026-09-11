@@ -49,7 +49,8 @@ import {
   PreconditionFailedError,
   WasSyncAuthError,
   WasSyncConflictError,
-  WasSyncNotFoundError
+  WasSyncNotFoundError,
+  WasServerError
 } from '../errors.js'
 import type { WasError, WasErrorOptions } from '../errors.js'
 import type { IZcap } from '../types.js'
@@ -307,6 +308,21 @@ export function createWasSyncPort({
       throw mapped
     }
     const { etag, version } = versionedEtag(response)
+    // `.data` is populated only for a JSON media type, so a resource stored as
+    // `text/jsonl`, `text/html`, or opaque bytes would otherwise produce a
+    // `MasterState` carrying a real `version`/`etag` and no `data` -- which a
+    // replica reads as a live-but-empty document and then pushes over the
+    // content that is actually there. The port contract promises `Json`, so a
+    // body it cannot deliver as `Json` is a fault, reported as one.
+    if (response.data === undefined) {
+      throw new WasServerError(
+        `The resource "${id}" answered with a body this sync port cannot ` +
+          `carry (content-type ` +
+          `"${response.headers.get('content-type') ?? 'unknown'}"): the ` +
+          'port moves JSON documents, so a non-JSON stored body cannot be ' +
+          'reported as state.'
+      )
+    }
     return {
       version: version ?? 0,
       etag,
