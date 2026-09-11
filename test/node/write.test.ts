@@ -393,6 +393,37 @@ describe('upsertResource: insert gate on a non-conditional backend', () => {
     expect(calls.map(call => call.method)).toEqual(['GET'])
   })
 
+  it('refuses with a typed error when the backend probe itself fails', async () => {
+    // The probe deliberately rethrows transient failures (a network error, a
+    // 401, a 429, a non-501 5xx), so a blip on `GET .../backend` must not
+    // surface on a first write as an unrelated error. The write is still
+    // refused -- an unprobed backend is one whose guard cannot be relied on --
+    // but as the same fail-closed ValidationError, carrying the probe's own
+    // error as its cause.
+    const { context, calls } = contextWithStatuses({ getStatus: 404 })
+    const probeFailure = new Error('backend descriptor unreachable')
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: {
+        async get(): Promise<string[]> {
+          throw probeFailure
+        },
+        async has(): Promise<boolean> {
+          throw probeFailure
+        },
+        async descriptorAbsent(): Promise<boolean> {
+          throw probeFailure
+        }
+      }
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(ValidationError)
+    expect((failure as Error).cause).toBe(probeFailure)
+    expect(calls.map(call => call.method)).toEqual(['GET'])
+  })
+
   it('does not consult the features probe when the pre-read found the document', async () => {
     // An update (current document readable) degrades to advisory on a
     // non-conditional backend by design; the probe must not even be consulted.

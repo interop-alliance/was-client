@@ -97,7 +97,6 @@ import {
 } from '../internal/indexSchema.js'
 import {
   EncryptionError,
-  EncryptOnlyCipherError,
   IntegrityError,
   KeyUnwrapError,
   NotSupportedError,
@@ -109,8 +108,9 @@ import { readEtag, writeHeaders } from '../internal/conditional.js'
 import type { WritePrecondition } from '../internal/conditional.js'
 import { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
-import { resolveEpochKeys } from './epochKeys.js'
-import { didKeyResolver, epochKeyIdFor } from './epochCrypto.js'
+import { epochWriteStandIn, resolveEpochKeys } from './epochKeys.js'
+import { didKeyResolver } from './epochCrypto.js'
+import { currentEpochOf } from './epochRoster.js'
 import { resolveHmacKey } from './hmacKey.js'
 import type { BlindingKey } from './hmacKey.js'
 import {
@@ -2058,7 +2058,8 @@ export async function buildEdvCodec({
   // resolves null for.
   const epochKeys = (await resolveEpochKeys({
     encryption: descriptor,
-    keyAgreementKey: keys.keyAgreementKey
+    keyAgreementKey: keys.keyAgreementKey,
+    label
   }))!
   // Epoch keys are self-describing did:key key-agreement keys, so a
   // resource's recipient (the epoch public key) resolves through the
@@ -2066,12 +2067,14 @@ export async function buildEdvCodec({
   const keyAgreementKey = epochKeys.writeKey
   // The collection's blinding key: an explicitly supplied one (a keystore
   // custodying the HMAC key itself) wins over unwrapping the descriptor's
-  // `hmac` member; `null` means the collection declares no blinded index.
+  // `hmac` member; `null` means the collection declares no blinded index, or
+  // that a rotated-off reader has no entry left in the one it declares.
   const hmac =
     keys.hmac ??
     (await resolveHmacKey({
       encryption: descriptor,
-      keyAgreementKey: keys.keyAgreementKey
+      keyAgreementKey: keys.keyAgreementKey,
+      required: epochKeys.namedInWriteEpoch
     }))
   const edv = new EdvClientCore({
     keyAgreementKey,
@@ -2203,53 +2206,17 @@ export async function encryptOnlyEdvCodec({
   idDerivation: 'content' | 'random'
   encryption: CollectionEncryption
 }): Promise<EdvCodec> {
-  const descriptor = guardEncryptionDescriptor({
-    label: `"${collectionId}"`,
-    encryption
-  })
-  const { epochs, currentEpoch } = descriptor
+  const label = `"${collectionId}"`
+  const descriptor = guardEncryptionDescriptor({ label, encryption })
   // `currentEpoch` MUST name a listed epoch (storage-core's descriptor
-  // invariant). A descriptor that violates it is stale, partially synced, or
-  // tampered with; refuse rather than silently seal to another epoch.
-  if (
-    currentEpoch !== undefined &&
-    !epochs.some(epoch => epoch.id === currentEpoch)
-  ) {
-    throw new EncryptionError(
-      `Collection "${collectionId}" declares currentEpoch "${currentEpoch}" ` +
-        'but its epoch roster does not list it. A descriptor names its ' +
-        'current epoch among the epochs it lists; re-read the descriptor ' +
-        'before writing.'
-    )
-  }
-  // With no `currentEpoch`, the last listed epoch is the newest: the roster
-  // is append-only and the current epoch never moves back.
-  const writeEpoch = currentEpoch ?? epochs.at(-1)!.id
-  let writeKeyId: string
-  try {
-    writeKeyId = epochKeyIdFor(writeEpoch)
-    // Fail fast on a malformed epoch id: the resolver validates the fragment
-    // is a well-formed X25519 public-key fingerprint, exactly what every
-    // write's recipient resolution will do.
-    await didKeyResolver({ id: writeKeyId })
-  } catch (err) {
-    throw new EncryptionError(
-      `Collection "${collectionId}" lists a malformed key-epoch id ` +
-        `"${writeEpoch}": it is not the did:key of an X25519 key-agreement ` +
-        'key, so no write recipient can be reconstructed from it.',
-      { cause: err }
-    )
-  }
-  const writeKey: IKeyAgreementKey = {
-    id: writeKeyId,
-    async deriveSecret(): Promise<Uint8Array> {
-      throw new EncryptOnlyCipherError(
-        `The cipher for collection "${collectionId}" is encrypt-only: it ` +
-          'was built from the descriptor alone and holds no key-agreement ' +
-          'secret to derive with.'
-      )
-    }
-  }
+  // invariant); with none declared, the last listed epoch is the newest,
+  // since the roster is append-only and the current epoch never moves back.
+  const writeEpoch = currentEpochOf({
+    epochs: descriptor.epochs,
+    currentEpoch: descriptor.currentEpoch,
+    label
+  }).id
+  const writeKey = await epochWriteStandIn({ epochId: writeEpoch, label })
   const edv = new EdvClientCore({
     keyAgreementKey: writeKey,
     keyResolver: didKeyResolver
@@ -2264,6 +2231,6 @@ export async function encryptOnlyEdvCodec({
     idDerivation,
     version: descriptor.version ?? EDV_SCHEME_VERSION,
     collectionId,
-    epochIds: epochs.map(epoch => epoch.id)
+    epochIds: descriptor.epochs.map(epoch => epoch.id)
   })
 }

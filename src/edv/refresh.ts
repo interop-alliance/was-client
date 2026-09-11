@@ -45,6 +45,11 @@ export class DescriptorRefreshPolicy {
    * re-reads once. A later unknown-epoch report for the same collection
    * returns the read's value as-is.
    *
+   * A refresh that fails does not spend the collection's refresh: the guard is
+   * un-armed, the already-successful first read is returned, and the next
+   * unknown-epoch read tries again. Only a refresh that ran is evidence that
+   * the remedy has been applied.
+   *
    * @param options {object}
    * @param options.collectionId {string}
    * @param options.read {function}   the read, reporting `unknownEpoch`
@@ -60,7 +65,18 @@ export class DescriptorRefreshPolicy {
     const first = await read()
     if (first.unknownEpoch && this.shouldRefresh({ collectionId })) {
       this.#refreshed.add(collectionId)
-      await this.#refresh({ collectionId })
+      try {
+        await this.#refresh({ collectionId })
+      } catch {
+        // The refresh itself failed (a transient descriptor re-read or cipher
+        // rebuild error). That is not evidence the remedy is useless, so it
+        // must not spend the collection's one refresh: un-arm the guard, and
+        // return the read that DID succeed rather than failing a read whose
+        // only defect is some skipped rows. The next unknown-epoch read
+        // retries the refresh.
+        this.#refreshed.delete(collectionId)
+        return first.value
+      }
       return (await read()).value
     }
     return first.value

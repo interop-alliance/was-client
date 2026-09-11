@@ -21,6 +21,7 @@
  * through the default `did:key` recipient resolver.
  */
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import type { IDID } from '@interop/data-integrity-core'
 import { DID_KEY_PREFIX } from './epochCrypto.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
 
@@ -34,10 +35,14 @@ const ED25519_MULTIBASE_PREFIX = 'z6Mk'
  * key). A key id (a DID with a fragment) is not one: the derivation is defined
  * over the DID itself.
  *
+ * A type predicate: what it proves (the `did:` prefix) is exactly what an
+ * {@link IDID} asserts, so a caller passing a checked controller on to an
+ * `IDID` parameter narrows instead of casting.
+ *
  * @param did {string | undefined}
  * @returns {boolean}
  */
-export function isEd25519DidKey(did: string | undefined): boolean {
+export function isEd25519DidKey(did: string | undefined): did is IDID {
   return (
     !!did &&
     did.startsWith(DID_KEY_PREFIX) &&

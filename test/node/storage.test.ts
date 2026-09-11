@@ -767,7 +767,7 @@ describe('Collection.configure() unreadable-description guard', () => {
     expect(result.name).toBe('x')
   })
 
-  it('proceeds when the caller supplies backend/encryption explicitly', async () => {
+  it('proceeds when the caller supplies BOTH backend and encryption', async () => {
     const calls: RequestArgs[] = []
     const zcapClient = {
       invocationSigner: { id: 'did:example:alice#key-1' },
@@ -793,9 +793,52 @@ describe('Collection.configure() unreadable-description guard', () => {
     await client
       .space('s')
       .collection('docs')
-      .configure({ name: 'x', backend: { id: 'custom' } })
+      .configure({
+        name: 'x',
+        backend: { id: 'custom' },
+        encryption: { scheme: 'edv' }
+      })
     const put = calls.find(call => call.method === 'PUT')
-    expect(put?.json).toMatchObject({ backend: { id: 'custom' } })
+    expect(put?.json).toMatchObject({
+      backend: { id: 'custom' },
+      encryption: { scheme: 'edv' }
+    })
+  })
+
+  it('still refuses when only one of the two protected fields is given', async () => {
+    const calls: RequestArgs[] = []
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      async request(args: RequestArgs) {
+        calls.push(args)
+        if (args.method === 'GET') {
+          throw { status: 404, response: { status: 404 } }
+        }
+        return {
+          status: 200,
+          headers: new Headers(),
+          data: undefined,
+          async json() {
+            return undefined
+          }
+        } as unknown as HttpResponse
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient
+    })
+    // Supplying `backend` says nothing about `encryption`: with no readable
+    // current description there is nothing to merge the omitted one from, so
+    // the PUT would clear an EDV collection's descriptor (or trip
+    // `encryption-immutable`) -- the very harm the guard covers.
+    await expect(
+      client
+        .space('s')
+        .collection('docs')
+        .configure({ name: 'x', backend: { id: 'custom' } })
+    ).rejects.toThrow(ValidationError)
+    expect(calls.some(call => call.method === 'PUT')).toBe(false)
   })
 
   it('fails closed on a supplied `current: null`', async () => {

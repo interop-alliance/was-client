@@ -268,10 +268,13 @@ describe('resolveEpochKeys', () => {
       encryption,
       keyAgreementKey: bob.kak
     })
-    // Bob can still read the older epoch (history), even though he cannot write
-    // the current one.
+    // Bob can still read the older epoch (history), even though he holds no
+    // key for the current one. The write epoch is the CURRENT epoch either
+    // way: falling back to the epoch he was rotated off of would seal fresh
+    // plaintext to a key the rotation exists to retire.
     expect(resolvedBob!.readKeys.length).toBe(1)
-    expect(resolvedBob!.writeEpoch).toBe(older.currentEpoch)
+    expect(resolvedBob!.writeEpoch).toBe(newer.currentEpoch)
+    expect(resolvedBob!.namedInWriteEpoch).toBe(false)
   })
 })
 
@@ -432,6 +435,45 @@ describe('addRecipient compare-and-swap retry', () => {
     expect(
       bobSecret && Buffer.from(bobSecret).equals(Buffer.from(seed.secret))
     ).toBe(true)
+  })
+
+  it('writes nothing when the reader is already a recipient', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const seed = await mintEpoch()
+    const descriptor: CollectionEncryption = {
+      scheme: 'edv',
+      epochs: [
+        {
+          id: seed.epochId,
+          recipients: await Promise.all(
+            [alice, bob].map(reader =>
+              wrapEpochSecret({
+                epochSecret: seed.secret,
+                recipient: {
+                  id: reader.kak.id,
+                  publicKeyMultibase: reader.publicKeyMultibase
+                }
+              })
+            )
+          )
+        }
+      ],
+      currentEpoch: seed.epochId
+    }
+    const fake = fakeCollection(descriptor, 0)
+    const before = fake._state.version
+    // An idempotent re-add (a retry after a lost response, or a provisioning
+    // step run twice). The escrow is a no-op, so the compare-and-swap must
+    // skip the write rather than append a redundant signed entry -- and, on a
+    // governed collection, a pin write -- per attempt.
+    const result = await addRecipient({
+      collection: fake as unknown as Collection,
+      recipient: { id: bob.kak.id, publicKeyMultibase: bob.publicKeyMultibase },
+      owner: { keyAgreementKey: alice.kak }
+    })
+    expect(fake._state.version).toBe(before)
+    expect(result.epochs![0]!.recipients.length).toBe(2)
   })
 
   it('surfaces PreconditionFailedError after exhausting retries', async () => {

@@ -116,7 +116,20 @@ async function readOrCreate<T>({
   } catch (err) {
     failure = err
   }
-  const latest = await read()
+  let latest: T | null
+  try {
+    latest = await read()
+  } catch (err) {
+    // The create failed and the confirming re-read failed too -- usually the
+    // same outage. The create's own error is the actionable one (a `412`
+    // race, a `409` `encryption-immutable`, an auth refusal), and it is the
+    // typed error this whole path exists to preserve, so it wins over the
+    // re-read's.
+    if (!created) {
+      throw failure
+    }
+    throw err
+  }
   if (latest !== null) {
     return { value: latest, created }
   }
@@ -192,7 +205,7 @@ async function readOrCreate<T>({
  *   request rides (a delegated Space-subtree zcap, say); the root capability
  *   is invoked otherwise. A capability scoped below the bare Space URL cannot
  *   reach the Space half, so a caller holding one supplies `spaceDescription`
- * @param [options.generator] {string}   the DID of the application the
+ * @param [options.generator] {IDID}   the DID of the application the
  *   collection is provisioned for -- controller-asserted attribution the
  *   server persists but never verifies. It is stamped on the guarded create
  *   only: a collection that already stands keeps whatever attribution it
@@ -228,7 +241,7 @@ export async function ensureSpaceAndCollection({
   collectionName?: string
   spaceDescription?: SpaceDescription
   capability?: IZcap
-  generator?: string
+  generator?: IDID
   generatorOrigin?: string
 }): Promise<void> {
   const space = was.space(spaceId, { capability })
@@ -252,13 +265,14 @@ export async function ensureSpaceAndCollection({
     // The app-attribution pair as it goes on the wire. `generatorOrigin` says
     // which origin the `generator` DID was bound to, so it carries no meaning
     // without one and is left off when the caller supplied only the origin.
-    // The DID arrives as a plain string (that is how callers hold DIDs) and
-    // the server is the one that validates its shape.
+    // Nothing verifies the pair once it is stored -- the server persists it
+    // as written -- so `generator` is typed as a DID here, the same shape
+    // every other write path takes.
     const attribution =
       generator === undefined
         ? {}
         : {
-            generator: generator as IDID,
+            generator,
             ...(generatorOrigin !== undefined && { generatorOrigin })
           }
     // A `'governed'` or `'plaintext'` collection takes the descriptor-less
@@ -317,18 +331,12 @@ export async function ensureSpaceAndCollection({
           },
           // Replace semantics: every writable field is carried forward,
           // the app attribution included -- a body omitting it would drop a
-          // stored `generator` on the server's replace.
+          // stored `generator` on the server's replace. The description just
+          // read is handed over whole, and `replaceDescription` picks the
+          // writable fields out of it, so this site cannot drift as fields
+          // are added.
           replace: async (next, { ifMatch }) => {
-            await collection.replaceDescription(
-              {
-                name: next.name,
-                backend: next.backend,
-                encryption: next.encryption,
-                generator: next.generator,
-                generatorOrigin: next.generatorOrigin
-              },
-              { ifMatch }
-            )
+            await collection.replaceDescription(next, { ifMatch })
           }
         },
         operation: 'Encryption declaration',

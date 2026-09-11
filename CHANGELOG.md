@@ -1,5 +1,64 @@
 # @interop/was-client Changelog
 
+## 0.60.0 - TBD
+
+### Changed
+
+- BREAKING: `ensureSpaceAndCollection`'s `generator` option is typed `IDID`,
+  matching every other path that writes the field. Nothing verifies the value
+  once it is stored, so the shape is checked where it is passed. A caller
+  declaring `generator?: string` (freewallet's `wasRemoteStore`) no longer
+  compiles and must narrow its own type.
+- BREAKING: `resolveEpochKeys` now resolves the write epoch against the full
+  epoch roster instead of the subset the reader is named in, and reports
+  `namedInWriteEpoch`. A reader rotated off the current epoch writes through a
+  public-only stand-in for it rather than falling back to an epoch it was
+  rotated off of.
+- BREAKING: `resolveHmacKey` takes a required `required` flag. `false` resolves
+  `null` where a reader has no usable blinding entry, instead of throwing.
+- `isEd25519DidKey` is a type predicate (`did is IDID`). What it checks is
+  exactly what `IDID` asserts, so a caller passing a checked controller on to an
+  `IDID` parameter -- `ensureSpaceAndCollection`'s `generator`, say -- narrows
+  instead of casting. Not breaking: it still returns a boolean.
+- `Collection.configure()`'s unreadable-description guard checks `backend` and
+  `encryption` separately. Supplying one no longer exempts the other, since with
+  nothing readable to merge from the omitted field is dropped either way.
+
+### Fixed
+
+- `Collection.putHistoryLog()` drops the memoized codec. On a governed
+  collection the served `encryption` member is a projection of the log head, so
+  a write there can rotate the epoch or flip the collection to encrypted;
+  without the reset, the next write on the same handle sealed to the retired
+  epoch, or wrote plaintext into an encrypted collection.
+- A reader rotated off the current key epoch no longer seals new documents to
+  that reader's own rotated-out epoch, whose key every removed recipient still
+  holds. The read axis of a rotation no longer depends on the pull axis having
+  taken effect.
+- A reader rotated off a blinded-index collection can build a cipher again (an
+  unindexed one) rather than failing to build any, so it keeps the history reads
+  rotation leaves untouched.
+- `addRecipient` skips the write when the reader is already a recipient of every
+  epoch and of the blinding key, instead of appending a redundant signed entry
+  (and pin write) per attempt.
+- The unknown-epoch refresh guard is no longer spent by a refresh that failed;
+  the read that did succeed is returned and the next unknown-epoch read retries.
+- A first write whose backend feature probe fails transiently is refused with
+  the fail-closed `ValidationError`, carrying the probe's error as its `cause`,
+  instead of an unrelated network or auth error.
+- `compareAndSwap` creates the seed on an absent store even when `mutate`
+  reports nothing to change, instead of resolving a value it never wrote.
+- `ensureSpaceAndCollection` keeps the create's typed failure when the
+  confirming re-read fails too, instead of discarding it for the read's error.
+- The sync port refuses a stored body it cannot carry as JSON instead of
+  reporting a live resource as an empty document.
+- `WasClient.listSpaces()`, `Collection.changes()`, `Collection.documents()`,
+  and the created-resource `Location` parse report a malformed server response
+  as `WasServerError` rather than as a raw `TypeError` / `URIError`.
+- The late encryption declaration in `ensureSpaceAndCollection` hands the
+  description it read to `replaceDescription` whole instead of listing the
+  writable fields itself, so the site cannot drop a newly added field.
+
 ## 0.59.1 - 2026-09-10
 
 ### Changed

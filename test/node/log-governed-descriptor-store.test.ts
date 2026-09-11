@@ -530,9 +530,13 @@ describe('logGovernedCollectionDescriptorStore over a governed collection', () =
   it('passes the library integrity refusal through unwrapped', async () => {
     const { fake, storeOptions } = await governedFixture()
     const [genesis] = fake._entries()
-    fake._setEntries([
-      { ...genesis!, versionId: genesis!.versionId.replace(/.$/, 'x') }
-    ])
+    // Swap the last character for a different one: `replace(/.$/, 'x')` is a
+    // no-op on the ~1-in-58 freshly-minted versionId that already ends in `x`,
+    // which leaves the entry untampered and the read succeeding.
+    const tampered = genesis!.versionId.replace(/(.)$/, (last: string) =>
+      last === 'x' ? 'y' : 'x'
+    )
+    fake._setEntries([{ ...genesis!, versionId: tampered }])
     const err = await logGovernedCollectionDescriptorStore({
       ...storeOptions,
       pinStore: memoryResourceLogPinStore()

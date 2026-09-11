@@ -98,23 +98,36 @@ export async function hmacKeyFromSecret({
  * no `hmac` member -- the collection is simply not indexable (installed at
  * provisioning or never).
  *
- * Fails closed when the descriptor DOES declare one but this key-agreement key
- * unwraps no entry: a current recipient must be able to blind, so a missing or
- * corrupt entry is an {@link EncryptionError} rather than a silent
- * "unindexable" downgrade that would write envelopes nobody can find.
+ * Fails closed when the descriptor DOES declare one, this key-agreement key
+ * unwraps no entry, and `required` is set: a current recipient must be able to
+ * blind, so a missing or corrupt entry is an {@link EncryptionError} rather
+ * than a silent "unindexable" downgrade that would write envelopes nobody can
+ * find.
+ *
+ * `required: false` is the rotated-off reader, whose blinding entry a removal
+ * drops along with its epoch key. There is no key to fail closed on behalf of
+ * there, and throwing would leave it unable to build any cipher at all --
+ * taking away the history reads that rotation is meant to leave untouched. It
+ * gets `null`, i.e. a cipher with no blinded index: it reads documents by id
+ * and cannot search.
  *
  * @param options {object}
  * @param options.encryption {EncryptionWithHmac}   the Collection's descriptor
  * @param options.keyAgreementKey {IKeyAgreementKey}   the reader's own KAK; its
  *   `id` must match an `hmac.recipients` entry's `kid`
+ * @param options.required {boolean}   whether an unusable entry is an error
+ *   rather than an unindexed cipher -- true for a recipient of the current key
+ *   epoch, false for a reader rotated off it
  * @returns {Promise<SHA256HMACKey | null>}
  */
 export async function resolveHmacKey({
   encryption,
-  keyAgreementKey
+  keyAgreementKey,
+  required
 }: {
   encryption: EncryptionWithHmac
   keyAgreementKey: IKeyAgreementKey
+  required: boolean
 }): Promise<SHA256HMACKey | null> {
   const hmac = encryption.hmac
   if (!hmac) {
@@ -127,6 +140,9 @@ export async function resolveHmacKey({
     ? await unwrapEpochSecret({ entry, keyAgreementKey })
     : null
   if (!secret) {
+    if (!required) {
+      return null
+    }
     throw new EncryptionError(
       'This collection declares a blinded-index key ' +
         `("${hmac.id}") that this client's key-agreement key ` +
