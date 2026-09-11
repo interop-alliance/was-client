@@ -1185,10 +1185,11 @@ export class Collection {
    * envelopes (an EDV encrypted document under the v1 `edv` scheme) -- this
    * method does not decrypt them, unlike `get()`.
    *
-   * Two server faults fail the call with a `WasServerError` instead of passing
-   * through as a page: a 2xx response with no JSON body (indistinguishable
-   * from an end-of-feed page otherwise), and a live entry with no `data` (the
-   * server could not read or parse that resource's body).
+   * Malformed responses fail the call with a `WasServerError` instead of
+   * passing through as a page: a 2xx response with no JSON body
+   * (indistinguishable from an end-of-feed page otherwise), a body with no
+   * `documents` array or with a non-object entry in it, and a live entry with
+   * no `data` (the server could not read or parse that resource's body).
    *
    * @param [options] {object}
    * @param [options.checkpoint] {ChangesCheckpoint}   resume strictly after this
@@ -1232,6 +1233,15 @@ export class Collection {
       )
     }
     for (const doc of page.documents) {
+      // `Array.isArray` accepts `[null]`; a non-object entry is the same class
+      // of server fault, reported as a typed `WasServerError` rather than as a
+      // `TypeError` from reading `_deleted` off it.
+      if (doc === null || typeof doc !== 'object') {
+        throw new WasServerError(
+          `The changes feed of collection "${this.id}" served a non-object ` +
+            'entry in its `documents` array.'
+        )
+      }
       if (!doc._deleted && doc.data === undefined) {
         throw new WasServerError(
           `The changes feed of collection "${this.id}" served resource ` +
