@@ -7,14 +7,27 @@
 - Security fix: listing walks no longer follow a server-supplied `next` link
   outside the listing. A `next` outside the first page's origin or base path,
   one with a username or password in it, or one that is not a string URL, fails
-  the walk with `WasServerError` and is not
-  requested. Before, the client sent a signed invocation (with a root zcap
-  synthesized for that URL) to any origin the server named. Covers
-  `listSpaces()`, `Space.collections()` / `collectionsPages()`,
-  `Collection.list()` / `listPages()` / `listItems()`, and the
-  `publicListCollection*()` walks.
+  the walk with `WasServerError` and is not requested. Before, the client sent a
+  signed invocation (with a root zcap synthesized for that URL) to any origin
+  the server named. Covers `listSpaces()`, `Space.collections()` /
+  `collectionsPages()`, `Collection.list()` / `listPages()` / `listItems()`, and
+  the `publicListCollection*()` walks.
 - A listing walk stops with `WasServerError` naming the listing URL after 10,000
   pages, instead of following an endless cursor without limit.
+- Security fix: `removeRecipient` and `replaceRecipient` refuse with
+  `EncryptionError` when the descriptor's `currentEpoch` is absent or names an
+  epoch the roster does not list. Before, the rotation fell back to the last
+  listed epoch. It could re-wrap the fresh epoch key to a reader an earlier
+  rotation removed, or skip the rotation and report success.
+- Security fix: an `edv` descriptor with key epochs but no `currentEpoch` is
+  refused with `EncryptionError` when opening a codec or doc cipher, including
+  the encrypt-only builds, and `canRoute` reports it unroutable. Before, writes
+  sealed under the last listed epoch, which could be an epoch a removed reader
+  still holds.
+- The compare-and-swap retry loop behind the recipient operations and
+  `declareIndex` now retries a `412` raised while reading, as it already did for
+  a stale write. On a log-governed Collection, a served descriptor that lags a
+  concurrent log append no longer fails the operation on its first attempt.
 
 ## 0.62.0 - 2026-09-13
 

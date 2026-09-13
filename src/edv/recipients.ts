@@ -53,7 +53,7 @@ import {
   wrapEpochSecret,
   wrapEpochSecretTo
 } from './epochCrypto.js'
-import { pickEpoch } from './epochRoster.js'
+import { currentEpochOf } from './epochRoster.js'
 import type { RecipientPublicKey } from './epochCrypto.js'
 import { mintHmacKey } from './hmacKey.js'
 
@@ -696,6 +696,11 @@ export async function addRecipient({
  * fresh epoch is minted or appended -- the retry skips straight to the pull
  * step instead of accumulating a redundant epoch per attempt.
  *
+ * The rotation refuses with `EncryptionError`, before anything is written or
+ * pulled, when the descriptor's `currentEpoch` is absent or names an epoch the
+ * roster does not list. Without it there is no trustworthy current roster to
+ * compute the survivors from.
+ *
  * Important: this does not re-encrypt existing resources, so the removed
  * reader keeps every earlier epoch's key and can still decrypt any pre-rotation
  * resource whose ciphertext it gets. Neither half alone removes a reader.
@@ -874,7 +879,15 @@ async function rotateOffRecipients({
       // is still present in that older epoch, so unioning would silently
       // re-escrow it into the fresh epoch and hand it back read access. Older
       // epochs exist only so existing readers can decrypt history.
-      const currentEpoch = pickEpoch(escrowed, current.currentEpoch)
+      // A rotation that cannot identify the current epoch refuses rather than
+      // guessing one: any other entry's recipients may include a reader an
+      // earlier rotation removed, and a guess that misses the retiring kid
+      // would skip the rotation and report success.
+      const currentEpoch = currentEpochOf({
+        epochs: escrowed,
+        currentEpoch: current.currentEpoch,
+        label: `being rotated by ${operation}`
+      })
       // No retiring kid still current? A prior attempt's rotation landed (its
       // pull step then failed transiently and the caller retried), or the
       // reader never held the current epoch. Nothing to rotate -- write only

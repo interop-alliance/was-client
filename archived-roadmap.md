@@ -1830,3 +1830,144 @@ the freewallet and was-react entries were waived to FW-523 and WR-46, which the
 maintainer takes on separately. Note that was-react still imports the deleted
 `collectionItems` builder, so WR-46 is also a compile break against this
 release.
+
+### WCL-45: Rotation resolves its current epoch with the tolerant `pickEpoch`, re-admitting removed readers
+
+- status: done (2026-09-13)
+- priority: high
+- labels: encryption, key-epochs, security, fail-closed
+- touches:
+  - freewallet, wallet-core, dcw: resolved 2026-09-13, no change needed. The
+    call sites are wallet-core's `rotateUserKeyRoster` / `replaceUserKeyRoster`
+    and the user-key cascade, and freewallet's app-revocation and unshare paths
+    in `storageManager.ts`. Each lets the new `EncryptionError` propagate or
+    logs it; none matches rotation errors by a name it would now misread.
+    Freewallet's revocation pass already skips a descriptor with no
+    `currentEpoch`. dcw calls neither function
+- acceptance:
+  - [x] `src/edv/recipients.ts:877` resolves the current epoch through the
+        strict `currentEpochOf`, and `pickEpoch` is deleted once it has no
+        callers
+  - [x] A rotation against a descriptor whose `currentEpoch` is absent, or names
+        an unlisted entry, refuses instead of computing a survivor set
+  - [x] Both scenarios are covered by tests: the re-admission case and the
+        silent-no-op case
+
+Executed against the real `removeRecipient`. Served
+`epochs: [E2{alice,mallory}, E1{alice,trent,mallory}]` with `currentEpoch`
+omitted, Alice removing Mallory: the fresh epoch E3 was wrapped to Trent, and
+Trent's key-agreement key unwrapped E3's secret to the same bytes Alice
+unwrapped. A reader removed at the earlier rotation holds the post-rotation
+collection key. The control run, with a correct `currentEpoch`, produced
+`[alice]` alone. The second variant also reproduced: an unlisted `currentEpoch`
+whose fallback lands on an epoch without the retiring kid makes `rotating`
+false, so `removeRecipient` writes nothing and resolves successfully while the
+removed reader keeps the epoch every writer is sealing under.
+
+`pickEpoch` has exactly one caller in the repo, this line, and no test coverage.
+The strict `currentEpochOf` was added in c02716f (2026-09-11) and routed only to
+the seal-plaintext sites. The tolerant form's stated rationale does not hold for
+its one caller: a rotation that cannot identify the current epoch is computing
+its survivor set from an untrusted list, which is exactly when it should refuse.
+The spec agrees -- `currentEpoch` is REQUIRED and must name an entry in `epochs`
+-- so the fallback exists only to tolerate a descriptor that cannot conformantly
+exist. No wire change.
+
+discovered-from: whole-codebase review, 2026-09-11.
+
+Landed 2026-09-13: the rotation refuses an absent `currentEpoch` itself, then
+resolves the entry through `currentEpochOf`, which refuses an unlisted one.
+`pickEpoch` is deleted. The seal-side callers of `currentEpochOf` still fall
+back to the last listed epoch when `currentEpoch` is absent; this item did not
+change that.
+
+### WCL-48: A 412 raised by `store.read()` escapes `compareAndSwap` instead of rebasing
+
+- status: done (2026-09-13)
+- priority: high
+- labels: cas, conditional-writes, log, correctness
+- touches:
+  - wallet-core: resolved 2026-09-13 -- its roster, cascade, and revocation
+    suites (6 files, 132 tests) pass with `@interop/was-client` aliased to this
+    change's source. The full suite's 86 failures are identical against the
+    published 0.62.0, so this change causes none of them
+- acceptance:
+  - [x] A `PreconditionFailedError` from `store.read()` is treated as a rebase,
+        the same as one from `store.replace()`
+  - [x] A store whose `read()` throws a 412 once completes through the retry
+        rather than surfacing the error to the caller
+  - [x] `logGovernedDescriptorStore`'s module docstring and ARCHITECTURE.md
+        agree with the code
+
+`compareAndSwap`'s loop body is `const current = await store.read()`
+(`src/internal/cas.ts:121`) with no enclosing try. The only two try/catch blocks
+wrap `store.create` and `store.replace`. `readGoverned` raises
+`PreconditionFailedError({ status: 412 })` at
+`src/edv/logGovernedDescriptorStore.ts:534`, reached from the governed store's
+`read()`, which `src/edv/recipients.ts:1192` adapts verbatim into the
+`CasStore`. `recipients.ts` has a single catch, on the zcap-revoke step, so
+nothing upstream rebases either.
+
+Proven by execution: a fake store whose `read()` throws a 412 once yields
+`reads === 1` and the raw `PreconditionFailedError` out of `compareAndSwap`,
+while the identical 412 from `replace()` yields `reads === 2` and succeeds. The
+documented rebase loops therefore fail on the first attempt against the governed
+store. Both the module docstring and ARCHITECTURE.md claim the recipient loops
+rebase on this class, so code and documentation disagree today. This sits
+between two archived items: WCL-25 landed `src/internal/cas.ts` and WCL-17
+landed the governed store whose `read()` can throw a 412; neither one's
+acceptance covers the pair. No wire artifact changes. discovered-from:
+whole-codebase review, 2026-09-11.
+
+### WCL-102: The seal-side epoch lookup still falls back to the last listed epoch when `currentEpoch` is absent
+
+- status: done (2026-09-13)
+- priority: high
+- labels: encryption, key-epochs, security, fail-closed
+- touches:
+  - freewallet, wallet-core, dcw, was-react: resolved 2026-09-13, no change
+    needed. No source, test, or fixture in the four repos passes a descriptor
+    with `epochs` but no `currentEpoch` to a codec or cipher build. Their
+    descriptors come from `initRecipients` / `removeRecipient` or fixtures that
+    set `currentEpoch`
+  - storage-core: `CollectionEncryption.currentEpoch` is typed optional while
+    the spec makes it REQUIRED; whether to tighten the type is a separate change
+    there, and this item does not depend on it. Resolved 2026-09-13 as out of
+    scope
+- acceptance:
+  - [x] `currentEpochOf` refuses a descriptor whose `currentEpoch` is absent,
+        with the same `EncryptionError` family as an unlisted one
+  - [x] The rotation's own absence check in `src/edv/recipients.ts` is removed,
+        since `currentEpochOf` then covers it
+  - [x] `resolveEpochKeys` and `encryptOnlyEdvCodec` refuse such a descriptor,
+        each covered by a test
+  - [x] The documented fallback is removed everywhere it is stated: the
+        `currentEpochOf` JSDoc, the `encryptOnlyEdvCodec` JSDoc and inline
+        comment, the `edv-doc-cipher.test.ts` case "falls back to the last
+        listed epoch when currentEpoch is absent" (which flips to a refusal),
+        and the `review-fixes.test.ts` header's "descriptor-order fallback"
+
+WCL-45 made rotation refuse a descriptor whose `currentEpoch` is absent or
+unlisted. The two seal-side callers of `currentEpochOf`, `resolveEpochKeys`
+(`src/edv/epochKeys.ts:130`) and `encryptOnlyEdvCodec`
+(`src/edv/EdvCodec.ts:2214`), still refuse only the unlisted case. With
+`currentEpoch` absent they seal new writes to the last listed epoch, on the
+stated assumption that the roster is append-ordered newest-last. Nothing on the
+read path checks that order. `descriptorDefect` checks only the scheme version
+and that `epochs` is non-empty, and the `hasKeyEpochs` predicate, which does
+require `currentEpoch`, is not consulted before a codec opens.
+
+The exposure is the one WCL-45 closed for rotation. A descriptor served as
+`epochs: [current, older]` with `currentEpoch` omitted seals every new write to
+`older`, whose key a reader removed at the later rotation still holds. This
+follows from the code but was not reproduced end to end. A governed Collection
+is covered by its log verification, since the projection must equal the verified
+head. An ungoverned descriptor is not (see WCL-47). The spec makes
+`currentEpoch` REQUIRED, so the fallback tolerates only a non-conformant
+descriptor.
+
+A probe making `currentEpochOf` refuse an absent `currentEpoch` failed exactly
+one unit test, the doc-cipher case that asserts the fallback, so the change is
+contained. No wire change.
+
+discovered-from: WCL-45, 2026-09-13.

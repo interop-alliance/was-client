@@ -325,30 +325,30 @@ describe('createEdvEncryptOnlyDocCipher', () => {
     ).rejects.toBeInstanceOf(EncryptionError)
   })
 
-  it('falls back to the last listed epoch when currentEpoch is absent', async () => {
-    // A two-epoch roster, so "last listed" is distinguishable from "first
-    // listed": a regression to epochs[0] would seal to the rotated-out epoch
-    // and fail the assertion below.
+  it('refuses a descriptor that declares no currentEpoch', async () => {
+    // Listed newest-first with no `currentEpoch`, a last-entry fallback would
+    // seal to the older epoch, whose key a reader removed at the rotation to
+    // the newer one still holds. Both the encrypt-only writer and the reader
+    // build refuse rather than guess.
     const { encryption, ...keys } = await makeReaderWithDescriptor()
     const rotated = await epochDescriptorFor([keys.keyAgreementKey])
-    const lastEpochId = rotated.epochs![0]!.id
-    const multi: CollectionEncryption = {
+    const unmarked: CollectionEncryption = {
       scheme: 'edv',
-      epochs: [...encryption.epochs!, ...rotated.epochs!]
+      epochs: [...rotated.epochs!, ...encryption.epochs!]
     }
-    const writer = await createEdvEncryptOnlyDocCipher({
-      collectionId: 'keyring',
-      encryption: multi
-    })
-    const { envelope, epoch } = await writer.encrypt({ data: DOC })
-    expect(epoch).toBe(lastEpochId)
-    expect(epoch).not.toBe(encryption.epochs![0]!.id)
-    const reader = await createEdvDocCipher({
-      ...keys,
-      collectionId: 'keyring',
-      encryption: { ...multi, currentEpoch: lastEpochId }
-    })
-    expect(await reader.decrypt({ envelope })).toEqual(DOC)
+    await expect(
+      createEdvEncryptOnlyDocCipher({
+        collectionId: 'keyring',
+        encryption: unmarked
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
+    await expect(
+      createEdvDocCipher({
+        ...keys,
+        collectionId: 'keyring',
+        encryption: unmarked
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
   })
 })
 

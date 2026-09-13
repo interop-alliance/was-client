@@ -83,47 +83,16 @@ export function epochRostersEqual(
 }
 
 /**
- * Picks the current epoch out of a roster: the entry named by `currentEpoch`
- * when the list holds it, otherwise the LAST entry in the list's canonical
- * order.
- *
- * The fallback is defined against the list's own order rather than against the
- * incidental order in which secrets happened to unwrap, so the choice is
- * deterministic for every caller, instead of assuming the list is
- * append-ordered newest-last.
- *
- * This is the tolerant form, for callers holding the full roster during a
- * rotation, where `currentEpoch` naming an unlisted entry is not yet
- * actionable. A caller choosing the epoch to SEAL PLAINTEXT UNDER wants
- * {@link currentEpochOf} instead, which refuses that case rather than
- * selecting another entry.
- *
- * The list must be non-empty -- every caller has already established that it
- * holds at least one epoch, so an empty list is a programming error rather than
- * a state this can report on.
- *
- * @param epochs {CollectionEncryptionEpoch[]}   the non-empty list to pick from
- * @param [currentEpoch] {string}   the descriptor's declared write epoch
- * @returns {CollectionEncryptionEpoch}
- */
-export function pickEpoch(
-  epochs: CollectionEncryptionEpoch[],
-  currentEpoch?: string
-): CollectionEncryptionEpoch {
-  return epochs.find(epoch => epoch.id === currentEpoch) ?? epochs.at(-1)!
-}
-
-/**
  * The epoch a descriptor seals new writes under: the entry `currentEpoch`
- * names, or the last listed entry when the descriptor declares none (the
- * roster is append-only, so the last entry is the newest).
+ * names.
  *
  * Always resolved against the FULL roster, never against the subset of epochs
- * one reader is named in, and fails closed when `currentEpoch` names an entry
- * the roster does not list. Both rules exist for the same reason: selecting
- * any other entry would seal new plaintext under a rotated-out epoch, whose
- * key every removed recipient of that epoch still holds. A descriptor whose
- * `currentEpoch` is unlisted violates the descriptor invariant -- it is stale,
+ * one reader is named in. Fails closed when `currentEpoch` is absent or names
+ * an entry the roster does not list. The list order is not trusted to put the
+ * newest epoch last, so there is no fallback entry. All three rules exist for
+ * the same reason: selecting any other entry would seal new plaintext under a
+ * rotated-out epoch, whose key every removed recipient of that epoch still
+ * holds. Such a descriptor violates the descriptor invariant -- it is stale,
  * partially synced, or tampered with -- and re-reading it is the only sound
  * recovery.
  *
@@ -143,7 +112,11 @@ export function currentEpochOf({
   label: string
 }): CollectionEncryptionEpoch {
   if (currentEpoch === undefined) {
-    return epochs.at(-1)!
+    throw new EncryptionError(
+      `Collection ${label} declares no currentEpoch, so the epoch to seal ` +
+        'under cannot be identified. A descriptor names its current epoch ' +
+        'among the epochs it lists; re-read the descriptor before writing.'
+    )
   }
   const entry = epochs.find(epoch => epoch.id === currentEpoch)
   if (entry === undefined) {

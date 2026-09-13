@@ -15,12 +15,14 @@ import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 
 import {
+  EncryptionError,
   KeyUnwrapError,
   PreconditionFailedError,
   ValidationError
 } from '../../src/index.js'
 import type {
   CollectionEncryption,
+  CollectionEncryptionEpoch,
   CollectionEncryptionRecipient
 } from '../../src/index.js'
 import type { Collection } from '../../src/Collection.js'
@@ -1012,6 +1014,32 @@ describe('removeRecipient security', () => {
   }
 
   /**
+   * Mints an epoch wrapping its key to each of `readers`.
+   *
+   * @param readers {Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>}
+   * @returns {Promise<CollectionEncryptionEpoch>}
+   */
+  async function epochFor(
+    readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
+  ): Promise<CollectionEncryptionEpoch> {
+    const { epochId, secret } = await mintEpoch()
+    return {
+      id: epochId,
+      recipients: await Promise.all(
+        readers.map(reader =>
+          wrapEpochSecret({
+            epochSecret: secret,
+            recipient: {
+              id: reader.kak.id,
+              publicKeyMultibase: reader.publicKeyMultibase
+            }
+          })
+        )
+      )
+    }
+  }
+
+  /**
    * Seeds a one-epoch descriptor wrapping the epoch key to each of `readers`.
    *
    * @param readers {Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>}
@@ -1020,28 +1048,62 @@ describe('removeRecipient security', () => {
   async function seedDescriptor(
     readers: Array<{ kak: IKeyAgreementKey; publicKeyMultibase: string }>
   ): Promise<CollectionEncryption> {
-    const { epochId, secret } = await mintEpoch()
-    return {
-      scheme: 'edv',
-      epochs: [
-        {
-          id: epochId,
-          recipients: await Promise.all(
-            readers.map(reader =>
-              wrapEpochSecret({
-                epochSecret: secret,
-                recipient: {
-                  id: reader.kak.id,
-                  publicKeyMultibase: reader.publicKeyMultibase
-                }
-              })
-            )
-          )
-        }
-      ],
-      currentEpoch: epochId
-    }
+    const epoch = await epochFor(readers)
+    return { scheme: 'edv', epochs: [epoch], currentEpoch: epoch.id }
   }
+
+  it('refuses to rotate a descriptor that declares no currentEpoch', async () => {
+    // Trent was removed at the rotation to `current`, so he holds only the
+    // older epoch. Listed newest-first with no `currentEpoch`, a last-entry
+    // fallback would pick `older` and wrap the fresh epoch back to Trent.
+    const alice = await makeReader()
+    const trent = await makeReader()
+    const mallory = await makeReader()
+    const current = await epochFor([alice, mallory])
+    const older = await epochFor([alice, trent, mallory])
+    const descriptor: CollectionEncryption = {
+      scheme: 'edv',
+      epochs: [current, older]
+    }
+    const fake = mutableCollection(descriptor)
+
+    await expect(
+      removeRecipient({
+        collection: fake as unknown as Collection,
+        space: { revoke: async () => undefined } as unknown as Space,
+        recipientId: mallory.kak.id,
+        revoke: []
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
+    expect(fake._state.encryption).toBe(descriptor)
+  })
+
+  it('refuses to rotate a descriptor whose currentEpoch is unlisted', async () => {
+    // The last-entry fallback lands on an epoch Mallory is not in, so a
+    // tolerant lookup would see nothing to rotate and resolve successfully
+    // while Mallory keeps the epoch every writer seals under.
+    const alice = await makeReader()
+    const trent = await makeReader()
+    const mallory = await makeReader()
+    const current = await epochFor([alice, mallory])
+    const older = await epochFor([alice, trent])
+    const descriptor: CollectionEncryption = {
+      scheme: 'edv',
+      epochs: [current, older],
+      currentEpoch: 'urn:epoch:never-listed'
+    }
+    const fake = mutableCollection(descriptor)
+
+    await expect(
+      removeRecipient({
+        collection: fake as unknown as Collection,
+        space: { revoke: async () => undefined } as unknown as Space,
+        recipientId: mallory.kak.id,
+        revoke: []
+      })
+    ).rejects.toBeInstanceOf(EncryptionError)
+    expect(fake._state.encryption).toBe(descriptor)
+  })
 
   it('does not re-add a previously removed reader on a later removal', async () => {
     // Readers {A, X, Y} in epoch1. Remove X, then remove Y. The survivor set of

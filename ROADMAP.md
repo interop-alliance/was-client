@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 102
+nextAvailableId: 103
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -432,46 +432,6 @@ one; that choice needs the maintainer's byte-level sign-off before it is coded.
 
 discovered-from: whole-codebase review, 2026-09-11.
 
-### WCL-45: Rotation resolves its current epoch with the tolerant `pickEpoch`, re-admitting removed readers
-
-- status: todo
-- priority: high
-- labels: encryption, key-epochs, security, fail-closed
-- touches:
-  - freewallet, wallet-core, dcw: `removeRecipient` / `replaceRecipient` gain a
-    new `EncryptionError` on a descriptor whose `currentEpoch` is absent or
-    unlisted, so the rotating call sites need a pass
-- acceptance:
-  - [ ] `src/edv/recipients.ts:877` resolves the current epoch through the
-        strict `currentEpochOf`, and `pickEpoch` is deleted once it has no
-        callers
-  - [ ] A rotation against a descriptor whose `currentEpoch` is absent, or names
-        an unlisted entry, refuses instead of computing a survivor set
-  - [ ] Both scenarios are covered by tests: the re-admission case and the
-        silent-no-op case
-
-Executed against the real `removeRecipient`. Served
-`epochs: [E2{alice,mallory}, E1{alice,trent,mallory}]` with `currentEpoch`
-omitted, Alice removing Mallory: the fresh epoch E3 was wrapped to Trent, and
-Trent's key-agreement key unwrapped E3's secret to the same bytes Alice
-unwrapped. A reader removed at the earlier rotation holds the post-rotation
-collection key. The control run, with a correct `currentEpoch`, produced
-`[alice]` alone. The second variant also reproduced: an unlisted `currentEpoch`
-whose fallback lands on an epoch without the retiring kid makes `rotating`
-false, so `removeRecipient` writes nothing and resolves successfully while the
-removed reader keeps the epoch every writer is sealing under.
-
-`pickEpoch` has exactly one caller in the repo, this line, and no test coverage.
-The strict `currentEpochOf` was added in c02716f (2026-09-11) and routed only to
-the seal-plaintext sites. The tolerant form's stated rationale does not hold for
-its one caller: a rotation that cannot identify the current epoch is computing
-its survivor set from an untrusted list, which is exactly when it should refuse.
-The spec agrees -- `currentEpoch` is REQUIRED and must name an entry in `epochs`
--- so the fallback exists only to tolerate a descriptor that cannot conformantly
-exist. No wire change.
-
-discovered-from: whole-codebase review, 2026-09-11.
-
 ### WCL-46: Rotation re-wraps the fresh epoch secret to every `kid` in the served roster
 
 - status: todo
@@ -556,42 +516,6 @@ verify. That contradicts the repo's fail-closed policy everywhere else.
 Maintainer decision required before coding: the shape of the marker by which a
 source declares itself governance-aware. discovered-from: whole-codebase review,
 2026-09-11.
-
-### WCL-48: A 412 raised by `store.read()` escapes `compareAndSwap` instead of rebasing
-
-- status: todo
-- priority: high
-- labels: cas, conditional-writes, log, correctness
-- touches:
-  - wallet-core: `rosterLogStore` is the generic store wrapped by this loop, so
-    its roster tests are the acceptance test and must be re-run
-- acceptance:
-  - [ ] A `PreconditionFailedError` from `store.read()` is treated as a rebase,
-        the same as one from `store.replace()`
-  - [ ] A store whose `read()` throws a 412 once completes through the retry
-        rather than surfacing the error to the caller
-  - [ ] `logGovernedDescriptorStore`'s module docstring and ARCHITECTURE.md
-        agree with the code
-
-`compareAndSwap`'s loop body is `const current = await store.read()`
-(`src/internal/cas.ts:121`) with no enclosing try. The only two try/catch blocks
-wrap `store.create` and `store.replace`. `readGoverned` raises
-`PreconditionFailedError({ status: 412 })` at
-`src/edv/logGovernedDescriptorStore.ts:534`, reached from the governed store's
-`read()`, which `src/edv/recipients.ts:1192` adapts verbatim into the
-`CasStore`. `recipients.ts` has a single catch, on the zcap-revoke step, so
-nothing upstream rebases either.
-
-Proven by execution: a fake store whose `read()` throws a 412 once yields
-`reads === 1` and the raw `PreconditionFailedError` out of `compareAndSwap`,
-while the identical 412 from `replace()` yields `reads === 2` and succeeds. The
-documented rebase loops therefore fail on the first attempt against the governed
-store. Both the module docstring and ARCHITECTURE.md claim the recipient loops
-rebase on this class, so code and documentation disagree today. This sits
-between two archived items: WCL-25 landed `src/internal/cas.ts` and WCL-17
-landed the governed store whose `read()` can throw a 412; neither one's
-acceptance covers the pair. No wire artifact changes. discovered-from:
-whole-codebase review, 2026-09-11.
 
 ### WCL-49: `declareIndex`'s first write is unconditional, so a concurrent first declaration is lost
 

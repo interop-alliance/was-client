@@ -110,7 +110,7 @@ import { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
 import { epochWriteStandIn, resolveEpochKeys } from './epochKeys.js'
 import { didKeyResolver } from './epochCrypto.js'
-import { currentEpochOf } from './epochRoster.js'
+import { currentEpochOf, hasKeyEpochs } from './epochRoster.js'
 import { resolveHmacKey } from './hmacKey.js'
 import type { BlindingKey } from './hmacKey.js'
 import {
@@ -2116,7 +2116,7 @@ export async function buildEdvCodec({
  * @param options.label {string}   names the collection in error messages
  * @param [options.encryption] {CollectionEncryption}   the descriptor
  * @returns {CollectionEncryption}   the descriptor, with `epochs` narrowed
- *   non-empty
+ *   non-empty and `currentEpoch` narrowed to a string
  */
 function guardEncryptionDescriptor({
   label,
@@ -2125,6 +2125,7 @@ function guardEncryptionDescriptor({
   label: string
   encryption?: CollectionEncryption
 }): CollectionEncryption & {
+  currentEpoch: string
   epochs: NonNullable<CollectionEncryption['epochs']>
 } {
   const defect = descriptorDefect(encryption)
@@ -2132,6 +2133,7 @@ function guardEncryptionDescriptor({
     throw new EncryptionError(`Collection ${label} ${defect}`)
   }
   return encryption as CollectionEncryption & {
+    currentEpoch: string
     epochs: NonNullable<CollectionEncryption['epochs']>
   }
 }
@@ -2140,8 +2142,9 @@ function guardEncryptionDescriptor({
  * The one routability rule for an `edv` descriptor, shared by the throwing
  * guard and the provider's `canRoute`: names why this client cannot route the
  * descriptor as it stands (a scheme version newer than this client
- * implements, or no key epochs), or `null` when it can. The reason reads as
- * the predicate of a sentence whose subject is the collection.
+ * implements, no key epochs, or no `currentEpoch`), or `null` when it can.
+ * The reason reads as the predicate of a sentence whose subject is the
+ * collection.
  *
  * @param [encryption] {CollectionEncryption}
  * @returns {string | null}
@@ -2167,6 +2170,12 @@ function descriptorDefect(encryption?: CollectionEncryption): string | null {
       'to a key-agreement key.'
     )
   }
+  if (!hasKeyEpochs(encryption)) {
+    return (
+      'declares key epochs but no currentEpoch, so the epoch to seal under ' +
+      'cannot be identified. Re-read the descriptor.'
+    )
+  }
   return null
 }
 
@@ -2183,11 +2192,10 @@ function descriptorDefect(encryption?: CollectionEncryption): string | null {
  *
  * Applies the same fail-closed guards as `codecFor`: a future-scheme
  * descriptor and a descriptor without epochs are refused. The write epoch is
- * the descriptor's `currentEpoch`; a descriptor that omits it seals to the
- * last listed epoch (the roster is append-only, so that is the newest). A
- * `currentEpoch` the roster does not list violates the descriptor invariant
- * and is refused fail-closed -- silently re-routing it could seal new
- * plaintext to a rotated-out epoch whose removed recipients still hold keys.
+ * the descriptor's `currentEpoch`. A descriptor that omits it, or names an
+ * epoch the roster does not list, violates the descriptor invariant and is
+ * refused fail-closed -- guessing another entry could seal new plaintext to a
+ * rotated-out epoch whose removed recipients still hold keys.
  *
  * @param options {object}
  * @param options.collectionId {string}   labels errors; and on a slot-bound
@@ -2209,8 +2217,7 @@ export async function encryptOnlyEdvCodec({
   const label = `"${collectionId}"`
   const descriptor = guardEncryptionDescriptor({ label, encryption })
   // `currentEpoch` MUST name a listed epoch (storage-core's descriptor
-  // invariant); with none declared, the last listed epoch is the newest,
-  // since the roster is append-only and the current epoch never moves back.
+  // invariant); the list order is not trusted to put the newest epoch last.
   const writeEpoch = currentEpochOf({
     epochs: descriptor.epochs,
     currentEpoch: descriptor.currentEpoch,

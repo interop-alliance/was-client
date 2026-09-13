@@ -6,8 +6,8 @@
  * off-limits to this change: `fromCapability` on a sub-path-mounted server (it
  * must strip `serverUrl`'s base path via `parseSpaceTarget`, not classify the
  * raw pathname), and the deterministic write-epoch selection in
- * `resolveEpochKeys` (currentEpoch by id lookup, with a descriptor-order
- * fallback).
+ * `resolveEpochKeys` (currentEpoch by id lookup, refusing a descriptor that
+ * omits it or names an unlisted epoch).
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -18,7 +18,8 @@ import {
   ValidationError,
   WasServerError,
   EncryptionError,
-  EncryptOnlyCipherError
+  EncryptOnlyCipherError,
+  PreconditionFailedError
 } from '../../src/index.js'
 import type { CollectionEncryption } from '../../src/index.js'
 import { Space } from '../../src/Space.js'
@@ -202,6 +203,22 @@ describe('resolveEpochKeys write-epoch selection', () => {
     )
   })
 
+  it('refuses a descriptor that declares no currentEpoch', async () => {
+    const alice = await makeReader()
+    const older = await epochEntryFor([alice])
+    const newer = await epochEntryFor([alice])
+    // Listed newest-first with no `currentEpoch`: a last-entry fallback would
+    // seal writes to `older`, whose key a reader removed at the rotation to
+    // `newer` still holds.
+    const encryption = {
+      scheme: 'edv',
+      epochs: [newer, older]
+    } as unknown as CollectionEncryption
+    await expect(
+      resolveEpochKeys({ encryption, keyAgreementKey: alice.kak })
+    ).rejects.toThrow(EncryptionError)
+  })
+
   it('refuses a currentEpoch the roster does not list', async () => {
     const alice = await makeReader()
     const listed = await epochEntryFor([alice])
@@ -240,6 +257,59 @@ describe('compareAndSwap on an absent store', () => {
     })
     expect(written).toBe('seed')
     expect(stored).toEqual(['seed'])
+  })
+})
+
+describe('compareAndSwap on a 412 raised by read()', () => {
+  it('rebases the read the same way as a stale replace', async () => {
+    // A store's read can observe a concurrent write mid-read (the governed
+    // store's projection behind its log). That is a lost race, so the loop
+    // re-reads instead of surfacing the conflict.
+    let reads = 0
+    const written: string[] = []
+    const result = await compareAndSwap<string>({
+      store: {
+        async read() {
+          reads += 1
+          if (reads === 1) {
+            throw new PreconditionFailedError('behind the log', { status: 412 })
+          }
+          return { value: 'fresh', etag: '"v2"' }
+        },
+        async replace(value: string) {
+          written.push(value)
+        }
+      },
+      mutate: value => `${value}+change`,
+      operation: 'Read rebase'
+    })
+    expect(reads).toBe(2)
+    expect(result).toBe('fresh+change')
+    expect(written).toEqual(['fresh+change'])
+  })
+
+  it('surfaces the exhaustion error when every read keeps losing', async () => {
+    const conflict = new PreconditionFailedError('behind the log', {
+      status: 412
+    })
+    await expect(
+      compareAndSwap<string>({
+        store: {
+          async read() {
+            throw conflict
+          },
+          async replace() {
+            throw new Error('not reached')
+          }
+        },
+        mutate: value => value,
+        operation: 'Read rebase',
+        maxAttempts: 2
+      })
+    ).rejects.toMatchObject({
+      name: 'PreconditionFailedError',
+      cause: conflict
+    })
   })
 })
 

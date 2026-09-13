@@ -28,7 +28,10 @@ export interface CasStore<T> {
   /**
    * Reads the current value with the validator the next {@link replace} is
    * compare-and-swapped against. Resolves `null` when the host holds no value
-   * yet and this store can {@link create} one.
+   * yet and this store can {@link create} one. Throws
+   * `PreconditionFailedError` (412) when the read itself observes a concurrent
+   * write (e.g. a served projection behind its governing log); the loop
+   * rebases on it like a stale replace.
    *
    * @returns {Promise<{ value: T; etag?: string } | null>}
    */
@@ -77,12 +80,12 @@ export function isPreconditionFailed(err: unknown): boolean {
 
 /**
  * Reads the store's value, applies `mutate`, and writes the result back with a
- * compare-and-swap (`If-Match`). Retries on a stale (`412`) validator,
- * re-reading the fresh value each time, up to `maxAttempts`; surfaces a
- * `PreconditionFailedError` naming `operation` if it keeps losing the race. A
- * `mutate` that resolves `null` signals "no change needed" (the value already
- * reflects the desired state, e.g. an idempotent retry): nothing is written
- * and the current value is returned as-is. Any other error `mutate` throws
+ * compare-and-swap (`If-Match`). Retries on a stale (`412`) validator, or a
+ * `412` raised by the read itself, re-reading the fresh value each time, up to
+ * `maxAttempts`; surfaces a `PreconditionFailedError` naming `operation` if it
+ * keeps losing the race. A `mutate` that resolves `null` signals "no change
+ * needed" (the value already reflects the desired state, e.g. an idempotent
+ * retry): nothing is written and the current value is returned as-is. Any other error `mutate` throws
  * propagates unchanged.
  *
  * When the store reports no value yet (`read()` resolves `null`), the optional
@@ -118,7 +121,17 @@ export async function compareAndSwap<T>({
 }): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const current = await store.read()
+    let current: { value: T; etag?: string } | null
+    try {
+      current = await store.read()
+    } catch (err) {
+      if (isPreconditionFailed(err)) {
+        // The read observed a concurrent write: re-read.
+        lastError = err
+        continue
+      }
+      throw err
+    }
     if (current === null) {
       if (onAbsent === undefined) {
         throw new ValidationError(
