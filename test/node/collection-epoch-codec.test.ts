@@ -30,6 +30,7 @@ import type {
 } from '../../src/index.js'
 import { resolveCodec, identityCodec } from '../../src/internal/codec.js'
 import type { ClientContext } from '../../src/internal/request.js'
+import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 /**
  * A fake codec bound to a fixed epoch that records each `encode` call, standing
@@ -196,6 +197,7 @@ describe('rotate-then-write on the same handle', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient,
       encryption
     })
@@ -346,6 +348,7 @@ describe('createCollection pre-seed consults the provider', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient,
       encryption
     })

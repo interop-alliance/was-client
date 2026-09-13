@@ -105,12 +105,9 @@ describeLive('governing history log (live server)', () => {
 
   beforeAll(async () => {
     const keyPair = await Ed25519VerificationKey.generate()
-    const did = `did:key:${keyPair.fingerprint()}`
-    keyPair.id = `${did}#${keyPair.fingerprint()}`
-    keyPair.controller = did
     owner = WasClient.fromSigner({
       serverUrl: serverUrl!,
-      signer: keyPair.signer()
+      signer: keyPair.didKeySigner()
     })
     space = await owner.createSpace({ name: 'Governed Log Integration' })
     // A Collection with no client-written `encryption` descriptor: the only

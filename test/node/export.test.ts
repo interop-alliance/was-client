@@ -12,7 +12,9 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient, WasServerError } from '../../src/index.js'
+import type { WasClient } from '../../src/index.js'
+import { WasServerError } from '../../src/index.js'
+import { clientWithStub } from '../helpers/stubClient.js'
 
 const TAR_BYTES = new Uint8Array([0x74, 0x61, 0x72, 0x00, 0xff, 0x01])
 
@@ -45,43 +47,39 @@ function clientWithExportResponse(response: ExportResponse = {}): WasClient {
   if (contentType !== undefined) {
     headers.set('content-type', contentType)
   }
-  const zcapClient = {
-    invocationSigner: { id: 'did:example:alice#key-1' },
-    async request() {
-      return {
-        status: 200,
-        headers,
-        bodyUsed: response.bodyUsed ?? false,
-        data: response.data,
-        body:
-          'body' in response
-            ? response.body
-            : new ReadableStream<Uint8Array>({
-                start(controller) {
-                  controller.enqueue(bytes.slice(0, 3))
-                  controller.enqueue(bytes.slice(3))
-                  controller.close()
-                }
-              }),
-        async arrayBuffer() {
-          return bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength
-          )
-        },
-        async blob() {
-          const buffer = bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength
-          ) as ArrayBuffer
-          return new Blob([buffer], {
-            type: contentType === 'application/x-tar' ? contentType : ''
-          })
-        }
-      } as unknown as HttpResponse
-    }
-  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  return clientWithStub(async () => {
+    return {
+      status: 200,
+      headers,
+      bodyUsed: response.bodyUsed ?? false,
+      data: response.data,
+      body:
+        'body' in response
+          ? response.body
+          : new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(bytes.slice(0, 3))
+                controller.enqueue(bytes.slice(3))
+                controller.close()
+              }
+            }),
+      async arrayBuffer() {
+        return bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        )
+      },
+      async blob() {
+        const buffer = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer
+        return new Blob([buffer], {
+          type: contentType === 'application/x-tar' ? contentType : ''
+        })
+      }
+    } as unknown as HttpResponse
+  })
 }
 
 /**

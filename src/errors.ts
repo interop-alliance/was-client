@@ -128,6 +128,20 @@ export class NotSupportedError extends WasError {
 }
 
 /**
+ * The server speaks no version of the WAS specification this client
+ * understands, so the client stops rather than guess a URL layout. Raised by
+ * service discovery before the first signed request when the server's
+ * responses carry no `rel="service"` link (a server that predates v0.5), when
+ * the service description is not valid JSON or lacks `url` or `specs`, or
+ * when no version entry under the WAS specification identifier names a
+ * version this client understands. Not a transient failure: retrying against
+ * the same server gives the same answer.
+ */
+export class IncompatibleServerError extends WasError {
+  override name = 'IncompatibleServerError'
+}
+
+/**
  * A client-supplied id or backend conflicts with existing state (HTTP 409):
  * `id-conflict` (the id already exists), `reserved-id` (the id collides with a
  * reserved path segment), or `unsupported-backend` (the backend id is not in

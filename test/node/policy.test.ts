@@ -10,7 +10,8 @@
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient } from '../../src/index.js'
+import type { WasClient } from '../../src/index.js'
+import { clientWithStub } from '../helpers/stubClient.js'
 
 interface RequestArgs {
   url?: string
@@ -38,24 +39,20 @@ function clientWithRequestSpy({
   lastRequest: () => RequestArgs | undefined
 } {
   let captured: RequestArgs | undefined
-  const zcapClient = {
-    invocationSigner: { id: 'did:example:alice#key-1' },
-    async request(args: RequestArgs) {
-      captured = args
-      if (fail !== undefined) {
-        throw { status: fail, response: { status: fail } }
-      }
-      return {
-        status: 200,
-        headers: new Headers(),
-        data,
-        async json() {
-          return data
-        }
-      } as unknown as HttpResponse
+  const client = clientWithStub(async (args: RequestArgs) => {
+    captured = args
+    if (fail !== undefined) {
+      throw { status: fail, response: { status: fail } }
     }
-  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+    return {
+      status: 200,
+      headers: new Headers(),
+      data,
+      async json() {
+        return data
+      }
+    } as unknown as HttpResponse
+  })
   return { client, lastRequest: () => captured }
 }
 

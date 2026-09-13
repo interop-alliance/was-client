@@ -8,7 +8,34 @@
  * throws the error the test wants `mapError` to see.
  */
 import type { HttpResponse } from '@interop/http-client'
+import type { ServiceDescription } from '../../src/index.js'
 import { WasClient } from '../../src/index.js'
+
+/**
+ * A v0.5 service description for a stub server at `serverUrl`, with the Spaces
+ * Repository at `spaces/` under it. Passing it to the `WasClient` constructor
+ * lets a stubbed client skip network discovery.
+ *
+ * @param [serverUrl] {string}   defaults to `https://was.example`
+ * @returns {ServiceDescription}
+ */
+export function serviceDescriptionFor(
+  serverUrl = 'https://was.example'
+): ServiceDescription {
+  const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
+  return {
+    url: new URL('service', base).toString(),
+    specs: {
+      'https://w3id.org/pws': [
+        {
+          version: '0.5',
+          spaces: new URL('spaces/', base).toString(),
+          features: ['listing', 'collection-management', 'space-management']
+        }
+      ]
+    }
+  }
+}
 
 /**
  * The subset of `ZcapClient.request()` arguments the stubs record.
@@ -43,7 +70,11 @@ export function clientWithStub(
     invocationSigner: { id: 'did:example:alice#key-1' },
     request
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  return new WasClient({
+    serverUrl: 'https://was.example',
+    zcapClient,
+    serviceDescription: serviceDescriptionFor()
+  })
 }
 
 /**

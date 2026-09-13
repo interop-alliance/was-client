@@ -49,8 +49,6 @@ async function freshClient(): Promise<{
 }> {
   const keyPair = await Ed25519VerificationKey.generate()
   const did = `did:key:${keyPair.fingerprint()}`
-  keyPair.id = `${did}#${keyPair.fingerprint()}`
-  keyPair.controller = did
 
   const kak = await X25519KeyAgreementKey2020.generate({ controller: did })
   const keyResolver = async ({ id }: { id?: string }) => {
@@ -74,7 +72,7 @@ async function freshClient(): Promise<{
   return {
     was: WasClient.fromSigner({
       serverUrl: serverUrl!,
-      signer: keyPair.signer(),
+      signer: keyPair.didKeySigner(),
       encryption
     }),
     kak: kak as IKeyAgreementKey

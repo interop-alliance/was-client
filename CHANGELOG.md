@@ -1,5 +1,31 @@
 # @interop/was-client Changelog
 
+## 0.62.0 - TBD
+
+### Added
+
+- Service discovery: `was.service()` finds the service description through the
+  `rel="service"` link on the response to an unsigned `HEAD` of `serverUrl`,
+  reads it unsigned, and selects the WAS version to speak. It returns a
+  `ServiceInfo` (`description`, `version`, `entry`, `spacesUrl`, `features`,
+  `hasFeature()`), memoized per client. `{ refresh: true }` discovers again.
+- `IncompatibleServerError`, and the `ServiceInfo`, `ServiceDescription`,
+  `ServiceDescriptionVersionEntry`, and `PwsVersionEntry` type exports.
+- A `serviceDescription` option on the `WasClient` constructor and
+  `fromSigner()`, to select a version from a copy the caller already holds.
+
+### Changed
+
+- BREAKING: every signed request waits on service discovery first. A server
+  whose responses carry no `service` link (pre-0.5), a malformed service
+  description, or one that lists no v0.5 entry under `https://w3id.org/pws`
+  makes every signed method reject with `IncompatibleServerError` before
+  signing. There is no v0.4 fallback. Unsigned public reads are not gated.
+- BREAKING: `createSpace()` and `listSpaces()` address the Spaces Repository URL
+  from the service description instead of `/spaces/` under `serverUrl`. They
+  throw `NotSupportedError` when the description has no `spaces` URL.
+- Requires `@interop/storage-core` 0.15.0 or newer.
+
 ## 0.61.0 - 2026-09-12
 
 ### Changed

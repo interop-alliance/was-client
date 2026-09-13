@@ -13,6 +13,7 @@
 - [Usage](#usage)
   - [Creating a client (signer + zcapClient)](#creating-a-client-signer--zcapclient)
     - [Deriving a client from a secret or seed (`./identity`)](#deriving-a-client-from-a-secret-or-seed-identity)
+  - [Service discovery](#service-discovery)
   - [The handle model](#the-handle-model)
   - [Spaces](#spaces)
   - [Collections](#collections)
@@ -187,6 +188,50 @@ accepted. A server that verifies both it and the older `Ed25519Signature2020`
 accepts chains whose links mix the two, which is what a fleet upgrading at its
 own pace produces.
 
+### Service discovery
+
+Before its first signed request, the client reads the server's service
+description. It sends an unsigned `HEAD` to `serverUrl` and follows the
+`Link: <...>; rel="service"` header on the response, whatever its status. Then
+it reads the linked document with an unsigned `GET`. The spec fixes no path for
+the document, so the client assumes none.
+
+From the document the client selects the WAS specification version it speaks.
+This client speaks only v0.5. It ignores `specs` keys other than
+`https://w3id.org/pws` and entries without a `version`. If no entry names v0.5,
+or the document is malformed, every signed request rejects with
+`IncompatibleServerError` before anything is signed. A server whose responses
+carry no `service` link predates v0.5 and is refused the same way. The client
+does not fall back to the v0.4 layout.
+
+Discovery runs once per client and is shared by every handle. A failure is not
+memoized, so the next request retries. Unsigned public reads (`publicRead`,
+`publicListCollection`, ...) take absolute URLs that may point at another
+server, and do not wait on discovery.
+
+`was.service()` returns what discovery found:
+
+```ts
+const info = await was.service()
+info.version // '0.5'
+info.entry // the chosen `PwsVersionEntry`
+info.description // the whole `ServiceDescription`
+info.spacesUrl // the Spaces Repository URL, or undefined
+info.features // e.g. ['listing', 'collection-management', ...]
+info.hasFeature('quotas') // false when the token is absent
+
+// Discover again, e.g. before relying on an affordance a host may have dropped.
+await was.service({ refresh: true })
+```
+
+`features` is an open token list. A token this client does not know is carried
+along and otherwise ignored, and an absent token means unsupported. The client
+gates no behavior on the document's `instance` member.
+
+A caller that already holds the document (from a cache, say) can pass it as the
+`serviceDescription` constructor option. The client then selects a version from
+that copy without fetching, and `service({ refresh: true })` discovers afresh.
+
 ### The handle model
 
 The client exposes the WAS containment model
@@ -220,10 +265,13 @@ one item" footgun. The next sections cover each level in turn.
 
 A Space is the top-level container, created from the spaces repository. The
 server requires a `name`; `controller` defaults to the client's own DID, and the
-server generates the id unless you pass one.
+server generates the id unless you pass one. `createSpace()` and `listSpaces()`
+address the Spaces Repository URL the service description names (see
+[Service discovery](#service-discovery)). Against a server whose description has
+no `spaces` URL, they throw `NotSupportedError` without sending anything.
 
 ```ts
-const space = await was.createSpace({ name: 'Home' }) // POST /spaces/
+const space = await was.createSpace({ name: 'Home' }) // POST {spacesUrl}
 
 // Lazy handle to an existing space by id -- no I/O until a verb runs.
 const same = was.space(space.id)
@@ -1134,7 +1182,8 @@ large Blobs to disk.)
 `was.request(...)` mirrors ezcap's generic `request()` for hand-built calls. As
 a deliberate escape hatch it returns the raw `HttpResponse` and throws raw
 ezcap/ky errors -- it does not apply the null-on-404 or typed-error
-conveniences.
+conveniences. It still waits on service discovery, so against an incompatible
+server it rejects with `IncompatibleServerError`.
 
 ```ts
 const response = await was.request({ path: `/space/${spaceId}`, method: 'GET' })
@@ -1170,6 +1219,12 @@ instead, as `{ outcome: 'not-found' }`, rather than swallowing it.
 
 Spec endpoints a given server has not yet implemented surface as
 `NotImplementedError` (the server's 501).
+
+`IncompatibleServerError` comes from service discovery, not from a response
+status. Any signed method, read methods included, throws it when the server
+speaks no WAS version this client understands (see
+[Service discovery](#service-discovery)). It carries no `status`, so a read
+method does not mistake it for a 404.
 
 ## Contribute
 

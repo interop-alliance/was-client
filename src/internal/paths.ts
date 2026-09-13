@@ -4,9 +4,10 @@
 /**
  * URL path builders for the WAS server, encoding the trailing-slash
  * canonicalization once. The convention: a trailing slash marks a container in
- * canonical form (`/spaces/`, `/space/{s}/`, `/space/{s}/{c}/`), everything
- * else has none, and no two paths differ only by a trailing slash. Path
- * segments are percent-encoded so ids never break out of their slot.
+ * canonical form (`/space/{s}/`, `/space/{s}/{c}/`), everything else has
+ * none, and no two paths differ only by a trailing slash. Path segments are
+ * percent-encoded so ids never break out of their slot. The Spaces Repository
+ * has no builder: its URL is the `spaces` member of the service description.
  *
  * A container's own description is not at its URL: it lives at the reserved
  * `meta` segment (`spaceMeta`, `collectionMeta`), beside the Resource-level
@@ -91,13 +92,6 @@ function encodeCollectionId(collectionId: string): string {
 function encodeResourceId(resourceId: string): string {
   assertNotReserved({ id: resourceId, kind: 'resource' })
   return encode(resourceId)
-}
-
-/**
- * `/spaces/` -- the SpacesRepository (create / list spaces).
- */
-export function spacesRoot(): string {
-  return '/spaces/'
 }
 
 /**

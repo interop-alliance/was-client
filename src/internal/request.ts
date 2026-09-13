@@ -6,28 +6,32 @@
  * paths against the server URL and defaulting the capability `action` to the
  * HTTP method (never ezcap's `read`/`write`). `send()` adds the typed-error
  * mapping and the null-on-404 read translation; `rawRequest()` is the
- * unmapped escape hatch used by `was.request()`.
+ * unmapped escape hatch used by `was.request()`. Every signed request first
+ * awaits the context's memoized service discovery, so no request reaches a
+ * server whose protocol version this client does not speak.
  */
 import type { ZcapClient } from '@interop/ezcap'
 import type { HttpResponse } from '@interop/http-client'
-import { mapError, httpStatus } from '../errors.js'
+import { WasError, mapError, httpStatus } from '../errors.js'
 import { toUrl } from './paths.js'
 import { dataOrNull } from './content.js'
 import { readEtag } from './conditional.js'
 import type { EncryptionProvider } from '../codec.js'
-import type { IZcap, RequestInput } from '../types.js'
+import type { IZcap, RequestInput, ServiceInfo } from '../types.js'
 
 /**
  * The shared context threaded through every handle: the server base URL, the
- * wrapped ezcap client, the cached controller DID of its signer, and the
- * optional encryption provider that supplies an encrypting codec for the
- * collections the client holds keys for.
+ * wrapped ezcap client, the cached controller DID of its signer, the optional
+ * encryption provider that supplies an encrypting codec for the collections
+ * the client holds keys for, and the memoized service discovery every signed
+ * request waits on.
  */
 export interface ClientContext {
   serverUrl: string
   zcapClient: ZcapClient
   controllerDid: string
   encryption?: EncryptionProvider
+  service: () => Promise<ServiceInfo>
 }
 
 /**
@@ -60,7 +64,9 @@ function resolveRequestUrl(context: ClientContext, input: SendInput): string {
 /**
  * Signs and sends a request via the wrapped ezcap client, returning the raw
  * `HttpResponse` and throwing the raw ky/ezcap error. Does not apply error
- * mapping or null-on-404 -- this is the escape-hatch primitive.
+ * mapping or null-on-404 -- this is the escape-hatch primitive. It waits on
+ * the context's service discovery first, and rejects with that discovery's
+ * error (such as `IncompatibleServerError`) before anything is signed.
  *
  * @param context {ClientContext}
  * @param input {SendInput}
@@ -71,6 +77,7 @@ export async function rawRequest(
   input: SendInput
 ): Promise<HttpResponse> {
   const url = resolveRequestUrl(context, input)
+  await context.service()
   const method = input.method ?? 'GET'
   return context.zcapClient.request({
     url,
@@ -82,6 +89,26 @@ export async function rawRequest(
     json: input.json,
     body: input.body
   })
+}
+
+/**
+ * A plain unsigned `fetch` that maps a network failure to a `WasError`, the
+ * way the rest of the transport does. The response is returned as is,
+ * whatever its status.
+ *
+ * @param url {string}
+ * @param init {RequestInit}
+ * @returns {Promise<Response>}
+ */
+export async function fetchMapped(
+  url: string,
+  init: RequestInit
+): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (err) {
+    throw mapError(err)
+  }
 }
 
 /**
@@ -104,15 +131,10 @@ export async function unsignedRequest(input: {
   headers?: Record<string, string>
   read?: boolean
 }): Promise<HttpResponse | null> {
-  let response: Response
-  try {
-    response = await fetch(input.url, {
-      method: input.method ?? 'GET',
-      headers: input.headers
-    })
-  } catch (err) {
-    throw mapError(err)
-  }
+  const response = await fetchMapped(input.url, {
+    method: input.method ?? 'GET',
+    headers: input.headers
+  })
   if (response.ok) {
     return response as HttpResponse
   }
@@ -154,7 +176,13 @@ export async function send(
   try {
     return await rawRequest(context, input)
   } catch (err) {
-    if ((input.read || input.idempotent) && httpStatus(err) === 404) {
+    // Only a raw transport error translates: a `WasError` (such as a discovery
+    // refusal) is already an answer and passes through whatever its status.
+    if (
+      (input.read || input.idempotent) &&
+      !(err instanceof WasError) &&
+      httpStatus(err) === 404
+    ) {
       return null
     }
     throw mapError(err)

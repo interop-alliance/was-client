@@ -91,10 +91,7 @@ async function makeWriter(): Promise<{
 }> {
   const signingKey = await Ed25519VerificationKey.generate()
   const keyMultibase = signingKey.publicKeyMultibase as string
-  const did = `did:key:${keyMultibase}`
-  signingKey.controller = did
-  signingKey.id = `${did}#${keyMultibase}`
-  const keySigner = signingKey.signer()
+  const keySigner = signingKey.didKeySigner()
   const signer: ResourceLogSigner = {
     keyMultibase,
     async sign({ data }) {

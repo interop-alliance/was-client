@@ -33,7 +33,11 @@ import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import { DescriptorRefreshPolicy } from '../../src/edv/refresh.js'
 import { compareAndSwap } from '../../src/internal/cas.js'
 import { createdResource } from '../../src/internal/content.js'
-import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
+import {
+  clientWithStub,
+  jsonResponse,
+  serviceDescriptionFor
+} from '../helpers/stubClient.js'
 
 /**
  * Builds a `WasClient` over a stub `ZcapClient` (no signer, no I/O -- only the
@@ -46,7 +50,11 @@ function clientFor(serverUrl: string): WasClient {
   const zcapClient = {
     invocationSigner: { id: 'did:example:alice#key-1' }
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  return new WasClient({ serverUrl, zcapClient })
+  return new WasClient({
+    serverUrl,
+    zcapClient,
+    serviceDescription: serviceDescriptionFor(serverUrl)
+  })
 }
 
 describe('fromCapability on a sub-path-mounted server', () => {

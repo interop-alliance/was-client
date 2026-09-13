@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { WasClient } from '../../src/index.js'
+import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 interface DelegateArgs {
   controller?: string
@@ -40,7 +41,11 @@ function clientWithDelegateSpy(): {
       return { ...args, allowedAction: args.allowedActions }
     }
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  const client = new WasClient({
+    serverUrl: 'https://was.example',
+    zcapClient,
+    serviceDescription: serviceDescriptionFor()
+  })
   return { client, lastDelegate: () => captured }
 }
 
@@ -164,6 +169,7 @@ describe('grant rooting (revocability)', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://host.example/was/',
+      serviceDescription: serviceDescriptionFor('https://host.example/was/'),
       zcapClient
     })
 

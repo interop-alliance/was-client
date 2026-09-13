@@ -28,6 +28,7 @@ import type {
   ResourceMetadataCustom
 } from '../../src/index.js'
 import { CodecHolder, identityCodec } from '../../src/internal/codec.js'
+import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 interface RequestArgs {
   url?: string
@@ -159,6 +160,7 @@ function clientWithRouter({
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
   const client = new WasClient({
     serverUrl: 'https://was.example',
+    serviceDescription: serviceDescriptionFor(),
     zcapClient,
     encryption
   })
@@ -558,6 +560,7 @@ describe('codec seam: configure() invalidates the memoized codec', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient,
       encryption
     })
@@ -663,6 +666,7 @@ describe('codec seam: a transient descriptor-read failure does not poison the ha
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient,
       encryption
     })

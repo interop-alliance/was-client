@@ -37,6 +37,7 @@ import { identityCodec } from '../../src/internal/codec.js'
 import { createEdvEncryption } from '../../src/edv/index.js'
 import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
 import { mintHmacKey } from '../../src/edv/hmacKey.js'
+import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 /**
  * A reader plus the epoch-and-blinding-key-bearing descriptor an indexable
@@ -327,6 +328,7 @@ function serverFor({
   let decodes = 0
   const client = new WasClient({
     serverUrl: 'https://was.example',
+    serviceDescription: serviceDescriptionFor(),
     zcapClient,
     // Count every metadata decrypt without disturbing the real codec: the
     // proxy forwards each member bound to the codec itself, so its private

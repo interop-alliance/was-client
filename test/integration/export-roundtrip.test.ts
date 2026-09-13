@@ -26,12 +26,9 @@ const describeLive = serverUrl ? describe : describe.skip
  */
 async function freshWasClient(): Promise<WasClient> {
   const keyPair = await Ed25519VerificationKey.generate()
-  const did = `did:key:${keyPair.fingerprint()}`
-  keyPair.id = `${did}#${keyPair.fingerprint()}`
-  keyPair.controller = did
   return WasClient.fromSigner({
     serverUrl: serverUrl!,
-    signer: keyPair.signer()
+    signer: keyPair.didKeySigner()
   })
 }
 

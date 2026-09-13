@@ -18,6 +18,8 @@ import {
 } from '../../src/index.js'
 import type { ResourceCodec } from '../../src/index.js'
 import type { ClientContext, SendInput } from '../../src/internal/request.js'
+import { selectServiceVersion } from '../../src/internal/service.js'
+import { serviceDescriptionFor } from '../helpers/stubClient.js'
 import { featureProbeFrom } from '../../src/internal/features.js'
 import { insertResource, upsertResource } from '../../src/internal/write.js'
 import { stubFeatures } from '../helpers/codec.js'
@@ -78,6 +80,7 @@ function contextWithStatuses({
   const context = {
     serverUrl: 'https://was.example',
     controllerDid: 'did:example:alice',
+    service: async () => selectServiceVersion(serviceDescriptionFor()),
     zcapClient: {
       async request(args: SendInput) {
         calls.push(args)

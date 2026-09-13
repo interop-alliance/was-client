@@ -6,17 +6,14 @@
  * signer) and exposes the WAS containment model
  * (`SpacesRepository > Space > Collection > Resource`) through lazy
  * navigational handles. Also hosts the general delegation primitive
- * (`grant`), capability-rebuilding (`fromCapability`), and the signed
- * escape-hatch (`request`).
+ * (`grant`), capability-rebuilding (`fromCapability`), the signed
+ * escape-hatch (`request`), and service discovery (`service`), which every
+ * signed request waits on.
  */
 import type { ZcapClient } from '@interop/ezcap'
 import type { HttpResponse } from '@interop/http-client'
-import {
-  collectionItemsUrl,
-  parseSpaceTarget,
-  spacesRoot,
-  toUrl
-} from './internal/paths.js'
+import type { ServiceDescription } from '@interop/storage-core'
+import { collectionItemsUrl, parseSpaceTarget } from './internal/paths.js'
 import type { ClientContext } from './internal/request.js'
 import { send, rawRequest, unsignedRequest } from './internal/request.js'
 import { createdId, parseResource, readJsonData } from './internal/content.js'
@@ -31,7 +28,9 @@ import {
 import type { PageWalk } from './internal/pagination.js'
 import { delegateGrant } from './internal/grant.js'
 import { spaceIdOf, submitRevocation } from './internal/revoke.js'
-import { ValidationError, WasServerError } from './errors.js'
+import { Memo } from './internal/memo.js'
+import { discoverService, selectServiceVersion } from './internal/service.js'
+import { NotSupportedError, ValidationError, WasServerError } from './errors.js'
 import { zcapClientForSigner } from './zcapClient.js'
 import type { EncryptionProvider } from './codec.js'
 import { Space } from './Space.js'
@@ -47,6 +46,7 @@ import type {
   RequestInput,
   CollectionResourcesList,
   ResourceSummary,
+  ServiceInfo,
   SpaceListing
 } from './types.js'
 
@@ -67,19 +67,28 @@ export class WasClient {
    *   does not decide *which* collections are encrypted -- that is the
    *   descriptor/override -- so a missing key for an encrypted collection fails
    *   closed rather than silently downgrading to plaintext.
+   * @param [options.serviceDescription] {ServiceDescription}   a service
+   *   description the caller already holds (from a cache, say). The client
+   *   selects its version from this copy instead of discovering the document
+   *   from `serverUrl`, and still refuses it with `IncompatibleServerError` if
+   *   it names no version this client speaks. `service({ refresh: true })`
+   *   discards it and discovers afresh.
    */
   constructor({
     serverUrl,
     zcapClient,
-    encryption
+    encryption,
+    serviceDescription
   }: {
     serverUrl: string
     zcapClient: ZcapClient
     encryption?: EncryptionProvider
+    serviceDescription?: ServiceDescription
   }) {
     this.serverUrl = serverUrl
     this.zcapClient = zcapClient
     this.encryption = encryption
+    this.#serviceDescription = serviceDescription
   }
 
   /**
@@ -95,21 +104,26 @@ export class WasClient {
    * @param options.serverUrl {string}
    * @param options.signer {ISigner}
    * @param [options.encryption] {EncryptionProvider}   see the constructor
+   * @param [options.serviceDescription] {ServiceDescription}   see the
+   *   constructor
    * @returns {WasClient}
    */
   static fromSigner({
     serverUrl,
     signer,
-    encryption
+    encryption,
+    serviceDescription
   }: {
     serverUrl: string
     signer: ISigner
     encryption?: EncryptionProvider
+    serviceDescription?: ServiceDescription
   }): WasClient {
     return new WasClient({
       serverUrl,
       zcapClient: zcapClientForSigner({ signer }),
-      encryption
+      encryption,
+      serviceDescription
     })
   }
 
@@ -129,6 +143,66 @@ export class WasClient {
     return signer.id.split('#')[0] as string
   }
 
+  #serviceDescription?: ServiceDescription
+
+  readonly #service = new Memo<ServiceInfo>(async () =>
+    this.#serviceDescription === undefined
+      ? discoverService({ url: this.serverUrl })
+      : selectServiceVersion(this.#serviceDescription)
+  )
+
+  /**
+   * Discovers the server's service description and the WAS version this
+   * client speaks with it. Follows the `rel="service"` link on the response to
+   * an unsigned `HEAD` of `serverUrl`, then reads the linked document with an
+   * unsigned `GET`. No capability is invoked. The result is memoized for the
+   * life of the client and shared by every handle; concurrent callers share
+   * one discovery, and a failure is not memoized, so the next call retries.
+   *
+   * Every signed request waits on this discovery, so a caller rarely needs to
+   * call it first. It is the way to read the server-wide affordances:
+   * `features` (an open token list, where an absent token means unsupported)
+   * and `spacesUrl` (absent when the server has no Spaces Repository).
+   * Unsigned public reads (`publicRead`, `publicListCollection`, ...) address
+   * an absolute URL that may be on another server, and do not wait on it.
+   *
+   * @param [options] {object}
+   * @param [options.refresh] {boolean}   discard the memoized result (and any
+   *   constructor-supplied `serviceDescription`) and discover again, for a
+   *   caller about to rely on an affordance the server may have stopped
+   *   advertising
+   * @returns {Promise<ServiceInfo>}
+   * @throws {IncompatibleServerError}   when the server's responses carry no
+   *   `service` link (it predates v0.5), the document is malformed, or it
+   *   lists no version this client speaks
+   */
+  async service(options: { refresh?: boolean } = {}): Promise<ServiceInfo> {
+    if (options.refresh) {
+      this.#serviceDescription = undefined
+      this.#service.reset()
+    }
+    return this.#service.get()
+  }
+
+  /**
+   * The Spaces Repository URL from the service description.
+   *
+   * @returns {Promise<string>}
+   * @throws {NotSupportedError}   when the server does not implement the
+   *   Spaces Repository
+   */
+  async #spacesUrl(): Promise<string> {
+    const { spacesUrl, version } = await this.service()
+    if (spacesUrl === undefined) {
+      throw new NotSupportedError(
+        `The server at "${this.serverUrl}" does not implement the Spaces ` +
+          `Repository: its WAS ${version} service description entry has no ` +
+          '`spaces` URL.'
+      )
+    }
+    return spacesUrl
+  }
+
   #cachedContext?: ClientContext
 
   get #context(): ClientContext {
@@ -141,7 +215,8 @@ export class WasClient {
         serverUrl: this.serverUrl,
         zcapClient: this.zcapClient,
         controllerDid: this.controllerDid,
-        encryption: this.encryption
+        encryption: this.encryption,
+        service: () => this.service()
       }
     }
     return this.#cachedContext
@@ -166,13 +241,15 @@ export class WasClient {
   /**
    * Creates a space (server-generated id unless `id` is given). `name` is
    * optional (both in the spec and on the reference server); `controller` must
-   * match the wrapped signer's DID (which is the default).
+   * match the wrapped signer's DID (which is the default). The request goes
+   * to the Spaces Repository URL the service description names.
    *
    * @param desc {object}
    * @param [desc.id] {string}
    * @param [desc.name] {string}
    * @param [desc.controller] {string}
    * @returns {Promise<Space>}
+   * @throws {NotSupportedError}   when the server has no Spaces Repository
    */
   async createSpace(
     desc: { id?: string; name?: string; controller?: string } = {}
@@ -184,7 +261,7 @@ export class WasClient {
       ...(desc.name !== undefined && { name: desc.name })
     }
     const response = await send(this.#context, {
-      path: spacesRoot(),
+      url: await this.#spacesUrl(),
       method: 'POST',
       json: body
     })
@@ -206,20 +283,21 @@ export class WasClient {
    * the walk has gathered the complete listing.
    *
    * @returns {Promise<SpaceListing>}
+   * @throws {NotSupportedError}   when the server has no Spaces Repository
    */
   async listSpaces(): Promise<SpaceListing> {
+    const spacesUrl = await this.#spacesUrl()
     const walk = await signedPageWalk<SpaceListing>(this.#context, {
-      firstUrl: toUrl({ serverUrl: this.serverUrl, path: spacesRoot() })
+      firstUrl: spacesUrl
     })
     // The first page always carries the listing body (an unauthorized caller
     // still gets an empty `items` list, not an error), so a `null` walk is a
-    // server fault -- a 404 from a `serverUrl` whose base path does not reach
-    // the repository, or a 2xx whose body did not parse as JSON. Report it as
-    // one, rather than as a `TypeError` from destructuring `null`.
+    // server fault -- a 404 at the advertised repository URL, or a 2xx whose
+    // body did not parse as JSON. Report it as one, rather than as a
+    // `TypeError` from destructuring `null`.
     if (walk === null) {
       throw new WasServerError(
-        `The space listing at "${this.serverUrl}" answered with no JSON ` +
-          'body. Check that `serverUrl` names the WAS repository root.'
+        `The space listing at "${spacesUrl}" answered with no JSON body.`
       )
     }
     const listing = await collectPages(walk)
@@ -443,6 +521,8 @@ export class WasClient {
    * `path` against `serverUrl`, defaults `action` to `method`, and signs via the
    * wrapped client. Returns the raw `HttpResponse` and throws raw ky/ezcap
    * errors -- it does not apply the null-on-404 or typed-error conveniences.
+   * Like every signed request it waits on {@link service} first, and rejects
+   * with its `IncompatibleServerError` before signing anything.
    *
    * @param options {RequestInput}
    * @returns {Promise<HttpResponse>}

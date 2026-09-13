@@ -865,26 +865,19 @@ describe('Collection.configure() unreadable-description guard', () => {
   it('proceeds with force: true (deliberate create through a handle)', async () => {
     const calls: RequestArgs[] = []
     // The describe() GET 404s (absent collection); the PUT then succeeds.
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request(args: RequestArgs) {
-        calls.push(args)
-        if (args.method === 'GET') {
-          throw { status: 404, response: { status: 404 } }
-        }
-        return {
-          status: 200,
-          headers: new Headers(),
-          data: undefined,
-          async json() {
-            return undefined
-          }
-        } as unknown as HttpResponse
+    const client = clientWithStub(async args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        throw { status: 404, response: { status: 404 } }
       }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+      return {
+        status: 200,
+        headers: new Headers(),
+        data: undefined,
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
     })
     const result = await client
       .space('s')
@@ -896,26 +889,19 @@ describe('Collection.configure() unreadable-description guard', () => {
 
   it('proceeds when the caller supplies BOTH backend and encryption', async () => {
     const calls: RequestArgs[] = []
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request(args: RequestArgs) {
-        calls.push(args)
-        if (args.method === 'GET') {
-          throw { status: 404, response: { status: 404 } }
-        }
-        return {
-          status: 200,
-          headers: new Headers(),
-          data: undefined,
-          async json() {
-            return undefined
-          }
-        } as unknown as HttpResponse
+    const client = clientWithStub(async args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        throw { status: 404, response: { status: 404 } }
       }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+      return {
+        status: 200,
+        headers: new Headers(),
+        data: undefined,
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
     })
     await client
       .space('s')
@@ -934,26 +920,19 @@ describe('Collection.configure() unreadable-description guard', () => {
 
   it('still refuses when only one of the two protected fields is given', async () => {
     const calls: RequestArgs[] = []
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request(args: RequestArgs) {
-        calls.push(args)
-        if (args.method === 'GET') {
-          throw { status: 404, response: { status: 404 } }
-        }
-        return {
-          status: 200,
-          headers: new Headers(),
-          data: undefined,
-          async json() {
-            return undefined
-          }
-        } as unknown as HttpResponse
+    const client = clientWithStub(async args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        throw { status: 404, response: { status: 404 } }
       }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+      return {
+        status: 200,
+        headers: new Headers(),
+        data: undefined,
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
     })
     // Supplying `backend` says nothing about `encryption`: with no readable
     // current description there is nothing to merge the omitted one from, so
@@ -1007,26 +986,19 @@ describe('Space.configure() unreadable-description guard', () => {
    */
   function guardedClient(): { client: WasClient; calls: RequestArgs[] } {
     const calls: RequestArgs[] = []
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request(args: RequestArgs) {
-        calls.push(args)
-        if (args.method === 'GET') {
-          throw { status: 404, response: { status: 404 } }
-        }
-        return {
-          status: 200,
-          headers: new Headers(),
-          data: undefined,
-          async json() {
-            return undefined
-          }
-        } as unknown as HttpResponse
+    const client = clientWithStub(async args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        throw { status: 404, response: { status: 404 } }
       }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+      return {
+        status: 200,
+        headers: new Headers(),
+        data: undefined,
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
     })
     return { client, calls }
   }
@@ -1226,33 +1198,26 @@ describe('Space.configure() type carry-forward', () => {
       name: 'x',
       controller: 'did:example:alice'
     }
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request(args: RequestArgs) {
-        calls.push(args)
-        if (args.method === 'GET') {
-          return {
-            status: 200,
-            headers: new Headers({ 'content-type': 'application/json' }),
-            data: current,
-            async json() {
-              return current
-            }
-          } as unknown as HttpResponse
-        }
+    const client = clientWithStub(async args => {
+      calls.push(args)
+      if (args.method === 'GET') {
         return {
           status: 200,
-          headers: new Headers(),
-          data: undefined,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          data: current,
           async json() {
-            return undefined
+            return current
           }
         } as unknown as HttpResponse
       }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+      return {
+        status: 200,
+        headers: new Headers(),
+        data: undefined,
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
     })
     const result = await client
       .space('s')
@@ -1273,26 +1238,22 @@ describe('resource.getText() / getBytes() on a JSON-typed resource', () => {
    * @returns {WasClient}
    */
   function clientWithConsumedJsonBody(data: unknown): WasClient {
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        return {
-          status: 200,
-          headers: new Headers({ 'content-type': 'application/json' }),
-          data,
-          async json() {
-            return data
-          },
-          async text() {
-            throw new TypeError('Body is unusable: Body has already been read')
-          },
-          async arrayBuffer() {
-            throw new TypeError('Body is unusable: Body has already been read')
-          }
-        } as unknown as HttpResponse
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+    return clientWithStub(async () => {
+      return {
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        data,
+        async json() {
+          return data
+        },
+        async text() {
+          throw new TypeError('Body is unusable: Body has already been read')
+        },
+        async arrayBuffer() {
+          throw new TypeError('Body is unusable: Body has already been read')
+        }
+      } as unknown as HttpResponse
+    })
   }
 
   it('getText() re-serializes the pre-parsed data instead of crashing', async () => {
@@ -1313,25 +1274,18 @@ describe('resource.getText() / getBytes() on a JSON-typed resource', () => {
 
   it('still reads a non-JSON body from the (unconsumed) stream', async () => {
     const body = 'hello, raw text'
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        return {
-          status: 200,
-          headers: new Headers({ 'content-type': 'text/plain' }),
-          data: undefined,
-          async text() {
-            return body
-          },
-          async arrayBuffer() {
-            return new TextEncoder().encode(body).buffer
-          }
-        } as unknown as HttpResponse
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+    const client = clientWithStub(async () => {
+      return {
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/plain' }),
+        data: undefined,
+        async text() {
+          return body
+        },
+        async arrayBuffer() {
+          return new TextEncoder().encode(body).buffer
+        }
+      } as unknown as HttpResponse
     })
     const resource = client.space('s').collection('c').resource('r')
     expect(await resource.getText()).toBe(body)
@@ -1349,13 +1303,9 @@ describe("resource.getWithEtag({ as: 'text' })", () => {
    * @returns {WasClient}
    */
   function clientWith(response: Record<string, unknown>): WasClient {
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        return { status: 200, ...response } as unknown as HttpResponse
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+    return clientWithStub(async () => {
+      return { status: 200, ...response } as unknown as HttpResponse
+    })
   }
 
   it('reads a text-family body as text with its etag', async () => {
@@ -1414,20 +1364,16 @@ describe('collection.add() Location resolution', () => {
    * @returns {WasClient}
    */
   function clientWithLocation(location: string): WasClient {
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        return {
-          status: 201,
-          headers: new Headers({ location }),
-          data: undefined,
-          async json() {
-            return undefined
-          }
-        } as unknown as HttpResponse
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+    return clientWithStub(async () => {
+      return {
+        status: 201,
+        headers: new Headers({ location }),
+        data: undefined,
+        async json() {
+          return undefined
+        }
+      } as unknown as HttpResponse
+    })
   }
 
   /**

@@ -20,6 +20,7 @@ import type {
   CollectionsList,
   SpaceListing
 } from '../../src/types.js'
+import { clientWithStub, serviceDescriptionFor } from '../helpers/stubClient.js'
 
 /**
  * Builds a one-item page envelope; `next` is included only when given.
@@ -106,22 +107,18 @@ function clientWithPages(pages: Record<string, object>): {
   urls: string[]
 } {
   const urls: string[] = []
-  const zcapClient = {
-    invocationSigner: { id: 'did:example:alice#key-1' },
-    async request({ url }: { url: string }) {
-      urls.push(url)
-      const data = pages[url]
-      return {
-        status: 200,
-        headers: new Headers(),
-        data,
-        async json() {
-          return data
-        }
-      } as unknown as HttpResponse
-    }
-  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  const client = new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  const client = clientWithStub(async ({ url }) => {
+    urls.push(url as string)
+    const data = pages[url as string]
+    return {
+      status: 200,
+      headers: new Headers(),
+      data,
+      async json() {
+        return data
+      }
+    } as unknown as HttpResponse
+  })
   return { client, urls }
 }
 
@@ -276,15 +273,8 @@ describe('Collection.listPages() / listItems()', () => {
   })
 
   it('listPages() yields nothing for a missing collection', async () => {
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        throw { status: 404, response: { status: 404 } }
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+    const client = clientWithStub(async () => {
+      throw { status: 404, response: { status: 404 } }
     })
     const pages: CollectionResourcesList[] = []
     for await (const pageResult of client
@@ -315,6 +305,7 @@ describe('publicListCollection() pagination', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient
     })
     const result = await client.publicListCollection({
@@ -345,6 +336,7 @@ describe('publicListCollection() pagination', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient
     })
     const ids: string[] = []
@@ -390,15 +382,8 @@ describe('Space.collections() pagination', () => {
   })
 
   it('returns null for a missing/unauthorized space', async () => {
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        throw { status: 404, response: { status: 404 } }
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+    const client = clientWithStub(async () => {
+      throw { status: 404, response: { status: 404 } }
     })
     const result = await client.space('missing').collections()
     expect(result).toBeNull()
@@ -442,15 +427,8 @@ describe('Space.collectionsPages()', () => {
   })
 
   it('yields nothing for a missing/unauthorized space', async () => {
-    const zcapClient = {
-      invocationSigner: { id: 'did:example:alice#key-1' },
-      async request() {
-        throw { status: 404, response: { status: 404 } }
-      }
-    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-    const client = new WasClient({
-      serverUrl: 'https://was.example',
-      zcapClient
+    const client = clientWithStub(async () => {
+      throw { status: 404, response: { status: 404 } }
     })
     const pages: CollectionsList[] = []
     for await (const pageResult of client.space('missing').collectionsPages()) {

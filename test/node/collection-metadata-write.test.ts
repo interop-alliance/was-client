@@ -21,7 +21,7 @@ import type {
   ResourceCodec
 } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
-import { jsonResponse } from '../helpers/stubClient.js'
+import { jsonResponse, serviceDescriptionFor } from '../helpers/stubClient.js'
 
 /**
  * Builds a `WasClient` whose stub answers each request through `handler`,
@@ -48,6 +48,7 @@ function clientWith(
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
   const client = new WasClient({
     serverUrl: 'https://was.example',
+    serviceDescription: serviceDescriptionFor(),
     zcapClient,
     ...(encryption !== undefined && { encryption })
   })

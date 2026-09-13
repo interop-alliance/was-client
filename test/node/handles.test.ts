@@ -18,7 +18,11 @@ import {
   AuthRequiredError
 } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
-import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
+import {
+  clientWithStub,
+  jsonResponse,
+  serviceDescriptionFor
+} from '../helpers/stubClient.js'
 
 /**
  * Builds a `WasClient` over a minimal stub `ZcapClient` -- enough to construct
@@ -31,7 +35,11 @@ function stubClient(signerId = 'did:example:alice#key-1'): WasClient {
   const zcapClient = {
     invocationSigner: { id: signerId }
   } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
-  return new WasClient({ serverUrl: 'https://was.example', zcapClient })
+  return new WasClient({
+    serverUrl: 'https://was.example',
+    zcapClient,
+    serviceDescription: serviceDescriptionFor()
+  })
 }
 
 describe('lazy handles', () => {
@@ -62,6 +70,7 @@ describe('lazy handles', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
       zcapClient
     })
     expect(() => client.controllerDid).toThrow(ValidationError)

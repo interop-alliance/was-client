@@ -1603,3 +1603,64 @@ stay open until that run is green.
 Verified 2026-09-12 against the reference server carrying the rule: the full
 was-client integration tier passes (11 files, 77 tests), including the five
 suites and the `governed-log` case above.
+
+### WCL-101: Discover the service description and select the spec version before the first structural request
+
+- status: done (2026-09-13)
+- priority: high
+- labels: was-v0.5, discovery, api
+- touches:
+  - wallet-attached-storage-spec: waived -- the Service Description section is
+    drafted on branch `service-description` (decision
+    `_spec/decisions/0006-service-description.md`); the client implements that
+    draft
+  - storage-core: shipped -- SC-5 there, archived 2026-09-13; 0.15.0 exports
+    `ServiceDescription`, `ServiceDescriptionVersionEntry`, and
+    `PwsVersionEntry`, which this item consumes
+  - was-teaching-server: shipped -- WAS-98 there (archived 2026-09-13) serves
+    `GET /service` and the `Link: <...>; rel="service"` header on every response
+  - was-client: shipped -- `src/internal/service.ts` (new), `src/WasClient.ts`
+    (`service()`), `src/internal/request.ts` (the gate), `src/internal/paths.ts`
+    (`spacesRoot` removed), `src/errors.ts` (`IncompatibleServerError`), README,
+    ARCHITECTURE.md, and the 0.62.0 CHANGELOG entry
+- acceptance:
+  - [x] The public API names (the discovery method or helper, and any new error
+        class) are settled with the maintainer before implementation (settled
+        2026-09-13: `was.service()` returning `ServiceInfo`, discovery gating
+        every signed request, `IncompatibleServerError`, and `NotSupportedError`
+        for a missing `spaces` URL)
+  - [x] The client finds the service description by following the
+        `rel="service"` link from a response to any URL it holds, the 404 and
+        308 responses included. It does not assume a fixed path, since the spec
+        reserves none
+  - [x] The document is fetched without a capability invocation and parsed into
+        `ServiceDescription` from `@interop/storage-core`
+  - [x] Version selection follows the spec's client rules: unknown `specs` keys
+        are ignored, an entry without `version` is ignored, the highest version
+        the client understands under `https://w3id.org/pws` is chosen, and no
+        understood entry or a malformed document stops the client with a typed
+        error
+  - [x] A response without the `service` link identifies a pre-0.5 server. The
+        client speaks only v0.5, so it stops there with the same typed error
+        rather than falling back to v0.4
+  - [x] The Spaces Repository URL comes from the chosen entry's `spaces` member
+        instead of the hardcoded `spacesRoot()`. An entry with no `spaces` means
+        the server does not implement the Spaces Repository
+  - [x] `features` is exposed to callers as an open token list: unknown tokens
+        are ignored, and an absent token reads as unsupported
+  - [x] The client never gates behavior on `instance`
+  - [x] Tests cover version selection against fixture documents, and the
+        integration tier discovers the document from the reference server
+
+Context: WAS v0.5 adds a negotiation step before any Space-scoped request. A
+wallet choosing a host at signup, or deciding which URL layout to speak, has no
+other server-level signal. Linksets and the Backend `features` array are
+Space-scoped, and `/health` is not a protocol feature. The spec puts the
+document behind a `Link` header with the `service` relation on every response,
+served with `Access-Control-Allow-Origin: *` and with `Link` exposed to
+cross-origin scripts, so a browser client can read it. The document also roots
+the URL graph: with no fixed server-level paths, the client learns URLs such as
+the Spaces Repository from it.
+
+The `https://w3id.org/pws` key is provisional until the spec's rename registers
+it. storage-core does not export it as a constant while it is provisional.

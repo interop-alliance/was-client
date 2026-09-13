@@ -63,13 +63,18 @@ export type {
   StorageLimit,
   CollectionUsage,
   BackendUsage,
-  SpaceQuotaReport
+  SpaceQuotaReport,
+  ServiceDescription,
+  ServiceDescriptionVersionEntry,
+  PwsVersionEntry
 } from '@interop/storage-core'
 
 import type {
   BackendReference,
   CollectionEncryption,
-  ResourceMetadataCustom
+  PwsVersionEntry,
+  ResourceMetadataCustom,
+  ServiceDescription
 } from '@interop/storage-core'
 
 /**
@@ -210,6 +215,33 @@ export interface FindPage {
  */
 export type EncryptionOverride =
   (CollectionEncryption & { keys?: unknown }) | 'plaintext'
+
+/**
+ * What service discovery learned about the server (`was.service()`): the
+ * service description as read, and the WAS version entry this client chose
+ * from it.
+ *
+ * - `description` -- the whole document, including `specs` entries for other
+ *   specifications and the optional `instance` disclosure. The client gates no
+ *   behavior on `instance`.
+ * - `version` -- the chosen WAS specification version, such as `"0.5"`.
+ * - `entry` -- the chosen version entry.
+ * - `spacesUrl` -- the absolute Spaces Repository URL from the entry's
+ *   `spaces` member. Absent when the server does not implement the Spaces
+ *   Repository.
+ * - `features` -- the entry's `features` tokens. The vocabulary is open: a
+ *   token this client does not know is carried here and otherwise ignored.
+ * - `hasFeature(token)` -- whether the entry advertises `token`. An absent
+ *   token (or an absent array) reads as unsupported.
+ */
+export interface ServiceInfo {
+  description: ServiceDescription
+  version: string
+  entry: PwsVersionEntry
+  spacesUrl?: string
+  features: string[]
+  hasFeature(token: string): boolean
+}
 
 /**
  * Options accepted by every handle factory (`space()`, `collection()`,

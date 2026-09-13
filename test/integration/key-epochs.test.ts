@@ -73,8 +73,6 @@ interface Party {
 async function makeParty(): Promise<Party> {
   const keyPair = await Ed25519VerificationKey.generate()
   const did = `did:key:${keyPair.fingerprint()}`
-  keyPair.id = `${did}#${keyPair.fingerprint()}`
-  keyPair.controller = did
 
   const kak = await X25519KeyAgreementKey2020.generate()
   const kakDid = `did:key:${kak.publicKeyMultibase}`
@@ -87,7 +85,7 @@ async function makeParty(): Promise<Party> {
       keyResolver: didKeyResolver
     })
   })
-  const signer = keyPair.signer()
+  const signer = keyPair.didKeySigner()
   return {
     was: WasClient.fromSigner({
       serverUrl: serverUrl!,

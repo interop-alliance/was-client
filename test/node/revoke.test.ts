@@ -13,7 +13,11 @@ import { describe, it, expect } from 'vitest'
 import { WasClient, ValidationError, NotFoundError } from '../../src/index.js'
 import type { IDelegatedZcap } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
-import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
+import {
+  clientWithStub,
+  jsonResponse,
+  serviceDescriptionFor
+} from '../helpers/stubClient.js'
 
 const SERVER_URL = 'https://was.example'
 const CAPABILITY_ID = 'urn:uuid:6f1c1b0e-1f3a-4a5e-9a1e-3b2c4d5e6f70'
@@ -278,6 +282,7 @@ describe('was.revoke (space derived from the capability)', () => {
     } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
     const client = new WasClient({
       serverUrl: 'https://host.example/was/',
+      serviceDescription: serviceDescriptionFor('https://host.example/was/'),
       zcapClient
     })
 

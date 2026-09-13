@@ -17,8 +17,8 @@ src/*.ts            Public handle classes + contracts
         |
         v
 src/internal/*.ts   Transport and orchestration
-  request, write, content, paths, conditional, codec (identity + resolver),
-  features, policy, grant, revoke, pagination, describe, reserved
+  request, service, write, content, paths, conditional, codec (identity +
+  resolver), features, policy, grant, revoke, pagination, describe, reserved
         |
         v
 external deps       @interop/ezcap, @interop/storage-core,
@@ -125,8 +125,9 @@ then; doing it earlier promotes internals to public API for no consumer.
 **no network I/O**; requests happen only when a method is called.
 
 All handles share one `ClientContext` by reference (`src/internal/request.ts`):
-`{ serverUrl, zcapClient, controllerDid, encryption? }`. Per-handle state on top
-of that:
+`{ serverUrl, zcapClient, controllerDid, encryption?, service }`. `service` is
+the client's memoized service discovery (see Service discovery). Per-handle
+state on top of that:
 
 - A bound `capability` (delegated zcap) flows from parent to child as the
   default (`options.capability ?? this.#capability`).
@@ -136,6 +137,46 @@ of that:
   `Resource` builds its own.
 - `WasClient.fromCapability(zcap)` parses `invocationTarget` back into a handle
   at the right depth via `parseSpaceTarget`.
+
+## Service discovery
+
+`src/internal/service.ts` implements the spec's Service Description section. The
+server-level URL graph is rooted in one document, the service description, found
+by following the `Link: <...>; rel="service"` header on the response to an
+unsigned `HEAD` of `serverUrl`. The spec reserves no path for it, so the client
+assumes none. The linked document is read with an unsigned `GET` and parsed as
+storage-core's `ServiceDescription`.
+
+`selectServiceVersion` applies the spec's client rules. It ignores `specs` keys
+other than `https://w3id.org/pws` (compared as opaque strings) and entries
+without a string `version`. It picks the newest entry in
+`SUPPORTED_PWS_VERSIONS`, which today holds only `"0.5"`. The chosen entry's
+`spaces` must be an absolute URL and its `features` an array of strings, since
+the client acts on both. The `instance` member is not read.
+
+`WasClient` memoizes discovery in a `Memo` and exposes it as `was.service()`.
+`rawRequest` awaits `context.service()` before it signs, so every signed request
+passes the gate. That includes `send`, `was.request()`, codec-driven requests,
+`WasTransport`, and the sync port. Unsigned public reads take absolute URLs that
+may be on another server, so they are not gated.
+
+Failure classes:
+
+- `IncompatibleServerError` -- no `service` link on the probe response (a server
+  that predates v0.5; the client does not fall back to v0.4), a non-2xx or
+  non-JSON document, a document without `url` or `specs`, no understood version,
+  or a malformed `spaces` / `features` on the chosen entry. `send()`'s
+  null-on-404 read translation applies only to raw transport errors, so a
+  discovery refusal still rejects instead of reading as `null`.
+- The mapped transport error -- a network failure, or a 5xx/429 that comes
+  without the link. These say nothing about the protocol.
+
+No failure is memoized, so the next request retries discovery.
+
+The Spaces Repository has no path builder. `createSpace` and `listSpaces`
+address `info.spacesUrl`, and throw `NotSupportedError` before any request when
+the chosen entry has no `spaces` member. Space-scoped paths are still built from
+`serverUrl`.
 
 ## Lifecycle of an authenticated request
 
@@ -159,8 +200,9 @@ Taking `resource.put(data)` as the canonical path:
    with `PreconditionFailedError` before the write is sent.
 4. **Path building** (`internal/paths.ts`): percent-encoded ids, reserved-id
    guards, and exact trailing-slash discipline.
-5. **Transport** (`internal/request.ts`): `zcapClient.request(...)` (ezcap)
-   signs the zcap invocation. The zcap `action` is the **HTTP method**
+5. **Transport** (`internal/request.ts`): the memoized service discovery is
+   awaited (see Service discovery), then `zcapClient.request(...)` (ezcap) signs
+   the zcap invocation. The zcap `action` is the **HTTP method**
    (`GET`/`PUT`/...), never ezcap's `read`/`write` -- WAS scopes capabilities by
    verb. With no bound capability, ezcap synthesizes the root capability for the
    target URL.
@@ -606,12 +648,12 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
    (`ifNoneMatch: true`), which states its own absence and therefore takes its
    codec from what it writes rather than from stored state.
 2. **Trailing-slash discipline is a security invariant.** A trailing slash marks
-   a container URL in canonical form (`/spaces/`, `/space/{s}/`,
-   `/space/{s}/{c}/`); everything else has none, and no two paths differ only by
-   a trailing slash. The zcap `invocationTarget` derives from the request URL
-   and must byte-match the server's per-operation `allowedTarget`, so the bare
-   (slash-less) form of a container URL is never emitted or followed -- it only
-   308-redirects, and a redirect would have to be signed again
+   a container URL in canonical form (`/space/{s}/`, `/space/{s}/{c}/`, and the
+   advertised Spaces Repository URL); everything else has none, and no two paths
+   differ only by a trailing slash. The zcap `invocationTarget` derives from the
+   request URL and must byte-match the server's per-operation `allowedTarget`,
+   so the bare (slash-less) form of a container URL is never emitted or followed
+   -- it only 308-redirects, and a redirect would have to be signed again
    (`internal/paths.ts`).
 3. **Reserved path segments are guarded in three places** (handle constructors,
    path builders, path parsing) so e.g. `collection('policy')` can never alias
@@ -627,7 +669,11 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
    `getText`/`getBytes` are not byte-exact for JSON content types.
 7. **The wire model lives in `@interop/storage-core`** (description, listing,
    policy, backend, and problem types). Do not redefine wire types locally.
-8. **The core entries stay off the encrypted-collection graph.** `.`, `./paths`,
+8. **No request is signed before service discovery selects a version.** The gate
+   lives in `rawRequest`, the one place every signed request passes, and the
+   Spaces Repository URL comes only from the service description. Do not add a
+   signed path that bypasses `rawRequest` or a hardcoded server-level path.
+9. **The core entries stay off the encrypted-collection graph.** `.`, `./paths`,
    `./log`, and `./sync` reach neither `src/edv/` (beyond `edv/constants.ts`)
    nor the encrypted-collection packages; `test/node/import-graph.test.ts`
    enforces it (see "Subpaths, not packages" under Layering). `./log` is not
@@ -665,8 +711,16 @@ it, and otherwise cover the client-side concepts this file names.
   Collection Description (retired term; the Description and the former `/meta`
   object are now the same object).
 - **`ClientContext`** -- the single
-  `{ serverUrl, zcapClient, controllerDid, encryption? }` record every handle
-  shares by reference (`src/internal/request.ts`). See The handle model.
+  `{ serverUrl, zcapClient, controllerDid, encryption?, service }` record every
+  handle shares by reference (`src/internal/request.ts`). See The handle model.
+- **Service description** -- the server-wide JSON document naming the
+  specification versions a server speaks and its server-level URLs, found
+  through the `rel="service"` link on every response. Owned by the WAS spec.
+  Avoid: well-known document, server metadata. See Service discovery.
+- **Service discovery** -- the client's memoized read of the service description
+  and its choice of WAS version (`src/internal/service.ts`, `was.service()`),
+  awaited before every signed request. Its result is a `ServiceInfo`. See
+  Service discovery.
 - **Bound capability** -- the delegated zcap carried on a handle and inherited
   by its children as the default for their requests. See The handle model.
 - **zcap action** -- the action named in a zcap invocation, which in WAS is the
@@ -759,6 +813,7 @@ it, and otherwise cover the client-side concepts this file names.
 | New public API method             | The relevant handle class in `src/*.ts`                                      |
 | New server endpoint or path shape | `src/internal/paths.ts` (+ wire types upstream in `@interop/storage-core`)   |
 | Request/transport behavior        | `src/internal/request.ts`                                                    |
+| Supported spec versions           | `src/internal/service.ts` (`SUPPORTED_PWS_VERSIONS`)                         |
 | Write preconditions, ETags        | `src/internal/conditional.ts`, `src/internal/write.ts`                       |
 | New server feature gate           | `src/internal/features.ts` + the call sites it gates                         |
 | New error kind                    | `src/errors.ts` (`ERROR_CLASS_BY_KIND`), problem type upstream               |

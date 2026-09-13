@@ -13,7 +13,6 @@ import { describe, it, expect } from 'vitest'
 
 import { ValidationError } from '../../src/index.js'
 import {
-  spacesRoot,
   spacePath,
   spaceMeta,
   spaceExport,
@@ -40,10 +39,6 @@ import {
 } from '../../src/internal/paths.js'
 
 describe('path builders', () => {
-  it('uses a trailing slash for the spaces repository (create / list)', () => {
-    expect(spacesRoot()).toBe('/spaces/')
-  })
-
   it('uses the trailing-slash canonical form for the space container', () => {
     expect(spacePath('home')).toBe('/space/home/')
   })
@@ -148,7 +143,6 @@ describe('the trailing-slash convention', () => {
    * separately; the server's route table has none, and neither may this.
    */
   const everyPath = {
-    spacesRoot: spacesRoot(),
     spacePath: spacePath('home'),
     spaceMeta: spaceMeta('home'),
     spaceExport: spaceExport('home'),
@@ -182,7 +176,7 @@ describe('the trailing-slash convention', () => {
   })
 
   it('ends every container path with a slash and no other path', () => {
-    const containers = new Set(['spacesRoot', 'spacePath', 'collectionPath'])
+    const containers = new Set(['spacePath', 'collectionPath'])
     const slashed = Object.entries(everyPath)
       .filter(([, path]) => path.endsWith('/'))
       .map(([name]) => name)

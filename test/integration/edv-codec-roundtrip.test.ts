@@ -96,8 +96,6 @@ async function freshClients(): Promise<{
 }> {
   const keyPair = await Ed25519VerificationKey.generate()
   const did = `did:key:${keyPair.fingerprint()}`
-  keyPair.id = `${did}#${keyPair.fingerprint()}`
-  keyPair.controller = did
 
   const kak = await X25519KeyAgreementKey2020.generate({ controller: did })
   const keyResolver = async ({ id }: { id?: string }) => {
@@ -119,16 +117,16 @@ async function freshClients(): Promise<{
   return {
     encrypted: WasClient.fromSigner({
       serverUrl: serverUrl!,
-      signer: keyPair.signer(),
+      signer: keyPair.didKeySigner(),
       encryption
     }),
     plaintext: WasClient.fromSigner({
       serverUrl: serverUrl!,
-      signer: keyPair.signer()
+      signer: keyPair.didKeySigner()
     }),
     keyless: WasClient.fromSigner({
       serverUrl: serverUrl!,
-      signer: keyPair.signer(),
+      signer: keyPair.didKeySigner(),
       encryption: createEdvEncryption({ resolveKeys: async () => null })
     }),
     kak: kak as IKeyAgreementKey
