@@ -680,6 +680,12 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
    crypto-free: its dependency, `@interop/vh-resource-log`, pulls
    `@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof
    kernel only, with no DID resolution.
+10. **A server's `next` link is untrusted.** Following it sends the caller's
+    signed invocation, and with no bound capability ezcap synthesizes a root
+    zcap for whatever URL it is given. `walkPages` follows a `next` only within
+    the first page's origin and base path, never with a username or password
+    in it, and only up to a page-count bound
+    (`internal/pagination.ts`). Do not add a listing walk that bypasses it.
 
 ## Glossary
 

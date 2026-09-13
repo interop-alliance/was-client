@@ -8,13 +8,19 @@
  * All transparently follow the server's `next` continuation links and aggregate
  * every page into one listing. A stub `ZcapClient` (signed path) and a stubbed
  * global `fetch` (public path) return canned pages keyed by request URL, so no
- * server is involved.
+ * server is involved. The walk's trust boundary is covered too: a hostile
+ * `next` outside the listing is never requested, and a walk that never ends is
+ * bounded.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
-import { WasClient } from '../../src/index.js'
-import { collectPages } from '../../src/internal/pagination.js'
+import { WasClient, WasServerError } from '../../src/index.js'
+import {
+  DEFAULT_MAX_PAGES,
+  collectPages,
+  walkPages
+} from '../../src/internal/pagination.js'
 import type {
   CollectionResourcesList,
   CollectionsList,
@@ -467,5 +473,299 @@ describe('WasClient.listSpaces() pagination', () => {
     expect(result.items.map(item => item.id)).toEqual(['a', 'b'])
     expect(result.next).toBeUndefined()
     expect(result.totalItems).toBe(2)
+  })
+})
+
+/**
+ * Builds a `WasClient` whose unsigned public reads go through a stubbed global
+ * `fetch` that returns each page in `pages` keyed by request URL, recording the
+ * URLs it was asked for.
+ *
+ * @param pages {Record<string, object>}   listing envelopes keyed by request URL
+ * @returns {object} { client, urls }
+ */
+function publicClientWithPages(pages: Record<string, object>): {
+  client: WasClient
+  urls: string[]
+} {
+  const urls: string[] = []
+  vi.stubGlobal('fetch', async (input: string) => {
+    urls.push(input)
+    return new Response(JSON.stringify(pages[input] ?? {}), {
+      headers: { 'content-type': 'application/json' }
+    })
+  })
+  const zcapClient = {
+    invocationSigner: { id: 'did:example:alice#key-1' }
+  } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+  const client = new WasClient({
+    serverUrl: 'https://was.example',
+    serviceDescription: serviceDescriptionFor(),
+    zcapClient
+  })
+  return { client, urls }
+}
+
+/**
+ * Consumes an async iterable to the end, returning what it yielded.
+ *
+ * @param iterable {AsyncIterable<T>}
+ * @returns {Promise<T[]>}
+ */
+async function drain<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const yielded: T[] = []
+  for await (const entry of iterable) {
+    yielded.push(entry)
+  }
+  return yielded
+}
+
+/**
+ * Every listing surface that follows `next`: its first page URL, a builder
+ * for a one-item page envelope, and how to drive the whole walk.
+ */
+const LISTING_SURFACES: {
+  name: string
+  firstUrl: string
+  envelope: (next?: unknown) => object
+  publicRead?: boolean
+  run: (client: WasClient) => Promise<unknown>
+}[] = [
+  {
+    name: 'WasClient.listSpaces()',
+    firstUrl: 'https://was.example/spaces/',
+    envelope: next => ({ ...spacesPage(['a']), next }),
+    run: client => client.listSpaces()
+  },
+  {
+    name: 'Space.collections()',
+    firstUrl: 'https://was.example/space/s/',
+    envelope: next => ({ ...collectionsPage(['a']), next }),
+    run: client => client.space('s').collections()
+  },
+  {
+    name: 'Space.collectionsPages()',
+    firstUrl: 'https://was.example/space/s/',
+    envelope: next => ({ ...collectionsPage(['a']), next }),
+    run: client => drain(client.space('s').collectionsPages())
+  },
+  {
+    name: 'Collection.list()',
+    firstUrl: 'https://was.example/space/s/c/',
+    envelope: next => ({ ...page(['a']), next }),
+    run: client => client.space('s').collection('c').list()
+  },
+  {
+    name: 'Collection.listPages()',
+    firstUrl: 'https://was.example/space/s/c/',
+    envelope: next => ({ ...page(['a']), next }),
+    run: client => drain(client.space('s').collection('c').listPages())
+  },
+  {
+    name: 'Collection.listItems()',
+    firstUrl: 'https://was.example/space/s/c/',
+    envelope: next => ({ ...page(['a']), next }),
+    run: client => drain(client.space('s').collection('c').listItems())
+  },
+  {
+    name: 'WasClient.publicListCollection()',
+    firstUrl: 'https://was.example/space/s/c/',
+    envelope: next => ({ ...page(['a']), next }),
+    publicRead: true,
+    run: client =>
+      client.publicListCollection({
+        collectionUrl: 'https://was.example/space/s/c'
+      })
+  },
+  {
+    name: 'WasClient.publicListCollectionPages()',
+    firstUrl: 'https://was.example/space/s/c/',
+    envelope: next => ({ ...page(['a']), next }),
+    publicRead: true,
+    run: client =>
+      drain(
+        client.publicListCollectionPages({
+          collectionUrl: 'https://was.example/space/s/c'
+        })
+      )
+  },
+  {
+    name: 'WasClient.publicListCollectionItems()',
+    firstUrl: 'https://was.example/space/s/c/',
+    envelope: next => ({ ...page(['a']), next }),
+    publicRead: true,
+    run: client =>
+      drain(
+        client.publicListCollectionItems({
+          collectionUrl: 'https://was.example/space/s/c'
+        })
+      )
+  }
+]
+
+/**
+ * `next` values that leave every listing above: another origin, a
+ * protocol-relative host, a scheme downgrade, a path outside the base path, a
+ * dot-segment escape, a backslash host, and a non-string value. Each surface
+ * also gets a `next` that matches its own listing but carries credentials.
+ */
+const HOSTILE_NEXTS: unknown[] = [
+  'http://169.254.169.254/latest/meta-data/',
+  '//evil.example/space/s/c/?cursor=2',
+  'http://was.example/space/s/c/?cursor=2',
+  '/space/other/?cursor=2',
+  '../../../other/?cursor=2',
+  '\\\\evil.example/space/s/c/',
+  42
+]
+
+/**
+ * The first page URL of a surface with a username and password added, so the
+ * credentials are the only thing wrong with it.
+ *
+ * @param firstUrl {string}
+ * @returns {string}
+ */
+function withCredentials(firstUrl: string): string {
+  const url = new URL(firstUrl)
+  url.username = 'attacker'
+  url.password = 'x'
+  url.search = '?cursor=2'
+  return url.toString()
+}
+
+describe('walk trust boundary: a hostile `next` is never requested', () => {
+  for (const surface of LISTING_SURFACES) {
+    for (const hostileNext of [
+      ...HOSTILE_NEXTS,
+      withCredentials(surface.firstUrl)
+    ]) {
+      it(`${surface.name} rejects next=${JSON.stringify(hostileNext)}`, async () => {
+        const pages = { [surface.firstUrl]: surface.envelope(hostileNext) }
+        const { client, urls } = surface.publicRead
+          ? publicClientWithPages(pages)
+          : clientWithPages(pages)
+        const error = await surface.run(client).then(
+          () => undefined,
+          (err: unknown) => err
+        )
+        expect(error).toBeInstanceOf(WasServerError)
+        expect((error as WasServerError).requestUrl).toBe(surface.firstUrl)
+        expect((error as WasServerError).message).toContain(surface.firstUrl)
+        // Only the first page was fetched; the hostile URL got no request.
+        expect(urls).toEqual([surface.firstUrl])
+      })
+    }
+  }
+
+  it('follows a `next` under the base path resolved against a later page', async () => {
+    const { client, urls } = clientWithPages({
+      'https://was.example/space/s/c/': page(['a'], '?cursor=2'),
+      'https://was.example/space/s/c/?cursor=2': page(['b'], 'page/3'),
+      'https://was.example/space/s/c/page/3': page(['c'])
+    })
+    const result = await client.space('s').collection('c').list()
+    expect(urls).toEqual([
+      'https://was.example/space/s/c/',
+      'https://was.example/space/s/c/?cursor=2',
+      'https://was.example/space/s/c/page/3'
+    ])
+    expect(result?.items.map(item => item.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it("checks a later page's `next` against the first page, not its own", async () => {
+    const { client, urls } = clientWithPages({
+      'https://was.example/space/s/c/': page(['a'], 'page/2/'),
+      'https://was.example/space/s/c/page/2/': page(['b'], '../../../d/')
+    })
+    await expect(client.space('s').collection('c').list()).rejects.toThrow(
+      WasServerError
+    )
+    expect(urls).toEqual([
+      'https://was.example/space/s/c/',
+      'https://was.example/space/s/c/page/2/'
+    ])
+  })
+
+  it('scopes a slash-less first URL at a path segment boundary', async () => {
+    const fetched: string[] = []
+    const pages = await drain(
+      walkPages({
+        first: page(['a'], '/spaces?cursor=2'),
+        firstUrl: 'https://was.example/spaces',
+        fetchPage: async url => {
+          fetched.push(url)
+          return page(['b'], '/spaces-other/')
+        }
+      })
+    ).catch((err: unknown) => err)
+    expect(pages).toBeInstanceOf(WasServerError)
+    // `/spaces-other/` shares a string prefix with `/spaces` but is not under it.
+    expect(fetched).toEqual(['https://was.example/spaces?cursor=2'])
+  })
+})
+
+describe('walk page-count bound', () => {
+  it('fails with a typed error naming the listing URL past `maxPages`', async () => {
+    const fetched: string[] = []
+    const yielded: CollectionResourcesList[] = []
+    let error: unknown
+    try {
+      for await (const pageResult of walkPages(
+        {
+          first: page(['a'], '?cursor=1'),
+          firstUrl: 'https://was.example/space/s/c/',
+          fetchPage: async url => {
+            fetched.push(url)
+            return page(['b'], `?cursor=${fetched.length + 1}`)
+          }
+        },
+        { maxPages: 3 }
+      )) {
+        yielded.push(pageResult)
+      }
+    } catch (err) {
+      error = err
+    }
+    expect(yielded).toHaveLength(3)
+    expect(fetched).toHaveLength(2)
+    expect(error).toBeInstanceOf(WasServerError)
+    expect((error as WasServerError).message).toContain(
+      'https://was.example/space/s/c/'
+    )
+  })
+
+  it('does not trip when the walk ends exactly at `maxPages`', async () => {
+    const pages = await drain(
+      walkPages(
+        {
+          first: page(['a'], '?cursor=2'),
+          firstUrl: 'https://was.example/space/s/c/',
+          fetchPage: async () => page(['b'])
+        },
+        { maxPages: 2 }
+      )
+    )
+    expect(pages).toHaveLength(2)
+  })
+
+  it('bounds an endless cursor on a listing surface by default', async () => {
+    const urls: string[] = []
+    const client = clientWithStub(async ({ url }) => {
+      urls.push(url as string)
+      const data = page(['x'], `?cursor=${urls.length}`)
+      return {
+        status: 200,
+        headers: new Headers(),
+        data,
+        async json() {
+          return data
+        }
+      } as unknown as HttpResponse
+    })
+    await expect(client.space('s').collection('c').list()).rejects.toThrow(
+      WasServerError
+    )
+    expect(urls).toHaveLength(DEFAULT_MAX_PAGES)
   })
 })

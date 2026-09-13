@@ -1664,3 +1664,169 @@ the Spaces Repository from it.
 
 The `https://w3id.org/pws` key is provisional until the spec's rename registers
 it. storage-core does not export it as a constant while it is provisional.
+
+### WCL-42: A server-supplied `next` link is followed to any origin, with a signed zcap invocation
+
+- status: done (2026-09-13)
+- priority: high
+- labels: security, api, correctness, fail-closed
+- acceptance:
+  - [x] A `next` that resolves outside the first page's origin, or outside its
+        base path, ends the walk with a typed `WasServerError` instead of being
+        fetched
+  - [x] A test asserts the list of URLs actually requested during a walk, so a
+        hostile `next` cannot silently receive an invocation
+  - [x] `walkPages` takes a page-count bound with a generous default and raises
+        a typed error naming the listing URL when it is exceeded
+  - [x] The guard covers `WasClient.listSpaces`, `Space.collections()` /
+        `collectionsPages()`, `Collection.list()` / `listPages()` /
+        `listItems()`, and the public listing walk
+  - [x] The CHANGELOG entry names this a security fix
+
+`walkPages` (`src/internal/pagination.ts:122`) resolves the server's `next` with
+`new URL(next, baseUrl)` and hands the absolute result to `fetchPage`. Nothing
+compares it to `context.serverUrl`. Three verification agents reproduced the
+same end-to-end result independently: a stub WAS server answering with
+`next: "http://169.254.169.254/latest/meta-data/"` made the real client issue a
+live request to that second origin, carrying an `authorization: Signature`
+header keyed to the controller's `did:key` and a `capability-invocation` header
+whose zcap id is `urn:zcap:root:<attacker url>`. The attacker's items were then
+returned to the caller as the listing. The ezcap mechanism is settled: with no
+bound capability, `ZcapClient.request` synthesizes `generateZcapUri({ url })`
+for whatever URL it was given, and the confused-deputy prefix check lives in the
+arm that only runs when a capability object was supplied.
+
+The exposure is an arbitrary-URL dereference plus the controller DID and a
+proof-of-possession handed to a third party, and attacker-chosen items merged
+into a listing the caller believes came from its own server. It is a Node-side
+problem in practice: in a browser the signature headers make the cross-origin
+GET non-simple, so preflight blocks it. Correction to the original report,
+widening the blast radius: this is not only `listSpaces` and the public walk.
+`Collection.list()`, `listPages()` and `listItems()` are equally exposed
+whenever the handle carries no capability, which is the ordinary owner case. The
+page-count bound belongs here because it is the same trust boundary and the same
+function: a stub whose every page returns a fresh cursor drove 5000 fetches with
+`seen` and `items` growing without limit. No wire contract changes; a conformant
+relative `next` is unaffected. discovered-from: whole-codebase review,
+2026-09-11.
+
+### WCL-41: v0.5 path layout -- container descriptions at `meta`, the merged Collection Metadata object, trailing-slash canonical URLs
+
+- status: done (2026-09-13)
+- priority: high
+- labels: was-v0.5, breaking, paths, zcap, api
+- blocked-by: nothing for the was-client half (the reference server serves the
+  v0.5 route table as of was-teaching-server 0.31.0)
+- touches:
+  - wallet-attached-storage-spec: shipped -- WASS-29 landed the spec text
+    2026-09-11 (decision
+    `_spec/decisions/0005-container-descriptions-live-at-meta.md`, with its two
+    2026-09-11 amendments)
+  - was-client: `src/internal/paths.ts`, `src/Collection.ts`, `src/Space.ts`,
+    `src/internal/describe.ts`, `src/internal/meta.ts`, `src/internal/grant.ts`,
+    `src/edv/descriptorStore.ts`, the `./paths` subpath export (`src/paths.ts` +
+    the `exports` block), and ARCHITECTURE.md -- which today states the
+    invariants this change reverses (the independence of the `/meta`
+    `metaVersion` ETag from the Collection Description's ETag, and the
+    trailing-slash convention that "container endpoints carry a trailing slash,
+    member endpoints do not")
+  - storage-core: shipped -- storage-core 0.14.1 carries the merged wire type
+    and `meta` in `RESERVED_COLLECTION_IDS`; this item consumes it
+  - wallet-core: resolved -- WC-230 landed its code 2026-09-12 against
+    was-client 0.61.0 (the single-verb Space capability's targets, and
+    `readSpaceMetadata` at `meta`). Its merged-validator check found nothing to
+    raise here. Every roster and epoch write goes through the governed arm,
+    whose etag is the `meta/log` sub-resource's own validator, and wallet-core
+    makes no annotation write. Its live round trip stays open on WC-230 itself
+  - freewallet: waived 2026-09-13 to FW-523 -- its three `./paths` importers
+    inherit the change, but several zcap minters hand-build WAS URLs and bypass
+    the builders entirely; that item carries the fix
+  - was-react: waived 2026-09-13 to WR-46 -- `WasRemoteStore.#putDescription`
+    sends a partial body to the bare Collection URL, which after the merge would
+    clear the `custom` envelope a description write cannot reach today; that
+    item carries the fix
+- acceptance:
+  - [x] A `spaceMeta(spaceId)` builder exists beside `collectionMeta` and
+        `resourceMeta`, and is exported from the `./paths` subpath
+  - [x] `spaceCollections()` is deleted; `Space.collections()` walks
+        `spacePath(spaceId)` -- the same `/space/{id}/` URL
+        `Space.createCollection()` already posts to
+  - [x] The Space description methods (`describe`, `describeWithEtag`,
+        `replaceDescription`, `configure`) read and write `spaceMeta`
+  - [x] The Collection description methods and the Collection metadata methods
+        converge on one path and one validator. `describe()` and `meta()` return
+        one merged object; `replaceDescription()` and `setMeta()` are one
+        full-replacement write against `collectionMeta`; the two `readEtag` call
+        sites become one
+  - [x] `Collection.delete()` and `Space.delete()` target the trailing-slash
+        container URLs
+  - [x] `ifNoneMatch` on the merged Collection write means "create only if the
+        Collection does not exist", and `Collection.configure` / `patchCustom`
+        are re-expressed against the single validator: a configuration change
+        now legitimately invalidates an in-flight annotation write, so the
+        read-modify-write helpers retry rather than assume independence
+  - [x] `delegateGrantAt`'s prefilled `target` and `spaceRootCapabilityId()`
+        agree with the server's canonical `allowedTarget` for every operation.
+        Signature verification fails on any mismatch, so this is checked against
+        the reference server, not reasoned about
+  - [x] `src/edv/descriptorStore.ts` (the encryption-descriptor store seam)
+        reads and writes the descriptor through the merged object
+  - [x] ARCHITECTURE.md's two affected statements are rewritten, and the
+        CHANGELOG entry names this a breaking change
+  - [x] The consumers listed under `touches:` are walked: every external call
+        site that builds a root capability, an invocation target, or a pinned
+        resource URL from the exported `spacePath` is re-audited against the
+        canonical trailing-slash Space URL. Walked for wallet-core (WC-230); the
+        freewallet and was-react walks were waived 2026-09-13 to FW-523 and
+        WR-46
+
+Context: WAS v0.5 moves a container's description to its `meta` sub-resource and
+merges a Collection's description with its Metadata object. `GET`/`PUT` of a
+Space description move from `/space/{id}` to `/space/{id}/meta`; the
+Collection's move from `/space/{s}/{c}` to `/space/{s}/{c}/meta`, where they
+join the object `meta()`/`setMeta()` already read and write. The two separate
+ETags the client tracks today collapse into one `metaVersion`. Separately, a
+container URL is now canonically written with a trailing slash, the Space became
+an ordinary container (`GET` lists its Collections, `POST` creates one), and
+`/space/{id}/collections/` is retired. The client currently encodes the opposite
+of all three, and `internal/paths.ts` says why that matters: its trailing-slash
+rules must match the server's per-operation `allowedTarget` exactly or signature
+verification fails.
+
+The blast radius outside this repo is the `./paths` subpath. `spacePath` is
+imported directly by wallet-core and freewallet to mint root capabilities and
+invocation targets, so retargeting it is not an internal refactor. Greenfield:
+no alias for the v0.4 paths, and the version bump names the break.
+
+Status 2026-09-12: the was-client half landed. `spacePath` / `collectionPath`
+now return the canonical trailing-slash container URLs, and are the only
+builders for them: a container lists its members, creates one and is deleted at
+itself, so the `spaceItems` / `collectionItems` aliases are gone and no two
+builders differ only by a slash or emit a bare container URL; `spaceMeta` joins
+`collectionMeta` / `resourceMeta` and the `./paths` barrel. The Collection
+handle reads and writes one object at `collectionMeta` under one `metaVersion`:
+`describe` is the configuration read (no codec, so `custom` stays the stored
+envelope) and `meta` the same read with `custom` decoded, while `configure`,
+`replaceDescription`, `setMeta` and the `setName` / `setTags` patches are
+full-replacement writes composed against a fresh read -- a configuration write
+forwards the stored `custom` and `epoch` verbatim, an annotation write re-sends
+the configuration -- each pinned to the version it composed against and rebased
+on a 412 through the shared compare-and-swap loop. Descriptor discovery and
+`meta()` now share one `GET`, since the descriptor and the persisted index
+schema live in the same object. The canonical Space root target was verified
+against was-teaching-server 0.31.0: the live
+`test/integration/revocation.test.ts` passes against `/space/{s}/`.
+
+Open: the cross-repo `touches:` entries (wallet-core WC-230, freewallet FW-523,
+was-react WR-46), and the last acceptance box, which is the walk of those
+consumers. storage-core 0.14.1 ships `meta` in `RESERVED_COLLECTION_IDS` and is
+consumed. WCL-98, the encrypted-Collection blocker the live run surfaced, was
+resolved the same day by the spec and server change that lets an empty or
+omitted `custom` clear on an encrypted Collection; the full integration tier (11
+files, 77 tests) passes against the reference server.
+
+Closed 2026-09-13: wallet-core's entry resolved with WC-230's landed code, and
+the freewallet and was-react entries were waived to FW-523 and WR-46, which the
+maintainer takes on separately. Note that was-react still imports the deleted
+`collectionItems` builder, so WR-46 is also a compile break against this
+release.

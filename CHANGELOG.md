@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.62.1 - TBD
+
+### Fixed
+
+- Security fix: listing walks no longer follow a server-supplied `next` link
+  outside the listing. A `next` outside the first page's origin or base path,
+  one with a username or password in it, or one that is not a string URL, fails
+  the walk with `WasServerError` and is not
+  requested. Before, the client sent a signed invocation (with a root zcap
+  synthesized for that URL) to any origin the server named. Covers
+  `listSpaces()`, `Space.collections()` / `collectionsPages()`,
+  `Collection.list()` / `listPages()` / `listItems()`, and the
+  `publicListCollection*()` walks.
+- A listing walk stops with `WasServerError` naming the listing URL after 10,000
+  pages, instead of following an endless cursor without limit.
+
 ## 0.62.0 - 2026-09-13
 
 ### Added

@@ -10,6 +10,12 @@
  * request, and yields one page at a time (constant memory, early-exit-friendly).
  * `collectPages` builds on it to eagerly aggregate every page into one envelope.
  *
+ * The server's `next` is untrusted input. Following it attaches a signed
+ * invocation (and, with no bound capability, a root zcap synthesized for
+ * whatever URL is requested), so `walkPages` only follows a `next` that stays
+ * within the first page's origin and base path, and stops after a bounded
+ * number of pages. Either violation fails the walk with a `WasServerError`.
+ *
  * The helpers are generic over the listing envelope, so they serve all three
  * paginated WAS listings: List Collection items (`CollectionResourcesList`),
  * List Collections (`CollectionsList`), and List Spaces (`SpaceListing`). Each
@@ -23,6 +29,14 @@ import type {
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
 import { dataOrNull } from './content.js'
+import { WasServerError } from '../errors.js'
+
+/**
+ * The default page-count bound on one listing walk. Generous enough for any
+ * real listing, but it stops a server whose every page returns a fresh cursor
+ * from driving an unbounded number of requests.
+ */
+export const DEFAULT_MAX_PAGES = 10_000
 
 /**
  * The shared shape of every paginated listing envelope: an `items` array and an
@@ -97,37 +111,120 @@ export async function signedPageWalk<
 }
 
 /**
+ * Resolves a server-supplied `next` against the URL of the page that produced
+ * it, and checks that the result stays within the listing: the same origin as
+ * the first page, a path equal to or under the first page's path, and no
+ * username or password. A `next` that fails any check is never fetched, because
+ * the fetch would carry the caller's signed invocation to wherever the server
+ * pointed it.
+ *
+ * @param options {object}
+ * @param options.next {unknown}     the `next` value from the page
+ * @param options.baseUrl {string}   the URL of the page that produced it
+ * @param options.firstUrl {URL}     the canonicalized first page URL
+ * @returns {string} the absolute, canonicalized page URL
+ * @throws {WasServerError}   when `next` is not a URL or leaves the listing
+ */
+function resolveNext({
+  next,
+  baseUrl,
+  firstUrl
+}: {
+  next: unknown
+  baseUrl: string
+  firstUrl: URL
+}): string {
+  const listingUrl = firstUrl.toString()
+  let pageUrl: URL
+  try {
+    // A parsed body is untrusted: a non-string `next` would otherwise be
+    // coerced into a relative path and followed.
+    if (typeof next !== 'string') {
+      throw new TypeError(`\`next\` is a ${typeof next}, not a string.`)
+    }
+    pageUrl = new URL(next, baseUrl)
+  } catch (err) {
+    throw new WasServerError(
+      `The listing at "${listingUrl}" served a \`next\` link that is not a ` +
+        `URL: ${JSON.stringify(next)}.`,
+      { requestUrl: listingUrl, cause: err }
+    )
+  }
+  const basePath = firstUrl.pathname.endsWith('/')
+    ? firstUrl.pathname
+    : `${firstUrl.pathname}/`
+  const sameOrigin =
+    pageUrl.origin !== 'null' && pageUrl.origin === firstUrl.origin
+  const underBasePath =
+    pageUrl.pathname === firstUrl.pathname ||
+    pageUrl.pathname.startsWith(basePath)
+  const hasCredentials = pageUrl.username !== '' || pageUrl.password !== ''
+  if (!sameOrigin || !underBasePath || hasCredentials) {
+    throw new WasServerError(
+      `The listing at "${listingUrl}" served a \`next\` link ` +
+        `("${pageUrl.toString()}") outside its origin or base path, or ` +
+        'with credentials in it. It was not followed.',
+      { requestUrl: listingUrl }
+    )
+  }
+  return pageUrl.toString()
+}
+
+/**
  * Lazily walks a list response page by page, yielding the first page and then
  * each page reached by following `next`. Each `next` is resolved relative to the
  * URL of the page that produced it, and a self-referential or already-seen
  * `next` ends the traversal defensively rather than looping forever. Yields one
  * page at a time, so a consumer can stop early without fetching the rest.
  *
+ * A `next` outside the first page's origin or base path, a `next` carrying a
+ * username or password, or a walk that would
+ * exceed `maxPages` pages, fails with a `WasServerError` naming the listing URL
+ * instead of fetching.
+ *
  * @param walk {PageWalk<T>}
+ * @param [options] {object}
+ * @param [options.maxPages] {number}   the most pages to yield, counting the
+ *   first (defaults to {@link DEFAULT_MAX_PAGES})
  * @returns {AsyncGenerator<T>}
+ * @throws {WasServerError}   when `next` leaves the listing or the bound is hit
  */
 export async function* walkPages<
   T extends PageEnvelope = CollectionResourcesList
->(walk: PageWalk<T>): AsyncGenerator<T> {
-  const { first, firstUrl, fetchPage } = walk
+>(
+  walk: PageWalk<T>,
+  { maxPages = DEFAULT_MAX_PAGES }: { maxPages?: number } = {}
+): AsyncGenerator<T> {
+  const { first, fetchPage } = walk
+  // Canonicalize the first URL once: it is both the scope every `next` is
+  // checked against and the seed of the cycle guard. Every followed `next` is
+  // canonicalized via `new URL(...)`, so an equivalent-but-unequal seed (e.g.
+  // an explicit default port) would let a next-link back to page 1 defeat the
+  // guard and yield its items twice.
+  const firstUrl = new URL(walk.firstUrl)
   yield first
-  // Seed the cycle guard with the canonicalized first URL -- every followed
-  // `next` is canonicalized via `new URL(...)`, so an equivalent-but-unequal
-  // seed (e.g. an explicit default port) would let a next-link back to page 1
-  // defeat the guard and yield its items twice.
-  const seen = new Set<string>([new URL(firstUrl).toString()])
-  let baseUrl = firstUrl
+  const seen = new Set<string>([firstUrl.toString()])
+  let pageCount = 1
+  let baseUrl = firstUrl.toString()
   let next = first.next
   while (next) {
-    const pageUrl = new URL(next, baseUrl).toString()
+    const pageUrl = resolveNext({ next, baseUrl, firstUrl })
     if (seen.has(pageUrl)) {
       break
+    }
+    if (pageCount >= maxPages) {
+      throw new WasServerError(
+        `The listing at "${firstUrl.toString()}" did not end within ` +
+          `${maxPages} pages.`,
+        { requestUrl: firstUrl.toString() }
+      )
     }
     seen.add(pageUrl)
     const page = await fetchPage(pageUrl)
     if (page === null) {
       break
     }
+    pageCount += 1
     yield page
     baseUrl = pageUrl
     next = page.next
