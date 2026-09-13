@@ -7,8 +7,9 @@
  * than letting the server answer `409 Conflict`.
  *
  * The reserved sets themselves are single-sourced from `@interop/storage-core`
- * (the spec's Reserved Path Segment Registry) and re-exported here. This module
- * only adds the client-side `ValidationError`-throwing guard.
+ * (the spec's Reserved Path Segment Registry). This module adds the
+ * client-side `ValidationError`-throwing guard and the two membership
+ * predicates the path grammar asks with.
  */
 import {
   RESERVED_COLLECTION_IDS,
@@ -16,6 +17,26 @@ import {
 } from '@interop/storage-core'
 
 import { ValidationError } from '../errors.js'
+
+/**
+ * Whether `id` is a reserved Collection-id path segment.
+ *
+ * @param id {string}
+ * @returns {boolean}
+ */
+export function isReservedCollectionId(id: string): boolean {
+  return RESERVED_COLLECTION_IDS.has(id)
+}
+
+/**
+ * Whether `id` is a reserved Resource-id path segment.
+ *
+ * @param id {string}
+ * @returns {boolean}
+ */
+export function isReservedResourceId(id: string): boolean {
+  return RESERVED_RESOURCE_IDS.has(id)
+}
 
 /**
  * Throws a `ValidationError` if the given id collides with a reserved path
@@ -34,9 +55,9 @@ export function assertNotReserved({
   id: string
   kind: 'collection' | 'resource'
 }): void {
-  const reserved =
-    kind === 'collection' ? RESERVED_COLLECTION_IDS : RESERVED_RESOURCE_IDS
-  if (reserved.has(id)) {
+  const isReserved =
+    kind === 'collection' ? isReservedCollectionId : isReservedResourceId
+  if (isReserved(id)) {
     throw new ValidationError(
       `Cannot use reserved path segment "${id}" as a ${kind} id.`
     )

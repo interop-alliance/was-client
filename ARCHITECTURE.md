@@ -143,7 +143,7 @@ Taking `resource.put(data)` as the canonical path:
 
 1. **Codec resolution** (`internal/codec.ts`): the memoized resolver decides
    plaintext vs encrypting. Order: per-handle override wins; no keystore means
-   identity codec; otherwise read the Collection description's `encryption`
+   identity codec; otherwise read the Collection Metadata object's `encryption`
    descriptor (fail closed if unreadable) and build the encrypting codec via
    `context.encryption.codecFor(...)`.
 2. **Encode** (`codec.encode`): identity codec is byte-exact pass-through; the
@@ -189,7 +189,7 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
   content, `encodeMeta`/`decodeMeta` for the custom name/tags metadata, plus a
   `conditionalWrites` flag) and `EncryptionProvider` (`codecFor`, which is
   **keys-only**: it supplies key material but never decides whether a collection
-  is encrypted -- the Collection description's `encryption` descriptor does;
+  is encrypted -- the Collection Metadata object's `encryption` descriptor does;
   plus the optional `canRoute`, the provider's pure answer to whether a
   just-declared descriptor is one `codecFor` could route as it stands, which
   `Space.createCollection` consults before pinning a new handle to that
@@ -242,11 +242,14 @@ descriptor declares a blinding key. Consequences worth knowing:
 
 - Resolving such a codec costs one extra read (the Collection `/meta` slot,
   whose encrypted `custom` holds the schema under `indexSchema`); a collection
-  without a blinding key pays nothing. `CodecHolder.resolve()` hands that read's
-  decoded snapshot to the call that triggered resolution, so a first `meta()` or
-  `declareIndex()` on a fresh handle reuses it instead of reading `/meta` again.
-  Every other caller reads fresh, since the snapshot is a point in time and
-  `get()` discards it.
+  without a blinding key pays nothing. The decode of that `custom` is advisory:
+  an envelope this reader cannot open leaves the schema empty and the snapshot
+  absent instead of failing the resolution, so only the calls that want the
+  annotations (`meta()`, and the search paths through the empty schema) see the
+  refusal. `CodecHolder.resolve()` hands that read's decoded snapshot to the
+  call that triggered resolution, so a first `meta()` or `declareIndex()` on a
+  fresh handle reuses it instead of reading `/meta` again. Every other caller
+  reads fresh, since the snapshot is a point in time and `get()` discards it.
 - The schema is as fresh as the handle. `declareIndex` updates the persisted
   copy and this handle's codec together, and `CodecHolder.reset()` re-reads it.
   The sync `DocCipher` has no request layer, so there the schema is
@@ -322,32 +325,42 @@ epoch a collection encrypts under, and when a reader asks again. Every consumer
 running an encrypted collection must share one rule, since a drift between two
 replicas fails as a resource one of them cannot decrypt rather than loudly. The
 two seams are narrow on purpose: an `EncryptionDescriptorSource` is one signed
-read of the Description (`wasDescriptorSource` over a `WasClient`, or a
-consumer's own reader over a governed log), and an `EncryptionDescriptorCache`
-is a client-local get/put the host has scoped to one Space. `acquireDescriptor`
-fetches, caches a success, and falls back to the cached copy whenever the fetch
-yields no descriptor -- thrown or empty, since WAS masks an unauthorized read as
-an absent one -- so `undefined` means nothing anywhere describes the
-collection's encryption, and a caller that declared it encrypted refuses
-fail-closed. A resource-log refusal from a governed source is a security signal,
-not an outage: `@interop/vh-resource-log`'s `isResourceLogRefusal` rethrows it
-past a warm cache, with the continuity `rollback` as the one carve-out. An epoch
-rotation emits no change-feed entry, so a cipher built from a cached descriptor
-can meet envelopes under an unseen epoch; the remedy is one re-read plus a
-cipher rebuild plus one retry, guarded to once per collection per session so a
-genuinely foreign envelope cannot drive a refetch loop.
-`DescriptorRefreshPolicy` is that guard for a host that scans rows, and
-`createRefreshingEdvDocCipher` binds `createEdvDocCipher` to both for a host
-whose decrypt seam is the cipher itself. The two no-key signals are what the
-policy dispatches on: only `UnknownEpochError` drives a refresh, and
+read of the Collection Metadata object (`wasDescriptorSource` over a
+`WasClient`, or a consumer's own reader over a governed log), and an
+`EncryptionDescriptorCache` is a client-local get/put the host has scoped to one
+Space. `acquireDescriptor` fetches, caches a success, and falls back to the
+cached copy whenever the fetch yields no descriptor -- thrown or empty, since
+WAS masks an unauthorized read as an absent one -- so `undefined` means nothing
+anywhere describes the collection's encryption, and a caller that declared it
+encrypted refuses fail-closed. A resource-log refusal from a governed source is
+a security signal, not an outage: `@interop/vh-resource-log`'s
+`isResourceLogRefusal` rethrows it past a warm cache, with the continuity
+`rollback` as the one carve-out. An epoch rotation emits no change-feed entry,
+so a cipher built from a cached descriptor can meet envelopes under an unseen
+epoch; the remedy is one re-read plus a cipher rebuild plus one retry, guarded
+to once per collection per session so a genuinely foreign envelope cannot drive
+a refetch loop. `DescriptorRefreshPolicy` is that guard for a host that scans
+rows, and `createRefreshingEdvDocCipher` binds `createEdvDocCipher` to both for
+a host whose decrypt seam is the cipher itself. The two no-key signals are what
+the policy dispatches on: only `UnknownEpochError` drives a refresh, and
 `KeyUnwrapError` propagates untouched, since re-reading the same descriptor
 cannot produce a key the reader was never given. Their `err.name` matchers,
 `isUnknownEpochError` and `isKeyUnwrapError`, live in `sync/predicates.ts`
 beside the other injected-seam signals.
 
+A write that declares or changes the `encryption` descriptor re-seals the
+Collection `/meta` envelope in the same body: the server validates `custom`
+against the INCOMING descriptor, so a stored plaintext envelope cannot travel
+beside a newly declared one (422, `encryption-scheme-mismatch`), and the spec
+states the same rule. The re-seal opens `custom` under the stored descriptor's
+codec and seals it under the incoming one, stamping the new epoch; a client that
+can build neither codec drops `custom` rather than sending it as it stands. A
+write that leaves the scheme alone -- an epoch rotation, the recipient CAS --
+carries the envelope and its stamp forward untouched.
+
 Descriptor mutations go through a CAS loop (read descriptor + validator, mutate,
 conditional write, bounded retries) over the **descriptor-store seam**
-(`descriptorStore.ts`): the Collection Description adapter (`describeWithEtag` /
+(`descriptorStore.ts`): the Collection Metadata adapter (`describeWithEtag` /
 `replaceDescription({ ifMatch })`, server-enforced descriptor invariants), the
 plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first
 descriptor created with `If-None-Match: *`; integrity rests on client-side epoch
@@ -360,18 +373,19 @@ the log's verified head state, `replace` / `create` are signed appends
 conflict translated to the port's `PreconditionFailedError`, read-back and pin),
 and `seal()` is the library's sealing sweep over the log this instance last
 verified; wallet-core's user key roster store wraps it. The pointer-following
-one, `logGovernedCollectionDescriptorStore`, reads the Description and
-dispatches on its `encryption` member: no `history` is the plain adapter's
-behavior; `history` present means the served descriptor is a projection of the
-Collection's `/meta/log` history log, and the read refuses a `history.method`
-other than the profile's format identifier or a `history.resource` other than
-`collection.historyLogUrl` before any fetch, then verifies the log through
-`@interop/vh-resource-log` (`readResourceLog` under a caller-supplied controller
-port and pin store, wrapped by `readGovernedEpochConfiguration`, which also
-refuses a head whose `state.type` is not `WasEpochConfiguration`) and refuses a
-projection that does not JCS-equal the verified head's `state` after stripping
-`history`. The Description and the log are two reads, so a projection equal to
-an earlier entry's state (a concurrent append landed between them) is the port's
+one, `logGovernedCollectionDescriptorStore`, reads the Collection Metadata
+object and dispatches on its `encryption` member: no `history` is the plain
+adapter's behavior; `history` present means the served descriptor is a
+projection of the Collection's `/meta/log` history log, and the read refuses a
+`history.method` other than the profile's format identifier or a
+`history.resource` other than `collection.historyLogUrl` before any fetch, then
+verifies the log through `@interop/vh-resource-log` (`readResourceLog` under a
+caller-supplied controller port and pin store, wrapped by
+`readGovernedEpochConfiguration`, which also refuses a head whose `state.type`
+is not `WasEpochConfiguration`) and refuses a projection that does not JCS-equal
+the verified head's `state` after stripping `history`. The Collection Metadata
+object and the log are two reads, so a projection equal to an earlier entry's
+state (a concurrent append landed between them) is the port's
 `PreconditionFailedError` and the CAS loop rebases; only a projection matching
 no entry is an integrity refusal. Writes on a governed Collection are the
 generic store's appends (`toEpochConfigurationState` strips `history` and stamps
@@ -502,9 +516,9 @@ matches the envelope's JWE recipient `kid`s against the reader's candidate keys
 a single-key collection. An envelope naming only recipients no candidate matches
 fails fast, and which error it raises depends on whether the descriptor lists
 the named epoch. An epoch the descriptor does not list at all throws
-`UnknownEpochError`, the signal that the cached Collection description is stale
-(epoch rotation emits no change-feed entry) and the codec must be rebuilt from a
-re-read descriptor. An epoch the descriptor lists but wraps only to other
+`UnknownEpochError`, the signal that the cached Collection Metadata object is
+stale (epoch rotation emits no change-feed entry) and the codec must be rebuilt
+from a re-read descriptor. An epoch the descriptor lists but wraps only to other
 recipients throws `KeyUnwrapError`: the descriptor is current and this reader is
 simply not a recipient of that epoch (it never was, or it was removed and the
 epoch rotated), so a refresh cannot help.
@@ -533,11 +547,23 @@ No locks; safety is optimistic (ETag/CAS) throughout
 
 - The server's per-resource version is the ETag; writes send `If-Match` /
   `If-None-Match: *`; 412 maps to `PreconditionFailedError`.
-- Each metadata slot has its own validator: the Resource `/meta` and Collection
-  `/meta` `metaVersion` ETags are independent of each other, of the Collection
-  Description's ETag, and of every content version, so `Collection.setMeta` and
-  the read-then-CAS `setName`/`setTags` sugar pin against the metadata's own
-  etag.
+- Each metadata slot has its own validator, independent of every content
+  version: the Resource `/meta` object has its `metaVersion` ETag, and so does
+  the Collection `/meta` object. The Collection's `metaVersion` covers the whole
+  Collection Metadata object, so one validator advances on a configuration write
+  (`configure`, `replaceDescription`) and on an annotation write (`setMeta`,
+  `setName`, `setTags`) alike -- there is no second, independent validator for
+  the configuration members. `Collection.setMeta` and the read-then-CAS
+  `setName`/`setTags` sugar pin against that one etag.
+- Every Collection Metadata write runs through one compose step
+  (`Collection.#writeStored`): the write body is built from the stored object
+  the write is pinned to, so a merge is never applied over a version it did not
+  observe and a rebase re-composes rather than re-sending. The baseline is the
+  read the handle (or the caller) most recently made, when that read carries the
+  validator; otherwise the compose step reads. The compose is a DENYLIST over
+  the stored object -- the server-managed members and the members this write
+  states itself are dropped, everything else travels -- so a member this client
+  does not model survives a write it is not about.
 - `declareIndex` reconciles against the persisted index schema with the same
   metadata ETag: read, merge, conditional write, bounded retry on 412, so two
   clients declaring different attributes at once do not erase each other.
@@ -571,13 +597,22 @@ with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
 ## Invariants worth knowing before you change things
 
 1. **Fail closed on masked 404.** Any operation that must know current state
-   (descriptor discovery, configure merges, conditional inserts, recipient CAS)
-   refuses to proceed when the description is unreadable. An encryption-capable
-   client never silently downgrades to plaintext.
-2. **Trailing-slash discipline is a security invariant.** The zcap
-   `invocationTarget` derives from the request URL and must byte-match the
-   server's per-operation `allowedTarget`; item-create/listing endpoints take a
-   trailing slash, member endpoints do not (`internal/paths.ts`).
+   (descriptor discovery, configure merges, conditional inserts, recipient CAS,
+   every annotation write) refuses to proceed when the Metadata object is
+   unreadable -- an annotation write with `NotFoundError`, since a
+   full-replacement `PUT` over an unreadable object creates a configuration-less
+   Collection. An encryption-capable client does not silently downgrade to
+   plaintext. The one write that may proceed from nothing is the guarded create
+   (`ifNoneMatch: true`), which states its own absence and therefore takes its
+   codec from what it writes rather than from stored state.
+2. **Trailing-slash discipline is a security invariant.** A trailing slash marks
+   a container URL in canonical form (`/spaces/`, `/space/{s}/`,
+   `/space/{s}/{c}/`); everything else has none, and no two paths differ only by
+   a trailing slash. The zcap `invocationTarget` derives from the request URL
+   and must byte-match the server's per-operation `allowedTarget`, so the bare
+   (slash-less) form of a container URL is never emitted or followed -- it only
+   308-redirects, and a redirect would have to be signed again
+   (`internal/paths.ts`).
 3. **Reserved path segments are guarded in three places** (handle constructors,
    path builders, path parsing) so e.g. `collection('policy')` can never alias
    the space policy endpoint.
@@ -616,6 +651,19 @@ it, and otherwise cover the client-side concepts this file names.
   without network I/O. The kinds are `WasClient` (the spaces repository),
   `Space`, `Collection`, and `Resource`, each creating the next (`src/*.ts`).
   See The handle model.
+- **Space Metadata object** -- a Space's one "about it" document (`name`,
+  `controller`, `type`), read and replaced at the Space's reserved `meta`
+  segment (`spaceMeta`) rather than at the Space container URL. One object under
+  one `metaVersion` validator. Avoid: Space Description (retired term; there is
+  no separate description object).
+- **Collection Metadata object** -- a Collection's one "about it" document: its
+  configuration (`name`, `backend`, `encryption`, `generator`) together with the
+  server-managed timestamps and the user-writable `custom`, read and replaced at
+  the Collection's reserved `meta` segment (`collectionMeta`) rather than at the
+  Collection container URL. One object under one `metaVersion` validator, which
+  advances on a configuration write and on an annotation write alike. Avoid:
+  Collection Description (retired term; the Description and the former `/meta`
+  object are now the same object).
 - **`ClientContext`** -- the single
   `{ serverUrl, zcapClient, controllerDid, encryption? }` record every handle
   shares by reference (`src/internal/request.ts`). See The handle model.
@@ -662,13 +710,13 @@ it, and otherwise cover the client-side concepts this file names.
   adds an epoch (`src/edv/epochCrypto.ts`, `epochKeys.ts`, `epochRoster.ts`).
   See The EDV layer.
 - **Encryption descriptor** -- the plaintext scaffolding on the Collection
-  description that declares whether and how a collection is encrypted (`scheme`,
-  `version`, epoch ids, blinding-key id). It, not the client, is what says a
-  collection is encrypted. See The codec seam and The EDV layer.
+  Metadata object that declares whether and how a collection is encrypted
+  (`scheme`, `version`, epoch ids, blinding-key id). It, not the client, is what
+  says a collection is encrypted. See The codec seam and The EDV layer.
 - **Descriptor-store seam** -- the read-validator/conditional-write pair the
   descriptor CAS loop runs over (`src/edv/descriptorStore.ts`), with two
-  adapters: the Collection description and a plain JSON Resource. See The EDV
-  layer.
+  adapters: the Collection Metadata object and a plain JSON Resource. See The
+  EDV layer.
 - **Envelope binding** -- the AEAD-authenticated `was` parameter in a JWE
   protected header (scheme version, plus `resource` or `collection`) that ties
   an envelope to the slot it belongs in, verified on decode. See The EDV layer.

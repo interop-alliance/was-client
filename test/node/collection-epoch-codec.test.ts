@@ -126,8 +126,11 @@ describe('rotate-then-write on the same handle', () => {
         const segments = new URL(args.url ?? '').pathname
           .split('/')
           .filter(Boolean)
-        const isCollectionDesc =
-          segments.length === 3 && segments[0] === 'space'
+        // The Collection Metadata object: `/space/{s}/{c}/meta`.
+        const isCollectionMeta =
+          segments.length === 4 &&
+          segments[0] === 'space' &&
+          segments[3] === 'meta'
         const isHistoryLog =
           segments.length === 5 &&
           segments[0] === 'space' &&
@@ -146,7 +149,7 @@ describe('rotate-then-write on the same handle', () => {
             }
           } as unknown as HttpResponse
         }
-        if (method === 'PUT' && isCollectionDesc && args.json?.encryption) {
+        if (method === 'PUT' && isCollectionMeta && args.json?.encryption) {
           // Rotate the served descriptor (what replaceDescription does
           // server-side).
           descriptor = args.json.encryption
@@ -159,7 +162,7 @@ describe('rotate-then-write on the same handle', () => {
             }
           } as unknown as HttpResponse
         }
-        if (method === 'GET' && isCollectionDesc) {
+        if (method === 'GET' && isCollectionMeta) {
           const description = {
             id: 'c',
             type: ['Collection'],
@@ -308,7 +311,11 @@ describe('createCollection pre-seed consults the provider', () => {
             }
           } as unknown as HttpResponse
         }
-        if (method === 'GET' && segments.length === 3) {
+        if (
+          method === 'GET' &&
+          segments.length === 4 &&
+          segments[3] === 'meta'
+        ) {
           describeGets++
           const description = {
             id: 'c',

@@ -83,7 +83,7 @@ describe('was.grant (delegation)', () => {
  * exactly in the Space), so a collection-rooted grant would be un-revocable.
  */
 describe('grant rooting (revocability)', () => {
-  const spaceRoot = `urn:zcap:root:${encodeURIComponent('https://was.example/space/s')}`
+  const spaceRoot = `urn:zcap:root:${encodeURIComponent('https://was.example/space/s/')}`
 
   it('roots a collection grant at its space, attenuating the target', async () => {
     const { client, lastDelegate } = clientWithDelegateSpy()
@@ -97,7 +97,7 @@ describe('grant rooting (revocability)', () => {
 
     const args = lastDelegate()
     expect(args?.capability).toBe(spaceRoot)
-    expect(args?.invocationTarget).toBe('https://was.example/space/s/c')
+    expect(args?.invocationTarget).toBe('https://was.example/space/s/c/')
   })
 
   it('roots a resource-targeted was.grant at its space', async () => {
@@ -117,7 +117,7 @@ describe('grant rooting (revocability)', () => {
 
     const args = lastDelegate()
     expect(args?.capability).toBe(spaceRoot)
-    expect(args?.invocationTarget).toBe('https://was.example/space/s')
+    expect(args?.invocationTarget).toBe('https://was.example/space/s/')
   })
 
   it('re-delegation keeps the bound capability as the parent', async () => {
@@ -177,10 +177,10 @@ describe('grant rooting (revocability)', () => {
 
     // The base path is preserved in the Space URL the chain roots at.
     expect(captured?.capability).toBe(
-      `urn:zcap:root:${encodeURIComponent('https://host.example/was/space/s')}`
+      `urn:zcap:root:${encodeURIComponent('https://host.example/was/space/s/')}`
     )
     expect(captured?.invocationTarget).toBe(
-      'https://host.example/was/space/s/c'
+      'https://host.example/was/space/s/c/'
     )
   })
 })

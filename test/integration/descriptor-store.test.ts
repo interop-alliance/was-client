@@ -177,8 +177,7 @@ describeLive('resource-hosted descriptor store (live server)', () => {
     expect(epochsAtPull).toEqual([rotated.currentEpoch])
 
     // The fresh epoch excludes the removed reader; a remaining reader holds
-    // both epochs, the removed reader only the old one (its writeEpoch falls
-    // back) and a stranger none.
+    // both epochs, the removed reader only the old one, and a stranger none.
     const currentEpoch = rotated.epochs!.find(
       epoch => epoch.id === rotated.currentEpoch
     )!
@@ -193,7 +192,13 @@ describeLive('resource-hosted descriptor store (live server)', () => {
       encryption: rotated,
       keyAgreementKey: bob.kak
     })
-    expect(bobKeys!.writeEpoch).not.toBe(rotated.currentEpoch)
+    // A rotated-off reader still writes UNDER the current epoch (through a
+    // public-only stand-in), so its `writeEpoch` is the current one and
+    // `namedInWriteEpoch` is what reports the removal; the only epoch key it
+    // holds is the older one it is still named in.
+    expect(bobKeys!.writeEpoch).toBe(rotated.currentEpoch)
+    expect(bobKeys!.namedInWriteEpoch).toBe(false)
+    expect(bobKeys!.readKeys).toHaveLength(1)
     const stranger = await makeReader()
     await expect(
       resolveEpochKeys({ encryption: rotated, keyAgreementKey: stranger.kak })

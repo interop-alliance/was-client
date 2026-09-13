@@ -453,9 +453,9 @@ export interface EncryptionProvider {
    * @param input.collectionId {string}
    * @param input.scheme {string}   the declared encryption scheme (e.g. `edv`)
    * @param [input.encryption] {CollectionEncryption}   the full encryption
-   *   descriptor read from the Collection Description (when core discovered it
-   *   via the descriptor rather than an override). Carries the key-epoch public
-   *   references (`epochs` / `currentEpoch`) a multi-recipient provider needs
+   *   descriptor read from the Collection Metadata object (when core
+   *   discovered it via the descriptor rather than an override). Carries the
+   *   key-epoch public references (`epochs` / `currentEpoch`) a provider needs
    *   to resolve per-epoch keys; absent on an override-driven resolution, where
    *   the provider falls back to its single-key path.
    * @param [input.keys] {unknown}   override-supplied key material (a per-handle

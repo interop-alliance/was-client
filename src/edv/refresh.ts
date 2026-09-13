@@ -5,7 +5,7 @@
  * The unknown-epoch refresh policy: an epoch rotation emits no change-feed
  * entry, so a cipher built from a cached descriptor can meet envelopes stamped
  * with an epoch it has never seen. The remedy is one re-read of the
- * Collection Description plus a cipher rebuild and a single retry -- and the
+ * Collection Metadata object plus a cipher rebuild and a single retry -- and
  * policy guards that remedy to ONCE per collection per session, so a
  * genuinely foreign envelope (one no descriptor will ever route) cannot drive
  * a refetch loop, let alone a refetch per resource.

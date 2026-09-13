@@ -24,10 +24,13 @@ import type { ActionInput } from '@interop/storage-core'
 export type { IZcap, IDelegatedZcap, IRootZcap, IDID, ISigner }
 
 /**
- * Re-export the shared WAS wire model from `@interop/storage-core`. The
- * resources-in-a-collection listing is `CollectionResourcesList` (formerly
- * `ResourceListing`) and the collections-in-a-space listing is `CollectionsList`
- * (formerly `CollectionListing`).
+ * Re-export the shared WAS wire model from `@interop/storage-core`. A
+ * container's description is its Metadata object: `SpaceMetadata` for a Space
+ * and `CollectionMetadata` for a Collection, the latter carrying the
+ * configuration members beside `custom` and the timestamps under one
+ * validator. The resources-in-a-collection listing is
+ * `CollectionResourcesList` and the collections-in-a-space listing is
+ * `CollectionsList`.
  */
 export type {
   Action,
@@ -35,8 +38,7 @@ export type {
   ChangeDocument,
   ChangesCheckpoint,
   ChangesPage,
-  SpaceDescription,
-  CollectionDescription,
+  SpaceMetadata,
   CollectionEncryption,
   CollectionEncryptionEpoch,
   CollectionEncryptionRecipient,
@@ -116,10 +118,14 @@ export type CollectionEncryptionHmac = NonNullable<CollectionEncryption['hmac']>
 export type EncryptionWithHmac = CollectionEncryption
 
 /**
- * The client-writable fields of a Collection Description -- the shape shared
- * by `Collection.configure` and `Collection.replaceDescription` and the single
- * place a new writable field is declared (the body/echo inclusion rule lives
- * in `Collection.#writableFields`).
+ * The client-writable configuration members of a Collection Metadata object --
+ * the shape shared by `Collection.configure` and
+ * `Collection.replaceDescription` and the single place a new writable member is
+ * declared (the inclusion rule lives in `collectionWritableFields`).
+ *
+ * The object's other writable members are not configuration and are not listed
+ * here: `custom` (and its `epoch` stamp) is written through `setMeta`, which
+ * preserves these, exactly as a configuration write preserves `custom`.
  */
 export interface CollectionWritableFields {
   name?: string

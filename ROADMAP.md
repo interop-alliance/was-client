@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 98
+nextAvailableId: 101
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -48,11 +48,11 @@ entries is unresolved -- live in isomorphic-lib-template's AGENTS.md under
 
 ### WCL-41: v0.5 path layout -- container descriptions at `meta`, the merged Collection Metadata object, trailing-slash canonical URLs
 
-- status: todo
+- status: in-progress
 - priority: high
 - labels: was-v0.5, breaking, paths, zcap, api
-- blocked-by: the reference server serving the v0.5 route table
-  (was-teaching-server's item for WASS-29)
+- blocked-by: nothing for the was-client half (the reference server serves the
+  v0.5 route table as of was-teaching-server 0.31.0)
 - touches:
   - wallet-attached-storage-spec: shipped -- WASS-29 landed the spec text
     2026-09-11 (decision
@@ -80,32 +80,32 @@ entries is unresolved -- live in isomorphic-lib-template's AGENTS.md under
     a partial body to the bare Collection URL, which after the merge would clear
     the `custom` envelope a description write cannot reach today
 - acceptance:
-  - [ ] A `spaceMeta(spaceId)` builder exists beside `collectionMeta` and
+  - [x] A `spaceMeta(spaceId)` builder exists beside `collectionMeta` and
         `resourceMeta`, and is exported from the `./paths` subpath
-  - [ ] `spaceCollections()` is deleted; `Space.collections()` walks
-        `spaceItems(spaceId)` -- the same `/space/{id}/` URL
+  - [x] `spaceCollections()` is deleted; `Space.collections()` walks
+        `spacePath(spaceId)` -- the same `/space/{id}/` URL
         `Space.createCollection()` already posts to
-  - [ ] The Space description methods (`describe`, `describeWithEtag`,
+  - [x] The Space description methods (`describe`, `describeWithEtag`,
         `replaceDescription`, `configure`) read and write `spaceMeta`
-  - [ ] The Collection description methods and the Collection metadata methods
+  - [x] The Collection description methods and the Collection metadata methods
         converge on one path and one validator. `describe()` and `meta()` return
         one merged object; `replaceDescription()` and `setMeta()` are one
         full-replacement write against `collectionMeta`; the two `readEtag` call
         sites become one
-  - [ ] `Collection.delete()` and `Space.delete()` target the trailing-slash
+  - [x] `Collection.delete()` and `Space.delete()` target the trailing-slash
         container URLs
-  - [ ] `ifNoneMatch` on the merged Collection write means "create only if the
+  - [x] `ifNoneMatch` on the merged Collection write means "create only if the
         Collection does not exist", and `Collection.configure` / `patchCustom`
         are re-expressed against the single validator: a configuration change
         now legitimately invalidates an in-flight annotation write, so the
         read-modify-write helpers retry rather than assume independence
-  - [ ] `delegateGrantAt`'s prefilled `target` and `spaceRootCapabilityId()`
+  - [x] `delegateGrantAt`'s prefilled `target` and `spaceRootCapabilityId()`
         agree with the server's canonical `allowedTarget` for every operation.
         Signature verification fails on any mismatch, so this is checked against
         the reference server, not reasoned about
-  - [ ] `src/edv/descriptorStore.ts` (the encryption-descriptor store seam)
+  - [x] `src/edv/descriptorStore.ts` (the encryption-descriptor store seam)
         reads and writes the descriptor through the merged object
-  - [ ] ARCHITECTURE.md's two affected statements are rewritten, and the
+  - [x] ARCHITECTURE.md's two affected statements are rewritten, and the
         CHANGELOG entry names this a breaking change
   - [ ] The consumers listed under `touches:` are walked: every external call
         site that builds a root capability, an invocation target, or a pinned
@@ -129,6 +129,33 @@ The blast radius outside this repo is the `./paths` subpath. `spacePath` is
 imported directly by wallet-core and freewallet to mint root capabilities and
 invocation targets, so retargeting it is not an internal refactor. Greenfield:
 no alias for the v0.4 paths, and the version bump names the break.
+
+Status 2026-09-12: the was-client half landed. `spacePath` / `collectionPath`
+now return the canonical trailing-slash container URLs, and are the only
+builders for them: a container lists its members, creates one and is deleted at
+itself, so the `spaceItems` / `collectionItems` aliases are gone and no two
+builders differ only by a slash or emit a bare container URL; `spaceMeta` joins
+`collectionMeta` / `resourceMeta` and the `./paths` barrel. The Collection
+handle reads and writes one object at `collectionMeta` under one `metaVersion`:
+`describe` is the configuration read (no codec, so `custom` stays the stored
+envelope) and `meta` the same read with `custom` decoded, while `configure`,
+`replaceDescription`, `setMeta` and the `setName` / `setTags` patches are
+full-replacement writes composed against a fresh read -- a configuration write
+forwards the stored `custom` and `epoch` verbatim, an annotation write re-sends
+the configuration -- each pinned to the version it composed against and rebased
+on a 412 through the shared compare-and-swap loop. Descriptor discovery and
+`meta()` now share one `GET`, since the descriptor and the persisted index
+schema live in the same object. The canonical Space root target was verified
+against was-teaching-server 0.31.0: the live
+`test/integration/revocation.test.ts` passes against `/space/{s}/`.
+
+Open: the cross-repo `touches:` entries (wallet-core WC-230, freewallet FW-523,
+was-react WR-46), and the last acceptance box, which is the walk of those
+consumers. storage-core 0.14.1 ships `meta` in `RESERVED_COLLECTION_IDS` and is
+consumed. WCL-98, the encrypted-Collection blocker the live run surfaced, was
+resolved the same day by the spec and server change that lets an empty or
+omitted `custom` clear on an encrypted Collection; the full integration tier (11
+files, 77 tests) passes against the reference server.
 
 ## Encrypted collections -- remaining work
 
@@ -1684,14 +1711,14 @@ discovered-from: whole-codebase review, 2026-09-11.
 
 ### WCL-78: An undecryptable Collection `/meta` envelope fails the whole codec resolution
 
-- status: todo
+- status: in-progress
 - priority: medium
 - labels: encryption, search, codec, fail-closed
 - acceptance:
-  - [ ] `loadIndexSchema` treats a `KeyUnwrapError`, `UnknownEpochError` or
+  - [x] `loadIndexSchema` treats a `KeyUnwrapError`, `UnknownEpochError` or
         `IntegrityError` from the `/meta` read the way it treats an unreadable
         `/meta`, leaving the schema empty
-  - [ ] A reader holding valid content keys can still `get()` and `put()` on a
+  - [x] A reader holding valid content keys can still `get()` and `put()` on a
         collection whose `/meta` envelope it cannot open
   - [ ] `indexes()`, `declareIndex()` and `find()` surface the recorded failure
         rather than returning a silently empty schema
@@ -1709,6 +1736,85 @@ fail-closed-timing decision but covers only the eager hmac unwrap, is still
 `draft`, and has no acceptance criteria; settle the two together.
 
 discovered-from: whole-codebase review, 2026-09-11.
+
+Status 2026-09-12: the first two criteria landed. The `custom` decode now sits
+behind a `try`/`catch` in `snapshotFrom` (`src/internal/codec.ts`): a refusal
+resolves no snapshot, the schema stays empty, and the codec resolution succeeds,
+so `get` / `put` / `add` / `list` on the handle are unaffected and only `meta()`
+-- which reads and decodes for itself -- surfaces the refusal. The scope widened
+on the way: after the v0.5 merge the decode runs on every resolution, not only
+on a collection declaring a blinding key. What is left is the third criterion:
+nothing records WHICH failure was swallowed, so `indexes()` and `find()` still
+report an empty schema rather than naming the envelope they could not open.
+
+### WCL-99: A Collection Metadata write re-sends the encryption descriptor with no validator to pin it to
+
+- status: todo
+- priority: medium
+- labels: conditional-writes, encryption, cas, fail-closed
+- acceptance:
+  - [ ] An annotation write (`setMeta`, `setName`, `setTags`, `declareIndex`)
+        against a backend serving no `metaVersion` validator either does not
+        re-send the stored `encryption` descriptor, or refuses rather than
+        racing a rotation
+  - [ ] The chosen behavior is stated in the `#writeStored` JSDoc and in the
+        README's conditional-writes note
+
+Since the v0.5 merge, the Collection Metadata object is written as one full
+replacement, so an annotation write re-sends the stored `encryption` descriptor
+it is not about. Against a backend that serves an `ETag` for `meta` that is
+harmless: the write is pinned to the version it read the descriptor from, and a
+rotation landing in between fails the precondition and rebases. Against a
+backend that serves no validator there is nothing to pin, and a rotation landing
+between the compose read and the `PUT` re-sends the older roster -- refused as a
+spurious `invalid-request-body` ("epochs is append-only") by a server enforcing
+the descriptor invariants, and silently rolled back (a revoked reader
+re-admitted) by one that does not.
+
+No sound client-side remedy exists today, which is why this is filed rather than
+patched: WAS v0.5 defines no partial-update form for the object (`PUT` is always
+a full replacement, `PATCH` is named as a possible future addition), and
+re-reading and retrying on the 400 races identically with no validator to pin
+the retry to. The candidate fixes are therefore upstream or refusals: a spec
+`PATCH` (or a member-scoped write) for the Metadata object, or refusing an
+annotation write that would re-send a descriptor when the backend advertises no
+`conditional-writes`. WCL-50 owns the general "precondition emitted without
+probing that the backend enforces it" family but explicitly scopes the Metadata
+endpoint out of it (per WCL-32), so this is its own item; settle the two
+together.
+
+discovered-from: code review of the v0.5 path-layout diff (WCL-41), 2026-09-12.
+
+### WCL-100: `Space.configure()` writes the Space Metadata object without a validator
+
+- status: todo
+- priority: medium
+- labels: conditional-writes, cas, space, api
+- acceptance:
+  - [ ] `Space.configure()` pins its `PUT` to the `ETag` of the read it merged
+        against (the caller's `current`, or its own `describeWithEtag()`) when
+        the backend serves one
+  - [ ] A `412` rebases through the shared `compareAndSwap` loop: re-read,
+        re-merge, re-send, as `Collection.configure()` does
+  - [ ] The compose-against-baseline, pinned-write, rebase-on-412 shape lives in
+        one internal helper that both `Collection.#writeStored` and the Space
+        write use, rather than a second hand-rolled loop
+  - [ ] Unit tests cover the lost-race rebase and the no-validator backend for
+        the Space write
+
+`Space.configure()` is still the pre-v0.5 unconditional read-then-`PUT`: it
+reads the current object (or takes the caller's), merges `name`, `controller`
+and `type` over it, and sends a full replacement with no `ifMatch`. Two
+concurrent configures (a rename and a controller change, say) silently clobber
+each other. The v0.5 merge rebuilt the Collection side of the same shape --
+`Collection.#writeStored` composes against a fresh baseline, pins the write, and
+rebases on a `412` -- and ARCHITECTURE.md now describes both containers as one
+object under one `metaVersion` validator, so the two are expected to behave the
+same way and do not. `replaceDescription()` already accepts `ifMatch` for a
+caller-driven compare-and-swap; this item makes the merging convenience safe by
+default rather than leaving the pin to the caller.
+
+discovered-from: simplify review of the WCL-41 diff, 2026-09-12.
 
 ### WCL-79: Local invariants the log store adapter can enforce itself
 

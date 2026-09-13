@@ -23,10 +23,10 @@
  * by the caller's guarded create of the log.
  */
 import type {
-  CollectionDescription,
+  CollectionMetadata,
   IDID,
   IZcap,
-  SpaceDescription
+  SpaceMetadata
 } from '../types.js'
 import type { WasClient } from '../WasClient.js'
 // A direct module import (not the `./edv` subpath entry), so the crypto-free
@@ -193,7 +193,7 @@ async function readOrCreate<T>({
  *   Space creation; defaults to `'WAS Space'`
  * @param [options.collectionName] {string}   the collection display name,
  *   applied only at collection creation; defaults to the collection id
- * @param [options.spaceDescription] {SpaceDescription}   the Space's
+ * @param [options.spaceDescription] {SpaceMetadata}   the Space's
  *   description, when the caller has already ensured the Space (with
  *   {@link ensureSpace}). Supplying it skips the Space half entirely, which is
  *   what keeps a caller provisioning N collections from ensuring one Space N
@@ -239,7 +239,7 @@ export async function ensureSpaceAndCollection({
   isPublic?: boolean
   spaceName?: string
   collectionName?: string
-  spaceDescription?: SpaceDescription
+  spaceDescription?: SpaceMetadata
   capability?: IZcap
   generator?: IDID
   generatorOrigin?: string
@@ -315,7 +315,7 @@ export async function ensureSpaceAndCollection({
       // declaration landing in between is re-read and adopted as-is rather
       // than tripping `encryption-immutable` or being overwritten.
       let reusable: typeof read | null = read
-      await compareAndSwap<CollectionDescription>({
+      await compareAndSwap<CollectionMetadata>({
         store: {
           read: async () => {
             const latest =
@@ -385,7 +385,7 @@ export async function ensureSpaceAndCollection({
  *   Space creation; defaults to `'WAS Space'`
  * @param [options.capability] {IZcap}   an invocation capability both
  *   requests ride; the root capability is invoked otherwise
- * @returns {Promise<SpaceDescription>}   the Space's description, existing or
+ * @returns {Promise<SpaceMetadata>}   the Space's description, existing or
  *   just written -- pass it to {@link ensureSpaceAndCollection} as
  *   `spaceDescription` so each collection skips the Space ensure
  */
@@ -401,7 +401,7 @@ export async function ensureSpace({
   controllerDid: string
   spaceName?: string
   capability?: IZcap
-}): Promise<SpaceDescription> {
+}): Promise<SpaceMetadata> {
   const space = was.space(spaceId, { capability })
   try {
     const { value } = await readOrCreate({

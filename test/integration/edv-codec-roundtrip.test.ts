@@ -188,7 +188,7 @@ describeLive('encrypted collection via the codec seam (live server)', () => {
   it('a fresh handle (no pre-seed) discovers the descriptor and decrypts', async () => {
     const { id } = await collection.add({ via: 'descriptor discovery' })
     // A brand-new handle for the same collection, with no encryption override:
-    // it must read the Collection Description, see the `encryption` descriptor,
+    // it must read the Collection Metadata object, see the `encryption` descriptor,
     // and decrypt with the keystore's keys -- the delegated-consumer discovery
     // path.
     const rediscovered = was.space(space.id).collection('vault')
@@ -536,11 +536,12 @@ describeLive('plaintext conditional writes (live server)', () => {
     expect(await collection.get('create-once')).toEqual({ v: 1 })
   })
 
-  it('collection meta() / setMeta() round-trips and advances its own etag', async () => {
-    // Before any metadata write the server answers 200 with no ETag.
+  it('collection meta() / setMeta() round-trips and advances the etag', async () => {
+    // The object exists as long as its Collection does, so it is versioned
+    // from the start -- there is no never-written metadata state.
     const before = await collection.meta()
     expect(before?.custom).toEqual({})
-    expect(before?.etag).toBeUndefined()
+    expect(before?.etag).toBeTruthy()
 
     const first = await collection.setMeta({
       custom: { name: 'Docs Label', tags: { project: 'demo' } }
@@ -571,23 +572,30 @@ describeLive('plaintext conditional writes (live server)', () => {
     expect((await collection.meta())?.custom).toEqual({ name: 'cv2' })
   })
 
-  it('the collection /meta ETag is independent of the description ETag', async () => {
-    const beforeDescription = await collection.describeWithEtag()
+  it('one ETag covers the configuration and the annotations alike', async () => {
+    const before = await collection.describeWithEtag()
     const metaWrite = await collection.setMeta({
-      custom: { name: 'independent' }
+      custom: { name: 'not independent' }
     })
-    // A metadata write leaves `descriptionVersion` untouched...
-    const afterDescription = await collection.describeWithEtag()
-    expect(afterDescription?.etag).toBe(beforeDescription?.etag)
+    // An annotation write advances the one validator the configuration read
+    // reports...
+    const afterAnnotation = await collection.describeWithEtag()
+    expect(afterAnnotation?.etag).not.toBe(before?.etag)
+    expect(afterAnnotation?.etag).toBe(metaWrite.etag)
 
-    // ...and a description write leaves `metaVersion` untouched.
+    // ...and a configuration write advances the same one, so an annotation
+    // ETag held across it is stale.
     await collection.replaceDescription(
       { name: 'Docs (renamed)' },
-      { ifMatch: afterDescription?.etag }
+      { ifMatch: afterAnnotation?.etag }
     )
-    expect((await collection.meta())?.etag).toBe(metaWrite.etag)
-    expect((await collection.describeWithEtag())?.etag).not.toBe(
-      afterDescription?.etag
+    const afterConfiguration = await collection.meta()
+    expect(afterConfiguration?.etag).not.toBe(metaWrite.etag)
+    // The configuration write carried the annotations forward rather than
+    // clearing them.
+    expect(afterConfiguration?.custom).toEqual({ name: 'not independent' })
+    expect((await collection.describeWithEtag())?.description.name).toBe(
+      'Docs (renamed)'
     )
   })
 

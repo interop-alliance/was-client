@@ -3,9 +3,25 @@
  */
 /**
  * URL path builders for the WAS server, encoding the trailing-slash
- * canonicalization once. Item-create and listing endpoints use a trailing
- * slash; get/put/delete-by-id endpoints do not. Path segments are
- * percent-encoded so ids never break out of their slot.
+ * canonicalization once. The convention: a trailing slash marks a container in
+ * canonical form (`/spaces/`, `/space/{s}/`, `/space/{s}/{c}/`), everything
+ * else has none, and no two paths differ only by a trailing slash. Path
+ * segments are percent-encoded so ids never break out of their slot.
+ *
+ * A container's own description is not at its URL: it lives at the reserved
+ * `meta` segment (`spaceMeta`, `collectionMeta`), beside the Resource-level
+ * `resourceMeta`. The bare (slash-less) form of a container URL only
+ * 308-redirects, and a signed invocation covers the target it was signed for,
+ * so no builder here emits the bare form -- a redirect would have to be signed
+ * again.
+ *
+ * The parser is deliberately laxer than the builders. `parseSpacePath` accepts
+ * the bare form too, because the targets it classifies are not this client's
+ * own URLs: they are the `invocationTarget` strings of delegated capabilities
+ * a third party minted, and those name containers in either form. Reading one
+ * as the Space or Collection it addresses is what `WasClient.fromCapability`
+ * and the revocation route's `spaceIdOf` do; refusing the bare form there would
+ * reject valid capabilities over a spelling this client does not control.
  *
  * The zcap `invocationTarget` is derived from the request URL, so these
  * trailing-slash rules must match the server's per-operation `allowedTarget`
@@ -16,12 +32,12 @@
  * resource / sub-resource), so `WasClient.fromCapability` and the builders stay
  * in lockstep.
  */
-import {
-  RESERVED_COLLECTION_IDS,
-  RESERVED_RESOURCE_IDS
-} from '@interop/storage-core'
 import { ValidationError } from '../errors.js'
-import { assertNotReserved } from './reserved.js'
+import {
+  assertNotReserved,
+  isReservedCollectionId,
+  isReservedResourceId
+} from './reserved.js'
 
 /**
  * Rejects an id that would escape its path slot even after percent-encoding:
@@ -85,38 +101,56 @@ export function spacesRoot(): string {
 }
 
 /**
- * `/space/:spaceId` -- get / update / delete a space (no trailing slash).
+ * `/space/:spaceId` -- the slash-less prefix the space-level sub-endpoints hang
+ * off. Module-private: the bare form is not a path this client ever requests
+ * (the server only 308-redirects it), so it is a prefix here and never a
+ * builder's return value. It is still a form the parser below reads, since a
+ * third party's capability target may be written that way.
+ *
+ * @param spaceId {string}
+ * @returns {string}
  */
-export function spacePath(spaceId: string): string {
+function spacePrefix(spaceId: string): string {
   return `/space/${encode(spaceId)}`
 }
 
 /**
- * `/space/:spaceId/` -- create a collection within a space (trailing slash).
+ * `/space/:spaceId/` -- the Space container in canonical form: the target a
+ * Space root capability names, the URL whose `GET` lists the Space's
+ * Collections, whose `POST` creates one, and whose `DELETE` removes the Space.
+ * The Space is an ordinary container, so its members are listed and created at
+ * the container itself -- there is no second builder for that.
+ *
+ * @param spaceId {string}
+ * @returns {string}
  */
-export function spaceItems(spaceId: string): string {
-  return `${spacePath(spaceId)}/`
+export function spacePath(spaceId: string): string {
+  return `${spacePrefix(spaceId)}/`
 }
 
 /**
- * `/space/:spaceId/collections/` -- list collections (trailing slash).
+ * `/space/:spaceId/meta` -- the Space Metadata object: the Space's description
+ * (`name`, `controller`, `type`), read with `GET` and replaced with `PUT`.
+ *
+ * @param spaceId {string}
+ * @returns {string}
  */
-export function spaceCollections(spaceId: string): string {
-  return `${spacePath(spaceId)}/collections/`
+export function spaceMeta(spaceId: string): string {
+  return `${spacePrefix(spaceId)}/meta`
 }
 
 /**
  * `/space/:spaceId/export` -- export a space as a tar archive.
  */
 export function spaceExport(spaceId: string): string {
-  return `${spacePath(spaceId)}/export`
+  return `${spacePrefix(spaceId)}/export`
 }
 
 /**
  * `/space/:spaceId/import` -- import a tar archive into a space.
  */
 export function spaceImport(spaceId: string): string {
-  return `${spacePath(spaceId)}/import`
+  return `${spacePrefix(spaceId)}/import`
 }
 
 /**
@@ -124,7 +158,7 @@ export function spaceImport(spaceId: string): string {
  * register a new `external` backend).
  */
 export function spaceBackends(spaceId: string): string {
-  return `${spacePath(spaceId)}/backends`
+  return `${spacePrefix(spaceId)}/backends`
 }
 
 /**
@@ -139,21 +173,21 @@ export function registeredBackend(spaceId: string, backendId: string): string {
  * `/space/:spaceId/quotas` -- the space-level storage quota report.
  */
 export function spaceQuotas(spaceId: string): string {
-  return `${spacePath(spaceId)}/quotas`
+  return `${spacePrefix(spaceId)}/quotas`
 }
 
 /**
  * `/space/:spaceId/policy` -- the space-level access-control policy resource.
  */
 export function spacePolicy(spaceId: string): string {
-  return `${spacePath(spaceId)}/policy`
+  return `${spacePrefix(spaceId)}/policy`
 }
 
 /**
  * `/space/:spaceId/linkset` -- the space-level linkset (policy discovery).
  */
 export function spaceLinkset(spaceId: string): string {
-  return `${spacePath(spaceId)}/linkset`
+  return `${spacePrefix(spaceId)}/linkset`
 }
 
 /**
@@ -165,23 +199,34 @@ export function spaceLinkset(spaceId: string): string {
  * deeper than any Collection or Resource route, so it shadows nothing.
  */
 export function spaceRevocation(spaceId: string, capabilityId: string): string {
-  return `${spacePath(spaceId)}/zcaps/revocations/${encode(capabilityId)}`
+  return `${spacePrefix(spaceId)}/zcaps/revocations/${encode(capabilityId)}`
 }
 
 /**
- * `/space/:spaceId/:collectionId` -- get / update / delete a collection
- * (no trailing slash).
+ * `/space/:spaceId/:collectionId` -- the slash-less prefix the collection-level
+ * sub-endpoints and the Resource ids hang off. Module-private, like
+ * {@link spacePrefix}.
+ *
+ * @param spaceId {string}
+ * @param collectionId {string}
+ * @returns {string}
+ */
+function collectionPrefix(spaceId: string, collectionId: string): string {
+  return `${spacePrefix(spaceId)}/${encodeCollectionId(collectionId)}`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/` -- the Collection container in canonical
+ * form: the target a "share this collection" capability names, the URL whose
+ * `GET` lists its Resources, whose `POST` adds one, and whose `DELETE` removes
+ * the Collection.
+ *
+ * @param spaceId {string}
+ * @param collectionId {string}
+ * @returns {string}
  */
 export function collectionPath(spaceId: string, collectionId: string): string {
-  return `${spacePath(spaceId)}/${encodeCollectionId(collectionId)}`
-}
-
-/**
- * `/space/:spaceId/:collectionId/` -- list items / add a resource
- * (trailing slash).
- */
-export function collectionItems(spaceId: string, collectionId: string): string {
-  return `${collectionPath(spaceId, collectionId)}/`
+  return `${collectionPrefix(spaceId, collectionId)}/`
 }
 
 /**
@@ -192,7 +237,7 @@ export function collectionPolicy(
   spaceId: string,
   collectionId: string
 ): string {
-  return `${collectionPath(spaceId, collectionId)}/policy`
+  return `${collectionPrefix(spaceId, collectionId)}/policy`
 }
 
 /**
@@ -203,7 +248,7 @@ export function collectionLinkset(
   spaceId: string,
   collectionId: string
 ): string {
-  return `${collectionPath(spaceId, collectionId)}/linkset`
+  return `${collectionPrefix(spaceId, collectionId)}/linkset`
 }
 
 /**
@@ -214,7 +259,7 @@ export function collectionBackend(
   spaceId: string,
   collectionId: string
 ): string {
-  return `${collectionPath(spaceId, collectionId)}/backend`
+  return `${collectionPrefix(spaceId, collectionId)}/backend`
 }
 
 /**
@@ -222,16 +267,17 @@ export function collectionBackend(
  * report (spec "Quotas").
  */
 export function collectionQuota(spaceId: string, collectionId: string): string {
-  return `${collectionPath(spaceId, collectionId)}/quota`
+  return `${collectionPrefix(spaceId, collectionId)}/quota`
 }
 
 /**
- * `/space/:spaceId/:collectionId/meta` -- the Collection metadata object
- * (server-managed timestamps / `createdBy` / `epoch` plus the user-writable
- * `custom` object). Versioned independently of the Collection Description.
+ * `/space/:spaceId/:collectionId/meta` -- the Collection Metadata object: the
+ * Collection's configuration (`name`, `backend`, `encryption`, `generator`)
+ * together with the server-managed timestamps / `createdBy` and the
+ * user-writable `custom` and `epoch`, as one object under one validator.
  */
 export function collectionMeta(spaceId: string, collectionId: string): string {
-  return `${collectionPath(spaceId, collectionId)}/meta`
+  return `${collectionPrefix(spaceId, collectionId)}/meta`
 }
 
 /**
@@ -248,7 +294,7 @@ export function collectionLog(spaceId: string, collectionId: string): string {
  * whose body's `profile` selects the query (e.g. `changes`, `blinded-index`).
  */
 export function collectionQuery(spaceId: string, collectionId: string): string {
-  return `${collectionPath(spaceId, collectionId)}/query`
+  return `${collectionPrefix(spaceId, collectionId)}/query`
 }
 
 /**
@@ -260,7 +306,7 @@ export function resourcePath(
   collectionId: string,
   resourceId: string
 ): string {
-  return `${collectionPath(spaceId, collectionId)}/${encodeResourceId(resourceId)}`
+  return `${collectionPrefix(spaceId, collectionId)}/${encodeResourceId(resourceId)}`
 }
 
 /**
@@ -414,6 +460,13 @@ export function parseSpaceTarget({
  * or any 5-segment target like `/space/s/c/r/meta` -- is classified
  * `sub-resource`, never silently truncated to the nearest handle.
  *
+ * Empty segments are dropped, so a container addressed in either form
+ * classifies the same: `/space/s` and `/space/s/` are both the Space, and
+ * `/space/s/c` and `/space/s/c/` both the Collection. That is deliberate. The
+ * builders emit only the canonical trailing-slash form, but the targets parsed
+ * here come from capabilities minted elsewhere, and a client that reads only
+ * one spelling would refuse valid ones.
+ *
  * @param pathname {string}   a URL pathname (e.g. from `new URL(...).pathname`)
  * @returns {ParsedSpacePath | null}
  */
@@ -437,7 +490,7 @@ export function parseSpacePath(pathname: string): ParsedSpacePath | null {
   // A reserved segment directly under the space (`policy`, `backends`,
   // `export`, ...) addresses a space-level sub-endpoint, as does anything
   // nested beneath one (`/space/s/backends/:backendId`).
-  if (RESERVED_COLLECTION_IDS.has(rest[0] as string)) {
+  if (isReservedCollectionId(rest[0] as string)) {
     return { kind: 'sub-resource', spaceId, segments: rest }
   }
   if (rest.length === 1) {
@@ -445,7 +498,7 @@ export function parseSpacePath(pathname: string): ParsedSpacePath | null {
   }
   // A reserved segment under the collection (`policy`, `backend`, `quota`,
   // ...) addresses a collection-level sub-endpoint.
-  if (RESERVED_RESOURCE_IDS.has(rest[1] as string)) {
+  if (isReservedResourceId(rest[1] as string)) {
     return { kind: 'sub-resource', spaceId, segments: rest }
   }
   if (rest.length === 2) {

@@ -6,12 +6,16 @@
  * (`describe`/`configure`/`delete`/`deleteWithOutcome`), contained Collections
  * (`collection`/`createCollection`/`collections`), delegation (`grant`), and
  * whole-space `export`/`import`.
+ *
+ * The Space is an ordinary container: its canonical URL (`/space/{id}/`) lists
+ * its Collections, creates one, and deletes the Space, while the Space's own
+ * description -- the Space Metadata object -- is read and replaced at its
+ * `meta` sub-resource.
  */
 import type { HttpResponse } from '@interop/http-client'
 import {
   spacePath,
-  spaceItems,
-  spaceCollections,
+  spaceMeta,
   spaceExport,
   spaceImport,
   spaceBackends,
@@ -61,13 +65,13 @@ import type {
   ImportStats,
   LinkSet,
   PolicyDocument,
-  SpaceDescription,
+  SpaceMetadata,
   SpaceQuotaReport
 } from './types.js'
 
 /**
- * The Space Description PUT body: the one inclusion rule for its writable
- * fields, shared by `configure` and `replaceDescription`. `name` and `type`
+ * The Space Metadata PUT body: the one inclusion rule for its writable
+ * members, shared by `configure` and `replaceDescription`. `name` and `type`
  * are sent only when set, since the server keeps the stored value for an
  * omitted member; `controller` is always sent.
  *
@@ -78,7 +82,7 @@ import type {
  * @param [fields.type] {string[]}
  * @returns {{ id: string; name?: string; controller: string; type?: string[] }}
  */
-function spaceDescriptionBody({
+function spaceMetadataBody({
   id,
   name,
   controller,
@@ -123,8 +127,23 @@ export class Space {
     this.#capability = capability
   }
 
+  /**
+   * The Space container in canonical (trailing-slash) form: the URL whose
+   * `GET` lists the Space's Collections, whose `POST` creates one, and whose
+   * `DELETE` removes the Space. It is also the target a Space root capability
+   * names, so a grant prefilled from it covers the whole Space by prefix --
+   * `meta` and every Collection included.
+   */
   get #path(): string {
     return spacePath(this.id)
+  }
+
+  /**
+   * The Space Metadata object: the Space's description, read and replaced at
+   * the reserved `meta` segment rather than at the container URL.
+   */
+  get #metaPath(): string {
+    return spaceMeta(this.id)
   }
 
   get #policyPath(): string {
@@ -132,41 +151,42 @@ export class Space {
   }
 
   /**
-   * Reads the Space Description. Returns `null` if the space is missing or not
+   * Reads the Space Metadata object -- the Space's description, at its `meta`
+   * sub-resource. Returns `null` if the space is missing or not
    * visible to you (WAS returns 404 for both not-found and unauthorized).
    *
-   * @returns {Promise<SpaceDescription | null>}
+   * @returns {Promise<SpaceMetadata | null>}
    */
-  async describe(): Promise<SpaceDescription | null> {
-    return readData<SpaceDescription>(this.#context, {
-      path: this.#path,
+  async describe(): Promise<SpaceMetadata | null> {
+    return readData<SpaceMetadata>(this.#context, {
+      path: this.#metaPath,
       capability: this.#capability
     })
   }
 
   /**
-   * Reads the Space Description together with its `ETag` validator (the
+   * Reads the Space Metadata object together with its `ETag` validator (the
    * server's `conditional-writes` support). The `ETag` is the opaque validator
    * to pass to {@link replaceDescription}'s `ifMatch` for a lost-update-safe
    * (compare-and-swap) description write. Returns `null` if the space is
    * missing or not visible to you (404 conflation caveat); `etag` is absent
-   * against a server that does not version the Space Description.
+   * against a server that does not version the Space Metadata object.
    *
-   * @returns {Promise<{ description: SpaceDescription; etag?: string } | null>}
+   * @returns {Promise<{ description: SpaceMetadata; etag?: string } | null>}
    */
   async describeWithEtag(): Promise<{
-    description: SpaceDescription
+    description: SpaceMetadata
     etag?: string
   } | null> {
-    const read = await readDataWithEtag<SpaceDescription>(this.#context, {
-      path: this.#path,
+    const read = await readDataWithEtag<SpaceMetadata>(this.#context, {
+      path: this.#metaPath,
       capability: this.#capability
     })
     return read === null ? null : { description: read.data, etag: read.etag }
   }
 
   /**
-   * Writes the Space Description under an optional precondition: `ifMatch`
+   * Writes the Space Metadata object under an optional precondition: `ifMatch`
    * (the `ETag` from {@link describeWithEtag}) makes it a compare-and-swap so
    * a concurrent writer cannot be silently clobbered, and `ifNoneMatch: true`
    * makes it a guarded create that proceeds only while no Space exists under
@@ -192,17 +212,17 @@ export class Space {
    *   if the description is unchanged
    * @param [options.ifNoneMatch] {boolean}   write only if the Space does not
    *   exist yet
-   * @returns {Promise<{ description?: SpaceDescription; etag?: string }>}
+   * @returns {Promise<{ description?: SpaceMetadata; etag?: string }>}
    */
   async replaceDescription(
     description: { name?: string; controller: string; type?: string[] },
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
-  ): Promise<{ description?: SpaceDescription; etag?: string }> {
+  ): Promise<{ description?: SpaceMetadata; etag?: string }> {
     const response = await send(this.#context, {
-      path: this.#path,
+      path: this.#metaPath,
       method: 'PUT',
       capability: this.#capability,
-      json: spaceDescriptionBody({ id: this.id, ...description }),
+      json: spaceMetadataBody({ id: this.id, ...description }),
       headers: writeHeaders({
         precondition: {
           ifMatch: options.ifMatch,
@@ -210,7 +230,7 @@ export class Space {
         }
       })
     })
-    const created = dataOrNull<SpaceDescription>(response)
+    const created = dataOrNull<SpaceMetadata>(response)
     return {
       ...(created !== null && { description: created }),
       etag: readEtag(response)
@@ -235,13 +255,13 @@ export class Space {
    * @param desc {object}
    * @param [desc.name] {string}
    * @param [desc.controller] {string}
-   * @param [desc.type] {string[]}   the Space Description's `type` array (e.g.
+   * @param [desc.type] {string[]}   the Space Metadata object's `type` array (e.g.
    *   a typed auxiliary Space). The server accepts it at creation only and
    *   treats it as immutable afterwards, so pass it on the create; on an
    *   update the current description's `type` is re-sent unchanged
    * @param [desc.force] {boolean}   proceed even when the current description is
    *   unreadable and a full description is not supplied (see above)
-   * @param [desc.current] {SpaceDescription | null}   the current description,
+   * @param [desc.current] {SpaceMetadata | null}   the current description,
    *   when the caller has already read it -- the merge and the fail-closed
    *   check then run against this instead of a second `describe()` round trip.
    *   `null` means the caller read it and found the Space absent or
@@ -249,15 +269,15 @@ export class Space {
    *   what asks for the read. Supplying a description this handle's own writes
    *   have since superseded would merge stale fields forward, so pass only a
    *   read the caller itself made and has not written over
-   * @returns {Promise<SpaceDescription>}
+   * @returns {Promise<SpaceMetadata>}
    */
   async configure(desc: {
     name?: string
     controller?: string
     type?: string[]
     force?: boolean
-    current?: SpaceDescription | null
-  }): Promise<SpaceDescription> {
+    current?: SpaceMetadata | null
+  }): Promise<SpaceMetadata> {
     const current =
       desc.current !== undefined ? desc.current : await this.describe()
     if (
@@ -281,10 +301,10 @@ export class Space {
       desc.controller ?? current?.controller ?? this.#context.controllerDid
     const type = desc.type ?? current?.type
     await send(this.#context, {
-      path: this.#path,
+      path: this.#metaPath,
       method: 'PUT',
       capability: this.#capability,
-      json: spaceDescriptionBody({ id: this.id, name, controller, type })
+      json: spaceMetadataBody({ id: this.id, name, controller, type })
     })
     return {
       id: this.id,
@@ -292,7 +312,7 @@ export class Space {
       ...(name !== undefined ? { name } : {}),
       // `controller` is a user-supplied DID string; assert it as the branded
       // `IDID` the wire type now uses (the server validates the DID form).
-      controller: controller as SpaceDescription['controller']
+      controller: controller as SpaceMetadata['controller']
     }
   }
 
@@ -404,7 +424,7 @@ export class Space {
       ...collectionWritableFields(desc)
     }
     const response = await send(this.#context, {
-      path: spaceItems(this.id),
+      path: this.#path,
       method: 'POST',
       capability: this.#capability,
       json: body
@@ -433,8 +453,10 @@ export class Space {
   }
 
   /**
-   * Reads the first page of the collections listing and packages the means to
-   * follow its `next` links (each page fetched with the same authorization).
+   * Reads the first page of the collections listing -- the Space container
+   * itself, the same URL {@link createCollection} posts to -- and packages the
+   * means to follow its `next` links (each page fetched with the same
+   * authorization).
    * Returns `null` if the space is missing or not visible to you (404 conflation
    * caveat).
    *
@@ -444,7 +466,7 @@ export class Space {
     return signedPageWalk<CollectionsList>(this.#context, {
       firstUrl: toUrl({
         serverUrl: this.#context.serverUrl,
-        path: spaceCollections(this.id)
+        path: this.#path
       }),
       capability: this.#capability
     })

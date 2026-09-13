@@ -10,23 +10,34 @@
  * The resolver splits policy from keys. Policy -- is this collection encrypted,
  * and under which scheme? -- is decided by, in order: (1) a per-handle
  * override, (2) the Collection's declared `encryption` descriptor (read lazily
- * via `describeCollection`), (3) plaintext. Only once policy says "encrypted"
- * does it ask the injected `EncryptionProvider` (a pure keystore) to build the
- * codec; if the keystore holds no keys it fails closed (throws), never silently
- * downgrading to plaintext. A plaintext-only client (no provider) and an
- * override both short-circuit the descriptor read, so only an
+ * via `readCollectionMetadata`), (3) plaintext. Only once policy says
+ * "encrypted" does it ask the injected `EncryptionProvider` (a pure keystore)
+ * to build the codec; if the keystore holds no keys it fails closed (throws),
+ * never silently downgrading to plaintext. A plaintext-only client (no
+ * provider) and an override both short-circuit the read, so only an
  * encryption-capable client reading an undeclared handle pays the one-time
- * `describe()` round-trip.
+ * round-trip.
+ *
+ * That round-trip is one `GET` of the Collection Metadata object, which carries
+ * the `encryption` descriptor and the persisted index schema together: the
+ * descriptor decides the codec, and the codec then decodes the same object's
+ * `custom` to recover the schema, with no second read. An override skips the
+ * read, so a blinded-index handle opened with one still fetches the object for
+ * its schema.
  */
 import type { HttpResponse } from '@interop/http-client'
 import type { EncodedWrite, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { prepareBody, parseResource } from './content.js'
-import { describeCollection, unreadableDescriptionError } from './describe.js'
+import {
+  asCollectionMetadata,
+  readCollectionMetadata,
+  storedEncryption,
+  unreadableDescriptionError
+} from './describe.js'
+import type { StoredCollectionMetadata } from './describe.js'
 import { readIndexSchema } from './indexSchema.js'
-import { readMeta } from './meta.js'
 import { Memo } from './memo.js'
-import { collectionMeta } from './paths.js'
 import { EncryptionError, NotImplementedError } from '../errors.js'
 import type {
   CollectionEncryption,
@@ -228,32 +239,40 @@ export async function resolveCodec(
     // descriptor's epoch roster and refuses an override without one
     // fail-closed, so dropping the descriptor here would break every read and
     // write.
-    return buildEncryptingCodec(context, {
+    const { codec } = await buildEncryptingCodec(context, {
       spaceId,
       collectionId,
       scheme: override.scheme,
       keys: override.keys,
-      capability,
       encryption: override
     })
+    // The override skipped the Collection Metadata read, so a searchable
+    // collection's persisted index schema is fetched here.
+    const meta = await loadIndexSchema(context, {
+      spaceId,
+      collectionId,
+      capability,
+      codec
+    })
+    return meta !== undefined ? { codec, meta } : { codec }
   }
   // 2. A plaintext-only client (no keystore) never encrypts; no round-trip.
   if (!context.encryption) {
     return { codec: identityCodec }
   }
   // 3. Otherwise the Collection's declared `encryption` descriptor decides -- but
-  // only if we could actually read the description. An unreadable description
-  // (a resource-scoped capability cannot GET the collection description, and
-  // WAS masks that as a 404) is ambiguous: it is indistinguishable from
-  // "absent", so an encryption-capable client fails closed rather than
-  // silently downgrading to plaintext and writing the caller's secret as
-  // server-visible plaintext into a possibly-encrypted collection.
-  const description = await describeCollection(context, {
+  // only if we could actually read the Collection Metadata object. An
+  // unreadable object (a resource-scoped capability cannot GET it, and WAS
+  // masks that as a 404) is ambiguous: it is indistinguishable from "absent",
+  // so an encryption-capable client fails closed rather than silently
+  // downgrading to plaintext and writing the caller's secret as server-visible
+  // plaintext into a possibly-encrypted collection.
+  const read = await readCollectionMetadata(context, {
     spaceId,
     collectionId,
     capability
   })
-  if (description === null) {
+  if (read === null) {
     throw unreadableDescriptionError({
       operation:
         `determine whether collection ${spaceId}/${collectionId} is ` +
@@ -267,16 +286,112 @@ export async function resolveCodec(
       ErrorClass: EncryptionError
     })
   }
-  if (!description.encryption) {
-    return { codec: identityCodec }
-  }
-  return buildEncryptingCodec(context, {
+  const declared = storedEncryption(read.metadata)
+  const { codec } = declared
+    ? await buildEncryptingCodec(context, {
+        spaceId,
+        collectionId,
+        scheme: declared.scheme,
+        encryption: declared
+      })
+    : { codec: identityCodec }
+  // The read that decided policy IS the Collection Metadata object, so it is
+  // also the index schema and the `meta()` answer: decode its `custom` with the
+  // codec just built and hand the snapshot on, rather than reading the same
+  // document again. A `custom` this reader cannot open is not the resolution's
+  // business -- only `meta()` and the search paths need it -- so the decode
+  // failure leaves the schema empty and the snapshot absent instead of failing
+  // every operation on the handle.
+  const meta = await snapshotFrom({ read, codec })
+  return meta !== undefined ? { codec, meta } : { codec }
+}
+
+/**
+ * Builds the codec a descriptor names, for a write that states the descriptor
+ * itself rather than discovering it from stored state: the identity codec when
+ * there is no descriptor, and the keystore's codec when there is. Resolves
+ * `null` when this client cannot build that codec (no keystore, no keys, or an
+ * unhandled scheme) -- a caller that must not guess treats `null` as its own
+ * refusal, since nothing here is stored state to fail closed on.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.descriptor] {CollectionEncryption}   the descriptor the write
+ *   declares; absent means plaintext
+ * @returns {Promise<ResourceCodec | null>}
+ */
+export async function codecForDescriptor(
+  context: ClientContext,
+  {
     spaceId,
     collectionId,
-    scheme: description.encryption.scheme,
-    encryption: description.encryption,
-    capability
+    descriptor
+  }: {
+    spaceId: string
+    collectionId: string
+    descriptor?: CollectionEncryption
+  }
+): Promise<ResourceCodec | null> {
+  if (descriptor === undefined) {
+    return identityCodec
+  }
+  if (!context.encryption) {
+    return null
+  }
+  const codec = await context.encryption.codecFor({
+    spaceId,
+    collectionId,
+    scheme: descriptor.scheme,
+    encryption: descriptor
   })
+  return codec ?? null
+}
+
+/**
+ * Turns the Collection Metadata object a resolution read into the snapshot the
+ * resolution carries: `custom` decoded through the codec just built (an opaque
+ * envelope on an encrypted collection), and the codec's persisted index schema
+ * installed from it along the way.
+ *
+ * A `custom` the decode refuses -- a reader removed from the collection whose
+ * epoch key no longer unwraps it, an envelope bound to another slot, a
+ * plaintext object where an envelope belongs -- resolves `undefined` rather
+ * than throwing. The schema then stays empty (a search on an undeclared
+ * attribute still fails loudly at `find()`), and the operations that do not
+ * need `custom` keep working; a `meta()` reads and decodes for itself and is
+ * the call that surfaces the refusal.
+ *
+ * @param options {object}
+ * @param options.read {object}   the stored object and its validator
+ * @param options.codec {ResourceCodec}
+ * @returns {Promise<(CollectionMetadata & { etag?: string }) | undefined>}
+ */
+async function snapshotFrom({
+  read,
+  codec
+}: {
+  read: { metadata: StoredCollectionMetadata; etag?: string }
+  codec: ResourceCodec
+}): Promise<(CollectionMetadata & { etag?: string }) | undefined> {
+  let custom
+  try {
+    // The stated slot drives the encrypting codec's binding check: in the
+    // Collection slot it refuses a resource-bound envelope served there.
+    custom = await codec.decodeMeta(
+      { custom: read.metadata.custom },
+      { kind: 'collection' }
+    )
+  } catch {
+    return undefined
+  }
+  codec.indexing?.applySchema(readIndexSchema(custom))
+  return {
+    ...asCollectionMetadata(read.metadata),
+    custom,
+    ...(read.etag !== undefined && { etag: read.etag })
+  }
 }
 
 /**
@@ -290,9 +405,9 @@ export async function resolveCodec(
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.scheme {string}
+ * @param [options.encryption] {CollectionEncryption}   the descriptor, passed
+ *   whole to the provider
  * @param [options.keys] {unknown}   override-supplied key material
- * @param [options.capability] {IZcap}   the handle's bound capability, used for
- *   the index-schema read
  * @returns {Promise<CodecResolution>}
  */
 async function buildEncryptingCodec(
@@ -302,15 +417,13 @@ async function buildEncryptingCodec(
     collectionId,
     scheme,
     encryption,
-    keys,
-    capability
+    keys
   }: {
     spaceId: string
     collectionId: string
     scheme: string
     encryption?: CollectionEncryption
     keys?: unknown
-    capability?: IZcap
   }
 ): Promise<CodecResolution> {
   const where = `${spaceId}/${collectionId}`
@@ -335,21 +448,15 @@ async function buildEncryptingCodec(
         'your keystore (resolveKeys) or a per-handle encryption override.'
     )
   }
-  const meta = await loadIndexSchema(context, {
-    spaceId,
-    collectionId,
-    capability,
-    codec
-  })
-  return meta !== undefined ? { codec, meta } : { codec }
+  return { codec }
 }
 
 /**
- * Loads the collection's persisted index schema onto a freshly-built codec, so
- * writes through it emit index tokens for the declared attributes and searches
- * can be built for them. A no-op for a codec with no search capability -- which
- * is every codec on a collection whose descriptor declares no blinding key, so
- * an ordinary encrypted collection pays no round-trip here.
+ * Loads the collection's persisted index schema onto a codec built from a
+ * per-handle encryption override -- the one path that skipped the Collection
+ * Metadata read, so the schema is not already in hand. A no-op for a codec with
+ * no search capability, which is every codec on a collection whose descriptor
+ * declares no blinding key.
  *
  * The schema is discovered rather than declared per app: it is the reason
  * declarations are persisted at all, so a reader that did not create the
@@ -363,7 +470,7 @@ async function buildEncryptingCodec(
  * failing the resolution: neither says the collection is broken, and every
  * search on an undeclared attribute still fails loudly at `find()`.
  *
- * The decoded metadata is returned so the caller that paid for this read can
+ * The decoded metadata is returned so the caller that paid for the read can
  * hand it to a `meta()` that would otherwise repeat it -- it is exactly what
  * `Collection.meta()` produces, decrypted `custom` and `etag` included.
  *
@@ -391,17 +498,14 @@ async function loadIndexSchema(
     codec: ResourceCodec
   }
 ): Promise<(CollectionMetadata & { etag?: string }) | null | undefined> {
-  const { indexing } = codec
-  if (!indexing) {
+  if (!codec.indexing) {
     return undefined
   }
-  let meta
+  let read
   try {
-    meta = await readMeta<CollectionMetadata>(context, {
-      metaPath: collectionMeta(spaceId, collectionId),
-      codec: Promise.resolve(codec),
-      subject: `collection "${collectionId}"`,
-      slot: { kind: 'collection' },
+    read = await readCollectionMetadata(context, {
+      spaceId,
+      collectionId,
       capability
     })
   } catch (err) {
@@ -410,9 +514,8 @@ async function loadIndexSchema(
     }
     throw err
   }
-  if (meta === null) {
+  if (read === null) {
     return null
   }
-  indexing.applySchema(readIndexSchema(meta.custom))
-  return meta
+  return snapshotFrom({ read, codec })
 }

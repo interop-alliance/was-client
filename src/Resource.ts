@@ -205,7 +205,7 @@ export class Resource {
   /**
    * Reads the resource together with its `ETag` validator (the backend's
    * `conditional-writes` feature) -- the Resource counterpart of
-   * `Collection.describeWithEtag`. The `ETag` is the opaque validator to pass
+   * `Collection.meta`. The `ETag` is the opaque validator to pass
    * to {@link put}'s `ifMatch` for a lost-update-safe (compare-and-swap)
    * write. The value is decoded like {@link get} (JSON parsed, binary as a
    * `Blob`, decrypted on an encrypted collection). Returns `null` if the
@@ -431,9 +431,6 @@ export class Resource {
       metaPath: this.#metaPath,
       codec: this.#codec(),
       custom: meta.custom ?? {},
-      // A Resource's key epoch stamps its content write via the `Key-Epoch`
-      // header, so the one the codec surfaces here is deliberately dropped.
-      sendEpoch: false,
       slot: { kind: 'resource', id: this.id },
       ifMatch: options.ifMatch,
       ifNoneMatch: options.ifNoneMatch,

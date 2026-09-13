@@ -11,8 +11,8 @@
  *
  * Two adapters:
  *
- * - {@link collectionDescriptorStore} -- the Collection Description's `encryption`
- *   member, read with `describeWithEtag` and written back with
+ * - {@link collectionDescriptorStore} -- the Collection Metadata object's
+ *   `encryption` member, read with `describeWithEtag` and written back with
  *   `replaceDescription` + `If-Match`. The server enforces the descriptor
  *   invariants (append-only epochs, monotone `currentEpoch`, non-decreasing
  *   `version`) on this path.
@@ -34,7 +34,7 @@ import type { Resource } from '../Resource.js'
 import { unreadableDescriptionError } from '../internal/describe.js'
 import { ValidationError } from '../errors.js'
 import type {
-  CollectionDescription,
+  CollectionMetadata,
   CollectionEncryption,
   JsonObject
 } from '../types.js'
@@ -52,7 +52,7 @@ export interface EncryptionDescriptorStore {
    * next {@link replace} must be compare-and-swapped against. Resolves `null`
    * when no descriptor exists yet AND this store can create one (the resource
    * adapter before the first `initRecipients`); a store whose host must
-   * already exist (the description adapter) throws instead of resolving
+   * already exist (the Collection Metadata adapter) throws instead of resolving
    * `null`. Throws when the hosted value is not an `edv`-scheme descriptor.
    *
    * @returns {Promise<{ descriptor: CollectionEncryption; etag?: string } | null>}
@@ -64,8 +64,8 @@ export interface EncryptionDescriptorStore {
    * validator from {@link read}); a stale validator throws
    * `PreconditionFailedError` (412). Must follow a {@link read} on the same
    * store instance -- an adapter may forward sibling state observed by its most
-   * recent read (the description adapter forwards the description's `name` /
-   * `backend`).
+   * recent read (the Collection Metadata adapter forwards the object's `name`
+   * / `backend`).
    *
    * @param descriptor {CollectionEncryption}
    * @param options {object}
@@ -82,7 +82,7 @@ export interface EncryptionDescriptorStore {
    * Creates the FIRST descriptor where {@link read} resolved `null`, guarded
    * create-if-absent (`If-None-Match: *`); throws `PreconditionFailedError`
    * (412) when a concurrent writer created one first. Absent on stores whose
-   * host always exists (the description adapter).
+   * host always exists (the Collection Metadata adapter).
    *
    * @param descriptor {CollectionEncryption}
    * @returns {Promise<void>}
@@ -91,14 +91,16 @@ export interface EncryptionDescriptorStore {
 }
 
 /**
- * The Collection Description adapter: the descriptor is the Description's
- * `encryption` member. Read fails closed when the Description is unreadable
+ * The Collection Metadata adapter: the descriptor is the Collection Metadata
+ * object's `encryption` member. Read fails closed when the object is unreadable
  * (WAS masks unauthorized reads as 404) or the collection is not declared
- * encrypted with the `edv` scheme; the CAS write forwards the description's
- * sibling fields (`name` / `backend`) observed by the most recent read, so
- * the replace-semantics PUT does not drop them. No `create`: a Collection
- * Description always exists, so a first descriptor is declared via
- * `collection.configure({ encryption })`, never through this store.
+ * encrypted with the `edv` scheme; the CAS write forwards the configuration
+ * members (`name` / `backend` / the app attribution) observed by the most
+ * recent read, so the full-replacement PUT does not drop them. The
+ * annotations (`custom` and its `epoch` stamp) are carried forward by
+ * `replaceDescription` itself. No `create`: a Collection Metadata object
+ * always exists alongside its Collection, so a first descriptor is declared
+ * via `collection.configure({ encryption })` instead of through this store.
  *
  * @param options {object}
  * @param options.collection {Collection}
@@ -109,18 +111,19 @@ export function collectionDescriptorStore({
 }: {
   collection: Collection
 }): EncryptionDescriptorStore {
-  // The sibling description fields observed by the most recent read, forwarded
-  // verbatim by the CAS write (the server's replace semantics would otherwise
-  // drop them). Safe to forward even if stale: the write is pinned to the same
-  // read's ETag, so a concurrent description change fails the CAS instead.
-  let described: CollectionDescription | undefined
+  // The configuration members observed by the most recent read, forwarded
+  // verbatim by the CAS write (the full-replacement PUT would otherwise drop
+  // them). Safe to forward even if stale: the write is pinned to the same
+  // read's ETag, so a concurrent configuration change fails the CAS instead.
+  let described: CollectionMetadata | undefined
   return {
     async read() {
       const current = await collection.describeWithEtag()
       if (current === null) {
         throw unreadableDescriptionError({
           operation: 'manage recipients',
-          advice: 'Use a capability that can read the Collection Description.'
+          advice:
+            'Use a capability that can read the Collection Metadata object.'
         })
       }
       const descriptor = current.description.encryption
@@ -156,7 +159,7 @@ export function collectionDescriptorStore({
  * than an `edv`-scheme descriptor object.
  *
  * The server enforces no descriptor invariants on a resource (unlike a
- * Collection Description): rollback/tamper detection rests on client-side
+ * Collection Metadata object): rollback/tamper detection rests on client-side
  * epoch pinning plus whatever governance the hosting profile adds (for a
  * log-governed descriptor, the Resource Log Profile's verified entry proofs
  * and chain-head pin), and the CAS/create guards ride the backend's
@@ -212,7 +215,8 @@ export function resourceDescriptorStore({
  * Casts a descriptor to the `JsonObject` a resource write takes. The descriptor
  * types are interfaces without index signatures, so they do not structurally
  * satisfy `JsonObject` -- but a descriptor is plain JSON by construction (it
- * round-trips through the Collection Description on the classic host), so this
+ * round-trips through the Collection Metadata object on the classic host), so
+ * this
  * is sound.
  *
  * @param descriptor {CollectionEncryption}

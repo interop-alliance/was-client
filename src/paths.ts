@@ -6,12 +6,15 @@
  * standalone functions, for a consumer that has to form a WAS path or a zcap
  * `invocationTarget` without going through a navigational handle.
  *
- * The path builders own the trailing-slash canonicalization (item-create and
- * listing endpoints carry a trailing slash; get/put/delete-by-id endpoints do
- * not) and the per-segment percent-encoding, and the zcap `invocationTarget` is
+ * The path builders own the trailing-slash canonicalization (a trailing slash
+ * marks a container in canonical form -- `/space/{s}/`, `/space/{s}/{c}/` --
+ * everything else has none, and no two paths differ only by a trailing slash)
+ * and the per-segment percent-encoding, and the zcap `invocationTarget` is
  * derived from the request URL -- so a caller that hand-assembles a path is
  * re-deriving rules that must match the server's `allowedTarget` byte for byte.
- * Exporting the builders instead is what keeps that from happening.
+ * Exporting the builders instead is what keeps that from happening. A
+ * container's description lives at its `meta` segment (`spaceMeta`,
+ * `collectionMeta`) instead of at the container URL.
  *
  * `parseSpacePath` / `parseSpaceTarget` are the inverse grammar (a pathname or
  * an absolute URL back to the containment depth it addresses), and
@@ -26,9 +29,8 @@
  */
 export {
   spacePath,
-  spaceItems,
+  spaceMeta,
   collectionPath,
-  collectionItems,
   collectionMeta,
   collectionLog,
   collectionQuery,

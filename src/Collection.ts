@@ -5,10 +5,18 @@
  * A navigational handle to a Collection within a Space. Exposes its own
  * lifecycle (`describe`/`configure`/`delete`) and contained-resource operations
  * (`add`/`get`/`put`/`list`, plus `resource(id)` for delete-by-id).
+ *
+ * The Collection's own "about it" document is the Collection Metadata object at
+ * its `meta` sub-resource: one object under one validator, carrying the
+ * configuration members beside the user-writable `custom`. `describe` and
+ * `meta` are its two read projections (the second decodes `custom` through the
+ * codec), and `configure` / `replaceDescription` / `setMeta` / `setName` are
+ * full-replacement writes of it composed against a fresh read. The bare
+ * Collection URL is the container: it lists and adds Resources, and `delete()`
+ * removes the Collection.
  */
 import {
   collectionPath,
-  collectionItems,
   collectionPolicy,
   collectionLinkset,
   collectionBackend,
@@ -20,11 +28,20 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
-import { ValidationError, WasServerError, httpStatus } from './errors.js'
+import {
+  NotFoundError,
+  ValidationError,
+  WasServerError,
+  httpStatus
+} from './errors.js'
 import { delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
-import { send, readData, readDataWithEtag } from './internal/request.js'
-import { collectionCodecHolder } from './internal/codec.js'
+import { send, readData } from './internal/request.js'
+import {
+  codecForDescriptor,
+  collectionCodecHolder,
+  identityCodec
+} from './internal/codec.js'
 import type { CodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
 import type { BackendFeatures } from './internal/features.js'
@@ -36,13 +53,20 @@ import {
 } from './internal/pagination.js'
 import type { PageWalk } from './internal/pagination.js'
 import {
+  ANNOTATION_MEMBERS,
+  CONFIGURATION_MEMBERS,
+  asCollectionMetadata,
+  carriedForward,
   collectionWritableFields,
-  describeCollection,
+  isGovernedDescriptor,
+  readCollectionMetadata,
+  storedEncryption,
   unreadableDescriptionError
 } from './internal/describe.js'
+import type { StoredCollectionMetadata } from './internal/describe.js'
 import { readEtag, writeHeaders } from './internal/conditional.js'
 import { compareAndSwap } from './internal/cas.js'
-import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
+import { readMeta, patchCustom } from './internal/meta.js'
 import { codecRequestContext, insertResource } from './internal/write.js'
 import {
   readPolicy,
@@ -82,7 +106,7 @@ import type {
   AddResult,
   BackendDescriptor,
   BackendUsage,
-  CollectionDescription,
+  CollectionEncryption,
   CollectionMetadata,
   CollectionWritableFields,
   EncryptionOverride,
@@ -100,6 +124,47 @@ import type {
   ResourceSummary
 } from './types.js'
 
+/**
+ * Merges a caller's configuration members over the Collection's current ones,
+ * the mirror of the full-replacement `PUT`: a member the caller leaves out
+ * keeps its stored value instead of being cleared. `configure({ name })` on an
+ * EDV collection would otherwise wipe its `backend` or trip
+ * `encryption-immutable` by clearing the descriptor, and erase a stored
+ * `generator`.
+ *
+ * A log-governed `encryption` descriptor is the exception: it is the server's
+ * projection of the history log's head, and a write carrying it is refused
+ * (`encryption-history-log-governed`), so it is never merged forward. Omitting
+ * the member leaves the derived descriptor in place.
+ *
+ * @param desc {CollectionWritableFields}   what the caller stated
+ * @param current {CollectionMetadata | null}   the object this write is pinned
+ *   to, or `null` when there is none
+ * @returns {CollectionWritableFields}
+ */
+function mergedConfiguration(
+  desc: CollectionWritableFields,
+  current: CollectionMetadata | null
+): CollectionWritableFields {
+  const declared = desc.encryption ?? current?.encryption
+  return collectionWritableFields({
+    name: desc.name ?? current?.name,
+    backend: desc.backend ?? current?.backend,
+    ...(declared !== undefined &&
+      !isGovernedDescriptor(declared) && { encryption: declared }),
+    // The app-attribution members merge forward on the same terms, so a
+    // `configure({ name })` does not erase a stored `generator`. They are
+    // deliberately NOT part of `configure`'s unreadable-object guard: unlike
+    // `backend` and `encryption`, they are freely re-writable attribution
+    // (dropping one is cosmetic, not a data-placement change or an
+    // `encryption-immutable` trip), and admitting them there would let a
+    // `configure({ generator })` sail past the guard and blindly drop the two
+    // members it exists to protect.
+    generator: desc.generator ?? current?.generator,
+    generatorOrigin: desc.generatorOrigin ?? current?.generatorOrigin
+  })
+}
+
 export class Collection {
   readonly spaceId: string
   readonly id: string
@@ -107,6 +172,12 @@ export class Collection {
   readonly #context: ClientContext
   readonly #capability?: IZcap
   readonly #codecHolder: CodecHolder
+  /**
+   * The per-handle encryption override, kept so a write that states its own
+   * encryption state -- the guarded create in {@link setMeta} -- can honor it
+   * without discovering a descriptor from stored state.
+   */
+  readonly #encryptionOverride?: EncryptionOverride
   /**
    * The shared backend-feature probe for this collection (memoized on a
    * definitive answer), consulted by the conditional-codec write path and
@@ -152,6 +223,7 @@ export class Collection {
     this.spaceId = spaceId
     this.id = collectionId
     this.#capability = capability
+    this.#encryptionOverride = encryption
     this.#codecHolder = collectionCodecHolder(context, {
       spaceId,
       collectionId,
@@ -165,12 +237,14 @@ export class Collection {
     })
   }
 
+  /**
+   * The Collection container in canonical (trailing-slash) form: the URL whose
+   * `GET` lists the Collection's Resources, whose `POST` adds one, and whose
+   * `DELETE` removes the Collection. A Collection's own description is not
+   * here -- it is the Metadata object at the reserved `meta` segment.
+   */
   get #path(): string {
     return collectionPath(this.spaceId, this.id)
-  }
-
-  get #itemsPath(): string {
-    return collectionItems(this.spaceId, this.id)
   }
 
   get #policyPath(): string {
@@ -211,72 +285,391 @@ export class Collection {
   }
 
   /**
-   * Reads the Collection Description. Returns `null` if the collection is
-   * missing or not visible to you (WAS returns 404 for both not-found and
-   * unauthorized).
+   * Reads the Collection Metadata object -- the Collection's configuration
+   * (`name`, `backend`, `encryption`, `generator`) beside the server-managed
+   * timestamps and the user-writable `custom`, as one object under one
+   * validator. Returns `null` if the collection is missing or not visible to
+   * you (WAS returns 404 for both not-found and unauthorized).
    *
-   * @returns {Promise<CollectionDescription | null>}
+   * This read never resolves the codec, so it is the configuration read: on an
+   * encrypted Collection the served `custom` is the opaque envelope, exactly as
+   * stored. {@link meta} is the same object with `custom` decoded.
+   *
+   * @returns {Promise<(CollectionMetadata & { etag?: string }) | null>}
    */
-  async describe(): Promise<CollectionDescription | null> {
-    return describeCollection(this.#context, {
+  async describe(): Promise<(CollectionMetadata & { etag?: string }) | null> {
+    const read = await this.describeWithEtag()
+    if (read === null) {
+      return null
+    }
+    return {
+      ...read.description,
+      ...(read.etag !== undefined && { etag: read.etag })
+    }
+  }
+
+  /**
+   * {@link describe}, with the object and its `ETag` in separate members. The
+   * `ETag` is the `metaVersion` validator to pass to
+   * {@link replaceDescription}'s `ifMatch` for a lost-update-safe
+   * (compare-and-swap) write. One validator covers the whole object, so it is
+   * also what {@link setMeta} pins against. Returns `null` if the collection is
+   * missing or not visible to you (404 conflation caveat); `etag` is absent
+   * against a backend that does not version the object.
+   *
+   * @returns {Promise<{ description: CollectionMetadata; etag?: string } | null>}
+   */
+  async describeWithEtag(): Promise<{
+    description: CollectionMetadata
+    etag?: string
+  } | null> {
+    const read = await this.#readStored()
+    if (read === null) {
+      return null
+    }
+    return {
+      description: asCollectionMetadata(read.metadata),
+      ...(read.etag !== undefined && { etag: read.etag })
+    }
+  }
+
+  /**
+   * Reads the stored Collection Metadata object with its validator, in the wire
+   * form the server served it -- `custom` undecoded. The one read behind
+   * {@link describe} and behind every write's compose step.
+   *
+   * @returns {Promise<{ metadata: StoredCollectionMetadata; etag?: string } | null>}
+   */
+  async #readStored(): Promise<{
+    metadata: StoredCollectionMetadata
+    etag?: string
+  } | null> {
+    const read = await readCollectionMetadata(this.#context, {
       spaceId: this.spaceId,
       collectionId: this.id,
       capability: this.#capability
     })
+    this.#remember(read)
+    return read
   }
 
   /**
-   * Creates or updates the collection by id (upsert). Merges the given fields
-   * over the current description.
+   * The object this handle read most recently, kept as the first baseline a
+   * following write composes against so a read-then-write is one `GET` plus
+   * one `PUT` rather than two `GET`s. Only a read carrying the backend's
+   * validator is kept: the write is pinned to that validator, so a baseline
+   * another client has since overwritten loses the compare-and-swap and is
+   * re-read, while a backend serving no validator has nothing to lose the race
+   * on and always reads fresh.
+   */
+  #recentRead?: { metadata: StoredCollectionMetadata; etag: string }
+
+  /**
+   * Records a read as the next write's baseline (see {@link #recentRead}).
    *
-   * The merge needs a readable current description to be lost-update-safe, and
-   * `describe()` cannot distinguish "absent" from "unreadable" (WAS masks
-   * unauthorized reads as 404). When it returns `null` and either `backend`
-   * or `encryption` is left out, this fails closed rather than sending a PUT
-   * body that would silently drop an existing collection's `backend` (a
-   * data-placement change) or trip `encryption-immutable` by clearing its
-   * descriptor on a replace-semantics server. Supplying only one of the two
-   * does not cover the other: with nothing readable to merge from, the
-   * omitted field is dropped either way. Pass `force: true` to proceed
-   * anyway
-   * -- e.g. when creating a new collection through a handle (or use
-   * `space.createCollection()`, which does not merge).
+   * @param read {object | null}   the stored object and its validator
+   * @returns {void}
+   */
+  #remember(
+    read: { metadata: StoredCollectionMetadata; etag?: string } | null
+  ): void {
+    this.#recentRead =
+      read !== null && read.etag !== undefined
+        ? { metadata: read.metadata, etag: read.etag }
+        : undefined
+  }
+
+  /**
+   * Takes the remembered read, if it is usable as this write's baseline, and
+   * drops it either way: it describes one point in time, so it is never handed
+   * to a second write. A write pinned to the caller's own `ifMatch` reuses it
+   * only when the two name the same version, which makes the reuse exact
+   * rather than merely rebasable.
+   *
+   * @param [ifMatch] {string}   the caller's precondition, when it named one
+   * @returns {{ metadata: StoredCollectionMetadata; etag: string } | undefined}
+   */
+  #takeRecentRead(
+    ifMatch?: string
+  ): { metadata: StoredCollectionMetadata; etag: string } | undefined {
+    const recent = this.#recentRead
+    this.#recentRead = undefined
+    if (recent === undefined) {
+      return undefined
+    }
+    return ifMatch === undefined || ifMatch === recent.etag ? recent : undefined
+  }
+
+  /**
+   * Writes the Collection Metadata object: one `PUT` at `meta`, a full
+   * replacement under the one `metaVersion` validator. Because it replaces the
+   * whole object, `compose` is handed the stored object and returns the write
+   * body, carrying forward every member this write is not about -- the
+   * configuration members on an annotation write, the `custom` envelope and its
+   * `epoch` stamp on a configuration write. `compose` runs against whichever
+   * read the write is actually pinned to, so a merge it performs is never
+   * applied over a version this write did not observe.
+   *
+   * The precondition decides how the read-modify-write is guarded:
+   *
+   * - `ifNoneMatch` is the guarded create ("only if the Collection does not
+   *   exist"), and reads nothing: `compose` is handed `null`, since there is no
+   *   stored object to carry forward.
+   * - `ifMatch` pins the caller's own validator, so a lost race is the caller's
+   *   to see as `PreconditionFailedError`.
+   * - Neither: the write is pinned to the validator of the read it composed
+   *   against, and a lost race re-reads and recomposes up to the shared
+   *   compare-and-swap attempt limit. One validator covers configuration and
+   *   annotations alike, so a configuration change now legitimately invalidates
+   *   an in-flight annotation write; rebasing is the normal outcome, not an
+   *   error. A backend without `conditional-writes` serves no validator, and
+   *   the write stays the unconditional upsert it has always been.
+   *
+   * Limitation, on a backend without `conditional-writes` only: the body
+   * re-sends the stored `encryption` descriptor, and with no validator to pin
+   * the `PUT` to, a descriptor rotation landing between the compose read and
+   * the write is re-sent as the older roster -- refused as a spurious
+   * `invalid-request-body` ("epochs is append-only") by a server enforcing the
+   * descriptor invariants, and rolled back by one that does not. There is no
+   * client-side remedy without a validator or a partial-update form, neither of
+   * which WAS v0.5 offers (WCL-99).
+   *
+   * The absent-object rule is the masked-404 fail-closed policy at write level:
+   * a `null` read means "missing OR not visible to you", and composing against
+   * an empty object would upsert a brand-new configuration-less Collection over
+   * a Collection this capability simply cannot read. Only a write that states
+   * its own absence -- the `ifNoneMatch` create, or a caller passing
+   * `allowAbsent` because creating is what it is for -- may proceed from
+   * nothing.
+   *
+   * @param options {object}
+   * @param options.compose {function}   the stored object (`null` when there is
+   *   none) to the write body, minus `id`
+   * @param options.operation {string}   what the caller is doing, for the
+   *   compare-and-swap exhaustion error
+   * @param [options.current] {object}   an object the caller has already read,
+   *   used as the first attempt's baseline instead of re-reading it: the write
+   *   composes against it and pins to its validator, and a rebase re-reads. A
+   *   baseline carrying no validator makes the first attempt unconditional,
+   *   which is what a backend without `conditional-writes` offers anyway
+   * @param [options.allowAbsent] {boolean}   compose against nothing (an
+   *   upsert) instead of throwing `NotFoundError` when the object cannot be
+   *   read
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {boolean}
+   * @returns {Promise<{ metadata?: CollectionMetadata; etag?: string }>}   the
+   *   new validator, and the object the server answered a create with
+   */
+  async #writeStored({
+    compose,
+    operation,
+    current,
+    allowAbsent,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    compose: (
+      stored: StoredCollectionMetadata | null
+    ) => StoredCollectionMetadata | Promise<StoredCollectionMetadata>
+    operation: string
+    current?: { metadata: StoredCollectionMetadata; etag?: string } | null
+    allowAbsent?: boolean
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ metadata?: CollectionMetadata; etag?: string }> {
+    const put = async (
+      body: StoredCollectionMetadata,
+      precondition: { ifMatch?: string; ifNoneMatch?: boolean }
+    ): Promise<{ metadata?: CollectionMetadata; etag?: string }> => {
+      const response = await send(this.#context, {
+        path: this.#metaPath,
+        method: 'PUT',
+        capability: this.#capability,
+        json: { id: this.id, ...body },
+        headers: writeHeaders({ precondition })
+      })
+      const created = dataOrNull<CollectionMetadata>(response)
+      // The write superseded whatever this handle last read.
+      this.#recentRead = undefined
+      return {
+        ...(created !== null && { metadata: created }),
+        etag: readEtag(response)
+      }
+    }
+    if (ifNoneMatch === true) {
+      return put(await compose(null), { ifNoneMatch: true })
+    }
+    // The baseline for one attempt: the caller's own read, then this handle's
+    // most recent read, then a fresh `GET`. Each is consumed once, so a rebase
+    // always re-reads.
+    let seed = current ?? undefined
+    const baseline = async (): Promise<{
+      metadata: StoredCollectionMetadata | null
+      etag?: string
+    }> => {
+      const reused = seed ?? this.#takeRecentRead(ifMatch)
+      seed = undefined
+      if (reused !== undefined) {
+        return reused
+      }
+      const read = await this.#readStored()
+      this.#recentRead = undefined
+      if (read !== null) {
+        return read
+      }
+      if (allowAbsent !== true) {
+        throw new NotFoundError(
+          `Cannot ${operation.toLowerCase()} on collection "${this.id}": it ` +
+            'does not exist, or is not visible with this capability (WAS ' +
+            'returns 404 for both). Writing anyway would replace it with a ' +
+            'configuration-less Collection. Create it with ' +
+            '`space.createCollection()`, or pass `ifNoneMatch: true` to ' +
+            'create it only if it is absent.'
+        )
+      }
+      return { metadata: null }
+    }
+    if (ifMatch !== undefined) {
+      const attempt = await baseline()
+      return put(await compose(attempt.metadata), { ifMatch })
+    }
+    let written: { metadata?: CollectionMetadata; etag?: string } = {}
+    await compareAndSwap<StoredCollectionMetadata | null>({
+      store: {
+        read: async () => {
+          const attempt = await baseline()
+          return {
+            value: attempt.metadata,
+            ...(attempt.etag !== undefined && { etag: attempt.etag })
+          }
+        },
+        replace: async (body, { ifMatch: pinned }) => {
+          written = await put(body ?? {}, { ifMatch: pinned })
+        }
+      },
+      operation,
+      mutate: compose
+    })
+    return written
+  }
+
+  /**
+   * Creates or updates the collection by id (upsert). Merges the given
+   * configuration members over the current ones; the annotations (`custom` and
+   * its `epoch` stamp) are carried forward untouched, unless this write
+   * changes the encryption scheme, in which case `custom` is re-sealed under
+   * the incoming descriptor (see {@link replaceDescription}).
+   *
+   * The merge runs against the same read the write is pinned to, and rebases
+   * with it: a rival configuration change landing in between is re-read and
+   * merged over rather than re-applied stale.
+   *
+   * The merge needs a readable current object to be lost-update-safe, and the
+   * read cannot distinguish "absent" from "unreadable" (WAS masks unauthorized
+   * reads as 404). When it finds nothing and either `backend` or `encryption`
+   * is left out, this fails closed rather than sending a PUT body that would
+   * silently drop an existing collection's `backend` (a data-placement change)
+   * or trip `encryption-immutable` by clearing its descriptor. Supplying only
+   * one of the two does not cover the other: with nothing readable to merge
+   * from, the omitted field is dropped either way. Pass `force: true` to
+   * proceed anyway -- e.g. when creating a new collection through a handle (or
+   * use `space.createCollection()`, which does not merge).
    *
    * @param desc {CollectionWritableFields}   the fields to merge; `encryption`
    *   declares the client-side encryption descriptor, which is set-once on the
    *   server (it may be added to a Collection that lacks one, but
    *   changing/clearing an existing descriptor is rejected -- `ConflictError`,
    *   `encryption-immutable`)
-   * @param [desc.force] {boolean}   proceed even when the current description
+   * @param [desc.force] {boolean}   proceed even when the current object
    *   is unreadable and `backend`/`encryption` are omitted (see above)
-   * @param [desc.current] {CollectionDescription | null}   the current
-   *   description, when the caller has already read it -- the merge and the
-   *   fail-closed check then run against this instead of a second `describe()`
-   *   round trip. `null` means the caller read it and found the collection
-   *   absent or unreadable, which is a supplied answer; omitting the member
-   *   entirely is what asks for the read. Supplying a description this
-   *   handle's own writes have since superseded would merge stale fields
-   *   forward -- dropping a `backend` or tripping `encryption-immutable` --
-   *   so pass only a read the caller itself made and has not written over
-   * @returns {Promise<CollectionDescription>}
+   * @param [desc.current] {CollectionMetadata | null}   the current Collection
+   *   Metadata object, when the caller has already read it -- the merge's first
+   *   attempt then runs against this instead of a second read. It is used only
+   *   while it carries the `etag` the write pins against, so a copy another
+   *   client has since overwritten loses the compare-and-swap and is re-read
+   *   rather than merged forward. `null` means the caller read it and found
+   *   the collection absent or unreadable; omitting the member entirely is
+   *   what asks for the read
+   * @returns {Promise<CollectionMetadata>}
    */
   async configure(
     desc: CollectionWritableFields & {
       force?: boolean
-      current?: CollectionDescription | null
+      current?: (CollectionMetadata & { etag?: string }) | null
     }
-  ): Promise<CollectionDescription> {
-    const current =
-      desc.current !== undefined ? desc.current : await this.describe()
-    // Each protected field is checked on its own terms. Supplying one does
-    // not make the other safe to omit: with no readable current description
-    // there is nothing to merge the omitted one forward from, so
-    // `configure({ backend })` on an EDV collection would send a body with no
-    // `encryption` -- clearing the descriptor, or tripping
-    // `encryption-immutable` on a replace-semantics server -- which is the
-    // harm this guard exists to prevent.
+  ): Promise<CollectionMetadata> {
+    // What the last compose attempt merged, for the echoed return below (the
+    // server answers an update with no body).
+    let echoed: { type?: string[]; fields: CollectionWritableFields } = {
+      fields: {}
+    }
+    if (desc.current === null) {
+      // `current: null` is an answer the caller already read, not a request to
+      // read: the guard fires on it without a round trip of this handle's own.
+      this.#refuseBlindMerge(desc)
+    }
+    const { metadata } = await this.#writeStored({
+      current:
+        desc.current != null
+          ? {
+              metadata: desc.current as unknown as StoredCollectionMetadata,
+              ...(desc.current.etag !== undefined && {
+                etag: desc.current.etag
+              })
+            }
+          : undefined,
+      // The merge is the upsert: with nothing stored there is nothing to merge
+      // forward, and the guard below decides whether that is safe.
+      allowAbsent: true,
+      compose: stored => {
+        const current = stored === null ? null : asCollectionMetadata(stored)
+        // Each protected field is checked on its own terms. Supplying one does
+        // not make the other safe to omit: with no readable current object
+        // there is nothing to merge the omitted one forward from, so
+        // `configure({ backend })` on an EDV collection would send a body with
+        // no `encryption` -- clearing the descriptor, or tripping
+        // `encryption-immutable` -- which is the harm this guard exists to
+        // prevent.
+        if (current === null) {
+          this.#refuseBlindMerge(desc)
+        }
+        const fields = mergedConfiguration(desc, current)
+        echoed = {
+          ...(current?.type !== undefined && { type: current.type }),
+          fields
+        }
+        return this.#configurationBody(stored, fields)
+      },
+      operation: 'Collection configuration'
+    })
+    this.#resetCodecIfDeclared(desc.encryption)
+    return (
+      metadata ?? {
+        id: this.id,
+        type: echoed.type ?? ['Collection'],
+        ...echoed.fields
+      }
+    )
+  }
+
+  /**
+   * The fail-closed guard of {@link configure}: refuses a merge whose current
+   * object could not be read, unless the caller stated both protected members
+   * itself or passed `force`. Each is checked on its own terms. Supplying one
+   * does not make the other safe to omit: with no readable current object
+   * there is nothing to merge the omitted one forward from, so
+   * `configure({ backend })` on an EDV collection would send a body with no
+   * `encryption` -- clearing the descriptor, or tripping
+   * `encryption-immutable` -- which is the harm this guard exists to prevent.
+   *
+   * @param desc {CollectionWritableFields}   what the caller stated
+   * @param [desc.force] {boolean}
+   * @returns {void}
+   */
+  #refuseBlindMerge(
+    desc: CollectionWritableFields & { force?: boolean }
+  ): void {
     if (
-      current === null &&
       (desc.backend === undefined || desc.encryption === undefined) &&
       !desc.force
     ) {
@@ -291,130 +684,171 @@ export class Collection {
           'creating a new collection.'
       })
     }
-    // Merge every current field forward (mirror `Space.configure`): a
-    // replace-semantics server drops anything omitted from the PUT body, so
-    // `configure({ name })` on an EDV collection would otherwise wipe its
-    // `backend` or trip `encryption-immutable` by clearing the descriptor.
-    const name = desc.name ?? current?.name
-    const backend = desc.backend ?? current?.backend
-    const encryption = desc.encryption ?? current?.encryption
-    // The app-attribution fields merge forward on the same terms, so a
-    // `configure({ name })` does not erase a stored `generator`. They are
-    // deliberately NOT part of the unreadable-description guard above: unlike
-    // `backend` and `encryption`, they are freely re-writable attribution
-    // (dropping one is cosmetic, not a data-placement change or an
-    // `encryption-immutable` trip), and admitting them there would let a
-    // `configure({ generator })` sail past the guard and blindly drop the two
-    // fields it exists to protect.
-    const generator = desc.generator ?? current?.generator
-    const generatorOrigin = desc.generatorOrigin ?? current?.generatorOrigin
-    const fields = collectionWritableFields({
-      name,
-      backend,
-      encryption,
-      generator,
-      generatorOrigin
-    })
-    await send(this.#context, {
-      path: this.#path,
-      method: 'PUT',
-      capability: this.#capability,
-      json: { id: this.id, ...fields }
-    })
-    // Adding the encryption descriptor flips this collection from plaintext to
-    // encrypted server-side. Drop any codec memoized from the prior (plaintext)
-    // descriptor so the next read/write re-resolves it -- otherwise a `put`
-    // would reuse the cached identity codec and write server-visible plaintext
-    // into the now-encrypted collection. Child resource handles share this
-    // codec via their thunk, so resetting here propagates to them too.
-    if (desc.encryption) {
-      this.#codecHolder.reset()
-    }
-    return {
-      id: this.id,
-      type: current?.type ?? ['Collection'],
-      ...fields
-    }
   }
 
   /**
-   * Reads the Collection Description together with its `ETag` validator (the
-   * server's `conditional-writes` / description-version support). The `ETag` is
-   * the opaque validator to pass to {@link replaceDescription}'s `ifMatch` for a
-   * lost-update-safe (compare-and-swap) description write. Returns `null` if the
-   * collection is missing or not visible to you (404 conflation caveat); `etag`
-   * is absent against a server that does not version the description.
-   *
-   * @returns {Promise<{ description: CollectionDescription; etag?: string } | null>}
-   */
-  async describeWithEtag(): Promise<{
-    description: CollectionDescription
-    etag?: string
-  } | null> {
-    const read = await readDataWithEtag<CollectionDescription>(this.#context, {
-      path: this.#path,
-      capability: this.#capability
-    })
-    return read === null ? null : { description: read.data, etag: read.etag }
-  }
-
-  /**
-   * Writes (replaces) the Collection Description, optionally under a
-   * precondition: `ifMatch` (the `ETag` from {@link describeWithEtag}) makes
+   * Writes (replaces) the Collection's configuration members, optionally under
+   * a precondition: `ifMatch` (the `ETag` from {@link describeWithEtag}) makes
    * it a compare-and-swap so a concurrent writer cannot be silently clobbered,
    * and `ifNoneMatch: true` makes it a guarded create that proceeds only while
    * no Collection exists under this id. A failed precondition surfaces as
-   * `PreconditionFailedError` (412). Sends the writable fields as the full
-   * body; omit a field to drop it (replace semantics), so callers doing CAS
-   * pass every field forward. Returns the new `ETag` and the fields written.
+   * `PreconditionFailedError` (412). Sends the writable configuration as the
+   * full body; omit a member to drop it (replace semantics), so callers doing
+   * CAS pass every member forward. Members this client does not model are
+   * carried forward from the stored object rather than cleared.
    *
-   * This is the generic description-CAS primitive the key-epoch recipient
+   * The annotations (`custom` and its `epoch` stamp) are carried forward
+   * verbatim -- `custom` exactly as served, so an encrypted Collection's
+   * envelope is never re-sealed by an ordinary configuration write. The one
+   * exception is a write that changes the encryption scheme: the server
+   * validates `custom` against the INCOMING descriptor, so a stored plaintext
+   * `custom` cannot travel beside a newly declared `encryption` descriptor.
+   * Such a write re-seals `custom` under the incoming descriptor's codec, and
+   * drops `custom` (and its stamp) when this client cannot build that codec.
+   * A Collection with no stored `custom` sends none, which clears an
+   * already-empty value on an encrypted Collection just as on a plaintext one.
+   * Returns the new `ETag`, and the object the server answers a create with.
+   *
+   * This is the generic compare-and-swap primitive the key-epoch recipient
    * operations build on (add/remove a reader is a CAS of the `encryption`
    * descriptor); it is not epoch-specific.
    *
    * @param description {CollectionWritableFields}
    * @param options {object}
    * @param [options.ifMatch] {string}   the prior `ETag`; the write applies only
-   *   if the description is unchanged
+   *   if the object is unchanged
    * @param [options.ifNoneMatch] {boolean}   write only if the Collection does
    *   not exist yet
-   * @returns {Promise<{ description: CollectionDescription; etag?: string }>}
+   * @returns {Promise<{ description: CollectionMetadata; etag?: string }>}
    */
   async replaceDescription(
     description: CollectionWritableFields,
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
-  ): Promise<{ description: CollectionDescription; etag?: string }> {
+  ): Promise<{ description: CollectionMetadata; etag?: string }> {
     const fields = collectionWritableFields(description)
-    const response = await send(this.#context, {
-      path: this.#path,
-      method: 'PUT',
-      capability: this.#capability,
-      json: { id: this.id, ...fields },
-      headers: writeHeaders({
-        precondition: {
-          ifMatch: options.ifMatch,
-          ifNoneMatch: options.ifNoneMatch
-        }
-      })
+    const { metadata, etag } = await this.#writeStored({
+      compose: stored => this.#configurationBody(stored, fields),
+      operation: 'Collection configuration',
+      // A caller pinning a validator is writing to an object it has read, so
+      // an unreadable one is a lost Collection, not a create. An unconditional
+      // call stays the upsert it has always been.
+      allowAbsent: options.ifMatch === undefined,
+      ifMatch: options.ifMatch,
+      ifNoneMatch: options.ifNoneMatch
     })
-    // Writing the `encryption` descriptor can rotate the key epoch (the
-    // recipient operations CAS this field) or flip the collection from
-    // plaintext to encrypted. Drop any memoized codec -- bound at construction
-    // to the prior descriptor's write key/epoch -- so the next read/write
-    // re-resolves it under the new descriptor; otherwise a `put` on the same
-    // handle would keep encrypting under the stale epoch, whose key a
-    // just-removed reader still holds. Child resource handles share this codec
-    // via their thunk, so resetting here propagates to them too.
-    if (description.encryption !== undefined) {
-      this.#codecHolder.reset()
-    }
+    this.#resetCodecIfDeclared(description.encryption)
     return {
-      description: {
+      description: metadata ?? {
         id: this.id,
         type: ['Collection'],
         ...fields
       },
-      etag: readEtag(response)
+      ...(etag !== undefined && { etag })
+    }
+  }
+
+  /**
+   * The write body of a configuration write: the caller's configuration
+   * members over everything the stored object carries that this write is not
+   * about -- the annotations, and any member this client does not model.
+   * Shared by {@link configure} and {@link replaceDescription}, whose bodies
+   * differ only in how the configuration members were arrived at.
+   *
+   * @param stored {StoredCollectionMetadata | null}
+   * @param fields {CollectionWritableFields}   the configuration this write
+   *   states in full
+   * @returns {Promise<StoredCollectionMetadata>}
+   */
+  async #configurationBody(
+    stored: StoredCollectionMetadata | null,
+    fields: CollectionWritableFields
+  ): Promise<StoredCollectionMetadata> {
+    const base = stored ?? {}
+    const resealed = await this.#resealedCustom(base, fields.encryption)
+    const carried = carriedForward(base, {
+      replacing:
+        resealed === null
+          ? CONFIGURATION_MEMBERS
+          : [...CONFIGURATION_MEMBERS, ...ANNOTATION_MEMBERS]
+    })
+    return { ...carried, ...(resealed ?? {}), ...fields }
+  }
+
+  /**
+   * The annotations a configuration write that CHANGES the encryption scheme
+   * sends: the stored `custom` opened under the descriptor it was sealed with
+   * and re-sealed under the incoming one, with the new key epoch stamped
+   * beside it. The server validates `custom` against the incoming descriptor,
+   * so forwarding a plaintext `custom` beside a newly declared descriptor is
+   * refused (422, `encryption-scheme-mismatch`) -- and the spec states the same
+   * rule: a change to `encryption` requires the envelope to be re-sealed.
+   *
+   * Resolves `null` when the write leaves the scheme as it is (the ordinary
+   * case, an epoch rotation included), meaning "carry the stored annotations
+   * forward untouched". Resolves `{}` -- drop `custom` and its stamp -- when
+   * the re-seal is not possible here: this client cannot build a codec for one
+   * of the two descriptors, or the stored envelope is one it cannot open. The
+   * name and tags inside are lost in that case, which is why the re-seal is
+   * attempted first.
+   *
+   * @param stored {StoredCollectionMetadata}
+   * @param [encryption] {CollectionEncryption}   the descriptor this write
+   *   states
+   * @returns {Promise<{ custom?: unknown; epoch?: string } | null>}
+   */
+  async #resealedCustom(
+    stored: StoredCollectionMetadata,
+    encryption?: CollectionEncryption
+  ): Promise<{ custom?: unknown; epoch?: string } | null> {
+    const declared = storedEncryption(stored)
+    if (encryption?.scheme === declared?.scheme) {
+      return null
+    }
+    if (stored.custom === undefined) {
+      return null
+    }
+    try {
+      const [from, to] = await Promise.all([
+        codecForDescriptor(this.#context, {
+          spaceId: this.spaceId,
+          collectionId: this.id,
+          ...(declared !== undefined && { descriptor: declared })
+        }),
+        codecForDescriptor(this.#context, {
+          spaceId: this.spaceId,
+          collectionId: this.id,
+          ...(encryption !== undefined && { descriptor: encryption })
+        })
+      ])
+      if (from === null || to === null) {
+        return {}
+      }
+      const slot = { kind: 'collection' } as const
+      const opened = await from.decodeMeta({ custom: stored.custom }, slot)
+      const { custom, epoch } = await to.encodeMeta({ custom: opened, slot })
+      return { custom, ...(epoch !== undefined && { epoch }) }
+    } catch {
+      return {}
+    }
+  }
+
+  /**
+   * Drops any memoized codec when a write declared an `encryption` descriptor.
+   * Writing it can rotate the key epoch (the recipient operations CAS this
+   * member) or flip the collection from plaintext to encrypted, and a codec
+   * memoized from the prior descriptor would keep encrypting under the stale
+   * epoch -- whose key a just-removed reader still holds -- or write
+   * server-visible plaintext into a now-encrypted collection. Child resource
+   * handles share this codec via their thunk, so resetting here propagates to
+   * them too.
+   *
+   * @param [encryption] {CollectionEncryption}   the descriptor the write
+   *   declared, if any
+   * @returns {void}
+   */
+  #resetCodecIfDeclared(encryption?: CollectionEncryption): void {
+    if (encryption !== undefined) {
+      this.#codecHolder.reset()
     }
   }
 
@@ -438,28 +872,30 @@ export class Collection {
   }
 
   /**
-   * Reads the Collection's metadata object (server-managed timestamps,
-   * `createdBy` and the encrypted-`custom` key `epoch`, plus the user-writable
-   * `custom` object). Returns `null` if the collection is missing or not
-   * visible to you (404 conflation caveat). A server without Collection
-   * metadata support surfaces its 501 as `NotImplementedError`.
+   * Reads the Collection Metadata object with its user-writable `custom`
+   * decoded -- {@link describe} plus the codec. Returns `null` if the
+   * collection is missing or not visible to you (404 conflation caveat). A
+   * server without Collection metadata support surfaces its 501 as
+   * `NotImplementedError`.
    *
    * On an encrypted collection the stored `custom` is an opaque envelope; this
    * decodes it (decrypts, via the codec) so a caller always sees plaintext
    * `{ name, tags }`. A collection with no user metadata reports `custom` as
-   * `{}`.
+   * `{}`. Resolving the codec can fail closed on a collection this client holds
+   * no keys for, which is why {@link describe} -- the configuration read -- goes
+   * without it.
    *
    * Against a backend with the `conditional-writes` feature the result also
-   * carries the metadata's current `etag` (the `/meta` `metaVersion`
-   * validator) -- pass it as `setMeta(meta, { ifMatch })` for a
-   * lost-update-safe metadata update. That validator is independent of the
-   * Collection Description's ETag ({@link describeWithEtag}) and of every
-   * Resource's versions: writing one never bumps the other.
+   * carries the object's current `etag` (its `metaVersion` validator) -- pass it
+   * as `setMeta(meta, { ifMatch })` for a lost-update-safe update. One
+   * validator covers the whole object: a configuration write and an annotation
+   * write advance the same counter, so a client holds one ETag for the
+   * Collection rather than one per surface.
    *
    * @returns {Promise<(CollectionMetadata & { etag?: string }) | null>}
    */
   async meta(): Promise<(CollectionMetadata & { etag?: string }) | null> {
-    // Resolving the codec on a blinded-index collection reads `/meta` itself
+    // Resolving the codec on a blinded-index collection reads `meta` itself
     // (for the index schema). When this call is the one that started that
     // resolution, its snapshot is this read's answer -- take it rather than
     // GETting and decrypting the same document twice. Every other caller gets
@@ -474,29 +910,44 @@ export class Collection {
       codec: Promise.resolve(codec),
       subject: `collection "${this.id}"`,
       slot: { kind: 'collection' },
-      capability: this.#capability
+      capability: this.#capability,
+      // `setName` / `setTags` / `declareIndex` write straight back through
+      // `setMeta`, so this read is the baseline that write composes against
+      // rather than a second `GET` of the same object.
+      onStored: read => {
+        this.#remember(read)
+      }
     })
   }
 
   /**
-   * Replaces the Collection's user-writable metadata (`custom`). This is a full
-   * replacement: any property omitted from `custom` is cleared, and an omitted
-   * `custom` clears them all. Does not create the collection -- a `PUT` to the
-   * metadata of a nonexistent collection throws `NotFoundError`. Servers
-   * without Collection metadata support surface their 501 as
-   * `NotImplementedError`.
+   * Replaces the Collection's user-writable annotations (`custom`). This is a
+   * full replacement of `custom`: any property omitted from it is cleared, and
+   * an omitted `custom` clears them all. The Collection's configuration
+   * members are carried forward -- the same `PUT` replaces the whole
+   * Collection Metadata object, so they are read and re-sent rather than
+   * dropped.
    *
    * On an encrypted collection `custom` is encrypted into an opaque envelope by
    * the codec before it is sent, so `name` / `tags` are never stored as
    * server-visible plaintext -- transparently, the same call works on plaintext
-   * and encrypted collections alike.
+   * and encrypted collections alike. The key epoch the codec stamps the
+   * envelope with travels as a top-level `epoch` member of the same body.
    *
-   * Conditional metadata writes (the backend's `conditional-writes` feature):
-   * pass `ifMatch` (the `etag` from a prior `meta()`) for an
-   * update-if-unchanged, or `ifNoneMatch: true` for a
-   * write-only-if-no-metadata. A failed precondition throws
-   * `PreconditionFailedError` (412). The `/meta` ETag (`metaVersion`) is
-   * independent of the Collection Description's ETag. Returns the new `etag`.
+   * Conditional writes (the backend's `conditional-writes` feature): pass
+   * `ifMatch` (the `etag` from a prior {@link meta} or {@link describe}) for an
+   * update-if-unchanged, and a failed precondition throws
+   * `PreconditionFailedError` (412). Without one the write is pinned to the
+   * version it composed the configuration from and rebases on a lost race.
+   * `ifNoneMatch: true` is the guarded create: one validator covers the whole
+   * object, which exists exactly as long as its Collection does, so it means
+   * "create the Collection only if it does not exist" -- and creates it with no
+   * configuration, the plaintext codec encoding its `custom` (nothing is
+   * stored yet to declare encryption, and a per-handle override is the only
+   * way to state it). Every other annotation write requires the Collection to
+   * be there: one that cannot read the current object throws `NotFoundError`
+   * rather than upserting a configuration-less Collection over one this
+   * capability cannot see. Returns the new `etag`.
    *
    * @param meta {object}
    * @param [meta.custom] {ResourceMetadataCustomInput}   the user-writable
@@ -504,48 +955,84 @@ export class Collection {
    *   Collection-level `custom` also carries the persisted `indexSchema`)
    *   while `name` / `tags` themselves stay checked at their stored types
    * @param options {object}
-   * @param [options.ifMatch] {string}       update only if the `/meta` ETag matches
-   * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
-   * @returns {Promise<{ etag?: string }>}   the metadata's new ETag
+   * @param [options.ifMatch] {string}       update only if the `ETag` matches
+   * @param [options.ifNoneMatch] {boolean}  create only if the Collection does
+   *   not exist
+   * @returns {Promise<{ etag?: string }>}   the object's new ETag
    */
   async setMeta(
     meta: { custom?: ResourceMetadataCustomInput } = {},
     options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
   ): Promise<{ etag?: string }> {
-    return writeMeta(this.#context, {
-      metaPath: this.#metaPath,
-      codec: this.#codec(),
+    const codec = await this.#codecForWrite(options.ifNoneMatch === true)
+    const { custom, epoch } = await codec.encodeMeta({
       custom: meta.custom ?? {},
-      // The Collection metadata stamp describes the `custom` envelope itself,
-      // so it travels as a top-level member of this PUT body.
-      sendEpoch: true,
-      slot: { kind: 'collection' },
-      ifMatch: options.ifMatch,
-      ifNoneMatch: options.ifNoneMatch,
-      capability: this.#capability
+      slot: { kind: 'collection' }
     })
+    const { etag } = await this.#writeStored({
+      // The configuration members come from the stored object and the
+      // annotations from this call. The epoch stamp describes the `custom`
+      // envelope itself, so it is re-stated with it; the server clears the
+      // stored stamp when the member is omitted, which is exactly right on a
+      // plaintext collection, whose codec surfaces no epoch.
+      compose: stored => ({
+        ...carriedForward(stored ?? {}, { replacing: ANNOTATION_MEMBERS }),
+        custom,
+        ...(epoch !== undefined && { epoch })
+      }),
+      operation: 'Collection metadata update',
+      // The create states its own absence; every other annotation write is
+      // about a Collection that exists, and an unreadable one is refused
+      // rather than upserted over (see `#writeStored`).
+      allowAbsent: false,
+      ifMatch: options.ifMatch,
+      ifNoneMatch: options.ifNoneMatch
+    })
+    return { etag }
   }
 
   /**
-   * Sets the Collection's metadata-level human-readable `name`, preserving any
-   * existing `tags`. Convenience over `setMeta()`. The write is pinned to the
-   * `etag` the `meta()` read returned (when the backend supports
-   * `conditional-writes`), so a concurrent metadata write surfaces as
-   * `PreconditionFailedError` instead of being silently erased by this
+   * The codec an annotation write encodes `custom` with. The ordinary write
+   * uses the handle's resolved codec, discovered from the Collection's stored
+   * `encryption` descriptor. The guarded create cannot: there is nothing
+   * stored to discover, and descriptor discovery on an absent Collection is
+   * exactly the masked-404 an encryption-capable client fails closed on -- it
+   * would refuse the create it was asked to make. So the create takes its
+   * encryption state from what it is writing: a per-handle override when the
+   * caller pinned one, and otherwise the plaintext codec, because the body it
+   * sends declares no descriptor.
+   *
+   * @param creating {boolean}   whether this write is the guarded create
+   * @returns {Promise<ResourceCodec>}
+   */
+  async #codecForWrite(creating: boolean): Promise<ResourceCodec> {
+    if (creating && this.#encryptionOverride === undefined) {
+      return identityCodec
+    }
+    return this.#codec()
+  }
+
+  /**
+   * Sets the Collection's annotation-level human-readable `name`, preserving
+   * any existing `tags`. Convenience over `setMeta()`. The write is pinned to
+   * the `etag` the `meta()` read returned (when the backend supports
+   * `conditional-writes`) and rebases on a lost race, so a concurrent write --
+   * an annotation write or a configuration change, which share the one
+   * validator -- is re-read and re-applied rather than silently erased by this
    * full-replacement write.
    *
    * On an encrypted collection this is the collection's client-encrypted name
    * surface: the codec seals it into the `custom` envelope, and by convention
-   * the plaintext Description `name` is left unpopulated. On a plaintext
+   * the plaintext top-level `name` is left unpopulated. On a plaintext
    * collection the two are separate labels -- space-level listings surface the
-   * Description's `name` (set via `configure({ name })`), while this one is
-   * metadata-level.
+   * top-level `name` (set via `configure({ name })`), while this one is inside
+   * `custom`.
    *
    * @param name {string}
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return patchCustom(this, { name })
+    return patchCustom(this, { name }, 'Collection name update')
   }
 
   /**
@@ -557,7 +1044,7 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return patchCustom(this, { tags })
+    return patchCustom(this, { tags }, 'Collection tags update')
   }
 
   get #logPath(): string {
@@ -565,7 +1052,7 @@ export class Collection {
   }
 
   /**
-   * The absolute URL of the Collection's governing history log, the `/meta/log`
+   * The absolute URL of the Collection's governing history log, the `meta/log`
    * sub-resource {@link getHistoryLog} reads. A log-governed descriptor's
    * `history.resource` names this URL; a verifying reader compares the two
    * before opening the log.
@@ -1000,7 +1487,7 @@ export class Collection {
     options: { contentType?: string } = {}
   ): Promise<AddResult> {
     const codec = await this.#codec()
-    const itemsPath = this.#itemsPath
+    const itemsPath = this.#path
     const outcome = await insertResource(this.#context, {
       itemsPath,
       pathForId: mintedId => resourcePath(this.spaceId, this.id, mintedId),
@@ -1119,7 +1606,7 @@ export class Collection {
     return signedPageWalk(this.#context, {
       firstUrl: toUrl({
         serverUrl: this.#context.serverUrl,
-        path: this.#itemsPath
+        path: this.#path
       }),
       capability: this.#capability
     })

@@ -73,7 +73,7 @@ describe('fromCapability', () => {
 
   it('rebuilds a Space handle from a space-scoped invocationTarget', () => {
     const handle = client.fromCapability({
-      invocationTarget: 'https://was.example/space/s'
+      invocationTarget: 'https://was.example/space/s/'
     } as never)
     expect(handle).toBeInstanceOf(Space)
     expect((handle as Space).id).toBe('s')
@@ -186,7 +186,7 @@ describe('Space.deleteWithOutcome / delete', () => {
     const result = await client.space('s', { capability }).deleteWithOutcome()
     expect(result).toEqual({ outcome: 'deleted' })
     const req = lastRequest()
-    expect(req?.url).toBe('https://was.example/space/s')
+    expect(req?.url).toBe('https://was.example/space/s/')
     expect(req?.method).toBe('DELETE')
     expect(req?.capability).toBe(capability)
   })

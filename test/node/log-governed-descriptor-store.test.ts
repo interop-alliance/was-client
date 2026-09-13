@@ -6,7 +6,7 @@
  * `EncryptionDescriptorStore` over a Collection whose served `encryption`
  * member is the point-state projection of its governing history log. Covers
  * the plain-descriptor passthrough (a projection without `history` behaves
- * as the Collection Description adapter does), the governed lifecycle driven
+ * as the Collection Metadata adapter does), the governed lifecycle driven
  * by the recipient primitives (genesis create, verified read, signed append,
  * chain-head pin), the read-only store, the forwarded seal, and the refusals:
  * `history.method` and `history.resource` mismatches before any fetch, a

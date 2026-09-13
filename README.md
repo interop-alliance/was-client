@@ -228,14 +228,14 @@ const space = await was.createSpace({ name: 'Home' }) // POST /spaces/
 // Lazy handle to an existing space by id -- no I/O until a verb runs.
 const same = was.space(space.id)
 
-// Read the Space Description (null if missing or not visible to you).
+// Read the Space Metadata object (null if missing or not visible to you).
 const desc = await space.describe() // { id, type: ['Space'], name, controller } | null
 
-// Upsert: merges the given fields over the current description.
+// Upsert: merges the given fields over the current Metadata object.
 await space.configure({ name: 'Home (renamed)' })
 
-// Lost-update-safe writes: read the description with its ETag, then write
-// it under `ifMatch` (412 `PreconditionFailedError` if it changed), or
+// Lost-update-safe writes: read the Metadata object with its ETag, then
+// write it under `ifMatch` (412 `PreconditionFailedError` if it changed), or
 // create-if-absent under `ifNoneMatch` (412 if the Space already exists).
 // Nothing is read or merged on the client, so `controller` is required.
 const read = await space.describeWithEtag() // { description, etag? } | null
@@ -248,7 +248,7 @@ await was
   .replaceDescription(
     { name: 'Fresh', controller: 'did:key:z6Mk...' },
     { ifNoneMatch: true }
-  ) // { description, etag? }: a create echoes the description
+  ) // { description, etag? }: a create echoes the Metadata object
 
 await space.delete() // idempotent
 
@@ -286,10 +286,10 @@ const collection = await space.createCollection({
 // Lazy handle to an existing collection by id.
 const same = space.collection(collection.id)
 
-// Read the Collection Description (null if missing or not visible).
+// Read the Collection Metadata object (null if missing or not visible).
 const desc = await collection.describe() // { id, type: ['Collection'], name } | null
 
-// Update (upsert; merges over the current description).
+// Update (upsert; merges over the current Metadata object).
 await collection.configure({ name: 'Credentials' })
 
 // List the collections in a space.
@@ -314,17 +314,16 @@ await collection.delete() // deletes the whole collection; idempotent
 To delete a single resource instead of the whole collection, use
 `collection.resource(id).delete()`.
 
-The Description's `name` is server-visible plaintext. An encrypted collection
-leaves it unpopulated by convention and carries its name and tags on the
-[Collection metadata](#collection-metadata) surface instead, where they are
-encrypted.
+The Collection Metadata object's top-level `name` is server-visible plaintext.
+An encrypted collection leaves it unpopulated by convention and carries its name
+and tags on the same object's [`custom`](#collection-metadata) member instead,
+where they are encrypted.
 
 An application that provisions a collection can record who it was provisioned
 for, with the optional `generator` (the application's DID) and `generatorOrigin`
-(the Web origin that DID was bound to) description fields. Both are accepted at
-create time and stay writable afterwards, so an existing collection can be
-backfilled; they are controller assertions the server persists but does not
-verify.
+(the Web origin that DID was bound to) fields. Both are accepted at create time
+and stay writable afterwards, so an existing collection can be backfilled; they
+are controller assertions the server persists but does not verify.
 
 ```ts
 await space.createCollection({
@@ -544,10 +543,14 @@ collection listings; updating one updates the other.
 
 ### Collection metadata
 
-A Collection has the same metadata surface at its own reserved `/meta` path:
-server-managed properties (`createdAt` / `updatedAt` / `createdBy`) plus a
-user-writable `custom` object (`name` and `tags`). A server without the endpoint
-surfaces its 501 as `NotImplementedError`.
+A Collection's configuration (`name`, `backend`, `encryption`, `generator`, read
+by [`describe()`](#collections)) and its annotations live in one object at the
+Collection's reserved `/meta` path: server-managed properties (`createdAt` /
+`updatedAt` / `createdBy`) plus a user-writable `custom` object (`name` and
+`tags`), under one `metaVersion` validator. `meta()` is that same object with
+`custom` decoded through the codec; `describe()` does not resolve the codec at
+all, so on an encrypted collection it reports `custom` as the opaque envelope. A
+server without the endpoint surfaces its 501 as `NotImplementedError`.
 
 ```ts
 const meta = await collection.meta() // CollectionMetadata | null (null on a miss)
@@ -561,19 +564,31 @@ await collection.setTags({ app: 'wallet' }) // keeps existing name
 
 // Conditional metadata write, against a `conditional-writes` backend.
 await collection.setMeta({ custom: { name: 'Vault' } }, { ifMatch: meta?.etag })
-// ...or write only if no metadata is set yet:
+// ...or create the Collection only if it does not exist yet:
 await collection.setMeta({ custom: { name: 'Vault' } }, { ifNoneMatch: true })
 ```
 
 A failed precondition throws `PreconditionFailedError` (412). This `/meta` ETag
-(`metaVersion`) is versioned independently of the Collection Description's ETag
-and of every Resource's versions: writing one never bumps the other.
+(`metaVersion`) is independent of every Resource's versions, but not of the
+configuration members: one validator covers the whole Collection Metadata
+object, so `configure()` and `setMeta()` advance the same counter.
+
+The write is a full replacement of that one object, so an annotation write
+re-sends the configuration members (and any member this client does not model)
+as read, and `configure()` merges over the version it pins to. Two consequences
+worth knowing. `ifNoneMatch: true` is the only annotation write that may create:
+it means "create the Collection only if it does not exist", creates it with no
+configuration, and encodes `custom` with the plaintext codec, since the body it
+sends declares no encryption descriptor (pass a per-handle `encryption` override
+to state one). Every other annotation write requires a readable current object
+and throws `NotFoundError` when there is none -- a masked 404 cannot turn a
+rename into a create.
 
 On an encrypted collection `custom` is encrypted into an envelope before it is
 sent, so `name` / `tags` are never stored as server-visible plaintext, and
 `meta()` decrypts them back for a keyed reader. This is the encrypted
-collection's name/tags surface: by convention the plaintext Description `name`
-is left unpopulated there.
+collection's name/tags surface: by convention the plaintext top-level `name` is
+left unpopulated there.
 
 #### The governing history log
 
@@ -594,11 +609,12 @@ await collection.putHistoryLog(log.body + nextLine, { ifMatch: log.etag })
 
 From the create on, `describe()` serves `encryption` as the log head's `state`
 with `history: { method, resource }` stamped on, and a direct `encryption` write
-on the Description throws `ConflictError`. The create is refused the same way on
-a Collection whose Description already carries a client-written descriptor. A
-lost race throws `PreconditionFailedError` (412). These are the raw transport
-methods; the `/log` subpath's `resourceLogStore({ collection })` (below) drives
-them as the resource-log store port.
+on the Collection Metadata object throws `ConflictError`. The create is refused
+the same way on a Collection whose Metadata object already carries a
+client-written descriptor. A lost race throws `PreconditionFailedError` (412).
+These are the raw transport methods; the `/log` subpath's
+`resourceLogStore({ collection })` (below) drives them as the resource-log store
+port.
 
 A reader that holds the descriptor but not the convention follows its `history`
 pointer through the `/edv` subpath's `logGovernedCollectionDescriptorStore`, the
@@ -759,10 +775,9 @@ stores faithfully). Two things drive it, kept separate:
 
 - **Policy** (is this collection encrypted?) is declared on the collection
   itself: `createCollection({ encryption: { scheme: 'edv' } })` writes a
-  non-secret `encryption` descriptor to the Collection Description. Any
+  non-secret `encryption` descriptor to the Collection Metadata object. Any
   authorized reader -- including a delegated consumer that did **not** create
-  the collection -- discovers it by reading the Description, so it knows to
-  decrypt.
+  the collection -- discovers it by reading that object, so it knows to decrypt.
 - **Keys** come from an `encryption` provider you pass to `WasClient` (built
   from the opt-in `@interop/was-client/edv` subpath, so plaintext consumers
   never pull the crypto graph). It is a pure **keystore**: `resolveKeys` returns
@@ -794,21 +809,23 @@ const { id } = await vault.add({ secret: 'hello' }) // encrypted; id is an EDV i
 const back = await vault.get(id) // { secret: 'hello' } -- decrypted
 
 // A consumer that did not create it discovers the descriptor and decrypts with its
-// own keys -- no override needed; one cached read of the Description:
+// own keys -- no override needed; one cached read of the Collection Metadata
+// object:
 const same = was.space(spaceId).collection('vault')
 await same.get(id) // reads the descriptor, then decrypts
 ```
 
 The switch is the **descriptor**: a handle encrypts a collection when its
-Description declares `encryption` (resolution reads the Description once, then
-caches -- no round-trip for plaintext-only clients or when an override is set).
-Keys are then **required**: if the collection is declared encrypted but your
-keystore returns no keys, reads/writes throw `EncryptionError` (fail-closed) --
-they never silently fall back to plaintext.
+Collection Metadata object declares `encryption` (resolution reads that object
+once, then caches -- no round-trip for plaintext-only clients or when an
+override is set). Keys are then **required**: if the collection is declared
+encrypted but your keystore returns no keys, reads/writes throw
+`EncryptionError` (fail-closed) instead of silently falling back to plaintext.
 
 **Per-handle override (escape hatch).** Pass `encryption` in the handle options
-to force the decision and skip the Description read -- `{ scheme: 'edv' }` (keys
-from the keystore), `{ scheme: 'edv', keys }` (keys inline), or `'plaintext'`:
+to force the decision and skip the Collection Metadata read --
+`{ scheme: 'edv' }` (keys from the keystore), `{ scheme: 'edv', keys }` (keys
+inline), or `'plaintext'`:
 
 ```ts
 const vault = was.space(spaceId).collection('vault', {
@@ -820,8 +837,12 @@ const vault = was.space(spaceId).collection('vault', {
 keys-only): re-declare it once with
 `collection.configure({ encryption: { scheme: 'edv' } })` (the descriptor is
 set-once: declaring it on a collection that lacks one is allowed, changing or
-clearing an existing one is rejected). Until then, a per-handle override reads
-it correctly.
+clearing an existing one is rejected). The same write re-seals the stored
+`custom` under the newly declared descriptor, since the server validates the
+envelope against the incoming one; a client that cannot build that codec (no
+keystore, or no keys for the descriptor) sends no `custom` at all rather than
+plaintext beside the descriptor, which loses the stored name and tags. Until the
+collection is re-declared, a per-handle override reads it correctly.
 
 Encrypted collections are a **stricter contract**, not a drop-in (documents-only
 scope for now):
@@ -842,9 +863,9 @@ scope for now):
   endpoint has its own ETag (`metaVersion`), independent of the content ETag.
   The same pair at Collection level (`collection.setName()` / `setTags()` /
   `setMeta()` / `meta()`) is where an encrypted collection carries its own name
-  and tags, since the Description's plaintext `name` is left unpopulated; the
-  collection-level envelope binds no resource id, and a resource-bound envelope
-  served into that slot is refused.
+  and tags, since the Collection Metadata object's plaintext `name` is left
+  unpopulated; the collection-level envelope binds no resource id, and a
+  resource-bound envelope served into that slot is refused.
 - **Binary.** A `Blob`/`Uint8Array` up to `maxBlobBytes` (512 KiB by default) is
   encrypted as a single document. A larger one is routed automatically by
   `add()` to the chunked-stream path: one document plus its chunk resources,

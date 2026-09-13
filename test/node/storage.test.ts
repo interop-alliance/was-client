@@ -12,10 +12,7 @@ import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
 
-import type {
-  SpaceDescription,
-  CollectionDescription
-} from '../../src/index.js'
+import type { SpaceMetadata, CollectionMetadata } from '../../src/index.js'
 import {
   WasClient,
   ValidationError,
@@ -357,36 +354,101 @@ describe('collection.meta()', () => {
   })
 })
 
+describe('collection.describe() / meta(): one path, one validator', () => {
+  it('reads both projections from the Collection Metadata object', async () => {
+    const stored = {
+      id: 'c',
+      type: ['Collection'],
+      name: 'Configured',
+      backend: { id: 'default' },
+      custom: { name: 'Annotated' },
+      createdAt: '2026-01-01T00:00:00Z'
+    }
+    const { client, calls } = clientWithRequestSpy({
+      data: stored,
+      etag: '"9"'
+    })
+    const collection = client.space('s').collection('c')
+    const described = await collection.describe()
+    const withEtag = await collection.describeWithEtag()
+    const meta = await collection.meta()
+    for (const call of calls) {
+      expect(call.url).toBe('https://was.example/space/s/c/meta')
+      expect(call.method).toBe('GET')
+    }
+    // The configuration members and the annotations are one object under one
+    // validator, so every projection reports the same `ETag`.
+    expect(described).toEqual({ ...stored, etag: '"9"' })
+    expect(withEtag).toEqual({ description: stored, etag: '"9"' })
+    expect(meta?.etag).toBe('"9"')
+    expect(meta?.name).toBe('Configured')
+    expect(meta?.custom).toEqual({ name: 'Annotated' })
+  })
+})
+
 describe('collection.setMeta()', () => {
-  it('PUTs the custom object to the collection meta endpoint', async () => {
-    const { client, calls } = clientWithRequestSpy()
+  it('replaces the whole object, carrying its configuration forward', async () => {
+    // The PUT at `meta` replaces the merged Collection Metadata object, so an
+    // annotation write reads it first and re-sends the configuration members
+    // the server would otherwise clear.
+    const { client, calls } = clientWithRequestSpy({
+      data: {
+        id: 'c',
+        type: ['Collection'],
+        name: 'Configured',
+        backend: { id: 'custom' },
+        generator: 'did:example:app',
+        createdAt: '2026-01-01T00:00:00Z'
+      }
+    })
     await client
       .space('s')
       .collection('c')
       .setMeta({ custom: { name: 'Notes', tags: { project: 'demo' } } })
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta')
-    expect(calls[0]?.method).toBe('PUT')
-    expect(calls[0]?.json).toEqual({
+    expect(calls[0]?.method).toBe('GET')
+    expect(calls[1]?.url).toBe('https://was.example/space/s/c/meta')
+    expect(calls[1]?.method).toBe('PUT')
+    expect(calls[1]?.json).toEqual({
+      id: 'c',
+      name: 'Configured',
+      backend: { id: 'custom' },
+      generator: 'did:example:app',
       custom: { name: 'Notes', tags: { project: 'demo' } }
     })
     // The identity codec surfaces no key epoch, so the body carries no `epoch`
-    // member -- which is what tells the server to clear any stored stamp.
-    expect(calls[0]?.json).not.toHaveProperty('epoch')
+    // member -- which is what tells the server to clear any stored stamp. The
+    // read-only members (`type`, `createdAt`) are not echoed back either.
+    expect(calls[1]?.json).not.toHaveProperty('epoch')
+    expect(calls[1]?.json).not.toHaveProperty('createdAt')
   })
 
   it('clears the custom object when called with no argument', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = clientWithRequestSpy({
+      data: { id: 'c', type: ['Collection'] }
+    })
     await client.space('s').collection('c').setMeta()
-    expect(calls[0]?.json).toEqual({ custom: {} })
+    expect(calls[1]?.json).toEqual({ id: 'c', custom: {} })
+  })
+
+  it('pins the write to the version it composed against', async () => {
+    const { client, calls } = clientWithRequestSpy({
+      data: { id: 'c', type: ['Collection'] },
+      etag: '"7"'
+    })
+    await client.space('s').collection('c').setMeta({ custom: {} })
+    expect(calls[1]?.headers?.['if-match']).toBe('"7"')
   })
 
   it('sends If-Match when pinned to a prior etag', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = clientWithRequestSpy({
+      data: { id: 'c', type: ['Collection'] }
+    })
     await client
       .space('s')
       .collection('c')
       .setMeta({ custom: { name: 'Notes' } }, { ifMatch: '"2"' })
-    expect(calls[0]?.headers?.['if-match']).toBe('"2"')
+    expect(calls[1]?.headers?.['if-match']).toBe('"2"')
   })
 })
 
@@ -480,39 +542,94 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
 describe('collection.setName() / setTags()', () => {
   it('setName() preserves existing tags (read-modify-write)', async () => {
     const { client, calls } = clientWithRequestSpy({
-      data: { custom: { name: 'Old', tags: { project: 'demo' } } }
+      data: {
+        id: 'c',
+        type: ['Collection'],
+        custom: { name: 'Old', tags: { project: 'demo' } }
+      }
     })
     await client.space('s').collection('c').setName('New')
-    // First call is the GET (meta), second is the PUT.
-    expect(calls[1]?.method).toBe('PUT')
-    expect(calls[1]?.json).toEqual({
+    // Two reads of the object (the patch's, then the write's compose step) and
+    // one PUT.
+    expect(calls[2]?.method).toBe('PUT')
+    expect(calls[2]?.json).toEqual({
+      id: 'c',
       custom: { name: 'New', tags: { project: 'demo' } }
     })
   })
 
   it('setTags() preserves the existing name (read-modify-write)', async () => {
     const { client, calls } = clientWithRequestSpy({
-      data: { custom: { name: 'Keep', tags: { project: 'demo' } } }
+      data: {
+        id: 'c',
+        type: ['Collection'],
+        custom: { name: 'Keep', tags: { project: 'demo' } }
+      }
     })
     await client.space('s').collection('c').setTags({ status: 'final' })
-    expect(calls[1]?.json).toEqual({
+    expect(calls[2]?.json).toEqual({
+      id: 'c',
       custom: { name: 'Keep', tags: { status: 'final' } }
     })
   })
 
   it('setName() pins the write to the meta etag (lost-update guard)', async () => {
     const { client, calls } = clientWithRequestSpy({
-      data: { custom: { name: 'Old' } },
+      data: { id: 'c', type: ['Collection'], custom: { name: 'Old' } },
       etag: '"meta-v1"'
     })
     await client.space('s').collection('c').setName('New')
+    // The write composes against the read the patch just made (it carries the
+    // validator the write pins to), so this is one GET and one PUT.
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.method).toBe('PUT')
     expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
   })
 
   it('setName() omits If-Match when the backend returned no etag', async () => {
-    const { client, calls } = clientWithRequestSpy({ data: { custom: {} } })
+    const { client, calls } = clientWithRequestSpy({
+      data: { id: 'c', type: ['Collection'], custom: {} }
+    })
     await client.space('s').collection('c').setName('New')
-    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
+    expect(calls[2]?.headers?.['if-match']).toBeUndefined()
+  })
+
+  it('rebases the patch when a concurrent write invalidates it (412)', async () => {
+    // One validator covers the configuration members and the annotations, so a
+    // concurrent `configure` legitimately fails an in-flight annotation write.
+    // The patch re-reads and re-applies rather than surfacing the 412.
+    const calls: RequestArgs[] = []
+    let version = 1
+    const client = clientWithStub(args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        return jsonResponse({
+          data: {
+            id: 'c',
+            type: ['Collection'],
+            name: `v${version}`,
+            custom: { tags: { keep: 'yes' } }
+          },
+          headers: { etag: `"${version}"` }
+        })
+      }
+      if (args.headers?.['if-match'] === '"1"') {
+        // A rival landed: bump the stored version and refuse this write.
+        version = 2
+        throw { status: 412, response: { status: 412 } }
+      }
+      return jsonResponse({ status: 204, headers: { etag: '"3"' } })
+    })
+    await client.space('s').collection('c').setName('New')
+    const writes = calls.filter(call => call.method === 'PUT')
+    expect(writes).toHaveLength(2)
+    // The winning write carries the rival's configuration, read fresh.
+    expect(writes[1]?.json).toEqual({
+      id: 'c',
+      name: 'v2',
+      custom: { tags: { keep: 'yes' }, name: 'New' }
+    })
+    expect(writes[1]?.headers?.['if-match']).toBe('"2"')
   })
 })
 
@@ -624,6 +741,16 @@ describe('Collection reserved-id guard', () => {
     expect(() => client.space('s').collection('policy')).toThrow(
       ValidationError
     )
+    expect(calls).toHaveLength(0)
+  })
+
+  it('rejects collection("meta"), which would shadow the Space Metadata object', () => {
+    // `/space/s/meta` IS the Space Metadata object, so a Collection named
+    // `meta` would address the Space's own description. The segment is not in
+    // storage-core 0.14.0's reserved-Collection-id set yet, so the client names
+    // it locally until a release adds it upstream.
+    const { client, calls } = clientWithRequestSpy()
+    expect(() => client.space('s').collection('meta')).toThrow(ValidationError)
     expect(calls).toHaveLength(0)
   })
 
@@ -968,7 +1095,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
       etag: '"7"'
     })
     const read = await client.space('s').describeWithEtag()
-    expect(calls[0]?.url).toBe('https://was.example/space/s')
+    expect(calls[0]?.url).toBe('https://was.example/space/s/meta')
     expect(calls[0]?.method).toBe('GET')
     expect(read).toEqual({ description: current, etag: '"7"' })
   })
@@ -988,7 +1115,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
       )
     expect(calls).toHaveLength(1)
     expect(calls[0]?.method).toBe('PUT')
-    expect(calls[0]?.url).toBe('https://was.example/space/s')
+    expect(calls[0]?.url).toBe('https://was.example/space/s/meta')
     expect(calls[0]?.json).toEqual({
       id: 's',
       name: 'Renamed',
@@ -1049,7 +1176,7 @@ describe('configure() with a supplied current description', () => {
       type: ['Space', 'AuxiliarySpace'],
       name: 'Existing',
       controller: 'did:example:alice'
-    } as SpaceDescription
+    } as SpaceMetadata
     const { client, calls } = clientWithRequestSpy()
     await client.space('s').configure({ name: 'Renamed', current })
     // One request, the PUT: `type` and `controller` still carry forward, from
@@ -1069,12 +1196,15 @@ describe('configure() with a supplied current description', () => {
       type: ['Collection'],
       name: 'Docs',
       backend: { id: 'custom' }
-    } as CollectionDescription
+    } as CollectionMetadata
     const { client, calls } = clientWithRequestSpy()
     await client
       .space('s')
       .collection('docs')
       .configure({ name: 'Renamed', current })
+    // One request, the PUT: the supplied object is the baseline the write
+    // composes against -- its configuration merged, its annotations carried
+    // forward -- rather than a describe() GET plus a second compose read.
     expect(calls).toHaveLength(1)
     expect(calls[0]?.method).toBe('PUT')
     expect(calls[0]?.json).toMatchObject({

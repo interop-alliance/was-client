@@ -7,7 +7,7 @@
  * the first epoch, adding a reader (escrow -- history included),
  * and removing a reader (the full revoke-and-rotate procedure). Each operation
  * mutates a `CollectionEncryption` descriptor through the descriptor-store seam
- * (see `descriptorStore.ts`) -- the Collection Description's `encryption`
+ * (see `descriptorStore.ts`) -- the Collection Metadata object's `encryption`
  * member for the `collection` sugar, or any explicit `store`, such as a
  * descriptor hosted as a plain JSON Resource -- and writes it back with a
  * compare-and-swap (`If-Match`), retrying on a concurrent change so two racing
@@ -1129,7 +1129,7 @@ async function defaultResolveRecipientKey(
 
 /**
  * Resolves the descriptor store a recipient operation targets: the explicit
- * `store`, or the Collection Description adapter over the `collection` sugar.
+ * `store`, or the Collection Metadata adapter over the `collection` sugar.
  * Exactly one of the two must be supplied.
  *
  * @param options {object}
@@ -1146,7 +1146,7 @@ function descriptorStoreFor({
 }): EncryptionDescriptorStore {
   if (collection !== undefined && store !== undefined) {
     throw new ValidationError(
-      'Pass either `collection` (the Collection Description hosts the ' +
+      'Pass either `collection` (the Collection Metadata object hosts the ' +
         'descriptor) or `store` (an explicit descriptor store), not both.'
     )
   }

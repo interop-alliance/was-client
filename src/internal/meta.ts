@@ -2,13 +2,18 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Shared `/meta` I/O for the Collection and Resource handles. The two read and
- * write the same metadata document shape and differ only in the metadata type,
- * the `/meta` slot the `custom` envelope is bound to, and whether the codec's
- * key epoch travels in the PUT body. Each handle wraps these with its
- * own JSDoc.
+ * Shared `meta` I/O for the Collection and Resource handles. `readMeta` serves
+ * both: the two read the same metadata document shape and differ only in the
+ * metadata type and the slot the `custom` envelope is bound to.
+ *
+ * `writeMeta` is the Resource side alone. A Collection's `meta` write is a full
+ * replacement of the merged Collection Metadata object -- configuration
+ * members included -- so it is composed against a fresh read of that object in
+ * `Collection`, and `patchCustom` below drives both handles' read-modify-write
+ * helpers through a bounded compare-and-swap.
  */
 import { WasServerError } from '../errors.js'
+import { compareAndSwap } from './cas.js'
 import type { MetaReadSlot, MetaWriteSlot, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
@@ -35,6 +40,10 @@ import type {
  * @param options.slot {MetaReadSlot}   the `/meta` slot being read, for an
  *   encrypting codec's envelope-binding check
  * @param [options.capability] {IZcap}
+ * @param [options.onStored] {function}   receives the document as served, with
+ *   its validator and its `custom` still undecoded, before the decode -- so a
+ *   caller whose next step is a full-replacement write of the same document
+ *   can compose that write against the read it just paid for
  * @returns {Promise<(Metadata & { etag?: string }) | null>}
  */
 export async function readMeta<
@@ -46,13 +55,18 @@ export async function readMeta<
     codec: codecPromise,
     subject,
     slot,
-    capability
+    capability,
+    onStored
   }: {
     metaPath: string
     codec: Promise<ResourceCodec>
     subject: string
     slot: MetaReadSlot
     capability?: IZcap
+    onStored?: (read: {
+      metadata: Record<string, unknown>
+      etag?: string
+    }) => void
   }
 ): Promise<(Metadata & { etag?: string }) | null> {
   // The metadata GET does not depend on the codec (only its `custom` decode
@@ -84,35 +98,38 @@ export async function readMeta<
     )
   }
   const metadata = response.data as Metadata
+  const etagBeforeDecode = readEtag(response)
+  onStored?.({
+    metadata: metadata as Record<string, unknown>,
+    ...(etagBeforeDecode !== undefined && { etag: etagBeforeDecode })
+  })
   // Decode the user-writable `custom` (decrypting it on an encrypted
   // collection) so callers uniformly see plaintext `{ name, tags }`. The
   // stated slot drives the encrypting codec's binding check: in the
   // Collection slot it refuses a resource-bound envelope served there.
   const custom = await codec.decodeMeta({ custom: metadata.custom }, slot)
   const decoded = { ...metadata, custom }
-  const etag = readEtag(response)
-  return etag !== undefined ? { ...decoded, etag } : decoded
+  return etagBeforeDecode !== undefined
+    ? { ...decoded, etag: etagBeforeDecode }
+    : decoded
 }
 
 /**
- * Replaces a metadata document's user-writable `custom`, encoding it through
- * the codec first (which seals it into an opaque envelope on an encrypted
- * collection).
+ * Replaces a Resource metadata document's user-writable `custom`, encoding it
+ * through the codec first (which seals it into an opaque envelope on an
+ * encrypted collection). A key epoch the codec surfaces is deliberately
+ * dropped: a Resource's epoch stamps its *content* write through the
+ * `Key-Epoch` header, not its metadata.
  *
  * @param context {ClientContext}
  * @param options {object}
- * @param options.metaPath {string}   the `/meta` sub-resource path
+ * @param options.metaPath {string}   the `meta` sub-resource path
  * @param options.codec {Promise<ResourceCodec>}   the resolving codec
  * @param options.custom {ResourceMetadataCustomInput}   the user-writable
  *   properties, as a full replacement
- * @param options.sendEpoch {boolean}   whether the codec's key epoch travels as
- *   a top-level member of this PUT body. True at Collection level, where the
- *   stamp describes the `custom` envelope itself; false at Resource level,
- *   where a Resource's epoch instead stamps its content write via the
- *   `Key-Epoch` header, so an epoch surfaced here is deliberately dropped.
- * @param options.slot {MetaWriteSlot}   the `/meta` slot being written, which
+ * @param options.slot {MetaWriteSlot}   the `meta` slot being written, which
  *   an encrypting codec binds into the envelope
- * @param [options.ifMatch] {string}       update only if the `/meta` ETag matches
+ * @param [options.ifMatch] {string}       update only if the `meta` ETag matches
  * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
  * @param [options.capability] {IZcap}
  * @returns {Promise<{ etag?: string }>}   the metadata's new ETag
@@ -123,7 +140,6 @@ export async function writeMeta(
     metaPath,
     codec: codecPromise,
     custom,
-    sendEpoch,
     slot,
     ifMatch,
     ifNoneMatch,
@@ -132,7 +148,6 @@ export async function writeMeta(
     metaPath: string
     codec: Promise<ResourceCodec>
     custom: ResourceMetadataCustomInput
-    sendEpoch: boolean
     slot: MetaWriteSlot
     ifMatch?: string
     ifNoneMatch?: boolean
@@ -140,21 +155,12 @@ export async function writeMeta(
   }
 ): Promise<{ etag?: string }> {
   const codec = await codecPromise
-  const { custom: encoded, epoch } = await codec.encodeMeta({ custom, slot })
+  const { custom: encoded } = await codec.encodeMeta({ custom, slot })
   const response = await send(context, {
     path: metaPath,
     method: 'PUT',
     capability,
-    // The key epoch travels in the body here, not in the `Key-Epoch` header:
-    // the header channel stamps a Resource's *content* write, while the
-    // Collection metadata stamp describes the `custom` envelope itself and is
-    // a top-level member of this PUT body. The server clears the stored stamp
-    // when the member is omitted -- which is exactly right on a plaintext
-    // collection, whose codec surfaces no epoch.
-    json:
-      sendEpoch && epoch !== undefined
-        ? { custom: encoded, epoch }
-        : { custom: encoded },
+    json: { custom: encoded },
     headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
   })
   return { etag: readEtag(response) }
@@ -164,12 +170,23 @@ export async function writeMeta(
  * The shared read-then-CAS body of the handles' `setName` / `setTags`: reads
  * the current metadata, merges `patch` over its `custom`, and writes it back
  * pinned to the read's `etag` (when the backend supports `conditional-writes`),
- * so a concurrent metadata write surfaces as `PreconditionFailedError` instead
- * of being silently erased by the full-replacement write.
+ * so a concurrent metadata write is rebased on rather than silently erased by
+ * the full-replacement write.
+ *
+ * A lost race (`412`) re-reads and re-applies the patch, up to the shared
+ * compare-and-swap attempt limit. A handle whose metadata cannot be read at
+ * all patches nothing onto an empty object: the write it drives is the one
+ * that refuses (`Collection.setMeta` throws `NotFoundError`), so a masked 404
+ * cannot turn a rename into a create. At Collection level that is not a rare event:
+ * one `metaVersion` covers the configuration members and the annotations
+ * alike, so a concurrent `configure` -- or an epoch rotation -- legitimately
+ * invalidates an in-flight annotation write.
  *
  * @param handle {object}   the Collection or Resource handle to patch
  * @param patch {ResourceMetadataCustom}   the properties to merge over the
  *   current `custom`
+ * @param operation {string}   what the caller is doing, for the exhaustion
+ *   error (e.g. `Metadata update`)
  * @returns {Promise<void>}
  */
 export async function patchCustom(
@@ -180,11 +197,23 @@ export async function patchCustom(
       options: { ifMatch?: string }
     ): Promise<{ etag?: string }>
   },
-  patch: ResourceMetadataCustom
+  patch: ResourceMetadataCustom,
+  operation = 'Metadata update'
 ): Promise<void> {
-  const current = await handle.meta()
-  await handle.setMeta(
-    { custom: { ...current?.custom, ...patch } },
-    { ifMatch: current?.etag }
-  )
+  await compareAndSwap<ResourceMetadataCustom>({
+    store: {
+      read: async () => {
+        const current = await handle.meta()
+        return {
+          value: current?.custom ?? {},
+          ...(current?.etag !== undefined && { etag: current.etag })
+        }
+      },
+      replace: async (custom, { ifMatch }) => {
+        await handle.setMeta({ custom }, { ifMatch })
+      }
+    },
+    operation,
+    mutate: custom => ({ ...custom, ...patch })
+  })
 }

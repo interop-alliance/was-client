@@ -1164,7 +1164,7 @@ export class EdvCodec implements ResourceCodec {
    * read axis only; it says nothing about whether the server will still
    * serve (pull) the ciphertext. An epoch the descriptor does not list at
    * all raises {@link UnknownEpochError} -- the signal that the cached
-   * Collection Description may be stale (an epoch rotation emits no
+   * Collection Metadata object may be stale (an epoch rotation emits no
    * change-feed entry) and the codec must be rebuilt from a re-read
    * descriptor. A candidate whose entry then fails to unwrap also surfaces
    * {@link KeyUnwrapError}.

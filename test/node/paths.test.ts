@@ -5,6 +5,9 @@
  * Unit tests for the URL path builders. The trailing-slash rules and
  * percent-encoding here must match the server's per-operation `allowedTarget`
  * exactly, since the zcap `invocationTarget` is derived from the request URL.
+ * The convention under test: a trailing slash marks a container in canonical
+ * form, everything else has none, and no two paths differ only by a trailing
+ * slash.
  */
 import { describe, it, expect } from 'vitest'
 
@@ -12,8 +15,7 @@ import { ValidationError } from '../../src/index.js'
 import {
   spacesRoot,
   spacePath,
-  spaceItems,
-  spaceCollections,
+  spaceMeta,
   spaceExport,
   spaceImport,
   spaceBackends,
@@ -22,12 +24,13 @@ import {
   spacePolicy,
   spaceLinkset,
   collectionPath,
-  collectionItems,
   collectionPolicy,
   collectionLinkset,
   collectionBackend,
   collectionQuota,
   collectionQuery,
+  collectionMeta,
+  collectionLog,
   resourcePath,
   resourcePolicy,
   resourceMeta,
@@ -41,16 +44,12 @@ describe('path builders', () => {
     expect(spacesRoot()).toBe('/spaces/')
   })
 
-  it('omits the trailing slash for get / update / delete of a space', () => {
-    expect(spacePath('home')).toBe('/space/home')
+  it('uses the trailing-slash canonical form for the space container', () => {
+    expect(spacePath('home')).toBe('/space/home/')
   })
 
-  it('uses a trailing slash for creating a collection within a space', () => {
-    expect(spaceItems('home')).toBe('/space/home/')
-  })
-
-  it('uses a trailing slash for listing collections', () => {
-    expect(spaceCollections('home')).toBe('/space/home/collections/')
+  it('reads and writes the space description at its meta segment', () => {
+    expect(spaceMeta('home')).toBe('/space/home/meta')
   })
 
   it('builds the export and import paths', () => {
@@ -58,12 +57,10 @@ describe('path builders', () => {
     expect(spaceImport('home')).toBe('/space/home/import')
   })
 
-  it('omits the trailing slash for a collection by id', () => {
-    expect(collectionPath('home', 'docs')).toBe('/space/home/docs')
-  })
-
-  it('uses a trailing slash for listing items / adding a resource', () => {
-    expect(collectionItems('home', 'docs')).toBe('/space/home/docs/')
+  it('uses the trailing-slash canonical form for a collection container', () => {
+    // The container is one URL under one builder: it lists the Collection's
+    // Resources, adds one, and deletes the Collection.
+    expect(collectionPath('home', 'docs')).toBe('/space/home/docs/')
   })
 
   it('omits the trailing slash for a resource by id', () => {
@@ -120,8 +117,8 @@ describe('path builders', () => {
   })
 
   it('percent-encodes path segments so ids cannot break out of their slot', () => {
-    expect(spacePath('a/b')).toBe('/space/a%2Fb')
-    expect(collectionPath('s p', 'd?x')).toBe('/space/s%20p/d%3Fx')
+    expect(spacePath('a/b')).toBe('/space/a%2Fb/')
+    expect(collectionPath('s p', 'd?x')).toBe('/space/s%20p/d%3Fx/')
     expect(resourcePath('s', 'c', 'r#1')).toBe('/space/s/c/r%231')
   })
 
@@ -139,6 +136,57 @@ describe('path builders', () => {
     expect(() => resourcePath('s', 'c', '')).toThrow(ValidationError)
     expect(() => collectionPath('s', '')).toThrow(ValidationError)
     expect(() => spacePath('')).toThrow(ValidationError)
+  })
+})
+
+describe('the trailing-slash convention', () => {
+  /**
+   * Every builder, applied to the same ids -- so the whole grammar can be
+   * checked at once rather than one assertion per path. A capability's
+   * `invocationTarget` covers its URL and everything under it by prefix, so
+   * two paths differing only by a trailing slash could not be granted
+   * separately; the server's route table has none, and neither may this.
+   */
+  const everyPath = {
+    spacesRoot: spacesRoot(),
+    spacePath: spacePath('home'),
+    spaceMeta: spaceMeta('home'),
+    spaceExport: spaceExport('home'),
+    spaceImport: spaceImport('home'),
+    spaceBackends: spaceBackends('home'),
+    registeredBackend: registeredBackend('home', 'b1'),
+    spaceQuotas: spaceQuotas('home'),
+    spacePolicy: spacePolicy('home'),
+    spaceLinkset: spaceLinkset('home'),
+    collectionPath: collectionPath('home', 'docs'),
+    collectionMeta: collectionMeta('home', 'docs'),
+    collectionLog: collectionLog('home', 'docs'),
+    collectionPolicy: collectionPolicy('home', 'docs'),
+    collectionLinkset: collectionLinkset('home', 'docs'),
+    collectionBackend: collectionBackend('home', 'docs'),
+    collectionQuota: collectionQuota('home', 'docs'),
+    collectionQuery: collectionQuery('home', 'docs'),
+    resourcePath: resourcePath('home', 'docs', 'note'),
+    resourceMeta: resourceMeta('home', 'docs', 'note'),
+    resourcePolicy: resourcePolicy('home', 'docs', 'note'),
+    resourceChunkPath: resourceChunkPath('home', 'docs', 'note', 0)
+  }
+
+  it('produces no two paths that differ only by a trailing slash', () => {
+    const collisions = Object.entries(everyPath).filter(([, path]) =>
+      Object.entries(everyPath).some(
+        ([, other]) => other !== path && `${other}/` === path
+      )
+    )
+    expect(collisions).toEqual([])
+  })
+
+  it('ends every container path with a slash and no other path', () => {
+    const containers = new Set(['spacesRoot', 'spacePath', 'collectionPath'])
+    const slashed = Object.entries(everyPath)
+      .filter(([, path]) => path.endsWith('/'))
+      .map(([name]) => name)
+    expect(new Set(slashed)).toEqual(containers)
   })
 })
 
@@ -175,6 +223,36 @@ describe('parseSpacePath', () => {
       kind: 'sub-resource',
       spaceId: 's'
     })
+    // The Space Metadata object sits at the Collection-id position, so `meta`
+    // directly under a Space is a space-level sub-endpoint rather than a
+    // Collection named `meta`.
+    expect(parseSpacePath('/space/s/meta')).toEqual({
+      kind: 'sub-resource',
+      spaceId: 's',
+      segments: ['meta']
+    })
+  })
+
+  it('reads the canonical trailing-slash container forms', () => {
+    // The empty final segment is filtered, so a container URL classifies as
+    // the container it names.
+    expect(parseSpacePath('/space/s/')).toEqual({ kind: 'space', spaceId: 's' })
+    expect(parseSpacePath('/space/s/c/')).toEqual({
+      kind: 'collection',
+      spaceId: 's',
+      collectionId: 'c'
+    })
+  })
+
+  it('also reads the bare (slash-less) container form a third party minted', () => {
+    // The builders emit only the canonical trailing-slash form, but the
+    // targets parsed here come from delegated capabilities minted elsewhere --
+    // `WasClient.fromCapability` and the revocation route's `spaceIdOf` read
+    // an `invocationTarget` this client did not write. Both forms name the same
+    // container, so refusing the bare one would reject valid capabilities over
+    // a spelling this client does not control.
+    expect(parseSpacePath('/space/s')).toEqual(parseSpacePath('/space/s/'))
+    expect(parseSpacePath('/space/s/c')).toEqual(parseSpacePath('/space/s/c/'))
   })
 
   it('classifies reserved collection-level sub-endpoints as sub-resources', () => {
@@ -250,7 +328,6 @@ describe('the ./paths subpath barrel', () => {
 
     expect(Object.keys(barrel).sort()).toEqual(
       [
-        'collectionItems',
         'collectionLog',
         'collectionMeta',
         'collectionPath',
@@ -261,7 +338,7 @@ describe('the ./paths subpath barrel', () => {
         'resourcePath',
         'rootCapability',
         'rootCapabilityId',
-        'spaceItems',
+        'spaceMeta',
         'spacePath',
         'toUrl'
       ].sort()

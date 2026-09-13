@@ -1522,3 +1522,84 @@ stops working could not tell a revocation from an expiry or a plain denial; the
 server now names the first two by `type`, and this maps that onto the one signal
 a consumer can match across package copies. Lands with 0.57.0; stays open until
 storage-core 0.13.0 is published and the link override dropped.
+
+### WCL-98: An encrypted Collection's configuration write has no `custom` envelope to carry
+
+- status: done
+- done: 2026-09-12
+- priority: high
+- labels: was-v0.5, encryption, key-epochs, spec, blocking
+- discovered-from: WCL-41
+- touches:
+  - wallet-attached-storage-spec: RESOLVED 2026-09-12 -- the envelope rule now
+    applies to a `custom` that is present, and an omitted `custom` clears on an
+    encrypted Collection. The Collection Metadata data model, its lifecycle and
+    error list, the server-side write-validation rule, and the Resource-level
+    counterpart all say so
+  - was-teaching-server: `lib/customMetadata.ts` (`resolveMetadataCustom` /
+    `assertEncryptedMetaConforms`): RESOLVED 2026-09-12 -- an empty or omitted
+    `custom` clears at the Collection and Resource metadata call sites alike
+  - was-client: RESOLVED 2026-09-12 -- no code change. `storedAnnotations`
+    already omits `custom` when none is stored, so `ensureFirstEpoch`'s
+    compare-and-swap and `replaceDescription` / `configure` send the write the
+    new rule admits; `replaceDescription`'s JSDoc says so
+- acceptance:
+  - [x] `ensureFirstEpoch` installs the first key epoch on a Collection declared
+        `{ scheme: 'edv' }` against a v0.5 server
+  - [x] A configuration write (a rename, a `backend` change, a recipient
+        rotation) on an encrypted Collection that carries no annotations
+        succeeds
+  - [x] The five live suites and the one `governed-log` case WCL-41 left red
+        pass: `blinded-find`, `edv-chunked-add`, `edv-codec-roundtrip` (both
+        encrypted blocks), `key-epochs`, and "a direct encryption write on the
+        Description is refused"
+
+The v0.5 merge put the `encryption` descriptor and the `custom` envelope in one
+object, and the spec requires every write of that object on an encrypted
+Collection to carry a conforming envelope -- an omitted `custom` is a 422,
+because an encrypted Collection's annotations cannot be cleared to a plaintext
+state. A configuration write can satisfy that by forwarding the stored envelope
+verbatim, which is what the client now does, but only when one is stored.
+
+Two flows have none to forward. The first is the documented two-step
+provisioning of an encrypted Collection: declare it `{ scheme: 'edv' }`, then
+call `ensureFirstEpoch` to install epoch 0. That second call is a
+compare-and-swap of `encryption`, so it is a write of the merged object -- and
+at that moment no key material exists anywhere, so no envelope can be sealed by
+anyone. The server refuses it with 422. The flow is not recoverable by
+reordering: creating the Collection with the full epoch-bearing descriptor in
+one `POST` works (a create may omit `custom`), but that is not available to a
+caller adopting a Collection that already exists, which is exactly what
+`ensureFirstEpoch` is for. The second flow is a plain rename of an encrypted
+Collection that has never been annotated.
+
+The spec names the cleared state as "an envelope encrypting an empty object",
+which suggests the client half: the epoch-installing write seals `{}` under the
+epoch it just minted and sends it as `custom` with its `epoch` stamp. That is a
+new permanent wire behavior (which epoch stamps the envelope, and whether every
+rotation re-seals) and a new code path -- the recipient primitives do no
+metadata sealing today -- so it is a maintainer decision, not a detail to pick
+while landing WCL-41. The alternative is a spec and server carve-out: an omitted
+`custom` on a Collection whose stored object has none is not a clearing attempt
+and should be accepted.
+
+Resolved 2026-09-12 by the maintainer, in favor of the second option and wider
+than the carve-out: an omitted `custom` on a `PUT` of the Collection Metadata
+object clears it on an encrypted Collection exactly as on a plaintext one, the
+same full-replacement rule `epoch` already follows, and an empty `custom` object
+clears it as well. A non-empty `custom` must still be a conforming envelope (422
+otherwise). The "envelope encrypting an empty object" clearing convention is
+retired. The spec text landed the same day (the Collection Metadata data model,
+its lifecycle and error list, the content-types validation rule, and the
+Resource-level counterpart), recorded as an amendment to the
+container-descriptions decision.
+
+The client needs no change: `storedAnnotations` already omits `custom` when the
+stored object has none, so the two flows above send exactly the write the new
+rule admits. What remains is the server half (drop the 422 for the omitted case)
+and re-running the client's live suites against it -- the three acceptance boxes
+stay open until that run is green.
+
+Verified 2026-09-12 against the reference server carrying the rule: the full
+was-client integration tier passes (11 files, 77 tests), including the five
+suites and the `governed-log` case above.

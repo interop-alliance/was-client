@@ -1,5 +1,88 @@
 # @interop/was-client Changelog
 
+## 0.61.0 - TBD
+
+### Changed
+
+- BREAKING: a container's description is read and replaced at its reserved
+  `meta` segment, not at the container URL: `space.describe()` /
+  `space.configure()` / `space.replaceDescription()` now hit `/space/{s}/meta`,
+  and `collection.describe()` / `collection.configure()` /
+  `collection.replaceDescription()` now hit `/space/{s}/{c}/meta`. There is no
+  DELETE at `meta`; the object exists exactly as long as its container does.
+- BREAKING: the Collection's description and its former `/meta` metadata object
+  are now one object under one `metaVersion` ETag, which advances on a
+  configuration write (`configure`, `replaceDescription`) and an annotation
+  write (`setMeta`, `setName`, `setTags`) alike. `Collection.describe()` and
+  `Collection.meta()` both read that one object; `meta()` decodes `custom`
+  through the codec and `describe()` does not.
+- BREAKING: `CollectionDescription` and `SpaceDescription` are gone. Use
+  `CollectionMetadata` and `SpaceMetadata` instead. Requires
+  `@interop/storage-core` 0.14.1 or newer.
+- BREAKING: a container URL is now canonically written with a trailing slash
+  (`/spaces/`, `/space/{s}/`, `/space/{s}/{c}/`). The bare (slash-less) form
+  only 308-redirects; the client never emits or follows it. `GET /space/{s}/`
+  lists Collections, `POST /space/{s}/` creates one, `DELETE /space/{s}/`
+  deletes the Space, and `DELETE /space/{s}/{c}/` deletes the Collection.
+  `/space/{s}/collections/` is retired, and `spaceCollections()` is removed.
+- BREAKING: the Space root capability target, and the `urn:zcap:root:` id this
+  client mints for a Space, is now the canonical `/space/{s}/`. `Space.grant()`
+  and `Collection.grant()` prefill their target with the trailing-slash
+  container URL.
+- BREAKING: because one validator now covers a Collection's configuration and
+  its annotations, each of these writes is composed against a fresh read of the
+  object -- a configuration write carries the stored `custom` envelope and its
+  `epoch` stamp forward verbatim, an annotation write re-sends the configuration
+  members -- and, with no caller-supplied precondition, is pinned to the version
+  it composed against and rebases on a 412 through the shared bounded
+  compare-and-swap loop. `ifNoneMatch: true` on a Collection Metadata write
+  means "create the Collection only if it does not exist".
+- A configuration write on an encrypted Collection that has no stored `custom`
+  sends none. Under the v0.5 rule a non-empty `custom` must be a conforming
+  envelope and an empty or omitted one clears, so the first key-epoch install
+  and a rename of a never-annotated encrypted Collection go through. Requires a
+  server carrying that rule.
+- New path builder `spaceMeta(spaceId)`, exported from `./paths` beside
+  `collectionMeta` / `resourceMeta`.
+- BREAKING: `spaceItems()` and `collectionItems()` are removed from `./paths`. A
+  container is one URL under one builder now that it lists its members, creates
+  one, and is deleted at itself: use `spacePath()` and `collectionPath()`.
+- `parseSpacePath()` accepts the bare (slash-less) container form as well as the
+  canonical one, and says so: the targets it classifies are the
+  `invocationTarget` strings of capabilities minted elsewhere, which this
+  client's trailing-slash builders do not govern.
+- Descriptor discovery and `Collection.meta()` now share one `GET`: the
+  `encryption` descriptor and the persisted blinded-index schema live in the
+  same object, so the resolution reads it once, builds the codec, and decodes
+  that same read's `custom` for the schema. A `custom` the reader cannot open no
+  longer fails the resolution: the schema stays empty and only `meta()` surfaces
+  the refusal, so `get` / `put` / `add` / `list` keep working for a reader whose
+  document keys are fine.
+- BREAKING: an annotation write (`setMeta` without `ifNoneMatch`, `setName`,
+  `setTags`, `declareIndex`) on a Collection Metadata object that cannot be read
+  throws `NotFoundError` instead of upserting a configuration-less Collection
+  over it. `ifNoneMatch: true` is the one annotation write that may create, and
+  it no longer discovers a codec from stored state: it encodes `custom` with the
+  plaintext codec (or the handle's `encryption` override), so the documented
+  create-if-absent works on an encryption-capable client.
+- `Collection.configure()` merges against the same version the write is pinned
+  to, and re-merges on a 412 rebase, so a rival configuration change is merged
+  over rather than re-cleared by a merge frozen before it landed.
+- A configuration write that declares or changes the `encryption` descriptor
+  re-seals the stored `custom` under the incoming descriptor's codec, and drops
+  `custom` when this client cannot build that codec. Forwarding a plaintext
+  envelope beside a new descriptor was rejected by the server (422,
+  `encryption-scheme-mismatch`).
+- A Collection Metadata write carries stored members this client does not model
+  (`plaintext`, anything a newer server serves) forward instead of clearing
+  them, and never echoes the server-managed ones (`id`, `type`, `url`,
+  `linkset`, `createdAt`, `updatedAt`, `createdBy`).
+- A read followed by a write of the same object is one `GET` plus one `PUT`
+  again: `describe()`, `describeWithEtag()` and `meta()` leave the read they
+  paid for as the baseline the next write composes against, and `configure`'s
+  `current` option is that baseline rather than a merge source. A rebase
+  re-reads.
+
 ## 0.60.0 - 2026-09-11
 
 ### Changed

@@ -56,7 +56,7 @@ function page(items: string[], next?: string): CollectionResourcesList {
  */
 function collectionsPage(ids: string[], next?: string): CollectionsList {
   const listing: CollectionsList = {
-    url: '/space/s/collections',
+    url: '/space/s/',
     totalItems: 5,
     items: ids.map(id => ({ id, url: `/space/s/${id}`, name: id }))
   }
@@ -363,18 +363,16 @@ describe('publicListCollection() pagination', () => {
 describe('Space.collections() pagination', () => {
   it('follows `next` across pages and aggregates, dropping `next`', async () => {
     const { client, urls } = clientWithPages({
-      'https://was.example/space/s/collections/': collectionsPage(
+      'https://was.example/space/s/': collectionsPage(
         ['a', 'b'],
-        '/space/s/collections/?cursor=2'
+        '/space/s/?cursor=2'
       ),
-      'https://was.example/space/s/collections/?cursor=2': collectionsPage([
-        'c'
-      ])
+      'https://was.example/space/s/?cursor=2': collectionsPage(['c'])
     })
     const result = await client.space('s').collections()
     expect(urls).toEqual([
-      'https://was.example/space/s/collections/',
-      'https://was.example/space/s/collections/?cursor=2'
+      'https://was.example/space/s/',
+      'https://was.example/space/s/?cursor=2'
     ])
     expect(result?.items.map(item => item.id)).toEqual(['a', 'b', 'c'])
     expect(result?.next).toBeUndefined()
@@ -383,10 +381,10 @@ describe('Space.collections() pagination', () => {
 
   it('returns the single page unchanged when there is no `next`', async () => {
     const { client, urls } = clientWithPages({
-      'https://was.example/space/s/collections/': collectionsPage(['a', 'b'])
+      'https://was.example/space/s/': collectionsPage(['a', 'b'])
     })
     const result = await client.space('s').collections()
-    expect(urls).toEqual(['https://was.example/space/s/collections/'])
+    expect(urls).toEqual(['https://was.example/space/s/'])
     expect(result?.items.map(item => item.id)).toEqual(['a', 'b'])
     expect(result?.next).toBeUndefined()
   })
@@ -410,13 +408,11 @@ describe('Space.collections() pagination', () => {
 describe('Space.collectionsPages()', () => {
   it('yields each page lazily', async () => {
     const { client } = clientWithPages({
-      'https://was.example/space/s/collections/': collectionsPage(
+      'https://was.example/space/s/': collectionsPage(
         ['a', 'b'],
-        '/space/s/collections/?cursor=2'
+        '/space/s/?cursor=2'
       ),
-      'https://was.example/space/s/collections/?cursor=2': collectionsPage([
-        'c'
-      ])
+      'https://was.example/space/s/?cursor=2': collectionsPage(['c'])
     })
     const sizes: number[] = []
     for await (const pageResult of client.space('s').collectionsPages()) {
@@ -427,13 +423,11 @@ describe('Space.collectionsPages()', () => {
 
   it('stops fetching when the consumer breaks early', async () => {
     const { client, urls } = clientWithPages({
-      'https://was.example/space/s/collections/': collectionsPage(
+      'https://was.example/space/s/': collectionsPage(
         ['a', 'b'],
-        '/space/s/collections/?cursor=2'
+        '/space/s/?cursor=2'
       ),
-      'https://was.example/space/s/collections/?cursor=2': collectionsPage([
-        'c'
-      ])
+      'https://was.example/space/s/?cursor=2': collectionsPage(['c'])
     })
     const ids: string[] = []
     for await (const pageResult of client.space('s').collectionsPages()) {
@@ -444,7 +438,7 @@ describe('Space.collectionsPages()', () => {
     }
     expect(ids).toEqual(['a', 'b'])
     // Broke during the first page, so the second page was never requested.
-    expect(urls).toEqual(['https://was.example/space/s/collections/'])
+    expect(urls).toEqual(['https://was.example/space/s/'])
   })
 
   it('yields nothing for a missing/unauthorized space', async () => {

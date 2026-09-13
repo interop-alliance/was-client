@@ -53,7 +53,7 @@ import {
   unreadableDescriptionError
 } from '../internal/describe.js'
 import { resourceLogStore } from '../log/logStore.js'
-import type { CollectionDescription, CollectionEncryption } from '../types.js'
+import type { CollectionMetadata, CollectionEncryption } from '../types.js'
 import type { EncryptionDescriptorStore } from './descriptorStore.js'
 
 /**
@@ -427,8 +427,8 @@ export function logGovernedDescriptorStore({
 
 /**
  * Builds the `EncryptionDescriptorStore` over a Collection that may be
- * log-governed. `read()` fetches the Collection Description and dispatches on
- * its `encryption` member: absent, the store resolves `null` (a fresh
+ * log-governed. `read()` fetches the Collection Metadata object and dispatches
+ * on its `encryption` member: absent, the store resolves `null` (a fresh
  * Collection that `create` makes log-governed with a genesis entry); present
  * without `history`, it is the plain point-state descriptor and the store
  * behaves exactly like `collectionDescriptorStore`; present with `history`,
@@ -484,14 +484,15 @@ export function logGovernedCollectionDescriptorStore({
     signer
   })
   /**
-   * The description observed by the most recent read: its sibling fields are
-   * forwarded by a point-state replace (the server's replace semantics would
-   * otherwise drop them), and its `encryption` member decides which write path
-   * a replace takes. Safe to carry even if stale: every write is pinned to the
-   * same read's validator, so a concurrent change fails the CAS instead. A
-   * create clears it, since the Collection it described is now log-governed.
+   * The Collection Metadata object observed by the most recent read: its
+   * configuration members are forwarded by a point-state replace (the
+   * full-replacement PUT would otherwise drop them), and its `encryption`
+   * member decides which write path a replace takes. Safe to carry even if
+   * stale: every write is pinned to the same read's validator, so a concurrent
+   * change fails the CAS instead. A create clears it, since the Collection it
+   * described is now log-governed.
    */
-  let described: CollectionDescription | undefined
+  let described: CollectionMetadata | undefined
 
   async function readGoverned(
     projection: CollectionEncryption & {
@@ -554,7 +555,8 @@ export function logGovernedCollectionDescriptorStore({
       if (current === null) {
         throw unreadableDescriptionError({
           operation: 'manage recipients',
-          advice: 'Use a capability that can read the Collection Description.'
+          advice:
+            'Use a capability that can read the Collection Metadata object.'
         })
       }
       described = current.description

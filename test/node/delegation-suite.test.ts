@@ -41,8 +41,8 @@ import { WasClient } from '../../src/index.js'
 import type { IDelegatedZcap, ISigner } from '../../src/index.js'
 
 const SERVER_URL = 'https://was.example'
-const SPACE_URL = `${SERVER_URL}/space/space-1`
-const TARGET_URL = `${SPACE_URL}/notes/`
+const SPACE_URL = `${SERVER_URL}/space/space-1/`
+const TARGET_URL = `${SPACE_URL}notes/`
 
 /**
  * The verification-method and DID documents the verifying loader serves,

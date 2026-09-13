@@ -10,9 +10,10 @@
  * server compares them as opaque strings.
  *
  * The handle-level tests drive a `WasClient` over a small in-memory WAS stub
- * that serves the Collection Description, the Collection `/meta` slot (with its
- * own `metaVersion` ETag, so the declare path's compare-and-swap is exercised
- * for real) and the `/query` endpoint.
+ * that serves the Collection Metadata object at the Collection's `meta`
+ * sub-resource (configuration and `custom` as one document under one
+ * `metaVersion` ETag, so the declare path's compare-and-swap is exercised for
+ * real) and the `/query` endpoint.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -28,7 +29,7 @@ import {
   PreconditionFailedError
 } from '../../src/index.js'
 import type {
-  CollectionDescription,
+  CollectionMetadata,
   CollectionEncryption
 } from '../../src/index.js'
 import type { SingleWriteCodec } from '../helpers/codec.js'
@@ -40,7 +41,7 @@ import { mintHmacKey } from '../../src/edv/hmacKey.js'
 /**
  * A reader plus the epoch-and-blinding-key-bearing descriptor an indexable
  * encrypted collection carries from birth. `keys` is what a keystore hands the
- * provider; `encryption` is what the Collection Description declares.
+ * provider; `encryption` is what the Collection Metadata object declares.
  *
  * @returns {Promise<{ encryption: CollectionEncryption; keys: object }>}
  */
@@ -216,13 +217,13 @@ describe('indexed emission at the content encrypt seam', () => {
 })
 
 /**
- * The mutable state of the in-memory WAS stub: the Collection `/meta` slot
- * (value plus its own `metaVersion` validator), the canned `/query` answer, and
- * a one-shot hook that fails the next metadata write with a 412 the way a
- * concurrent writer would.
+ * The mutable state of the in-memory WAS stub: the Collection Metadata object
+ * (the stored document plus its `metaVersion` validator), the canned `/query`
+ * answer, and a one-shot hook that fails the next metadata write with a 412 the
+ * way a concurrent writer would.
  */
 interface ServerState {
-  meta: { custom?: unknown; version: number }
+  meta: { document: Record<string, unknown>; version: number }
   queryResult: unknown
   collideOnce?: () => void
 }
@@ -254,9 +255,9 @@ function ok(data: unknown, etag?: string): HttpResponse {
 
 /**
  * Builds a `WasClient` (with the EDV keystore) over an in-memory WAS stub for
- * one encrypted collection: it serves the Collection Description, the
- * Collection `/meta` slot with a monotonic `metaVersion` ETag it enforces
- * `If-Match` against, and the `/query` endpoint.
+ * one encrypted collection: it serves the Collection Metadata object at `meta`
+ * with a monotonic `metaVersion` ETag it enforces `If-Match` against, and the
+ * `/query` endpoint.
  *
  * @param options {object}
  * @param options.encryption {CollectionEncryption}
@@ -275,24 +276,24 @@ function serverFor({
   calls: RequestArgs[]
   decodes: () => number
 } {
-  const state: ServerState = { meta: { version: 0 }, queryResult: {} }
-  const calls: RequestArgs[] = []
-  const description: CollectionDescription = {
+  const metadata: CollectionMetadata = {
     id: 'c',
     type: ['Collection'],
     encryption
   }
+  const state: ServerState = {
+    meta: { document: { ...metadata }, version: 0 },
+    queryResult: {}
+  }
+  const calls: RequestArgs[] = []
   const zcapClient = {
     invocationSigner: { id: 'did:example:alice#key-1' },
     async request(args: RequestArgs) {
       calls.push(args)
       const path = new URL(args.url!).pathname
       const method = args.method ?? 'GET'
-      if (path === '/space/s/c' && method === 'GET') {
-        return ok(description)
-      }
       if (path === '/space/s/c/meta' && method === 'GET') {
-        return ok({ custom: state.meta.custom }, String(state.meta.version))
+        return ok(state.meta.document, String(state.meta.version))
       }
       if (path === '/space/s/c/meta' && method === 'PUT') {
         state.collideOnce?.()
@@ -300,8 +301,15 @@ function serverFor({
         if (ifMatch !== undefined && ifMatch !== String(state.meta.version)) {
           throw { status: 412, response: { status: 412 } }
         }
+        // The PUT is a full replacement of the one object; the server keeps the
+        // read-only members (`type`, and the derived `encryption` the stub does
+        // not let a body change).
         state.meta = {
-          custom: (args.json as { custom?: unknown }).custom,
+          document: {
+            ...(args.json as Record<string, unknown>),
+            type: ['Collection'],
+            encryption
+          },
           version: state.meta.version + 1
         }
         return ok({}, String(state.meta.version))
@@ -348,8 +356,8 @@ function serverFor({
 }
 
 /**
- * How many times the Collection `/meta` document was GET, across every layer
- * (the index-schema read inside codec resolution included).
+ * How many times the Collection Metadata object was GET, across every layer
+ * (the descriptor-and-index-schema read inside codec resolution included).
  *
  * @param calls {RequestArgs[]}
  * @returns {number}
@@ -376,8 +384,10 @@ describe('Collection.declareIndex', () => {
       indexes: [{ attribute: 'content.type', addedIn: 1 }]
     })
     // What the server holds is an opaque envelope, not the attribute name.
-    expect(JSON.stringify(state.meta.custom)).not.toContain('content.type')
-    expect((state.meta.custom as { jwe?: unknown }).jwe).toBeTruthy()
+    expect(JSON.stringify(state.meta.document.custom)).not.toContain(
+      'content.type'
+    )
+    expect((state.meta.document.custom as { jwe?: unknown }).jwe).toBeTruthy()
   })
 
   it('is idempotent: re-declaring the same index writes nothing', async () => {
@@ -399,10 +409,7 @@ describe('Collection.declareIndex', () => {
     // handle's read and its conditional write.
     state.collideOnce = () => {
       state.collideOnce = undefined
-      state.meta = {
-        custom: state.meta.custom,
-        version: state.meta.version + 1
-      }
+      state.meta = { ...state.meta, version: state.meta.version + 1 }
     }
     await rival.declareIndex({ attribute: 'content.type' })
     // The retry re-read the (now bumped) validator and wrote on top of it.
@@ -429,10 +436,7 @@ describe('Collection.declareIndex', () => {
     const collide = () => {
       writes++
       state.collideOnce = collide
-      state.meta = {
-        custom: state.meta.custom,
-        version: state.meta.version + 1
-      }
+      state.meta = { ...state.meta, version: state.meta.version + 1 }
     }
     state.collideOnce = collide
     const failure = await client
@@ -579,7 +583,9 @@ describe('Collection.meta on a blinded-index collection', () => {
       0,
       calls.findIndex(call => call.method === 'PUT')
     )
-    expect(metaGets(beforeWrite)).toBe(1)
+    // The codec resolution's read is the declaration's read; the write's own
+    // compose step then re-reads the object it is about to replace.
+    expect(metaGets(beforeWrite)).toBe(2)
   })
 
   it('re-reads /meta on the second call (no snapshot reuse)', async () => {

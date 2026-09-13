@@ -64,7 +64,9 @@ function clientWithRouter({
   readEtag?: string
   writeEtag?: string
   readStatus?: number
-  /** When set, a collection-description GET (`/space/{s}/{c}`) carries it. */
+  /**
+   * When set, a collection-description GET (`/space/{s}/{c}/meta`) carries it.
+   */
   descriptor?: CollectionEncryption
 } = {}): { client: WasClient; calls: RequestArgs[] } {
   const calls: RequestArgs[] = []
@@ -98,21 +100,34 @@ function clientWithRouter({
         if (readStatus === 404) {
           throw { status: 404, response: { status: 404 } }
         }
-        // A collection-description GET (`/space/{spaceId}/{collectionId}`,
-        // three path segments) drives descriptor discovery; carry the
-        // descriptor when set.
-        if (segments.length === 3 && segments[0] === 'space') {
-          const description = {
-            id: segments[2],
+        // A Collection Metadata GET (`/space/{spaceId}/{collectionId}/meta`)
+        // drives descriptor discovery; carry the descriptor when set.
+        if (
+          segments.length === 4 &&
+          segments[0] === 'space' &&
+          segments[3] === 'meta'
+        ) {
+          // The one object: the configuration members the descriptor discovery
+          // reads, plus whatever annotations the test set as `readData`.
+          const metadata = {
+            id: segments[1],
             type: ['Collection'],
-            ...(descriptor && { encryption: descriptor })
+            ...(descriptor && { encryption: descriptor }),
+            ...(readData !== null &&
+              typeof readData === 'object' &&
+              !Array.isArray(readData) &&
+              !(readData instanceof Blob) &&
+              readData)
           }
           return {
             status: 200,
-            headers: new Headers({ 'content-type': 'application/json' }),
-            data: description,
+            headers: new Headers({
+              'content-type': 'application/json',
+              ...(readEtag && { etag: readEtag })
+            }),
+            data: metadata,
             async json() {
-              return description
+              return metadata
             }
           } as unknown as HttpResponse
         }
@@ -360,13 +375,13 @@ describe('codec seam: policy resolution (override > descriptor > plaintext)', ()
       encryption,
       descriptor: { scheme: 'edv' }
     })
-    // No override: the collection-description GET reveals the descriptor, which
+    // No override: the Collection Metadata GET reveals the descriptor, which
     // binds the codec; the write is then an encrypted PUT (bytes, not JSON).
     await client.space('s').collection('c').put('zDoc', { secret: 1 })
     const descriptorGet = calls.find(
       call =>
         (call.method ?? 'GET') === 'GET' &&
-        call.url === 'https://was.example/space/s/c'
+        call.url === 'https://was.example/space/s/c/meta'
     )
     expect(descriptorGet).toBeTruthy()
     expect(log).toContain('encode:zDoc')
@@ -502,20 +517,23 @@ describe('codec seam: configure() invalidates the memoized codec', () => {
         const segments = new URL(args.url ?? '').pathname
           .split('/')
           .filter(Boolean)
-        const isCollectionDescription =
-          segments.length === 3 && segments[0] === 'space'
-        // A configure PUT to the collection description with an `encryption`
-        // body flips the server-side descriptor on.
+        // The Collection Metadata object: `/space/{s}/{c}/meta`.
+        const isCollectionMeta =
+          segments.length === 4 &&
+          segments[0] === 'space' &&
+          segments[3] === 'meta'
+        // A configure PUT of the Collection Metadata object with an
+        // `encryption` body flips the server-side descriptor on.
         if (
           method === 'PUT' &&
-          isCollectionDescription &&
+          isCollectionMeta &&
           (args.json as { encryption?: unknown } | undefined)?.encryption
         ) {
           encrypted = true
         }
-        if (method === 'GET' && isCollectionDescription) {
+        if (method === 'GET' && isCollectionMeta) {
           const description = {
-            id: segments[2],
+            id: segments[1],
             type: ['Collection'],
             ...(encrypted && { encryption: { scheme: 'edv' } })
           }
@@ -609,16 +627,18 @@ describe('codec seam: a transient descriptor-read failure does not poison the ha
         const segments = new URL(args.url ?? '').pathname
           .split('/')
           .filter(Boolean)
-        const isCollectionDescription =
-          segments.length === 3 && segments[0] === 'space'
-        if (method === 'GET' && isCollectionDescription) {
+        const isCollectionMeta =
+          segments.length === 4 &&
+          segments[0] === 'space' &&
+          segments[3] === 'meta'
+        if (method === 'GET' && isCollectionMeta) {
           descriptorGets++
           if (descriptorGets === 1) {
             // Transient server failure during descriptor discovery.
             throw { status: 500, response: { status: 500 } }
           }
           const description = {
-            id: segments[2],
+            id: segments[1],
             type: ['Collection'],
             encryption: { scheme: 'edv' }
           }
@@ -741,7 +761,10 @@ describe('codec seam: Collection-level metadata routes through the codec', () =>
       .setMeta({ custom: { name: 'x', tags: { a: 'b' } } })
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.url).toBe('https://was.example/space/s/c/meta')
+    // The whole object is replaced, so the body restates the Collection id and
+    // the configuration the compose step read back.
     expect(write?.json).toEqual({
+      id: 'c',
       custom: { jwe: { name: 'x', tags: { a: 'b' } } }
     })
     // The Collection metadata slot belongs to no resource, so the codec is
@@ -788,6 +811,7 @@ describe('codec seam: Collection-level metadata routes through the codec', () =>
       .setMeta({ custom: { name: 'x' } })
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.json).toEqual({
+      id: 'c',
       custom: { jwe: { name: 'x' } },
       epoch: 'did:key:zEpoch1'
     })
@@ -802,7 +826,7 @@ describe('codec seam: Collection-level metadata routes through the codec', () =>
       .setMeta({ custom: { name: 'ok' } })
     const write = calls.find(call => call.method === 'PUT')
     expect(write?.url).toBe('https://was.example/space/s/c/meta')
-    expect(write?.json).toEqual({ custom: { name: 'ok' } })
+    expect(write?.json).toEqual({ id: 'c', custom: { name: 'ok' } })
   })
 })
 
@@ -972,7 +996,12 @@ describe('identityCodec: metadata identity (byte-for-byte)', () => {
 })
 
 describe('CodecHolder: the initiator-only metadata snapshot', () => {
-  const snapshot = { custom: { name: 'first' }, etag: '1' }
+  const snapshot = {
+    id: 'c',
+    type: ['Collection'],
+    custom: { name: 'first' },
+    etag: '1'
+  }
 
   /**
    * A holder over a canned resolution, counting how often it re-resolves and
@@ -982,9 +1011,10 @@ describe('CodecHolder: the initiator-only metadata snapshot', () => {
    *   `'none'` for a resolution that read no metadata at all
    * @returns {{ holder: CodecHolder; resolutions: () => number }}
    */
-  function holderFor(
-    meta: { custom: { name: string }; etag: string } | null | 'none' = snapshot
-  ): { holder: CodecHolder; resolutions: () => number } {
+  function holderFor(meta: typeof snapshot | null | 'none' = snapshot): {
+    holder: CodecHolder
+    resolutions: () => number
+  } {
     let resolutions = 0
     const holder = new CodecHolder(async () => {
       resolutions++
@@ -1046,7 +1076,7 @@ describe('CodecHolder: the initiator-only metadata snapshot', () => {
       resolutions++
       return {
         codec: identityCodec,
-        meta: { custom: { name: `read-${resolutions}` }, etag: '1' }
+        meta: { ...snapshot, custom: { name: `read-${resolutions}` } }
       }
     })
     // The first resolution's snapshot goes unconsumed; the reset drops it, so
@@ -1054,6 +1084,9 @@ describe('CodecHolder: the initiator-only metadata snapshot', () => {
     await holder.get()
     holder.reset()
     const after = await holder.resolve()
-    expect(after.meta).toEqual({ custom: { name: 'read-2' }, etag: '1' })
+    expect(after.meta).toEqual({
+      ...snapshot,
+      custom: { name: 'read-2' }
+    })
   })
 })

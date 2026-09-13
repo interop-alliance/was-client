@@ -61,7 +61,7 @@
  * loudly; it fails as a resource one of them cannot decrypt):
  *
  * - `EncryptionDescriptorSource` / `EncryptionDescriptorCache` -- the narrow
- *   seams a host implements: one signed Collection Description read, and a
+ *   seams a host implements: one signed Collection Metadata read, and a
  *   client-local get/put pre-scoped to one Space. `wasDescriptorSource` is the
  *   source over a `WasClient` handle.
  * - `acquireDescriptor` / `acquireDescriptors` -- fetch + cache with the

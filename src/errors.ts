@@ -302,7 +302,7 @@ export class WasServerError extends WasError {
 
 /**
  * Thrown on decrypt when a stored envelope names JWE recipient (`kid`) ids
- * whose epochs the Collection Description does not list at all. It signals
+ * whose epochs the Collection Metadata object does not list at all. It signals
  * that the caller's cached descriptor may be stale and should be re-read
  * before retrying: an epoch rotation emits no change-feed entry, so a codec
  * built from a pre-rotation descriptor meets envelopes stamped with a newer
@@ -325,8 +325,8 @@ export class UnknownEpochError extends Error {
     super(
       `Cannot decrypt a resource in collection "${collectionId}": its ` +
         `envelope names recipient key id(s) [${kids.join(', ')}] whose key ` +
-        'epoch is not on the Collection Description this reader holds. The ' +
-        'cached descriptor may be stale (an epoch rotation emits no ' +
+        'epoch is not on the Collection Metadata object this reader holds. ' +
+        'The cached descriptor may be stale (an epoch rotation emits no ' +
         'change-feed entry); re-read it and rebuild the cipher.'
     )
     this.name = 'UnknownEpochError'
