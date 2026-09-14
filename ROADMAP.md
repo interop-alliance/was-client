@@ -38,9 +38,10 @@ rather than here. Statuses: `todo`, `in-progress`, `draft` (no actionable
 done-state yet -- blocked externally or a parking record); `done` items move to
 [archived-roadmap.md](archived-roadmap.md) once shipped. The full conventions --
 including the `touches:` field, required for any item changing a spec, a wire
-contract, or a shared `@interop/*` API, and blocking `done` while any of its
-entries is unresolved -- live in isomorphic-lib-template's AGENTS.md under
-"Roadmap & Task Conventions" and apply to WCL-N items too.
+contract, or a shared `@interop/*` API, whose entries are reminders to file
+follow-up items in the touched repos and do not block `done` -- live in
+isomorphic-lib-template's AGENTS.md under "Roadmap & Task Conventions" and apply
+to WCL-N items too.
 
 ---
 

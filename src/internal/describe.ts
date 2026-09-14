@@ -46,13 +46,42 @@ export type StoredCollectionMetadata = Record<string, unknown>
  * server guarantees the object's shape, so the assertion lives here once
  * instead of at each reader.
  *
+ * `custom` is normalized on the way out: a stored `null` or an empty plain
+ * object both mean "cleared" on the wire, so the returned object carries no
+ * `custom` member at all and a reader has one answer to check for rather than
+ * three. Every other member is returned as served, and the stored object itself
+ * is not modified (a write composes from it verbatim).
+ *
  * @param stored {StoredCollectionMetadata}
  * @returns {CollectionMetadata}
  */
 export function asCollectionMetadata(
   stored: StoredCollectionMetadata
 ): CollectionMetadata {
-  return stored as unknown as CollectionMetadata
+  if (!isClearedCustom(stored.custom)) {
+    return stored as unknown as CollectionMetadata
+  }
+  const { custom: _cleared, ...rest } = stored
+  return rest as unknown as CollectionMetadata
+}
+
+/**
+ * Whether a stored `custom` value means "cleared": `null`, or a plain object
+ * with no own members. An opaque envelope on an encrypted Collection carries
+ * members, so it is never read as cleared.
+ *
+ * @param custom {unknown}
+ * @returns {boolean}
+ */
+function isClearedCustom(custom: unknown): boolean {
+  if (custom === null) {
+    return true
+  }
+  return (
+    typeof custom === 'object' &&
+    !Array.isArray(custom) &&
+    Object.keys(custom as object).length === 0
+  )
 }
 
 /**

@@ -17,7 +17,10 @@
  * `collectionMeta`) instead of at the container URL.
  *
  * `parseSpacePath` / `parseSpaceTarget` are the inverse grammar (a pathname or
- * an absolute URL back to the containment depth it addresses), and
+ * an absolute URL back to the containment depth it addresses),
+ * `isReservedCollectionId` / `isReservedResourceId` report whether a segment is
+ * in the Reserved Path Segment Registry (the builders throw on one, so a caller
+ * forming a path out of a value it did not choose asks first), and
  * `rootCapabilityId` / `rootCapability` mint the `urn:zcap:root:` capability a
  * target's own root invocation names -- the id form for parenting an unparented
  * grant, the object form for invoking it (`@interop/ezcap` accepts a bare root
@@ -40,6 +43,10 @@ export {
   parseSpacePath,
   parseSpaceTarget
 } from './internal/paths.js'
+export {
+  isReservedCollectionId,
+  isReservedResourceId
+} from './internal/reserved.js'
 export type { ParsedSpacePath } from './internal/paths.js'
 
 export { rootCapabilityId, rootCapability } from './internal/revoke.js'

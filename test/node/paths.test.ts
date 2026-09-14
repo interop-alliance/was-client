@@ -317,7 +317,7 @@ describe('toUrl', () => {
 })
 
 describe('the ./paths subpath barrel', () => {
-  it('re-exports the builders, the inverse grammar, and the root zcap', async () => {
+  it('re-exports the builders, the inverse grammar, the reserved-segment predicates, and the root zcap', async () => {
     const barrel = await import('../../src/paths.js')
 
     expect(Object.keys(barrel).sort()).toEqual(
@@ -326,6 +326,8 @@ describe('the ./paths subpath barrel', () => {
         'collectionMeta',
         'collectionPath',
         'collectionQuery',
+        'isReservedCollectionId',
+        'isReservedResourceId',
         'parseSpacePath',
         'parseSpaceTarget',
         'resourceMeta',

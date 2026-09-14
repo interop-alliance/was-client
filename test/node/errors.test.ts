@@ -21,7 +21,8 @@ import {
   PreconditionFailedError,
   PayloadTooLargeError,
   QuotaExceededError,
-  WasServerError
+  WasServerError,
+  httpStatus
 } from '../../src/index.js'
 import { mapError } from '../../src/errors.js'
 
@@ -259,5 +260,20 @@ describe('mapError', () => {
   it('preserves the original error as the cause', () => {
     const original = { status: 500, message: 'boom' }
     expect(mapError(original).cause).toBe(original)
+  })
+})
+
+describe('httpStatus', () => {
+  it('reads a flat `status`', () => {
+    expect(httpStatus({ status: 404 })).toBe(404)
+  })
+
+  it('reads a nested `response.status`', () => {
+    expect(httpStatus({ response: { status: 412 } })).toBe(412)
+  })
+
+  it('returns undefined for a value carrying no status', () => {
+    expect(httpStatus(new Error('boom'))).toBeUndefined()
+    expect(httpStatus(undefined)).toBeUndefined()
   })
 })

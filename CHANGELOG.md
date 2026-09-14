@@ -2,6 +2,21 @@
 
 ## 0.62.1 - TBD
 
+### Added
+
+- `isReservedCollectionId` and `isReservedResourceId` are exported from the
+  `./paths` subpath, so a caller forming a path out of a value it did not choose
+  can ask before calling a builder that throws on a reserved segment.
+- `httpStatus(err)` is exported from the package root, beside `mapError`.
+
+### Changed
+
+- `describe()` / `describeWithEtag()` normalize a Collection Metadata object's
+  `custom` on read: a stored `null` or empty object both mean "cleared" on the
+  wire, and the returned object now carries no `custom` member in either case.
+  Every other member is returned as served, and write composition still reads
+  the stored object verbatim.
+
 ### Fixed
 
 - Security fix: listing walks no longer follow a server-supplied `next` link

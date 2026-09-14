@@ -15,6 +15,11 @@ import {
 
 import { ValidationError } from '../../src/index.js'
 import { assertNotReserved } from '../../src/internal/reserved.js'
+import {
+  collectionPath,
+  isReservedCollectionId,
+  isReservedResourceId
+} from '../../src/paths.js'
 
 describe('assertNotReserved', () => {
   it('throws a ValidationError for a reserved collection id', () => {
@@ -76,5 +81,26 @@ describe('assertNotReserved', () => {
     expect(() =>
       assertNotReserved({ id: 'greeting', kind: 'resource' })
     ).not.toThrow()
+  })
+})
+
+describe('the ./paths subpath', () => {
+  it('reports a reserved collection id through isReservedCollectionId', () => {
+    expect(isReservedCollectionId('export')).toBe(true)
+    expect(isReservedCollectionId('import')).toBe(true)
+    expect(isReservedCollectionId('credentials')).toBe(false)
+  })
+
+  it('reports a reserved resource id through isReservedResourceId', () => {
+    expect(isReservedResourceId('backend')).toBe(true)
+    expect(isReservedResourceId('greeting')).toBe(false)
+  })
+
+  it('lets a caller refuse a segment the path builder would throw on', () => {
+    // The predicate and the builder agree: what one reports reserved is what
+    // the other refuses, so a caller can ask before forming a path out of a
+    // value it did not choose.
+    expect(isReservedCollectionId('export')).toBe(true)
+    expect(() => collectionPath('space-1', 'export')).toThrow(ValidationError)
   })
 })

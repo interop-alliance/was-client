@@ -39,6 +39,7 @@ export {
   WasSyncConflictError,
   WasSyncNotFoundError,
   WasServerError,
+  httpStatus,
   mapError
 } from './errors.js'
 

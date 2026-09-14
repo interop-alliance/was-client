@@ -78,9 +78,9 @@ rules that apply when working an item:
   append-only at the bottom. A `done` item left in ROADMAP.md is an unfinished
   task. CHANGELOG.md remains the record of what landed; do not rewrite or
   summarize items on the way into the archive.
-- An item carrying a `touches:` field may not flip to `done` while any entry in
-  it is unresolved -- an unresolved entry is unfinished work of the item itself,
-  not a follow-up.
+- A `touches:` entry does not block `done`. An item is done when its own repo's
+  work is done and every entry carries its annotation, so the cross-repo
+  follow-ups are on record in their own roadmaps.
 - Work discovered mid-implementation gets its own WCL-N item immediately, noting
   `discovered-from: WCL-N` in its prose.
 
