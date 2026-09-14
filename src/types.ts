@@ -19,7 +19,7 @@ import type {
 } from '@interop/data-integrity-core/zcap'
 import type { IDID, ISigner } from '@interop/data-integrity-core'
 
-import type { ActionInput } from '@interop/storage-core'
+import type { ActionInput, CollectionMetadata } from '@interop/storage-core'
 
 export type { IZcap, IDelegatedZcap, IRootZcap, IDID, ISigner }
 
@@ -145,6 +145,15 @@ export interface CollectionWritableFields {
    */
   generator?: IDID
   generatorOrigin?: string
+  /**
+   * The server-side processing declared for a plaintext Collection (its
+   * `indexes` for the `equality` query profile); the served member's own type.
+   * The one configuration member with keep-if-omitted wire semantics: a
+   * supplied object replaces the stored one whole, and a write that leaves it
+   * out carries the stored one forward rather than clearing it. Mutually
+   * exclusive with `encryption` by presence, which the server enforces.
+   */
+  plaintext?: CollectionMetadata['plaintext']
 }
 
 /**

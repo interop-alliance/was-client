@@ -121,7 +121,8 @@ export function collectionWritableFields(
     ...(fields.generator !== undefined && { generator: fields.generator }),
     ...(fields.generatorOrigin !== undefined && {
       generatorOrigin: fields.generatorOrigin
-    })
+    }),
+    ...(fields.plaintext !== undefined && { plaintext: fields.plaintext })
   }
 }
 
@@ -149,6 +150,12 @@ const SERVER_MANAGED_MEMBERS: readonly string[] = [
  * The Collection's configuration members: what a configuration write
  * (`configure`, `replaceDescription`) states in full and an annotation write
  * carries forward.
+ *
+ * `plaintext` is a configuration member too, but deliberately not listed: on
+ * the wire an update that omits it keeps the stored value, so a write never
+ * has to restate it. Leaving it off the list makes every write carry the
+ * stored object forward (see {@link carriedForward}), and a write that does
+ * supply it replaces the carried value whole, which is the spec's rule.
  */
 export const CONFIGURATION_MEMBERS: readonly string[] = [
   'name',
@@ -183,8 +190,9 @@ export function storedEncryption(
  * Picks the stored members a full-replacement write carries forward: every
  * member except the ones the server manages and the ones this write states
  * itself. A denylist rather than an allowlist, so a member this client does
- * not model -- `plaintext`, or one a newer server serves -- survives a write
- * it is not about instead of being silently cleared.
+ * not model (one a newer server serves) survives a write it is not about
+ * instead of being silently cleared, and so does `plaintext`, the modelled
+ * member no write restates unless the caller supplies it.
  *
  * A governed `encryption` descriptor is deliberately dropped: on a
  * log-governed Collection the served descriptor is the server's projection of

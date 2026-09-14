@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.62.2 - TBD
+
+### Added
+
+- `CollectionWritableFields.plaintext` (typed as the served
+  `CollectionMetadata['plaintext']`): `configure({ plaintext })`,
+  `replaceDescription({ plaintext })`, and `createCollection({ plaintext })`
+  send a plaintext collection's server-side `indexes` declaration instead of
+  stripping it. A supplied object replaces the stored one whole; a write that
+  omits it carries the stored declaration forward, as before.
+
 ## 0.62.1 - 2026-09-14
 
 ### Added

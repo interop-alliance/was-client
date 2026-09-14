@@ -56,6 +56,7 @@ import type {
   BackendReference,
   BackendRegistration,
   CollectionEncryption,
+  CollectionMetadata,
   CollectionsList,
   GrantOptions,
   HandleOptions,
@@ -402,6 +403,9 @@ export class Space {
    *   backfilled.
    * @param [desc.generatorOrigin] {string}   the Web origin the `generator`
    *   DID was bound to at provisioning time, on the same footing.
+   * @param [desc.plaintext] {object}   declare a plaintext collection's
+   *   server-side `indexes` (the `equality` query profile) at create. Cannot
+   *   be combined with `encryption`; the server rejects both on one object.
    * @returns {Promise<Collection>}
    */
   async createCollection(
@@ -412,6 +416,7 @@ export class Space {
       encryption?: CollectionEncryption
       generator?: IDID
       generatorOrigin?: string
+      plaintext?: CollectionMetadata['plaintext']
     } = {}
   ): Promise<Collection> {
     if (desc.id !== undefined) {

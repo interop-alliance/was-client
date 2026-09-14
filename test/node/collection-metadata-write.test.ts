@@ -412,6 +412,93 @@ describe('members this client does not model', () => {
   })
 })
 
+describe('the plaintext index declaration', () => {
+  it('is sent when configure() states it', async () => {
+    const { client, calls } = clientWith(args =>
+      args.method === 'GET'
+        ? served({ id: 'c', type: ['Collection'], name: 'Docs' }, '"1"')
+        : jsonResponse({ status: 204, headers: { etag: '"2"' } })
+    )
+    const result = await client
+      .space('s')
+      .collection('c')
+      .configure({ plaintext: { indexes: ['title'] }, force: true })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({
+      id: 'c',
+      name: 'Docs',
+      plaintext: { indexes: ['title'] }
+    })
+    // The server answers an update with no body; the echo reports the merge.
+    expect(result.plaintext).toEqual({ indexes: ['title'] })
+  })
+
+  it('carries the stored declaration forward through a write that omits it', async () => {
+    const { client, calls } = clientWith(args =>
+      args.method === 'GET'
+        ? served(
+            {
+              id: 'c',
+              type: ['Collection'],
+              name: 'Docs',
+              plaintext: { indexes: ['title'] }
+            },
+            '"1"'
+          )
+        : jsonResponse({ status: 204, headers: { etag: '"2"' } })
+    )
+    const result = await client
+      .space('s')
+      .collection('c')
+      .configure({ name: 'Renamed', force: true })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({
+      id: 'c',
+      name: 'Renamed',
+      plaintext: { indexes: ['title'] }
+    })
+    expect(result.plaintext).toEqual({ indexes: ['title'] })
+  })
+
+  it('replaces the stored declaration whole rather than merging entries', async () => {
+    const { client, calls } = clientWith(args =>
+      args.method === 'GET'
+        ? served(
+            {
+              id: 'c',
+              type: ['Collection'],
+              name: 'Docs',
+              plaintext: { indexes: ['title', { name: 'slug', unique: true }] }
+            },
+            '"1"'
+          )
+        : jsonResponse({ status: 204, headers: { etag: '"2"' } })
+    )
+    await client
+      .space('s')
+      .collection('c')
+      .configure({ plaintext: { indexes: ['author'] }, force: true })
+    const write = calls.find(call => call.method === 'PUT')
+    expect(write?.json).toEqual({
+      id: 'c',
+      name: 'Docs',
+      plaintext: { indexes: ['author'] }
+    })
+  })
+
+  it('is accepted by createCollection()', async () => {
+    const { client, calls } = clientWith(() =>
+      jsonResponse({ data: { id: 'c' }, status: 201 })
+    )
+    await client.space('s').createCollection({
+      id: 'c',
+      plaintext: { indexes: ['title'] }
+    })
+    const write = calls.find(call => call.method === 'POST')
+    expect(write?.json).toEqual({ id: 'c', plaintext: { indexes: ['title'] } })
+  })
+})
+
 describe('a custom this reader cannot open', () => {
   it('does not brick the operations that do not need it', async () => {
     // Codec resolution decodes the same read's `custom` for the index schema.

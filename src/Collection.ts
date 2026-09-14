@@ -161,7 +161,10 @@ function mergedConfiguration(
     // `configure({ generator })` sail past the guard and blindly drop the two
     // members it exists to protect.
     generator: desc.generator ?? current?.generator,
-    generatorOrigin: desc.generatorOrigin ?? current?.generatorOrigin
+    generatorOrigin: desc.generatorOrigin ?? current?.generatorOrigin,
+    // Replaced whole when stated, kept when not: the server's own rule for
+    // this member, mirrored here so the echoed return reports what is stored.
+    plaintext: desc.plaintext ?? current?.plaintext
   })
 }
 
@@ -579,7 +582,10 @@ export class Collection {
    *   declares the client-side encryption descriptor, which is set-once on the
    *   server (it may be added to a Collection that lacks one, but
    *   changing/clearing an existing descriptor is rejected -- `ConflictError`,
-   *   `encryption-immutable`)
+   *   `encryption-immutable`). `plaintext` declares a plaintext Collection's
+   *   server-side indexes and replaces the stored declaration whole (no
+   *   per-entry merge); it cannot share the object with `encryption`, which
+   *   the server rejects (`invalid-request-body`)
    * @param [desc.force] {boolean}   proceed even when the current object
    *   is unreadable and `backend`/`encryption` are omitted (see above)
    * @param [desc.current] {CollectionMetadata | null}   the current Collection
@@ -695,7 +701,9 @@ export class Collection {
    * `PreconditionFailedError` (412). Sends the writable configuration as the
    * full body; omit a member to drop it (replace semantics), so callers doing
    * CAS pass every member forward. Members this client does not model are
-   * carried forward from the stored object rather than cleared.
+   * carried forward from the stored object rather than cleared, and so is
+   * `plaintext`, which an omitting write keeps on the wire anyway; supplying
+   * it replaces the stored declaration whole.
    *
    * The annotations (`custom` and its `epoch` stamp) are carried forward
    * verbatim -- `custom` exactly as served, so an encrypted Collection's
