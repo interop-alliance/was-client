@@ -84,8 +84,8 @@ import {
 } from './internal/content.js'
 import {
   INDEX_SCHEMA_PROPERTY,
-  attributeKey,
-  normalizeAttribute,
+  mergeIndexDeclarations,
+  normalizeIndexRequests,
   readIndexSchema
 } from './internal/indexSchema.js'
 import type { CustomWithIndexSchema } from './internal/indexSchema.js'
@@ -1274,10 +1274,38 @@ export class Collection {
     attribute: string | string[]
     unique?: boolean
   }): Promise<IndexSchema> {
+    return this.declareIndexes({ indexes: [{ attribute, unique }] })
+  }
+
+  /**
+   * Declares a batch of attributes searchable in one compare-and-swap:
+   * {@link declareIndex} for several attributes at once, settled with a single
+   * metadata read and a single conditional write instead of one of each per
+   * attribute. Every newly added entry shares one `revision` bump and one
+   * `addedIn`.
+   *
+   * Per-entry semantics match `declareIndex` exactly: an attribute already
+   * declared on the same terms is skipped, and one already declared with
+   * different uniqueness throws `ValidationError`. Two entries in `indexes`
+   * naming the same attribute are deduplicated when their terms agree and
+   * rejected with `ValidationError` when they disagree. When every requested
+   * attribute is already declared, nothing is written.
+   *
+   * @param options {object}
+   * @param options.indexes {Array<{ attribute: string | string[]; unique?: boolean }>}
+   *   the attributes to declare, in `declareIndex`'s own terms
+   * @returns {Promise<IndexSchema>}   the schema now in force
+   */
+  async declareIndexes({
+    indexes
+  }: {
+    indexes: Array<{ attribute: string | string[]; unique?: boolean }>
+  }): Promise<IndexSchema> {
     const { indexing, meta: snapshot } =
-      await this.#resolveIndexing('declare an index')
-    const declared = normalizeAttribute(attribute)
-    const key = attributeKey(declared)
+      await this.#resolveIndexing('declare indexes')
+    // Repeats within the request are settled up front: a conflict there is a
+    // caller error that does not depend on the stored schema.
+    const requested = normalizeIndexRequests(indexes)
     // Read, reconcile, conditionally write. A 412 means another client wrote
     // the metadata between the read and the write, so the shared loop re-reads
     // and re-applies rather than clobbering its declaration with ours.
@@ -1304,39 +1332,13 @@ export class Collection {
       },
       operation: 'Index declaration',
       mutate: current => {
-        const schema = readIndexSchema(current)
-        const existing = schema.indexes.find(
-          entry => attributeKey(entry.attribute) === key
-        )
-        if (existing) {
-          if ((existing.unique === true) !== (unique === true)) {
-            throw new ValidationError(
-              `Cannot declare index "${key}" as ` +
-                `${unique === true ? 'unique' : 'non-unique'}: this ` +
-                'collection already declares it as ' +
-                `${existing.unique === true ? 'unique' : 'non-unique'}. An ` +
-                'index cannot change uniqueness in place -- already-stored ' +
-                'documents were indexed under the old terms.'
-            )
-          }
-          // Already declared: nothing to write.
-          return null
-        }
-        const revision = schema.revision + 1
-        return {
-          ...current,
-          [INDEX_SCHEMA_PROPERTY]: {
-            revision,
-            indexes: [
-              ...schema.indexes,
-              {
-                attribute: declared,
-                ...(unique === true && { unique: true as const }),
-                addedIn: revision
-              }
-            ]
-          }
-        }
+        const next = mergeIndexDeclarations({
+          schema: readIndexSchema(current),
+          requested
+        })
+        return next === null
+          ? null
+          : { ...current, [INDEX_SCHEMA_PROPERTY]: next }
       }
     })
     const schema = readIndexSchema(custom)

@@ -198,6 +198,32 @@ describeLive('blinded content search on an encrypted collection', () => {
     ).rejects.toBeInstanceOf(ValidationError)
   })
 
+  it('declares several attributes in one metadata write via declareIndexes', async () => {
+    const schema = await collection.declareIndexes({
+      indexes: [
+        { attribute: 'content.category' },
+        { attribute: 'content.slug', unique: true }
+      ]
+    })
+    const added = schema.indexes.filter(entry =>
+      ['content.category', 'content.slug'].includes(entry.attribute as string)
+    )
+    expect(added).toHaveLength(2)
+    // Both attributes were added by the same call, so they share one
+    // schema revision.
+    expect(new Set(added.map(entry => entry.addedIn)).size).toBe(1)
+
+    await collection.add({
+      type: 'note',
+      title: 'batch',
+      category: 'batch-cat'
+    })
+    const page = (await collection.find({
+      equals: { 'content.category': 'batch-cat' }
+    })) as FindPage
+    expect(page.items.length).toBe(1)
+  })
+
   // Runs last on purpose: it adds another `content.type: note` document, which
   // would change the counts the earlier tests assert.
   it('finds a document pushed through the sync path', async () => {

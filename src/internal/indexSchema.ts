@@ -14,7 +14,7 @@
  * existing collection needs: index declarations that lived only in one app's
  * memory would leave every other reader unable to learn them.
  */
-import type { IndexSchema } from '../codec.js'
+import type { IndexDeclaration, IndexSchema } from '../codec.js'
 import { ValidationError } from '../errors.js'
 
 /**
@@ -65,6 +65,99 @@ export function normalizeAttribute(
 export function attributeKey(attribute: string | string[]): string {
   const parts = Array.isArray(attribute) ? attribute : [attribute]
   return parts.map(part => encodeURIComponent(part)).join('|')
+}
+
+/**
+ * An index declaration as a caller requests it, before it is stamped with the
+ * schema revision that adds it.
+ */
+type IndexRequest = { attribute: string | string[]; unique?: boolean }
+
+/**
+ * How an error message names a declaration's uniqueness.
+ *
+ * @param unique {boolean | undefined}
+ * @returns {string}
+ */
+function uniquenessLabel(unique: boolean | undefined): string {
+  return unique === true ? 'unique' : 'non-unique'
+}
+
+/**
+ * Normalizes a batch of requested declarations, keyed by
+ * {@link attributeKey}. A key repeated on the same terms collapses to one
+ * entry. A key repeated with different uniqueness throws `ValidationError`.
+ *
+ * @param indexes {IndexRequest[]}
+ * @returns {Map<string, IndexRequest>}
+ */
+export function normalizeIndexRequests(
+  indexes: IndexRequest[]
+): Map<string, IndexRequest> {
+  const requested = new Map<string, IndexRequest>()
+  for (const { attribute, unique } of indexes) {
+    const declared = normalizeAttribute(attribute)
+    const key = attributeKey(declared)
+    const seen = requested.get(key)
+    if (seen === undefined) {
+      requested.set(key, { attribute: declared, unique })
+    } else if ((seen.unique === true) !== (unique === true)) {
+      throw new ValidationError(
+        `Cannot declare index "${key}" as both ` +
+          `${uniquenessLabel(unique)} and ${uniquenessLabel(seen.unique)} ` +
+          'in the same declareIndexes() call.'
+      )
+    }
+  }
+  return requested
+}
+
+/**
+ * Adds the requested declarations to a schema. An attribute already declared
+ * on the same terms is skipped, and one declared with different uniqueness
+ * throws `ValidationError`. Every added entry shares one `revision` bump.
+ *
+ * @param options {object}
+ * @param options.schema {IndexSchema}   the persisted schema
+ * @param options.requested {Map<string, IndexRequest>}   from
+ *   {@link normalizeIndexRequests}
+ * @returns {IndexSchema | null}   the next schema, or `null` when every
+ *   requested attribute is already declared
+ */
+export function mergeIndexDeclarations({
+  schema,
+  requested
+}: {
+  schema: IndexSchema
+  requested: Map<string, IndexRequest>
+}): IndexSchema | null {
+  const existingByKey = new Map(
+    schema.indexes.map(entry => [attributeKey(entry.attribute), entry])
+  )
+  const revision = schema.revision + 1
+  const added: IndexDeclaration[] = []
+  for (const [key, { attribute, unique }] of requested) {
+    const existing = existingByKey.get(key)
+    if (existing === undefined) {
+      added.push({
+        attribute,
+        ...(unique === true && { unique: true as const }),
+        addedIn: revision
+      })
+    } else if ((existing.unique === true) !== (unique === true)) {
+      throw new ValidationError(
+        `Cannot declare index "${key}" as ${uniquenessLabel(unique)}: this ` +
+          'collection already declares it as ' +
+          `${uniquenessLabel(existing.unique)}. An index cannot change ` +
+          'uniqueness in place -- already-stored documents were indexed under ' +
+          'the old terms.'
+      )
+    }
+  }
+  if (added.length === 0) {
+    return null
+  }
+  return { revision, indexes: [...schema.indexes, ...added] }
 }
 
 /**

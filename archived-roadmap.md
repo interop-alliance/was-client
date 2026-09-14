@@ -1971,3 +1971,34 @@ one unit test, the doc-cipher case that asserts the fallback, so the change is
 contained. No wire change.
 
 discovered-from: WCL-45, 2026-09-13.
+
+### WCL-103: Batch blinded-index declaration `Collection.declareIndexes`
+
+- status: done (2026-09-14)
+- priority: medium
+- labels: blinded-index, search, api
+- touches:
+  - was-react (ARCHITECTURE.md, `src/storage/wasRemoteStore.ts`
+    `declareBlindedIndexes`): not yet filed -- its per-attribute `declareIndex`
+    loop is a candidate to switch to this batch form, one metadata write instead
+    of N
+- acceptance:
+  - [x] `Collection.declareIndexes({ indexes })` settles every requested
+        attribute in one compare-and-swap read and one conditional write,
+        sharing one `revision` bump and one `addedIn` across newly added entries
+  - [x] Per-entry semantics match `declareIndex`: an attribute already declared
+        on the same terms is skipped; one already declared with different
+        uniqueness throws `ValidationError`
+  - [x] A duplicate attribute within one call is deduplicated when terms agree
+        and rejected with `ValidationError` when they disagree
+  - [x] `declareIndex` is a thin wrapper over `declareIndexes` (one entry), so
+        the compare-and-swap logic exists once
+  - [x] Unit coverage in `test/node/blinded-index.test.ts` for the batch write
+        count, partial-missing writes, no-write-when-complete, and the
+        uniqueness-mismatch throw
+
+`@interop/was-react`'s `wasRemoteStore.ts` loops `declareIndex` once per missing
+blinded-index attribute, each call its own compare-and-swap read+write of the
+collection's `/meta` object. `declareIndexes` lets a caller declaring several
+attributes at once -- a fresh collection's whole blinded-index schema, say --
+settle them in one read and one conditional write.

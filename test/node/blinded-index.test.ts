@@ -358,16 +358,18 @@ function serverFor({
 }
 
 /**
- * How many times the Collection Metadata object was GET, across every layer
- * (the descriptor-and-index-schema read inside codec resolution included).
+ * How many times the Collection Metadata object was requested with `method`,
+ * across every layer (a GET count includes the descriptor-and-index-schema
+ * read inside codec resolution).
  *
  * @param calls {RequestArgs[]}
+ * @param method {string}
  * @returns {number}
  */
-function metaGets(calls: RequestArgs[]): number {
+function metaCalls(calls: RequestArgs[], method: string): number {
   return calls.filter(
     call =>
-      (call.method ?? 'GET') === 'GET' &&
+      (call.method ?? 'GET') === method &&
       new URL(call.url!).pathname === '/space/s/c/meta'
   ).length
 }
@@ -486,6 +488,113 @@ describe('Collection.declareIndex', () => {
   })
 })
 
+describe('Collection.declareIndexes', () => {
+  it('declares several attributes in one metadata write, sharing one revision and addedIn', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    const schema = await client
+      .space('s')
+      .collection('c')
+      .declareIndexes({
+        indexes: [
+          { attribute: 'content.type' },
+          { attribute: 'content.author' },
+          { attribute: 'content.slug', unique: true }
+        ]
+      })
+
+    expect(schema).toEqual({
+      revision: 1,
+      indexes: [
+        { attribute: 'content.type', addedIn: 1 },
+        { attribute: 'content.author', addedIn: 1 },
+        { attribute: 'content.slug', unique: true, addedIn: 1 }
+      ]
+    })
+    expect(metaCalls(calls, 'PUT')).toBe(1)
+  })
+
+  it('writes only the attributes that are still missing', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    const collection = client.space('s').collection('c')
+    await collection.declareIndex({ attribute: 'content.type' })
+    expect(metaCalls(calls, 'PUT')).toBe(1)
+
+    const schema = await collection.declareIndexes({
+      indexes: [
+        { attribute: 'content.type' },
+        { attribute: 'content.author' },
+        { attribute: 'content.slug' }
+      ]
+    })
+
+    expect(metaCalls(calls, 'PUT')).toBe(2)
+    expect(schema.revision).toBe(2)
+    expect(schema.indexes).toEqual([
+      { attribute: 'content.type', addedIn: 1 },
+      { attribute: 'content.author', addedIn: 2 },
+      { attribute: 'content.slug', addedIn: 2 }
+    ])
+  })
+
+  it('performs no write when every requested attribute is already declared', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client, calls } = serverFor(fixture)
+    const collection = client.space('s').collection('c')
+    await collection.declareIndexes({
+      indexes: [{ attribute: 'content.type' }, { attribute: 'content.author' }]
+    })
+    expect(metaCalls(calls, 'PUT')).toBe(1)
+
+    const schema = await collection.declareIndexes({
+      indexes: [{ attribute: 'content.author' }, { attribute: 'content.type' }]
+    })
+
+    expect(metaCalls(calls, 'PUT')).toBe(1)
+    expect(schema.revision).toBe(1)
+  })
+
+  it('deduplicates a repeated attribute within the same call when terms agree', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client } = serverFor(fixture)
+    const schema = await client
+      .space('s')
+      .collection('c')
+      .declareIndexes({
+        indexes: [{ attribute: 'content.type' }, { attribute: 'content.type' }]
+      })
+
+    expect(schema.indexes).toEqual([{ attribute: 'content.type', addedIn: 1 }])
+  })
+
+  it('refuses a repeated attribute within the same call when terms disagree', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client } = serverFor(fixture)
+    await expect(
+      client
+        .space('s')
+        .collection('c')
+        .declareIndexes({
+          indexes: [
+            { attribute: 'content.slug', unique: true },
+            { attribute: 'content.slug' }
+          ]
+        })
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('refuses a uniqueness mismatch against the persisted schema', async () => {
+    const fixture = await makeIndexableCollection()
+    const { client } = serverFor(fixture)
+    const collection = client.space('s').collection('c')
+    await collection.declareIndex({ attribute: 'content.slug', unique: true })
+    await expect(
+      collection.declareIndexes({ indexes: [{ attribute: 'content.slug' }] })
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+})
+
 describe('Collection.find', () => {
   it('posts the blinded-index profile and decrypts the documents', async () => {
     const fixture = await makeIndexableCollection()
@@ -570,7 +679,7 @@ describe('Collection.meta on a blinded-index collection', () => {
     // Resolving this handle's codec reads `/meta` for the index schema; the
     // `meta()` that triggered it reuses that read instead of repeating it.
     await client.space('s').collection('c').meta()
-    expect(metaGets(calls)).toBe(1)
+    expect(metaCalls(calls, 'GET')).toBe(1)
     expect(decodes()).toBe(1)
   })
 
@@ -587,7 +696,7 @@ describe('Collection.meta on a blinded-index collection', () => {
     )
     // The codec resolution's read is the declaration's read; the write's own
     // compose step then re-reads the object it is about to replace.
-    expect(metaGets(beforeWrite)).toBe(2)
+    expect(metaCalls(beforeWrite, 'GET')).toBe(2)
   })
 
   it('re-reads /meta on the second call (no snapshot reuse)', async () => {
@@ -596,7 +705,7 @@ describe('Collection.meta on a blinded-index collection', () => {
     const collection = client.space('s').collection('c')
     await collection.meta()
     await collection.meta()
-    expect(metaGets(calls)).toBe(2)
+    expect(metaCalls(calls, 'GET')).toBe(2)
   })
 
   it('never serves a snapshot taken for another operation', async () => {
@@ -606,11 +715,11 @@ describe('Collection.meta on a blinded-index collection', () => {
     // A write resolves the codec (reading `/meta` for the schema) without
     // consuming its snapshot.
     await collection.add({ type: 'note' })
-    const afterWrite = metaGets(calls)
+    const afterWrite = metaCalls(calls, 'GET')
     // Another client changes the metadata in between.
     await client.space('s').collection('c').setName('renamed')
     const current = await collection.meta()
-    expect(metaGets(calls)).toBeGreaterThan(afterWrite)
+    expect(metaCalls(calls, 'GET')).toBeGreaterThan(afterWrite)
     expect(current?.custom).toEqual({ name: 'renamed' })
   })
 
@@ -624,7 +733,7 @@ describe('Collection.meta on a blinded-index collection', () => {
     ])
     // One read inside the codec resolution, one for the caller that did not
     // start it.
-    expect(metaGets(calls)).toBe(2)
+    expect(metaCalls(calls, 'GET')).toBe(2)
     expect(first).toEqual(second)
   })
 
@@ -633,13 +742,13 @@ describe('Collection.meta on a blinded-index collection', () => {
     delete fixture.encryption.hmac
     const { client, calls } = serverFor(fixture)
     await client.space('s').collection('c').meta()
-    expect(metaGets(calls)).toBe(1)
+    expect(metaCalls(calls, 'GET')).toBe(1)
   })
 
   it('costs one /meta read on a plaintext handle', async () => {
     const fixture = await makeIndexableCollection()
     const { client, calls } = serverFor(fixture)
     await client.space('s').collection('c', { encryption: 'plaintext' }).meta()
-    expect(metaGets(calls)).toBe(1)
+    expect(metaCalls(calls, 'GET')).toBe(1)
   })
 })

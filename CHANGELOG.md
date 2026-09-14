@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.63.0 - TBD
+
+### Added
+
+- `Collection.declareIndexes({ indexes })` declares a batch of blinded-index
+  attributes in one compare-and-swap: one metadata read and one conditional
+  write for the whole set, with newly added entries sharing one `revision` bump
+  and one `addedIn`. `declareIndex` is now a thin wrapper over it.
+
 ## 0.62.2 - 2026-09-14
 
 ### Added
