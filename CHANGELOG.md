@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.64.0 - TBD
+
+### Added
+
+- `discoverService({ url })` is exported from the root entry: the same
+  discovery `WasClient.service()` runs, callable without a signer. A caller
+  that holds a server-owned URL other than the base (the Spaces Repository
+  URL, say) discovers once and hands the `description` to each client it
+  builds through the `serviceDescription` constructor option, so no client
+  sends the `HEAD` to a base URL the server may not answer.
+
 ## 0.63.0 - 2026-09-14
 
 ### Added
