@@ -9,7 +9,7 @@
  * conditional codec's write path pre-read.
  */
 import type { EncodedWrite, ResponseLike } from '../codec.js'
-import { PreconditionFailedError } from '../errors.js'
+import { PreconditionFailedError, ValidationError } from '../errors.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -21,7 +21,8 @@ export const KEY_EPOCH_HEADER = 'Key-Epoch'
 /**
  * A conditional-write precondition: `ifMatch` is the quoted ETag an
  * update-if-unchanged write must match; `ifNoneMatch` requests a create-if-absent
- * (`If-None-Match: *`). At most one is normally set.
+ * (`If-None-Match: *`). At most one may be set; {@link writeHeaders} rejects
+ * both.
  */
 export interface WritePrecondition {
   ifMatch?: string
@@ -65,7 +66,8 @@ export function namedPrecondition(
  * Builds the headers for a write request: the content-type (when present) and
  * the conditional-write precondition headers (`If-Match` / `If-None-Match: *`).
  * Returns `undefined` when no header is needed, matching the request layer's
- * optional `headers`.
+ * optional `headers`. Throws `ValidationError` when the precondition names both
+ * `ifMatch` and `ifNoneMatch`, a pair no server state can satisfy.
  *
  * @param options {object}
  * @param [options.contentType] {string}          the body content-type, if any
@@ -86,6 +88,15 @@ export function writeHeaders({
   precondition?: WritePrecondition
   epoch?: string
 }): Record<string, string> | undefined {
+  if (precondition.ifMatch !== undefined && precondition.ifNoneMatch) {
+    // `If-Match` needs a current representation and `If-None-Match: *` needs
+    // none, so the server would refuse the pair every time.
+    throw new ValidationError(
+      'A write cannot name both `ifMatch` and `ifNoneMatch`: an update pinned ' +
+        'to a version and a create-if-absent can never both hold. Pass ' +
+        '`ifMatch` to update or `ifNoneMatch: true` to create.'
+    )
+  }
   const headers: Record<string, string> = {}
   if (contentType) {
     headers['content-type'] = contentType

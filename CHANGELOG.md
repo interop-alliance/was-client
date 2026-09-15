@@ -1,15 +1,39 @@
 # @interop/was-client Changelog
 
+## 0.65.0 - TBD
+
+### Changed
+
+- `Space.configure()` returns
+  `Omit<SpaceMetadata, 'type'> & { type?: string[] }`. The returned `type` is
+  the one sent (supplied or re-sent from the current description) and is absent
+  when neither exists, instead of a fabricated `['Space']`. Its JSDoc now says a
+  supplied `type` is sent as given on an update, where the server rejects a
+  change.
+- `writeHeaders()` throws `ValidationError` when a precondition names both
+  `ifMatch` and `ifNoneMatch`, a pair no server state can satisfy.
+
+### Fixed
+
+- `Space.replaceDescription()` writes the handle's own `id` after the caller's
+  description, so a description carrying another Space's `id` cannot retarget
+  the write.
+- `Space.registerBackend()` and `Space.import()` throw `WasServerError` naming
+  the response content type when a 2xx carries no JSON body, instead of
+  returning `null` through a non-null assertion.
+- `isPublic()` on Space, Collection, and Resource documents that `false` also
+  covers a policy not visible to the caller.
+
 ## 0.64.0 - 2026-09-14
 
 ### Added
 
-- `discoverService({ url })` is exported from the root entry: the same
-  discovery `WasClient.service()` runs, callable without a signer. A caller
-  that holds a server-owned URL other than the base (the Spaces Repository
-  URL, say) discovers once and hands the `description` to each client it
-  builds through the `serviceDescription` constructor option, so no client
-  sends the `HEAD` to a base URL the server may not answer.
+- `discoverService({ url })` is exported from the root entry: the same discovery
+  `WasClient.service()` runs, callable without a signer. A caller that holds a
+  server-owned URL other than the base (the Spaces Repository URL, say)
+  discovers once and hands the `description` to each client it builds through
+  the `serviceDescription` constructor option, so no client sends the `HEAD` to
+  a base URL the server may not answer.
 
 ## 0.63.0 - 2026-09-14
 

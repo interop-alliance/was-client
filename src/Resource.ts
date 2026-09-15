@@ -510,7 +510,9 @@ export class Resource {
   }
 
   /**
-   * Returns `true` when this resource policy is `PublicCanRead`.
+   * Returns `true` when this resource policy is `PublicCanRead`. Answers
+   * `false` when no policy is set or it is not visible to you, so a `false`
+   * does not prove the resource is private.
    *
    * @returns {Promise<boolean>}
    */

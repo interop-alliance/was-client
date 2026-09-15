@@ -2002,3 +2002,44 @@ blinded-index attribute, each call its own compare-and-swap read+write of the
 collection's `/meta` object. `declareIndexes` lets a caller declaring several
 attributes at once -- a fresh collection's whole blinded-index schema, say --
 settle them in one read and one conditional write.
+
+### WCL-73: Space API hygiene
+
+- status: done (2026-09-14)
+- priority: low
+- labels: space, api, correctness, conditional-writes, errors
+- touches:
+  - wallet-core (`src/clientAnnex/log.ts` `ensureClientAnnexSpace`): not yet
+    filed -- it returns `space.configure()` as `Promise<SpaceMetadata>`, which
+    no longer type-checks now that the returned `type` is optional. Its call
+    supplies `type`, so the value at runtime is unchanged
+- acceptance:
+  - [x] `replaceDescription` builds its body with the handle's own `id` last, so
+        a spread-in `id` cannot retarget the write
+  - [x] `configure()`'s JSDoc matches the code on `type`, and the returned
+        description does not claim a `type` it never read
+  - [x] `writeHeaders` rejects `ifMatch` and `ifNoneMatch` together with a
+        `ValidationError`
+  - [x] `registerBackend()` and `import()` throw `WasServerError` naming the
+        response content type instead of asserting non-null on an absent body
+  - [x] `isPublic()`'s JSDoc carries the same "or it is not visible to you"
+        caveat `getPolicy`'s already has, on all three handles
+
+Five small defects in one file. `replaceDescription` spreads the caller's
+description after the handle's own `id`, so a caller passing a read description
+back with one field changed can retarget the write; proven at both the type
+level (`tsc --strict` accepts it through a spread) and at runtime (the PUT went
+to one Space carrying another Space's id). `configure()` computes
+`desc.type ?? current?.type`, so a caller's `type` is forwarded on updates and
+the server rejects a change with a 400, while the JSDoc claims the current
+`type` is re-sent unchanged; the returned description also fabricates
+`['Space']` on the `force` path where `current` is null, and the exposed
+consumer is `wallet-core/src/keyring/unlockSpace.ts:90`. `writeHeaders` emits
+`if-match` and `if-none-match: *` from independent branches, and the two can
+never both pass, so the combination is an always-412 request the type system
+accepts today. `registerBackend()` and `import()` assert non-null on a body that
+is `null` for any 2xx the HTTP client did not parse as JSON, where the sibling
+paths throw `WasServerError`. `isPublic()` answers `false` when the policy is
+not visible to the caller; that is the conservative direction rather than the
+wrong one, so this last one is a documentation fix. discovered-from:
+whole-codebase review, 2026-09-11.

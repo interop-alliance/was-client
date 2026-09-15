@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 104
+nextAvailableId: 105
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -1319,41 +1319,26 @@ already-seen checkpoint, so a server that advances the checkpoint forever is
 walked forever; a scratch run reached 5001 requests. discovered-from:
 whole-codebase review, 2026-09-11.
 
-### WCL-73: Space API hygiene
+### WCL-104: Reject `ifMatch` with `ifNoneMatch` on every write route
 
 - status: todo
 - priority: low
-- labels: space, api, correctness, conditional-writes, errors
+- labels: conditional-writes, errors, collection, edv
 - acceptance:
-  - [ ] `replaceDescription` builds its body with the handle's own `id` last, so
-        a spread-in `id` cannot retarget the write
-  - [ ] `configure()`'s JSDoc matches the code on `type`, and the returned
-        description does not claim a `type` it never read
-  - [ ] `writeHeaders` rejects `ifMatch` and `ifNoneMatch` together with a
-        `ValidationError`
-  - [ ] `registerBackend()` and `import()` throw `WasServerError` naming the
-        response content type instead of asserting non-null on an absent body
-  - [ ] `isPublic()`'s JSDoc carries the same "or it is not visible to you"
-        caveat `getPolicy`'s already has, on all three handles
+  - [ ] `Collection.configure()`, `replaceDescription()`, and `setMeta()` throw
+        `ValidationError` for `ifMatch` plus `ifNoneMatch: true` instead of
+        taking the create branch and dropping `ifMatch`
+  - [ ] A codec-driven `Resource.put` with both throws `ValidationError` rather
+        than a local `PreconditionFailedError`
+  - [ ] Unit coverage for both routes
 
-Five small defects in one file. `replaceDescription` spreads the caller's
-description after the handle's own `id`, so a caller passing a read description
-back with one field changed can retarget the write; proven at both the type
-level (`tsc --strict` accepts it through a spread) and at runtime (the PUT went
-to one Space carrying another Space's id). `configure()` computes
-`desc.type ?? current?.type`, so a caller's `type` is forwarded on updates and
-the server rejects a change with a 400, while the JSDoc claims the current
-`type` is re-sent unchanged; the returned description also fabricates
-`['Space']` on the `force` path where `current` is null, and the exposed
-consumer is `wallet-core/src/keyring/unlockSpace.ts:90`. `writeHeaders` emits
-`if-match` and `if-none-match: *` from independent branches, and the two can
-never both pass, so the combination is an always-412 request the type system
-accepts today. `registerBackend()` and `import()` assert non-null on a body that
-is `null` for any 2xx the HTTP client did not parse as JSON, where the sibling
-paths throw `WasServerError`. `isPublic()` answers `false` when the policy is
-not visible to the caller; that is the conservative direction rather than the
-wrong one, so this last one is a documentation fix. discovered-from:
-whole-codebase review, 2026-09-11.
+`writeHeaders` now rejects the pair, but two routes never reach it with both
+members. `Collection#writeStored` checks `ifNoneMatch === true` first and sends
+a create with `ifMatch` discarded, so the call succeeds or fails on the create
+alone. The conditional codec write path runs `assertPreconditionAgainstPreRead`
+before building headers, and it answers the pair with a 412 whichever way the
+pre-read comes out. Both hide a caller bug behind a result that looks like a
+race. discovered-from: WCL-73.
 
 ### WCL-74: `isEncryptedEnvelope` is a fail-open routing predicate, and its JSDoc says to use it that way
 

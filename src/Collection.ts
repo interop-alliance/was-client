@@ -1865,7 +1865,9 @@ export class Collection {
   }
 
   /**
-   * Returns `true` when this collection's policy is `PublicCanRead`.
+   * Returns `true` when this collection's policy is `PublicCanRead`. Answers
+   * `false` when no policy is set or it is not visible to you, so a `false`
+   * does not prove the collection is private.
    *
    * @returns {Promise<boolean>}
    */

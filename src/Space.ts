@@ -102,6 +102,34 @@ function spaceMetadataBody({
   }
 }
 
+/**
+ * The error for a successful response that carried no parsed JSON body where
+ * one is required. The request layer parses a body into `data` only for a JSON
+ * content type, so naming the content type the server sent points at the
+ * cause (a mislabeled or body-less 2xx).
+ *
+ * @param options {object}
+ * @param options.response {HttpResponse | null}
+ * @param options.operation {string}   the request, as the message's subject
+ * @param options.expected {string}   what the body should have carried
+ * @returns {WasServerError}
+ */
+function missingJsonBodyError({
+  response,
+  operation,
+  expected
+}: {
+  response: HttpResponse | null
+  operation: string
+  expected: string
+}): WasServerError {
+  const contentType = response?.headers.get('content-type') ?? 'no content-type'
+  return new WasServerError(
+    `${operation} response carried no JSON body (the server sent ` +
+      `${contentType}); expected ${expected}.`
+  )
+}
+
 export class Space {
   readonly id: string
 
@@ -223,7 +251,9 @@ export class Space {
       path: this.#metaPath,
       method: 'PUT',
       capability: this.#capability,
-      json: spaceMetadataBody({ id: this.id, ...description }),
+      // The handle's own `id` goes last: a caller handing back a read
+      // description (which carries its own `id`) cannot retarget the write.
+      json: spaceMetadataBody({ ...description, id: this.id }),
       headers: writeHeaders({
         precondition: {
           ifMatch: options.ifMatch,
@@ -258,8 +288,10 @@ export class Space {
    * @param [desc.controller] {string}
    * @param [desc.type] {string[]}   the Space Metadata object's `type` array (e.g.
    *   a typed auxiliary Space). The server accepts it at creation only and
-   *   treats it as immutable afterwards, so pass it on the create; on an
-   *   update the current description's `type` is re-sent unchanged
+   *   treats it as immutable afterwards, so pass it on the create. On an
+   *   update, omit it to re-send the current description's `type`; a supplied
+   *   `type` is sent as given, and the server rejects one that differs from
+   *   the stored value with a `ValidationError`
    * @param [desc.force] {boolean}   proceed even when the current description is
    *   unreadable and a full description is not supplied (see above)
    * @param [desc.current] {SpaceMetadata | null}   the current description,
@@ -270,7 +302,10 @@ export class Space {
    *   what asks for the read. Supplying a description this handle's own writes
    *   have since superseded would merge stale fields forward, so pass only a
    *   read the caller itself made and has not written over
-   * @returns {Promise<SpaceMetadata>}
+   * @returns {Promise<Omit<SpaceMetadata, 'type'> & { type?: string[] }>}   the
+   *   description as written; `type` is absent when it was neither supplied
+   *   nor read from the current description, since the server's value is then
+   *   unknown
    */
   async configure(desc: {
     name?: string
@@ -278,7 +313,7 @@ export class Space {
     type?: string[]
     force?: boolean
     current?: SpaceMetadata | null
-  }): Promise<SpaceMetadata> {
+  }): Promise<Omit<SpaceMetadata, 'type'> & { type?: string[] }> {
     const current =
       desc.current !== undefined ? desc.current : await this.describe()
     if (
@@ -309,7 +344,7 @@ export class Space {
     })
     return {
       id: this.id,
-      type: type ?? ['Space'],
+      ...(type !== undefined ? { type } : {}),
       ...(name !== undefined ? { name } : {}),
       // `controller` is a user-supplied DID string; assert it as the branded
       // `IDID` the wire type now uses (the server validates the DID form).
@@ -551,8 +586,15 @@ export class Space {
       capability: this.#capability,
       json: registration
     })
-    // A successful registration always carries the sanitized descriptor body.
-    return dataOrNull<BackendDescriptor>(response)!
+    const descriptor = dataOrNull<BackendDescriptor>(response)
+    if (descriptor === null) {
+      throw missingJsonBodyError({
+        response,
+        operation: 'Backend registration',
+        expected: 'the sanitized backend descriptor'
+      })
+    }
+    return descriptor
   }
 
   /**
@@ -777,8 +819,15 @@ export class Space {
       body,
       headers: { 'content-type': 'application/x-tar' }
     })
-    // A successful import always carries the stats body.
-    return dataOrNull<ImportStats>(response)!
+    const stats = dataOrNull<ImportStats>(response)
+    if (stats === null) {
+      throw missingJsonBodyError({
+        response,
+        operation: 'Import',
+        expected: 'the import stats'
+      })
+    }
+    return stats
   }
 
   /**
@@ -811,7 +860,9 @@ export class Space {
   }
 
   /**
-   * Returns `true` when this space's policy is `PublicCanRead`.
+   * Returns `true` when this space's policy is `PublicCanRead`. Answers
+   * `false` when no policy is set or it is not visible to you, so a `false`
+   * does not prove the space is private.
    *
    * @returns {Promise<boolean>}
    */

@@ -119,6 +119,35 @@ describe('space.registerBackend()', () => {
       client.space('s').registerBackend(registration)
     ).rejects.toBeInstanceOf(ConflictError)
   })
+
+  it('throws WasServerError naming the content type on a 2xx with no JSON body', async () => {
+    const client = clientWithStub(() =>
+      jsonResponse({ status: 201, headers: { 'content-type': 'text/plain' } })
+    )
+    const attempt = client.space('s').registerBackend(registration)
+    await expect(attempt).rejects.toBeInstanceOf(WasServerError)
+    await expect(attempt).rejects.toThrow(/text\/plain/)
+  })
+})
+
+describe('space.import()', () => {
+  it('POSTs the tar and returns the import stats', async () => {
+    const stats = { collections: 1, resources: 2 }
+    const { client, calls } = clientWithRequestSpy({ data: stats })
+    const result = await client.space('s').import(new Uint8Array([1, 2, 3]))
+    expect(calls[0]?.method).toBe('POST')
+    expect(calls[0]?.url).toBe('https://was.example/space/s/import')
+    expect(result).toEqual(stats)
+  })
+
+  it('throws WasServerError naming the content type on a 2xx with no JSON body', async () => {
+    const client = clientWithStub(() =>
+      jsonResponse({ status: 200, headers: { 'content-type': 'text/html' } })
+    )
+    const attempt = client.space('s').import(new Uint8Array([1, 2, 3]))
+    await expect(attempt).rejects.toBeInstanceOf(WasServerError)
+    await expect(attempt).rejects.toThrow(/text\/html/)
+  })
 })
 
 describe('space.updateBackend()', () => {
@@ -1038,9 +1067,11 @@ describe('Space.configure() unreadable-description guard', () => {
 
   it('omits type from the PUT when neither supplied nor current', async () => {
     const { client, calls } = guardedClient()
-    await client.space('s').configure({ name: 'x', force: true })
+    const result = await client.space('s').configure({ name: 'x', force: true })
     const put = calls.find(call => call.method === 'PUT')
     expect(put?.json).not.toHaveProperty('type')
+    // The server's `type` was never read, so the result does not claim one.
+    expect(result).not.toHaveProperty('type')
   })
 
   it('fails closed on a supplied `current: null`', async () => {
@@ -1138,6 +1169,28 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
           { ifNoneMatch: true }
         )
     ).rejects.toThrow(PreconditionFailedError)
+  })
+
+  it('writes to its own id when the description carries another id', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    // A description read from another Space, handed back with one change.
+    const other = { ...current, id: 'other', name: 'Renamed' }
+    await client.space('s').replaceDescription(other)
+    expect(calls[0]?.url).toBe('https://was.example/space/s/meta')
+    expect(calls[0]?.json).toMatchObject({ id: 's', name: 'Renamed' })
+  })
+
+  it('rejects ifMatch and ifNoneMatch together before sending', async () => {
+    const { client, calls } = clientWithRequestSpy()
+    await expect(
+      client
+        .space('s')
+        .replaceDescription(
+          { controller: 'did:example:alice' },
+          { ifMatch: '"7"', ifNoneMatch: true }
+        )
+    ).rejects.toThrow(ValidationError)
+    expect(calls).toHaveLength(0)
   })
 })
 
