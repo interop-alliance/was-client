@@ -5,14 +5,17 @@
  * Unit tests for the plaintext (identity) DocCipher and the EDV-envelope
  * predicate. The plaintext cipher is the seam for a content-addressed plaintext
  * collection: `encrypt` is the identity transform keyed by the content id,
- * `decrypt` returns the body unchanged, and `encryptUpdate` throws.
+ * `decrypt` returns the body unchanged once its content id matches the id it
+ * was read under, and `encryptUpdate` throws.
  */
 import { describe, it, expect } from 'vitest'
 
 import {
   contentCid,
   createPlaintextDocCipher,
-  isEncryptedEnvelope
+  IntegrityError,
+  isEncryptedEnvelope,
+  isIntegrityError
 } from '../../src/sync/index.js'
 import type { Json } from '../../src/sync/index.js'
 
@@ -36,12 +39,46 @@ describe('createPlaintextDocCipher', () => {
   })
 
   it('decrypt is identity', async () => {
-    expect(await cipher.decrypt({ envelope: CREDENTIAL })).toEqual(CREDENTIAL)
+    expect(
+      await cipher.decrypt({ id: contentCid(CREDENTIAL), envelope: CREDENTIAL })
+    ).toEqual(CREDENTIAL)
   })
 
   it('round-trips through encrypt then decrypt', async () => {
-    const { envelope } = await cipher.encrypt({ data: CREDENTIAL })
-    expect(await cipher.decrypt({ envelope })).toEqual(CREDENTIAL)
+    const { id, envelope } = await cipher.encrypt({ data: CREDENTIAL })
+    expect(await cipher.decrypt({ id, envelope })).toEqual(CREDENTIAL)
+  })
+
+  it('decrypt refuses a document stored under an id it does not hash to', async () => {
+    const { id } = await cipher.encrypt({ data: CREDENTIAL })
+    const tampered: Json = {
+      ...(CREDENTIAL as Record<string, Json>),
+      issuer: 'did:key:zMallory'
+    }
+    const refusal = await cipher
+      .decrypt({ id, envelope: tampered })
+      .then(() => null)
+      .catch((err: unknown) => err)
+    expect(refusal).toBeInstanceOf(IntegrityError)
+    expect(isIntegrityError(refusal)).toBe(true)
+  })
+
+  it('decrypt refuses an authentic document presented under another id', async () => {
+    const other = await cipher.encrypt({ data: { note: 'other' } })
+    await expect(
+      cipher.decrypt({ id: other.id, envelope: CREDENTIAL })
+    ).rejects.toThrow(IntegrityError)
+  })
+
+  it('decrypt refuses a call without a resource id', async () => {
+    const refusal = await cipher
+      .decrypt({ envelope: CREDENTIAL } as unknown as {
+        id: string
+        envelope: Json
+      })
+      .then(() => null)
+      .catch((err: unknown) => err)
+    expect((refusal as Error).name).toBe('ValidationError')
   })
 
   it('encryptUpdate throws (content-addressed docs never update in place)', async () => {

@@ -17,7 +17,8 @@
  *   Collection provisioning, and its Space half alone (ensure the Space once,
  *   then thread the returned description through every collection).
  * - `isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
- *   `isUnknownEpochError` -- the classification contract for the signals
+ *   `isUnknownEpochError` / `isKeyUnwrapError` / `isIntegrityError` -- the
+ *   classification contract for the signals
  *   below. A consumer matches by `err.name` and never with `instanceof`,
  *   because every one of these errors is raised inside a seam the app injects
  *   (the port, the caller's `DocCipher`) and that seam can resolve to a second
@@ -33,8 +34,10 @@
  * signal (`UnknownEpochError`: the envelope's epoch is not on the descriptor at
  * all, so re-read it and rebuild the cipher) and the membership signal
  * (`KeyUnwrapError`: the epoch is on the descriptor but this reader holds no
- * key for it, so a refresh cannot help). `EncryptionError`, the fail-closed
- * umbrella `KeyUnwrapError` falls under, rides along. The classes are exported
+ * key for it, so a refresh cannot help). So is the tamper signal
+ * (`IntegrityError`: the stored body does not verify against the resource id
+ * it was read under). `EncryptionError`, the fail-closed umbrella both
+ * `KeyUnwrapError` and `IntegrityError` fall under, rides along. The classes are exported
  * for construction and for a caller inside one resolved copy; across a package
  * boundary the predicates are the contract
  * (`decisions/0001-cross-package-errors-match-by-name.md`).
@@ -52,11 +55,13 @@ export {
   isSyncAuthError,
   isSyncConflictError,
   isSyncNotFoundError,
+  isIntegrityError,
   isKeyUnwrapError,
   isUnknownEpochError
 } from './predicates.js'
 export {
   EncryptionError,
+  IntegrityError,
   KeyUnwrapError,
   UnknownEpochError,
   WasSyncAuthError,

@@ -1,5 +1,34 @@
 # @interop/was-client Changelog
 
+## 0.66.0 - TBD
+
+### Changed
+
+- Breaking: `DocCipher.decrypt` takes `{ id, envelope, context? }` and resolves
+  `Json | Blob`. `id` is required: the resource id the replica read the body
+  under. A call without it throws `ValidationError` from both built-in ciphers.
+  `context` is an optional `CodecRequestContext`.
+- `createEdvDocCipher` and `createRefreshingEdvDocCipher` accept an optional
+  `spaceId`. With it and a `context`, `decrypt` reassembles a chunked envelope
+  from its chunk resources and resolves a `Blob`.
+- `Collection.codecContext()` is public, so a sync replica can pass it to
+  `DocCipher.decrypt`.
+
+### Added
+
+- `isIntegrityError` predicate and an `IntegrityError` re-export on the `./sync`
+  subpath.
+
+### Fixed
+
+- The EDV `DocCipher.decrypt` forwards the resource id to the codec, so a
+  replication read verifies the envelope's resource binding. An authentic
+  envelope for one resource presented under another id throws `IntegrityError`.
+  Before, both id checks were skipped on every sync read.
+- `createPlaintextDocCipher`'s `decrypt` recomputes the content id and throws
+  `IntegrityError` when it differs from the resource id. Before, it returned any
+  body unchanged.
+
 ## 0.65.0 - 2026-09-15
 
 ### Changed

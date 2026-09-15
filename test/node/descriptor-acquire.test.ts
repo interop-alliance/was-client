@@ -23,7 +23,7 @@ import {
   ResourceLogContinuityError,
   ResourceLogIntegrityError
 } from '@interop/vh-resource-log'
-import { PreconditionFailedError } from '../../src/index.js'
+import { IntegrityError, PreconditionFailedError } from '../../src/index.js'
 import type { CollectionEncryption } from '../../src/index.js'
 import {
   acquireDescriptor,
@@ -463,9 +463,26 @@ describe('createRefreshingEdvDocCipher', () => {
       source: memorySource(),
       cache
     })
-    const { envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
+    const { id, envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
     expect(epoch).toBe(descriptor2.currentEpoch)
-    expect(await cipher.decrypt({ envelope })).toEqual({ n: 1 })
+    expect(await cipher.decrypt({ id, envelope })).toEqual({ n: 1 })
+  })
+
+  it('forwards the resource id, so a swapped envelope is refused', async () => {
+    const owner = await makeReader()
+    const { descriptor2 } = await mintRotatedDescriptors(owner)
+    const cache = memoryCache()
+    cache._set(COLLECTION_ID, descriptor2)
+    const cipher = await createRefreshingEdvDocCipher({
+      ...owner,
+      collectionId: COLLECTION_ID,
+      cache
+    })
+    const resourceA = await cipher.encrypt({ data: { n: 1 } })
+    const resourceB = await cipher.encrypt({ data: { n: 2 } })
+    await expect(
+      cipher.decrypt({ id: resourceB.id, envelope: resourceA.envelope })
+    ).rejects.toThrow(IntegrityError)
   })
 
   it("encrypts under the acquired descriptor's current epoch", async () => {
@@ -480,9 +497,9 @@ describe('createRefreshingEdvDocCipher', () => {
       source,
       cache: memoryCache()
     })
-    const { envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
+    const { id, envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
     expect(epoch).toBe(descriptor1.currentEpoch)
-    expect(await cipher.decrypt({ envelope })).toEqual({ n: 1 })
+    expect(await cipher.decrypt({ id, envelope })).toEqual({ n: 1 })
   })
 
   it('refreshes exactly once on an unknown-epoch decrypt: re-read, swap, retry', async () => {
@@ -512,11 +529,15 @@ describe('createRefreshingEdvDocCipher', () => {
     expect(one.epoch).toBe(descriptor2.currentEpoch)
 
     // First unknown-epoch decrypt drives the one re-read + swap + retry...
-    expect(await reader.decrypt({ envelope: one.envelope })).toEqual({ n: 1 })
+    expect(
+      await reader.decrypt({ id: one.id, envelope: one.envelope })
+    ).toEqual({ n: 1 })
     expect(source.fetches).toBe(2)
     expect(cache._get(COLLECTION_ID)).toEqual(descriptor2)
     // ...and later fresh-epoch decrypts ride the swapped cipher, no refetch.
-    expect(await reader.decrypt({ envelope: two.envelope })).toEqual({ n: 2 })
+    expect(
+      await reader.decrypt({ id: two.id, envelope: two.envelope })
+    ).toEqual({ n: 2 })
     expect(source.fetches).toBe(2)
   })
 
@@ -546,16 +567,16 @@ describe('createRefreshingEdvDocCipher', () => {
       collectionId: COLLECTION_ID,
       encryption: foreignDescriptor
     })
-    const { envelope } = await foreign.encrypt({ data: { n: 1 } })
+    const { id, envelope } = await foreign.encrypt({ data: { n: 1 } })
 
     // The first foreign envelope spends the one refresh (the descriptor is
     // unchanged, so the retry fails the same way)...
-    await expect(reader.decrypt({ envelope })).rejects.toThrow(
+    await expect(reader.decrypt({ id, envelope })).rejects.toThrow(
       UnknownEpochError
     )
     expect(source.fetches).toBe(2)
     // ...and a later one neither refetches nor loops.
-    await expect(reader.decrypt({ envelope })).rejects.toThrow(
+    await expect(reader.decrypt({ id, envelope })).rejects.toThrow(
       UnknownEpochError
     )
     expect(source.fetches).toBe(2)
@@ -579,13 +600,13 @@ describe('createRefreshingEdvDocCipher', () => {
       collectionId: COLLECTION_ID,
       encryption: descriptor2
     })
-    const { envelope } = await writer.encrypt({ data: { n: 1 } })
+    const { id, envelope } = await writer.encrypt({ data: { n: 1 } })
 
     // Nothing answers the re-read: the description is unreachable and the
     // cache cannot be read either, so the rebuild rejects.
     source.failing.add(COLLECTION_ID)
     cache.failReads = true
-    await expect(reader.decrypt({ envelope })).rejects.toThrow(
+    await expect(reader.decrypt({ id, envelope })).rejects.toThrow(
       UnknownEpochError
     )
     expect(source.fetches).toBe(2)
@@ -595,7 +616,7 @@ describe('createRefreshingEdvDocCipher', () => {
     source.failing.delete(COLLECTION_ID)
     cache.failReads = false
     source._set(COLLECTION_ID, descriptor2)
-    expect(await reader.decrypt({ envelope })).toEqual({ n: 1 })
+    expect(await reader.decrypt({ id, envelope })).toEqual({ n: 1 })
     expect(source.fetches).toBe(3)
   })
 
@@ -617,9 +638,9 @@ describe('createRefreshingEdvDocCipher', () => {
     })
     // Offline, the previously-shared collection keeps encrypting under its
     // current epoch (the cached descriptor).
-    const { envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
+    const { id, envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
     expect(epoch).toBe(descriptor2.currentEpoch)
-    expect(await cipher.decrypt({ envelope })).toEqual({ n: 1 })
+    expect(await cipher.decrypt({ id, envelope })).toEqual({ n: 1 })
     expect(errors).toHaveLength(1)
   })
 
@@ -639,8 +660,8 @@ describe('createRefreshingEdvDocCipher', () => {
       collectionId: COLLECTION_ID,
       encryption: descriptor2
     })
-    const { envelope } = await writer.encrypt({ data: { n: 1 } })
-    await expect(reader.decrypt({ envelope })).rejects.toThrow(
+    const { id, envelope } = await writer.encrypt({ data: { n: 1 } })
+    await expect(reader.decrypt({ id, envelope })).rejects.toThrow(
       UnknownEpochError
     )
   })
@@ -672,7 +693,9 @@ describe('createRefreshingEdvDocCipher', () => {
       current: created.envelope
     })
     expect(updated.id).toBe(created.id)
-    expect(await cipher.decrypt({ envelope: updated.envelope })).toEqual({
+    expect(
+      await cipher.decrypt({ id: updated.id, envelope: updated.envelope })
+    ).toEqual({
       name: 'Ada Lovelace'
     })
   })

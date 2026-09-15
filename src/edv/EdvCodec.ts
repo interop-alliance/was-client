@@ -760,7 +760,7 @@ export class EdvCodec implements ResourceCodec {
           'codec was built for a local replica and holds no route to address ' +
           'a document and its chunk resources with. Chunked encrypted blobs ' +
           'can only be read and written through a Collection handle bound to ' +
-          'a Space.'
+          'a Space, or read through a DocCipher built with its `spaceId`.'
       )
     }
     return this.#transportFactory({ context, documentHeaders })
@@ -1077,7 +1077,8 @@ export class EdvCodec implements ResourceCodec {
         'Cannot read this resource: it is a chunked encrypted blob, whose ' +
           'bytes live in separate chunk resources, and this caller supplied no ' +
           'request context to fetch them with. Read it through a Resource or ' +
-          'Collection handle (`resource.get()`), which supplies one.'
+          'Collection handle (`resource.get()`), which supplies one, or pass ' +
+          "`collection.codecContext()` to the sync DocCipher's `decrypt`."
       )
     }
     if (id === undefined) {

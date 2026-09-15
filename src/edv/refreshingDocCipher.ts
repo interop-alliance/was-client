@@ -57,6 +57,8 @@ import {
  *   collection's envelopes are sealed to
  * @param options.keyResolver {IKeyResolver}
  * @param options.collectionId {string}
+ * @param [options.spaceId] {string}   the WAS Space holding the collection,
+ *   which lets a `decrypt` given a request context read a chunked envelope
  * @param [options.idDerivation] {'content' | 'random'}   defaults to
  *   `'content'`
  * @param [options.source] {EncryptionDescriptorSource}
@@ -69,6 +71,7 @@ export async function createRefreshingEdvDocCipher({
   keyAgreementKey,
   keyResolver,
   collectionId,
+  spaceId,
   idDerivation,
   source,
   cache,
@@ -77,6 +80,7 @@ export async function createRefreshingEdvDocCipher({
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
   collectionId: string
+  spaceId?: string
   idDerivation?: 'content' | 'random'
   source?: EncryptionDescriptorSource
   cache: EncryptionDescriptorCache
@@ -100,6 +104,7 @@ export async function createRefreshingEdvDocCipher({
       keyAgreementKey,
       keyResolver,
       collectionId,
+      spaceId,
       idDerivation,
       encryption
     })
@@ -123,9 +128,9 @@ export async function createRefreshingEdvDocCipher({
       return inner.encryptUpdate(options)
     },
 
-    async decrypt({ envelope }) {
+    async decrypt(options) {
       try {
-        return await inner.decrypt({ envelope })
+        return await inner.decrypt(options)
       } catch (err) {
         // `instanceof` is safe here and only here: `inner` is built in this
         // package by `createEdvDocCipher`, which raises this package's own
@@ -166,7 +171,7 @@ export async function createRefreshingEdvDocCipher({
         // no-network decrypt that fails the same way -- so a genuinely
         // foreign envelope still surfaces UnknownEpochError, and never a
         // second description read.
-        return inner.decrypt({ envelope })
+        return inner.decrypt(options)
       }
     }
   }

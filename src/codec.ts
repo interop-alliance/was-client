@@ -362,14 +362,15 @@ export interface ResourceCodec {
    * @param [expectedId] {string}   the resource id the read targeted. An
    *   encrypting codec verifies the decrypted envelope's AEAD-authenticated
    *   binding against it (a server-side swap of two envelopes is then detected);
-   *   the identity codec ignores it. Optional and backward compatible -- a
-   *   caller that does not know the id (or the plaintext codec) omits it.
+   *   the identity codec ignores it. Every handle read and the sync `DocCipher`
+   *   pass it. A caller that omits it skips the binding check.
    * @param [context] {CodecRequestContext}   the signed-request escape hatch,
    *   passed by every handle read. A codec whose stored form can span several
    *   resources (the EDV codec's chunked blobs) reads the remainder through it;
-   *   the identity codec ignores it. A caller with no request layer (the sync
-   *   `DocCipher`, reading a local replica) omits it, and a codec that then
-   *   meets a multi-resource document throws rather than return a stub.
+   *   the identity codec ignores it. The sync `DocCipher` forwards the context
+   *   its caller supplied. A caller with no request layer omits it, and a codec
+   *   that then meets a multi-resource document throws rather than return a
+   *   stub.
    * @returns {Promise<Json | Blob>}
    */
   decode(

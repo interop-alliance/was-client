@@ -263,9 +263,13 @@ export class Collection {
    * EDV codec reading a chunked blob back), bound to this handle's capability
    * and sharing its memoized feature probe.
    *
+   * Public so a sync replica can pass it to `DocCipher.decrypt`, which then
+   * reassembles a chunked envelope from its chunk resources on this
+   * collection. Building it performs no I/O.
+   *
    * @returns {CodecRequestContext}
    */
-  #codecContext(): CodecRequestContext {
+  codecContext(): CodecRequestContext {
     return codecRequestContext(this.#context, {
       features: this.#features,
       capability: this.#capability
@@ -1416,7 +1420,7 @@ export class Collection {
     // Each envelope is an independent JWE open with nothing carried between
     // them, so the page decrypts concurrently. `Promise.all` preserves order,
     // so `items` still matches the server's ranking.
-    const codecContext = this.#codecContext()
+    const codecContext = this.codecContext()
     const items: FindPage['items'] = await Promise.all(
       documents.map(async envelope => {
         // Restrict-mode ids make the stored document's own id the WAS resource

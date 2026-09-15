@@ -41,7 +41,7 @@ import type {
   ResourceCodec
 } from '../../src/index.js'
 import type { SingleWriteCodec } from '../helpers/codec.js'
-import { stubFeatures } from '../helpers/codec.js'
+import { memoryBackend } from '../helpers/codec.js'
 import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 import { buildEdvCodec } from '../../src/edv/EdvCodec.js'
 import {
@@ -561,77 +561,6 @@ describe('EdvCodec: binary', () => {
   })
 })
 
-/**
- * An in-memory WAS backend for the chunked-blob tests: it answers the request
- * context a handle hands the codec, storing every `PUT` body under its path and
- * serving it back on `GET`. That is the whole surface `WasTransport` needs, so
- * a chunked write plan and a chunked read run end to end with no network.
- *
- * It also answers `DELETE` (dropping the stored body), which the chunked
- * write's failure cleanup needs.
- *
- * @param [options] {object}
- * @param [options.features] {string[]}   the backend's advertised affordances
- * @param [options.descriptorAbsent] {boolean}   whether the feature probe
- *   should report that the backend descriptor could not be read at all
- * @returns {object}   the request context, the stored bodies by path, and the
- *   ordered lists of written and deleted paths
- */
-function memoryBackend({
-  features = ['chunked-streams', 'conditional-writes'],
-  descriptorAbsent = false
-}: { features?: string[]; descriptorAbsent?: boolean } = {}): {
-  context: CodecRequestContext
-  store: Map<string, Uint8Array>
-  writes: string[]
-  deletes: string[]
-} {
-  const store = new Map<string, Uint8Array>()
-  const writes: string[] = []
-  const deletes: string[] = []
-  const respond = (
-    body: Uint8Array | undefined,
-    etag?: string
-  ): HttpResponse => {
-    const text = body === undefined ? '' : new TextDecoder().decode(body)
-    return {
-      headers: {
-        get: (name: string) =>
-          name.toLowerCase() === 'etag' ? (etag ?? null) : null
-      },
-      async json() {
-        return JSON.parse(text)
-      },
-      async text() {
-        return text
-      }
-    } as unknown as HttpResponse
-  }
-  const context: CodecRequestContext = {
-    features: stubFeatures(features, { descriptorAbsent }),
-    async request(input) {
-      const path = input.path as string
-      const method = input.method ?? 'GET'
-      if (method === 'PUT') {
-        writes.push(path)
-        store.set(path, input.body as Uint8Array)
-        return respond(undefined, '"v1"')
-      }
-      if (method === 'DELETE') {
-        deletes.push(path)
-        store.delete(path)
-        return respond(undefined)
-      }
-      const stored = store.get(path)
-      if (stored === undefined) {
-        throw Object.assign(new Error(`HTTP 404 ${path}`), { status: 404 })
-      }
-      return respond(stored)
-    }
-  }
-  return { context, store, writes, deletes }
-}
-
 describe('EdvCodec: chunked blob auto-routing', () => {
   const blob = new Uint8Array(64).map((_value, index) => (index * 7) % 251)
 
@@ -815,22 +744,14 @@ describe('EdvCodec: chunked blob auto-routing', () => {
       new TextEncoder().encode(JSON.stringify(envelope))
     )
 
-    const reads: string[] = []
-    const watching: CodecRequestContext = {
-      features: backend.context.features,
-      async request(input) {
-        reads.push(input.path as string)
-        return backend.context.request(input)
-      }
-    }
-    const decoded = await codec.decode(swapped, planA.id, watching)
+    const decoded = await codec.decode(swapped, planA.id, backend.context)
     const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
     expect(out).toEqual(blob)
     expect(out).not.toEqual(otherBlob)
     // Nothing under B's document path was ever fetched.
-    expect(reads.some(path => path.startsWith(`/space/s/c/${planB.id}`))).toBe(
-      false
-    )
+    expect(
+      backend.reads.some(path => path.startsWith(`/space/s/c/${planB.id}`))
+    ).toBe(false)
 
     // And served into B's own slot, the same envelope is refused outright by
     // the `was.resource` binding check, before any chunk is fetched.
@@ -855,23 +776,15 @@ describe('EdvCodec: chunked blob auto-routing', () => {
     ) as { stream?: unknown }
     envelope.stream = { chunks: 1 }
 
-    const reads: string[] = []
-    const watching: CodecRequestContext = {
-      features: backend.context.features,
-      async request(input) {
-        reads.push(input.path as string)
-        return backend.context.request(input)
-      }
-    }
     const decoded = await codec.decode(
       responseFrom(new TextEncoder().encode(JSON.stringify(envelope))),
       encoded.id,
-      watching
+      backend.context
     )
     expect(decoded).toBeInstanceOf(Blob)
     const out = new Uint8Array(await (decoded as Blob).arrayBuffer())
     expect(out).toEqual(small)
-    expect(reads).toEqual([])
+    expect(backend.reads).toEqual([])
   })
 
   it('routes an over-threshold Blob on its size alone', async () => {

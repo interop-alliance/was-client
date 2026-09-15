@@ -5,9 +5,9 @@
  * The `err.name` predicates that classify the errors a replication path can
  * meet: the port's two wire signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), its opt-in revoked-access signal
- * (`WasSyncAuthError`), and the cipher's two no-key signals: the
- * stale-descriptor one (`UnknownEpochError`) and the not-a-recipient one
- * (`KeyUnwrapError`).
+ * (`WasSyncAuthError`), the cipher's two no-key signals (the stale-descriptor
+ * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), and its
+ * tamper signal (`IntegrityError`).
  *
  * They live beside the classes that assign the names they match (`errors.ts`)
  * because every one of those errors is raised inside a seam the consuming app
@@ -106,4 +106,18 @@ export function isUnknownEpochError(err: unknown): boolean {
  */
 export function isKeyUnwrapError(err: unknown): boolean {
   return nameOf(err) === 'KeyUnwrapError'
+}
+
+/**
+ * Whether an error is the cipher's tamper signal (`IntegrityError`): a stored
+ * body failed verification against the resource id it was read under, or an
+ * envelope this reader holds a key for failed to authenticate. The server
+ * altered the data or served it under another id. Retrying the read or
+ * refreshing the descriptor cannot fix it, and the row must not be applied.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {boolean}
+ */
+export function isIntegrityError(err: unknown): boolean {
+  return nameOf(err) === 'IntegrityError'
 }

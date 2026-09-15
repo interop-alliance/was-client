@@ -1017,31 +1017,38 @@ plugs into:
   failure arrives as the typed `WasError` subclass for its status, carrying the
   server's `problem+json` fields.
 - **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
-  `isUnknownEpochError` / `isKeyUnwrapError`** classify those signals by
-  `err.name`. Use them rather than `instanceof`: the port and the `DocCipher`
-  are seams your app injects, and a tree that resolves two copies of this
-  package makes an `instanceof` check quietly false. Read what you need off the
-  matched value, such as `err.status` on an auth error to tell a 401 from the
-  masked 404. The last two tell a decrypt's two no-key outcomes apart: an epoch
-  the reader's descriptor does not list (a re-read may fix it) and an epoch it
-  lists but this reader holds no key for (real data, permanently unreadable
-  here, never garbage).
+  `isUnknownEpochError` / `isKeyUnwrapError` / `isIntegrityError`** classify
+  those signals by `err.name`. Use them rather than `instanceof`: the port and
+  the `DocCipher` are seams your app injects, and a tree that resolves two
+  copies of this package makes an `instanceof` check quietly false. Read what
+  you need off the matched value, such as `err.status` on an auth error to tell
+  a 401 from the masked 404. The last two tell a decrypt's two no-key outcomes
+  apart: an epoch the reader's descriptor does not list (a re-read may fix it)
+  and an epoch it lists but this reader holds no key for (real data, permanently
+  unreadable here, never garbage). `isIntegrityError` matches a stored body that
+  does not verify against the resource id it was read under. Do not apply that
+  row.
 - **`SyncStatus`** (`'idle' | 'syncing' | 'synced' | 'error'`) is the closed
   vocabulary a replication driver reports one feed's state through.
 - **`DocCipher`** is the per-collection encrypt/decrypt seam sitting above the
   port: it turns a JSON document into its stored body (minting the resource id)
-  and back. `createPlaintextDocCipher(...)` is the crypto-free identity
-  implementation for a plaintext content-addressed collection;
-  `createEdvDocCipher(...)` (from `@interop/was-client/edv`) is the encrypting
-  one, built from the collection's key-epoch descriptor (every encrypted
-  collection carries one from birth; install epoch[0] at provision time with
-  `ensureFirstEpoch`). On a searchable collection, also hand it the stored
-  Collection `/meta` value (the `meta` input, or `applyMeta` when the replica's
-  copy changes) so pushed documents carry blinded index entries and stay visible
-  to `find()`. `createEdvEncryptOnlyDocCipher(...)` is the write-only
-  counterpart, built from the descriptor alone with no key-agreement secret
-  (writes seal to the current epoch's public key, reconstructed from the epoch
-  id); `decrypt` on it refuses with the typed `EncryptOnlyCipherError`.
+  and back. `decrypt({ id, envelope, context? })` takes the resource id the
+  replica read the body under (the feed row's `id`, not the envelope's own) and
+  throws `IntegrityError` when the body was written for a different id. Pass
+  `collection.codecContext()` as `context` to read a chunked encrypted blob,
+  which then decrypts to a `Blob`. `createPlaintextDocCipher(...)` is the
+  crypto-free identity implementation for a plaintext content-addressed
+  collection; `createEdvDocCipher(...)` (from `@interop/was-client/edv`) is the
+  encrypting one, built from the collection's key-epoch descriptor (every
+  encrypted collection carries one from birth; install epoch[0] at provision
+  time with `ensureFirstEpoch`). Build it with the collection's `spaceId` to let
+  `decrypt` fetch a chunked blob's chunks. On a searchable collection, also hand
+  it the stored Collection `/meta` value (the `meta` input, or `applyMeta` when
+  the replica's copy changes) so pushed documents carry blinded index entries
+  and stay visible to `find()`. `createEdvEncryptOnlyDocCipher(...)` is the
+  write-only counterpart, built from the descriptor alone with no key-agreement
+  secret (writes seal to the current epoch's public key, reconstructed from the
+  epoch id); `decrypt` on it refuses with the typed `EncryptOnlyCipherError`.
 - **`createRefreshingEdvDocCipher(...)`** (from `@interop/was-client/edv`) is
   `createEdvDocCipher` bound to descriptor acquisition and the unknown-epoch
   refresh rule: it acquires the collection's descriptor through the
@@ -1108,7 +1115,7 @@ do {
   const page = await port.query({ checkpoint, limit: 100 })
   for (const doc of page.documents) {
     if (doc._deleted) continue // tombstone
-    const data = await cipher.decrypt({ envelope: doc.data })
+    const data = await cipher.decrypt({ id: doc.id, envelope: doc.data })
     // apply to the local replica, recording doc.version for later pushes
   }
   checkpoint = page.checkpoint // null when the page was empty (caught up)

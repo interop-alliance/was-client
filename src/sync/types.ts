@@ -17,6 +17,7 @@ import type {
   ChangesCheckpoint,
   ChangesPage
 } from '@interop/storage-core'
+import type { CodecRequestContext } from '../codec.js'
 import type { Json } from '../types.js'
 
 export type { Json }
@@ -198,6 +199,23 @@ export interface WasSyncPort {
  *   (advancing the envelope `sequence`). A content-addressed cipher (plaintext
  *   or `idDerivation: 'content'`) either omits it or throws: a changed document
  *   is a different id, never an in-place update.
+ * - `decrypt` takes the resource id the envelope was stored under (the feed
+ *   row's `id`, or the id a {@link WasSyncPort.get} addressed) and verifies the
+ *   envelope against it, throwing `IntegrityError` when the envelope was
+ *   written for a different id. A missing id throws `ValidationError` rather
+ *   than skipping the check. An EDV cipher checks the AEAD-bound
+ *   `was.resource` binding, or re-derives a content-derived id from the
+ *   ciphertext. The plaintext cipher recomputes the content id. Pass the id
+ *   the replica addressed, never the envelope's own cleartext `id`, which the
+ *   server controls.
+ * - `decrypt` also takes an optional `context`, the signed-request surface a
+ *   codec reads a multi-resource document through. With it, an EDV cipher
+ *   reassembles a chunked envelope from its chunk resources. Without it, such
+ *   an envelope throws `EncryptionError`. A cipher built without a `spaceId`,
+ *   or a backend that does not advertise `chunked-streams`, throws
+ *   `NotSupportedError`. A replica gets one from its
+ *   Collection handle (`collection.codecContext()`). A binary document
+ *   decrypts to a `Blob`, and everything else to `Json`.
  */
 export interface DocCipher {
   encrypt(options: {
@@ -208,7 +226,11 @@ export interface DocCipher {
     data: Json
     current: Json
   }): Promise<{ id: string; envelope: Json; epoch?: string }>
-  decrypt(options: { envelope: Json }): Promise<Json>
+  decrypt(options: {
+    id: string
+    envelope: Json
+    context?: CodecRequestContext
+  }): Promise<Json | Blob>
 }
 
 /**

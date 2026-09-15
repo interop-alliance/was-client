@@ -126,38 +126,6 @@ attributes, so the extra hmac application emits nothing meaningful -- but it
 means the WAS codec cannot fully control `indexed` emission on the chunked path
 without this upstream fix.
 
-### WCL-16: Sync read path cannot decode chunked documents
-
-- status: todo
-- priority: medium
-- labels: encryption, streams, sync
-- acceptance:
-  - [ ] A chunked envelope arriving through a sync pull either decodes
-        (context-carrying DocCipher) or is skipped/marked gracefully with a
-        defined recovery story, instead of throwing per-envelope and wedging the
-        pull pipeline
-
-discovered-from: WCL-2 (review finding, 2026-08-12). `add()` can now mint
-documents the package's own sync decrypt path structurally cannot read:
-`docCipher.decrypt` calls `codec.decode` with no `CodecRequestContext`, so a
-chunked envelope reaching a synced collection throws `EncryptionError`
-per-envelope during pull, with no skip affordance in `src/sync/`. The fail-loud
-behavior is deliberate and documented in ARCHITECTURE.md, but one routed blob
-can wedge a downstream pull pipeline (freewallet, was-react). Design question:
-either `createEdvDocCipher` gains an optional requester/context so sync replicas
-can reassemble, or the sync layer gains a graceful-skip contract for
-stream-profile envelopes (surface them as opaque and let the app fetch via a
-live handle). Related: WCL-11 is the push-side sibling (schema emission), not
-this.
-
-Take the seam change once, together with WCL-43. `decode` takes
-`(response, expectedId?, context?)`. This item is the third parameter, an
-availability gap that `src/codec.ts` documents as deliberate for sync. WCL-43 is
-the second, an integrity gap nothing documents as intended. Both are fixed by
-giving `DocCipher.decrypt` the caller's resource id and context, so splitting
-the breaking change across two releases would churn the same downstream
-consumers twice.
-
 ### WCL-4: Live Google Drive backend round-trip
 
 - status: draft (blocked externally)
@@ -345,55 +313,6 @@ Items filed from the review of 2026-09-11, which read every root module and
 subdirectory of `src/` and verified each finding against the source, the
 reference server and the spec. Findings that proved wrong, that an existing item
 already covered, or that were too small to track are not itemized here.
-
-### WCL-43: The sync decrypt seam carries no resource id, so the envelope-to-resource binding is never verified
-
-- status: todo
-- priority: high
-- labels: sync, encryption, integrity, codec-seam, security, breaking
-- touches:
-  - was-client: `DocCipher.decrypt` in `src/sync/types.ts`,
-    `src/edv/docCipher.ts`, `src/sync/plaintextCipher.ts`, and ARCHITECTURE.md's
-    "Tamper resistance" paragraph, which today asserts the binding is verified
-    on decode
-  - wallet-core: `src/sync/engine.ts`, `src/sync/types.ts`,
-    `src/keyring/record.ts`, `src/descriptors/index.ts`
-  - was-sync: `src/conflictHandler.ts` and the feed mapping that would supply
-    the id
-  - freewallet, was-react: every `DocCipher.decrypt` call site
-- acceptance:
-  - [ ] `DocCipher.decrypt` takes the resource id and forwards it as `decode`'s
-        `expectedId`
-  - [ ] A replication read of an authentic envelope for resource A presented
-        under feed row id B throws `IntegrityError`
-  - [ ] The `./sync` subpath's breaking change is taken once, jointly with
-        WCL-16, rather than twice
-  - [ ] ARCHITECTURE.md's tamper-resistance claim matches the code
-
-`ResourceCodec.decode(response, expectedId?, context?)` has three parameters.
-`docCipherOverCodec.decrypt` passes only the first (`src/edv/docCipher.ts:354`),
-because `DocCipher.decrypt` has no id in its signature at all, so no sync
-consumer can supply one. Both id checks in `EdvCodec.#verifyResourceSlot` are
-gated on `expectedId !== undefined`, so both are skipped on every replication
-read. Proven by execution: the same envelope throws `IntegrityError` when
-decoded with the wrong id and resolves silently with no id. Under the default
-`idDerivation: 'content'` the skipped check is the ciphertext re-derivation
-rather than the `was.resource` comparison; the defect is the same either way. A
-consumer sweep found nothing compensating: every downstream call site either
-passes no id or uses one only for a log line or a cache key.
-
-Relationship to WCL-16, stated precisely because the two share a call site and a
-signature change: WCL-16 is about the third parameter, `context`, and its harm
-is availability (a chunked envelope wedges a pull). That omission is deliberate
-and documented in `src/codec.ts`. This item is about the second parameter,
-`expectedId`, and its harm is integrity. That omission is documented nowhere as
-intended, and ARCHITECTURE.md asserts the opposite guarantee. A context-carrying
-`DocCipher` that still calls `decode(response, undefined, context)` skips
-exactly the same two checks, so WCL-16 does not close this. Sequence the two so
-one breaking `DocCipher` change covers both. WCL-51 rides the same signature
-change. No new wire artifact: the binding already exists and is unchanged.
-
-discovered-from: whole-codebase review, 2026-09-11.
 
 ### WCL-44: Chunked reads never verify a chunk against its parent document (cross-document chunk splice)
 
@@ -614,50 +533,6 @@ exposure this closes is the backend that emits an `ETag` on GET but ignores
 `If-Match` / `If-None-Match` on PUT, which is the common case for BYOS object
 stores and is why WAS carries the token at all. One item rather than five, so
 the decision is made once.
-
-discovered-from: whole-codebase review, 2026-09-11.
-
-### WCL-51: A content id is minted at write time and never verified at read time
-
-- status: todo
-- priority: high
-- labels: sync, integrity, correctness
-- touches:
-  - freewallet: `src/stores/remoteDirectStore.ts:340` and
-    `src/stores/browserStore.ts:764` / `:1021` recompute the content id from the
-    decrypted payload and never compare it
-  - dcw: `app/lib/walletBackupCore.ts` and `app/lib/publicLink.ts` call the same
-    helpers
-- acceptance:
-  - [ ] `createPlaintextDocCipher.decrypt` refuses when the recomputed content
-        id does not match the id it was handed, as a typed `IntegrityError` the
-        sync predicates can classify
-  - [ ] A tampered envelope presented under an honest id is rejected rather than
-        resolved
-  - [ ] The downstream recompute sites are walked and either compare or delegate
-        to the seam
-
-`createPlaintextDocCipher.encrypt` returns
-`{ id: contentCid(data), envelope: data }` and `decrypt({ envelope })` is
-`return envelope`, verbatim, with nothing to compare against
-(`src/sync/plaintextCipher.ts:30-43`). Proven: encrypt(A) mints one id, then
-`decrypt({ envelope: B })` resolves B unchanged while `contentCid(B)` is a
-different value that nothing observes. For a plaintext content-addressed
-collection the content id is the only integrity mechanism, so this is an unused
-check rather than a missing one. A plaintext collection is server-visible
-anyway, so the threat model is a tampering server; what makes it high rather
-than medium is replica-to-replica propagation, since the next push re-asserts
-the forged document under the old id.
-
-Correction to the original evidence, which strengthens the item rather than
-weakening it: the claim that `contentCid` / `cidFrom` have no read-side caller
-is false. Freewallet and dcw both recompute the value from the decrypted payload
-and store it beside the resource id, feeding a dedup index. A mismatch is never
-checked at any of them. So consumers already compute exactly the value the check
-needs and simply do not compare it. This rides the same `DocCipher.decrypt`
-signature change as WCL-43 and belongs in the same pass. Not a new wire
-artifact: the content id derivation already exists and is unchanged, and only
-the read-side comparison is new -- so no byte-level sign-off is needed here.
 
 discovered-from: whole-codebase review, 2026-09-11.
 

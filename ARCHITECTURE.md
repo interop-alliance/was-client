@@ -265,9 +265,12 @@ typed errors carry the HTTP `status`, so a status-dispatching driver such as
 is an `add()` affordance only; the refusal message is scheme-agnostic and
 appends the plan's own `guidance` string, since only the codec knows which
 low-level API drives that write directly. `decode` takes the same context, so a
-codec whose stored form spans several resources can read the remainder; a caller
-with no request layer (the sync `DocCipher`) omits it, and such a document then
-fails loudly rather than decoding to a stub.
+codec whose stored form spans several resources can read the remainder. The sync
+`DocCipher` forwards a context when its caller passes one
+(`collection.codecContext()`), and reads chunks only when it was built with the
+collection's `spaceId`, which gives its codec a route to the chunk resources. A
+caller with no request layer omits the context, and such a document then fails
+loudly rather than decoding to a stub.
 
 An `EncodedWrite` from the EDV codec carries the envelope twice: `body`, the
 wire bytes, and `envelope`, the object form the codec already holds. `body` is a
@@ -390,7 +393,8 @@ the policy dispatches on: only `UnknownEpochError` drives a refresh, and
 `KeyUnwrapError` propagates untouched, since re-reading the same descriptor
 cannot produce a key the reader was never given. Their `err.name` matchers,
 `isUnknownEpochError` and `isKeyUnwrapError`, live in `sync/predicates.ts`
-beside the other injected-seam signals.
+beside the other injected-seam signals, as does `isIntegrityError` for a body
+that fails verification against its resource id.
 
 A write that declares or changes the `encryption` descriptor re-seals the
 Collection `/meta` envelope in the same body: the server validates `custom`
@@ -446,14 +450,18 @@ first read.
 
 Tamper resistance: each write binds an AEAD-authenticated `was` parameter
 (scheme version, resource id, epoch) into the JWE protected header, verified on
-decode (`IntegrityError` on envelope swap or epoch rollback). The Collection
-`/meta` envelope belongs to no resource, so instead of a resource id it binds
-the collection id (`was.collection`, no Space scoping). Each slot is thereby
-declared positively by the member set of its envelope: `resource` marks a
-resource slot, `collection` the Collection `/meta` slot, and a content-derived
-envelope binds neither. The decode side enforces that both ways -- a
-resource-bound (or unmarked) envelope served into the `/meta` slot is refused,
-as is a collection-bound envelope served into a resource's slot, and a
+decode (`IntegrityError` on envelope swap or epoch rollback). The resource-id
+check needs the id the read addressed, passed as `decode`'s `expectedId`. A
+content-derived envelope binds no resource id, so that check re-derives the id
+from the ciphertext instead. Handle reads pass the id, and so does the sync
+`DocCipher`, whose `decrypt` requires it. A `decode` called without an id skips
+the check. The Collection `/meta` envelope belongs to no resource, so instead of
+a resource id it binds the collection id (`was.collection`, no Space scoping).
+Each slot is thereby declared positively by the member set of its envelope:
+`resource` marks a resource slot, `collection` the Collection `/meta` slot, and
+a content-derived envelope binds neither. The decode side enforces that both
+ways -- a resource-bound (or unmarked) envelope served into the `/meta` slot is
+refused, as is a collection-bound envelope served into a resource's slot, and a
 `was.collection` naming a different collection is refused as one Collection's
 metadata served as another's.
 
@@ -473,19 +481,23 @@ plugs into:
   returns types the stored bodies as `Json`.
 - **`DocCipher`** (`types.ts`) is the per-collection encrypt/decrypt seam: it
   turns a JSON document into its stored body (minting the resource id) and back.
+  `decrypt` takes the resource id the replica addressed and verifies the stored
+  body against it, throwing `IntegrityError` on a mismatch. It also takes an
+  optional request context for chunked envelopes, and resolves `Json | Blob`.
   `createPlaintextDocCipher` is the crypto-free identity implementation for a
-  plaintext content-addressed collection; `createEdvDocCipher`
-  (`src/edv/docCipher.ts`, on the `./edv` subpath) is the encrypting one,
-  wrapping the same EDV codec the handles use but pointed at a local replica. On
-  a collection with a blinded-index key, the caller hands it the stored
-  Collection `/meta` value (the `meta` build input, or `applyMeta` on the
-  returned cipher when the replica's copy changes mid-session), so pushed
-  envelopes carry the same blinded `indexed` entries as handle writes.
-  `createEdvEncryptOnlyDocCipher` (same module) is the write-only counterpart
-  built from the descriptor alone -- no key-agreement secret; writes seal to the
-  write epoch's public key reconstructed from the epoch id, and decrypt refuses
-  with the typed `EncryptOnlyCipherError` -- for a writer holding only a
-  recipient's public half.
+  plaintext content-addressed collection, and its `decrypt` recomputes the
+  content id and compares it; `createEdvDocCipher` (`src/edv/docCipher.ts`, on
+  the `./edv` subpath) is the encrypting one, wrapping the same EDV codec the
+  handles use but pointed at a local replica. On a collection with a
+  blinded-index key, the caller hands it the stored Collection `/meta` value
+  (the `meta` build input, or `applyMeta` on the returned cipher when the
+  replica's copy changes mid-session), so pushed envelopes carry the same
+  blinded `indexed` entries as handle writes. `createEdvEncryptOnlyDocCipher`
+  (same module) is the write-only counterpart built from the descriptor alone --
+  no key-agreement secret; writes seal to the write epoch's public key
+  reconstructed from the epoch id, and decrypt refuses with the typed
+  `EncryptOnlyCipherError` -- for a writer holding only a recipient's public
+  half.
 
 The port's defining property: **it moves stored bodies verbatim and never
 touches keys**. Writes and single-resource reads ride the raw signed

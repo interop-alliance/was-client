@@ -219,7 +219,10 @@ export class KeyUnwrapError extends EncryptionError {
 /**
  * A fail-closed integrity error: a stored EDV envelope this reader DOES hold a
  * key for failed to authenticate on decrypt -- its AEAD tag did not verify, so
- * the ciphertext is corrupt or has been tampered with. Distinct from
+ * the ciphertext is corrupt or has been tampered with -- or a stored body does
+ * not verify against the resource id it was read under (an envelope bound to
+ * another resource, or a content-addressed document whose content id differs
+ * from its resource id). Distinct from
  * {@link KeyUnwrapError}: that is the read/membership axis ("no key for this
  * epoch"), whereas this is a data-integrity failure by a legitimate recipient.
  * A subtype of {@link EncryptionError}, so existing `catch (EncryptionError)`
@@ -434,6 +437,31 @@ export function httpStatus(err: unknown): number | undefined {
  */
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Refuses a `DocCipher.decrypt` call that carries no resource id. Both
+ * built-in ciphers verify the stored body against that id, and a missing one
+ * would silently skip the check.
+ *
+ * @param options {object}
+ * @param options.id {string}   the resource id the replica read the body under
+ * @param options.collectionId {string}   labels the error
+ */
+export function requireResourceId({
+  id,
+  collectionId
+}: {
+  id: string
+  collectionId: string
+}): void {
+  if (typeof id !== 'string' || id === '') {
+    throw new ValidationError(
+      `Cannot decrypt a resource of collection "${collectionId}" without its ` +
+        'resource id: pass the id the replica read it under, so the stored ' +
+        'body can be verified against it.'
+    )
+  }
 }
 
 /**

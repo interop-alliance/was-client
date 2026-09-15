@@ -32,6 +32,10 @@
  * rewrite existing resources, and because resource ids are content-derived they
  * stay stable across a rotation.
  *
+ * Given the Space the collection lives in (`spaceId`), the cipher can also
+ * read a chunked envelope: `decrypt` fetches its chunk resources through the
+ * request context the caller passes (`collection.codecContext()`).
+ *
  * On a collection whose descriptor also declares a blinded-index key, the
  * cipher can install the collection's persisted index schema (`applyMeta`, or
  * the `meta` build input), so envelopes written here carry the same blinded
@@ -46,18 +50,29 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type { CodecWrite, IndexSchema, ResourceCodec } from '../codec.js'
+import type {
+  CodecRequestContext,
+  CodecWrite,
+  IndexSchema,
+  ResourceCodec
+} from '../codec.js'
 import { isChunkedWrite } from '../codec.js'
 import { DECODER, storedResponse } from '../internal/content.js'
 import { EMPTY_INDEX_SCHEMA, readIndexSchema } from '../internal/indexSchema.js'
 import {
   EncryptOnlyCipherError,
   KeyUnwrapError,
+  requireResourceId,
   ValidationError
 } from '../errors.js'
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
-import { buildEdvCodec, encryptOnlyEdvCodec } from './EdvCodec.js'
+import { DEFAULT_CONTENT_TYPE } from './constants.js'
+import {
+  buildEdvCodec,
+  encryptOnlyEdvCodec,
+  wasTransportFactory
+} from './EdvCodec.js'
 import type { EdvCodec } from './EdvCodec.js'
 import type { RecipientPublicKey } from './recipients.js'
 
@@ -168,6 +183,11 @@ export interface EdvDocCipher extends DocCipher {
  *   the real id, not a label: the collection's metadata envelope is
  *   AEAD-bound to it (`was.collection`), so `applyMeta` refuses an envelope
  *   bound elsewhere.
+ * @param [options.spaceId] {string}   the WAS Space holding the collection.
+ *   It gives the codec a route to a chunked document's chunk resources, so a
+ *   `decrypt` that also passes a request context reassembles a chunked
+ *   envelope. Without it such a `decrypt` throws `NotSupportedError`, as it
+ *   does when the backend does not advertise `chunked-streams`.
  * @param [options.idDerivation] {'content' | 'random'}   defaults to `'content'`
  * @param options.encryption {CollectionEncryption}   the collection's
  *   encryption descriptor; must carry the key-epoch roster (every encrypted
@@ -187,6 +207,7 @@ export async function createEdvDocCipher({
   keyAgreementKey,
   keyResolver,
   collectionId,
+  spaceId,
   idDerivation = 'content',
   encryption,
   meta
@@ -194,6 +215,7 @@ export async function createEdvDocCipher({
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
   collectionId: string
+  spaceId?: string
   idDerivation?: 'content' | 'random'
   encryption: CollectionEncryption
   meta?: { custom?: unknown }
@@ -206,6 +228,13 @@ export async function createEdvDocCipher({
   try {
     codec = await buildEdvCodec({
       collectionId,
+      ...(spaceId !== undefined && {
+        transportFactory: wasTransportFactory({
+          spaceId,
+          collectionId,
+          contentType: DEFAULT_CONTENT_TYPE
+        })
+      }),
       encryption,
       keys: { keyAgreementKey, keyResolver },
       idDerivation
@@ -346,12 +375,25 @@ function docCipherOverCodec({
       return readEncoded(encoded)
     },
 
-    async decrypt({ envelope }: { envelope: Json }) {
+    async decrypt({
+      id,
+      envelope,
+      context
+    }: {
+      id: string
+      envelope: Json
+      context?: CodecRequestContext
+    }) {
       // Routing by the envelope's JWE recipient kids -- including the
       // stale-descriptor `UnknownEpochError` (epoch not on the descriptor)
       // and the membership `KeyUnwrapError` (listed epoch this reader is not
-      // a recipient of) -- is owned by the codec's decrypt.
-      return (await codec.decode(storedResponse(envelope))) as Json
+      // a recipient of) -- is owned by the codec's decrypt. So is the
+      // envelope-to-resource binding: `id` is the expected id the codec
+      // verifies the envelope against, which is what catches a server serving
+      // one resource's authentic envelope under another's id. The codec skips
+      // the binding checks when it has no id, so refuse a missing one here.
+      requireResourceId({ id, collectionId })
+      return codec.decode(storedResponse(envelope), id, context)
     }
   }
 }
@@ -407,7 +449,7 @@ export async function createEdvEncryptOnlyDocCipher({
   return {
     encrypt,
     encryptUpdate,
-    async decrypt(): Promise<Json> {
+    async decrypt(): Promise<Json | Blob> {
       throw new EncryptOnlyCipherError(
         `Cannot decrypt a resource of collection "${collectionId}" with an ` +
           'encrypt-only cipher: it was built from the descriptor alone and ' +

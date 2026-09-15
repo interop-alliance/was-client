@@ -23,8 +23,17 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 
-import { EncryptionError, ValidationError } from '../../src/index.js'
-import type { EncodedWrite } from '../../src/index.js'
+import {
+  EncryptionError,
+  IntegrityError,
+  NotSupportedError,
+  ValidationError
+} from '../../src/index.js'
+import type {
+  ChunkedWrite,
+  EncodedWrite,
+  ResourceCodec
+} from '../../src/index.js'
 import { EdvCodec } from '../../src/edv/EdvCodec.js'
 import {
   createEdvDocCipher,
@@ -39,10 +48,12 @@ import {
 import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
 import { mintHmacKey } from '../../src/edv/hmacKey.js'
 import type { SingleWriteCodec } from '../helpers/codec.js'
+import { memoryBackend } from '../helpers/codec.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionRecipient
 } from '../../src/index.js'
+import { isIntegrityError } from '../../src/sync/index.js'
 import type { Json } from '../../src/sync/index.js'
 
 /** A fresh real X25519 key-agreement key plus a resolver that returns it. */
@@ -179,8 +190,8 @@ describe('createEdvDocCipher (epoch roster, content derivation)', () => {
       collectionId: 'private-credentials',
       encryption
     })
-    const { envelope } = await cipher.encrypt({ data: DOC })
-    expect(await cipher.decrypt({ envelope })).toEqual(DOC)
+    const { id, envelope } = await cipher.encrypt({ data: DOC })
+    expect(await cipher.decrypt({ id, envelope })).toEqual(DOC)
   })
 
   it('throws UnknownEpochError for an envelope from another collection epoch', async () => {
@@ -201,10 +212,158 @@ describe('createEdvDocCipher (epoch roster, content derivation)', () => {
       collectionId: 'private-credentials',
       encryption: malloryKeys.encryption
     })
-    const { envelope } = await alice.encrypt({ data: DOC })
-    await expect(mallory.decrypt({ envelope })).rejects.toThrow(
+    const { id, envelope } = await alice.encrypt({ data: DOC })
+    await expect(mallory.decrypt({ id, envelope })).rejects.toThrow(
       UnknownEpochError
     )
+  })
+})
+
+describe('createEdvDocCipher (envelope-to-resource binding)', () => {
+  for (const idDerivation of ['content', 'random'] as const) {
+    it(`refuses an authentic envelope presented under another id (${idDerivation})`, async () => {
+      // A replication read hands the cipher the feed row id. A server serving
+      // resource A's authentic envelope in row B must not decrypt as B: the
+      // content-derived id re-derives from the ciphertext, and a random id is
+      // the AEAD-bound `was.resource`.
+      const { encryption, ...keys } = await makeReaderWithDescriptor()
+      const cipher = await createEdvDocCipher({
+        ...keys,
+        collectionId: 'private-credentials',
+        idDerivation,
+        encryption
+      })
+      const resourceA = await cipher.encrypt({ data: DOC })
+      const resourceB = await cipher.encrypt({ data: { other: true } })
+      expect(
+        await cipher.decrypt({ id: resourceA.id, envelope: resourceA.envelope })
+      ).toEqual(DOC)
+
+      const refusal = await cipher
+        .decrypt({ id: resourceB.id, envelope: resourceA.envelope })
+        .then(() => null)
+        .catch((err: unknown) => err)
+      expect(refusal).toBeInstanceOf(IntegrityError)
+      expect(isIntegrityError(refusal)).toBe(true)
+    })
+  }
+
+  it('refuses a decrypt without a resource id instead of skipping the check', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'private-credentials',
+      encryption
+    })
+    const { envelope } = await cipher.encrypt({ data: DOC })
+    await expect(
+      cipher.decrypt({ envelope } as unknown as { id: string; envelope: Json })
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+})
+
+describe('createEdvDocCipher (chunked envelopes)', () => {
+  const blob = new Uint8Array(64).map((_value, index) => (index * 7) % 251)
+
+  /**
+   * Writes `blob` as a chunked document (an envelope plus chunk resources) to
+   * an in-memory backend, through a handle-style codec over the same reader and
+   * descriptor the cipher under test uses.
+   *
+   * @returns {Promise<object>}   the reader's keys and descriptor, the backend,
+   *   the written resource id, and its stored envelope
+   */
+  async function writeChunked(): Promise<{
+    keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
+    encryption: CollectionEncryption
+    backend: ReturnType<typeof memoryBackend>
+    id: string
+    envelope: Json
+  }> {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const codec = (await createEdvEncryption({
+      resolveKeys: async () => keys,
+      maxBlobBytes: 16,
+      chunkSize: 24
+    }).codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'edv',
+      encryption
+    })) as ResourceCodec
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    await plan.execute(backend.context)
+    const envelope = JSON.parse(
+      new TextDecoder().decode(backend.store.get(`/space/s/c/${plan.id}`))
+    ) as Json
+    return { keys, encryption, backend, id: plan.id, envelope }
+  }
+
+  it('reassembles a chunked envelope given the Space and a request context', async () => {
+    const { keys, encryption, backend, id, envelope } = await writeChunked()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      spaceId: 's',
+      encryption
+    })
+    const decrypted = await cipher.decrypt({
+      id,
+      envelope,
+      context: backend.context
+    })
+    expect(decrypted).toBeInstanceOf(Blob)
+    expect((decrypted as Blob).type).toBe('application/octet-stream')
+    expect(new Uint8Array(await (decrypted as Blob).arrayBuffer())).toEqual(
+      blob
+    )
+  })
+
+  it('refuses a chunked envelope without a request context', async () => {
+    const { keys, encryption, id, envelope } = await writeChunked()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      spaceId: 's',
+      encryption
+    })
+    await expect(cipher.decrypt({ id, envelope })).rejects.toBeInstanceOf(
+      EncryptionError
+    )
+  })
+
+  it('refuses a chunked envelope when the cipher was built without a Space', async () => {
+    const { keys, encryption, backend, id, envelope } = await writeChunked()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption
+    })
+    await expect(
+      cipher.decrypt({ id, envelope, context: backend.context })
+    ).rejects.toBeInstanceOf(NotSupportedError)
+  })
+
+  it('checks the resource binding before fetching any chunk', async () => {
+    const { keys, encryption, backend, envelope } = await writeChunked()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      spaceId: 's',
+      encryption
+    })
+    await expect(
+      cipher.decrypt({
+        id: 'zOtherResource',
+        envelope,
+        context: backend.context
+      })
+    ).rejects.toBeInstanceOf(IntegrityError)
+    expect(backend.reads).toEqual([])
   })
 })
 
@@ -249,13 +408,18 @@ describe('createEdvDocCipher (epoch-from-birth refusals)', () => {
       encryption
     })
     await expect(
-      cipher.decrypt({ envelope: sealedToOwnKey as unknown as Json })
+      cipher.decrypt({
+        id: sealedToOwnKey.id,
+        envelope: sealedToOwnKey as unknown as Json
+      })
     ).rejects.toThrow(UnknownEpochError)
 
     // Writes under the epoch roster round-trip as usual.
     const fresh = await cipher.encrypt({ data: DOC })
     expect(fresh.epoch).toBe(encryption.currentEpoch)
-    expect(await cipher.decrypt({ envelope: fresh.envelope })).toEqual(DOC)
+    expect(
+      await cipher.decrypt({ id: fresh.id, envelope: fresh.envelope })
+    ).toEqual(DOC)
   })
 })
 
@@ -280,7 +444,7 @@ describe('createEdvEncryptOnlyDocCipher', () => {
       collectionId: 'keyring',
       encryption
     })
-    expect(await reader.decrypt({ envelope })).toEqual(DOC)
+    expect(await reader.decrypt({ id, envelope })).toEqual(DOC)
   })
 
   it('refuses decrypt with the typed encrypt-only error', async () => {
@@ -289,9 +453,9 @@ describe('createEdvEncryptOnlyDocCipher', () => {
       collectionId: 'keyring',
       encryption
     })
-    const { envelope } = await writer.encrypt({ data: DOC })
+    const { id, envelope } = await writer.encrypt({ data: DOC })
     const refusal = await writer
-      .decrypt({ envelope })
+      .decrypt({ id, envelope })
       .then(() => null)
       .catch((err: unknown) => err as Error)
     expect(refusal).toBeInstanceOf(EncryptOnlyCipherError)
@@ -371,7 +535,9 @@ describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
 
     expect(updated.id).toBe(first.id)
     expect(isEncryptedEnvelope(updated.envelope)).toBe(true)
-    expect(await cipher.decrypt({ envelope: updated.envelope })).toEqual({
+    expect(
+      await cipher.decrypt({ id: updated.id, envelope: updated.envelope })
+    ).toEqual({
       v: 2
     })
     // The re-encryption advanced the envelope sequence from the prior one.
@@ -400,7 +566,9 @@ describe('createEdvDocCipher (random derivation, encryptUpdate)', () => {
       current: envelope
     })
     expect(updated.id).toBe(uuid)
-    expect(await cipher.decrypt({ envelope: updated.envelope })).toEqual({
+    expect(
+      await cipher.decrypt({ id: updated.id, envelope: updated.envelope })
+    ).toEqual({
       v: 2
     })
   })
@@ -627,8 +795,8 @@ describe('createEdvDocCipher (blinded index schema)', () => {
       revision: 0,
       indexes: []
     })
-    const { envelope } = await cipher.encrypt({ data: DOC })
-    expect(await cipher.decrypt({ envelope })).toEqual(DOC)
+    const { id, envelope } = await cipher.encrypt({ data: DOC })
+    expect(await cipher.decrypt({ id, envelope })).toEqual(DOC)
   })
 
   it('refuses a metadata envelope bound to another collection', async () => {
