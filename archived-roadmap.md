@@ -2043,3 +2043,24 @@ paths throw `WasServerError`. `isPublic()` answers `false` when the policy is
 not visible to the caller; that is the conservative direction rather than the
 wrong one, so this last one is a documentation fix. discovered-from:
 whole-codebase review, 2026-09-11.
+
+### WCL-104: Reject `ifMatch` with `ifNoneMatch` on every write route
+
+- status: done (2026-09-14)
+- priority: low
+- labels: conditional-writes, errors, collection, edv
+- acceptance:
+  - [x] `Collection.configure()`, `replaceDescription()`, and `setMeta()` throw
+        `ValidationError` for `ifMatch` plus `ifNoneMatch: true` instead of
+        taking the create branch and dropping `ifMatch`
+  - [x] A codec-driven `Resource.put` with both throws `ValidationError` rather
+        than a local `PreconditionFailedError`
+  - [x] Unit coverage for both routes
+
+`writeHeaders` now rejects the pair, but two routes never reach it with both
+members. `Collection#writeStored` checks `ifNoneMatch === true` first and sends
+a create with `ifMatch` discarded, so the call succeeds or fails on the create
+alone. The conditional codec write path runs `assertPreconditionAgainstPreRead`
+before building headers, and it answers the pair with a 412 whichever way the
+pre-read comes out. Both hide a caller bug behind a result that looks like a
+race. discovered-from: WCL-73.

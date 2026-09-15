@@ -228,6 +228,21 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
     expect(calls.map(call => call.method)).toEqual(['GET'])
   })
 
+  it('rejects ifMatch with ifNoneMatch as a caller bug, before the pre-read', async () => {
+    const { context, calls } = contextWithStatuses()
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: conditionalCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: conditionalFeatures,
+      precondition: { ifMatch: '"v2"', ifNoneMatch: true }
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(ValidationError)
+    expect(failure).not.toBeInstanceOf(PreconditionFailedError)
+    expect(calls).toHaveLength(0)
+  })
+
   it('refuses a caller baseline when the pre-read finds nothing readable', async () => {
     const { context, calls } = contextWithStatuses({ getStatus: 404 })
     const failure = await upsertResource(context, {

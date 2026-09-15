@@ -15,6 +15,10 @@
 
 ### Fixed
 
+- `Collection.replaceDescription()`, `Collection.setMeta()`, and a
+  conditional-codec `Resource.put()` throw `ValidationError` for `ifMatch` plus
+  `ifNoneMatch: true`. Before, the Collection writes sent a create and dropped
+  `ifMatch`, and the codec path answered with a `PreconditionFailedError`.
 - `Space.replaceDescription()` writes the handle's own `id` after the caller's
   description, so a description carrying another Space's `id` cannot retarget
   the write.

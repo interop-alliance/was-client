@@ -21,8 +21,8 @@ export const KEY_EPOCH_HEADER = 'Key-Epoch'
 /**
  * A conditional-write precondition: `ifMatch` is the quoted ETag an
  * update-if-unchanged write must match; `ifNoneMatch` requests a create-if-absent
- * (`If-None-Match: *`). At most one may be set; {@link writeHeaders} rejects
- * both.
+ * (`If-None-Match: *`). At most one may be set; {@link assertSinglePrecondition}
+ * rejects both.
  */
 export interface WritePrecondition {
   ifMatch?: string
@@ -63,6 +63,29 @@ export function namedPrecondition(
 }
 
 /**
+ * Throws `ValidationError` when a precondition names both `ifMatch` and
+ * `ifNoneMatch`. `If-Match` needs a current representation and
+ * `If-None-Match: *` needs none, so no server state satisfies the pair. Every
+ * write route checks this before acting on either member, so the caller bug
+ * surfaces as itself rather than as a create that dropped `ifMatch` or as a
+ * 412 that looks like a lost race.
+ *
+ * @param [precondition] {WritePrecondition}
+ * @returns {void}
+ */
+export function assertSinglePrecondition(
+  precondition?: WritePrecondition
+): void {
+  if (precondition?.ifMatch !== undefined && precondition.ifNoneMatch) {
+    throw new ValidationError(
+      'A write cannot name both `ifMatch` and `ifNoneMatch`: an update pinned ' +
+        'to a version and a create-if-absent can never both hold. Pass ' +
+        '`ifMatch` to update or `ifNoneMatch: true` to create.'
+    )
+  }
+}
+
+/**
  * Builds the headers for a write request: the content-type (when present) and
  * the conditional-write precondition headers (`If-Match` / `If-None-Match: *`).
  * Returns `undefined` when no header is needed, matching the request layer's
@@ -88,15 +111,7 @@ export function writeHeaders({
   precondition?: WritePrecondition
   epoch?: string
 }): Record<string, string> | undefined {
-  if (precondition.ifMatch !== undefined && precondition.ifNoneMatch) {
-    // `If-Match` needs a current representation and `If-None-Match: *` needs
-    // none, so the server would refuse the pair every time.
-    throw new ValidationError(
-      'A write cannot name both `ifMatch` and `ifNoneMatch`: an update pinned ' +
-        'to a version and a create-if-absent can never both hold. Pass ' +
-        '`ifMatch` to update or `ifNoneMatch: true` to create.'
-    )
-  }
+  assertSinglePrecondition(precondition)
   const headers: Record<string, string> = {}
   if (contentType) {
     headers['content-type'] = contentType

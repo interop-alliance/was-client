@@ -32,6 +32,7 @@ import { send } from './request.js'
 import type { FeatureProbe } from './features.js'
 import {
   assertPreconditionAgainstPreRead,
+  assertSinglePrecondition,
   encodedPrecondition,
   writeHeaders,
   namedPrecondition
@@ -285,6 +286,9 @@ export async function upsertResource(
 ): Promise<HttpResponse> {
   // An empty precondition object (the handle's default) names no baseline.
   const precondition = namedPrecondition(callerPrecondition)
+  // Checked before the pre-read, whose comparison would otherwise answer the
+  // pair with a 412 either way.
+  assertSinglePrecondition(precondition)
   let current: HttpResponse | null | undefined
   if (codec.conditionalWrites) {
     current = await send(context, {

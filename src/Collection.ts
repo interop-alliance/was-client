@@ -64,7 +64,11 @@ import {
   unreadableDescriptionError
 } from './internal/describe.js'
 import type { StoredCollectionMetadata } from './internal/describe.js'
-import { readEtag, writeHeaders } from './internal/conditional.js'
+import {
+  assertSinglePrecondition,
+  readEtag,
+  writeHeaders
+} from './internal/conditional.js'
 import { compareAndSwap } from './internal/cas.js'
 import { readMeta, patchCustom } from './internal/meta.js'
 import { codecRequestContext, insertResource } from './internal/write.js'
@@ -480,6 +484,8 @@ export class Collection {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metadata?: CollectionMetadata; etag?: string }> {
+    // The create branch below would otherwise drop `ifMatch` silently.
+    assertSinglePrecondition({ ifMatch, ifNoneMatch })
     const put = async (
       body: StoredCollectionMetadata,
       precondition: { ifMatch?: string; ifNoneMatch?: boolean }

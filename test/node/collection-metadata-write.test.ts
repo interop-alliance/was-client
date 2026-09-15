@@ -14,7 +14,7 @@ import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
 
-import { WasClient, NotFoundError } from '../../src/index.js'
+import { WasClient, NotFoundError, ValidationError } from '../../src/index.js'
 import type {
   CollectionMetadata,
   EncryptionProvider,
@@ -184,6 +184,37 @@ describe('an annotation write on an unreadable Collection', () => {
     expect(calls[0]?.method).toBe('PUT')
     expect(calls[0]?.headers?.['if-none-match']).toBe('*')
     expect(calls[0]?.json).toEqual({ id: 'c', custom: { name: 'x' } })
+  })
+})
+
+describe('a write naming both ifMatch and ifNoneMatch', () => {
+  it('is refused by replaceDescription instead of creating', async () => {
+    const { client, calls } = clientWith(() =>
+      jsonResponse({ status: 201, headers: { etag: '"1"' } })
+    )
+    await expect(
+      client
+        .space('s')
+        .collection('c')
+        .replaceDescription({}, { ifMatch: '"1"', ifNoneMatch: true })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('is refused by setMeta instead of creating', async () => {
+    const { client, calls } = clientWith(() =>
+      jsonResponse({ status: 201, headers: { etag: '"1"' } })
+    )
+    await expect(
+      client
+        .space('s')
+        .collection('c')
+        .setMeta(
+          { custom: { name: 'x' } },
+          { ifMatch: '"1"', ifNoneMatch: true }
+        )
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(calls).toHaveLength(0)
   })
 })
 
