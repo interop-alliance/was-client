@@ -35,7 +35,9 @@
  *
  * `hasKeyEpochs` and `epochRostersEqual` are the crypto-free predicates over a
  * descriptor: whether it carries a usable roster, and whether two descriptors
- * name the same one (roster identity, recipient sets deliberately excluded).
+ * carry the same epoch configuration (`scheme`, `version`, `currentEpoch`, and
+ * the ordered epoch ids; recipients and the `hmac` member deliberately
+ * excluded).
  *
  * `x25519RecipientFromDidKey` is the one rule for turning a grantee named only
  * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a

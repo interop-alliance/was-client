@@ -12,6 +12,11 @@
   change.
 - `writeHeaders()` throws `ValidationError` when a precondition names both
   `ifMatch` and `ifNoneMatch`, a pair no server state can satisfy.
+- `epochRostersEqual` compares the whole epoch configuration: `scheme` and
+  `version` as well as `currentEpoch` and the ordered epoch ids. A descriptor
+  whose `scheme` or `version` changed now reads as a change. An absent `version`
+  compares as `EDV_SCHEME_VERSION`. Its JSDoc and ARCHITECTURE.md say the epoch
+  pin does not cover the recipients inside an epoch or the `hmac` member.
 
 ### Fixed
 

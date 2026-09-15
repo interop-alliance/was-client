@@ -355,11 +355,13 @@ crypto-free predicates over a descriptor ship beside that machinery
 (`epochRoster.ts`), so a consumer holding descriptors can ask about them without
 pulling in the epoch crypto: `hasKeyEpochs` is the usable-roster test (a
 descriptor with a string `currentEpoch` and a non-empty `epochs` list), and
-`epochRostersEqual` is roster identity -- equal `currentEpoch` plus the same
-epoch ids in the same order. The comparator deliberately ignores the recipients
-wrapped inside each epoch: adding or removing a reader leaves every epoch id and
-the write epoch alone, so a cipher opened from the older descriptor stays valid,
-and only a rotation reads as a change.
+`epochRostersEqual` compares the spec's epoch configuration, the value a client
+pins: equal `scheme`, `version`, and `currentEpoch`, plus the same epoch ids in
+the same order. An absent `version` compares as `EDV_SCHEME_VERSION`. The
+comparator deliberately ignores the recipients wrapped inside each epoch and the
+`hmac` member. Adding or removing a reader leaves every epoch id and the write
+epoch alone, so a cipher opened from the older descriptor stays valid. A
+rotation or a `scheme` or `version` move reads as a change.
 
 Descriptor acquisition and the unknown-epoch refresh (`acquire.ts`,
 `refresh.ts`, `refreshingDocCipher.ts`) are the read side of that roster: which
@@ -407,8 +409,10 @@ conditional write, bounded retries) over the **descriptor-store seam**
 plain-JSON-Resource adapter (`getWithEtag` / `put({ ifMatch })`, first
 descriptor created with `If-None-Match: *`; integrity rests on client-side epoch
 pinning plus the hosting profile's governance -- for a log-governed descriptor,
-the Resource Log Profile's verified entry proofs and chain-head pin), or the
-log-governed adapters (`logGovernedDescriptorStore.ts`). The generic one,
+the Resource Log Profile's verified entry proofs and chain-head pin; the epoch
+pin covers neither the recipients inside an epoch nor the `hmac` member, which
+only the log form authenticates), or the log-governed adapters
+(`logGovernedDescriptorStore.ts`). The generic one,
 `logGovernedDescriptorStore`, sits over any `ResourceLogStore`: reads resolve to
 the log's verified head state, `replace` / `create` are signed appends
 (verified-head build, the library's pre-write pass, compare-and-swap with the

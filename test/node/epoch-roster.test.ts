@@ -5,12 +5,17 @@
  * Unit tests for the crypto-free descriptor predicates (`hasKeyEpochs`,
  * `epochRostersEqual`). They pin the two definitions consumers key their
  * open/refuse and cipher-rebuild decisions off: what counts as a usable epoch
- * roster, and what counts as the same roster -- in particular that recipient
- * churn inside an existing epoch is NOT a roster change.
+ * roster, and what counts as the same epoch configuration -- in particular that
+ * recipient churn inside an existing epoch and the `hmac` member are NOT part
+ * of it.
  */
 import { describe, it, expect } from 'vitest'
 
-import { hasKeyEpochs, epochRostersEqual } from '../../src/edv/index.js'
+import {
+  EDV_SCHEME_VERSION,
+  hasKeyEpochs,
+  epochRostersEqual
+} from '../../src/edv/index.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionRecipient
@@ -133,6 +138,65 @@ describe('epochRostersEqual', () => {
         })
       )
     ).toBe(false)
+  })
+
+  it('reads a differing version as different', () => {
+    const currentEpoch = 'epoch-1'
+    const epochIds = ['epoch-1']
+    expect(
+      epochRostersEqual(
+        { ...descriptor({ currentEpoch, epochIds }), version: 2 },
+        descriptor({ currentEpoch, epochIds })
+      )
+    ).toBe(false)
+    expect(
+      epochRostersEqual(
+        { ...descriptor({ currentEpoch, epochIds }), version: 2 },
+        { ...descriptor({ currentEpoch, epochIds }), version: undefined }
+      )
+    ).toBe(false)
+  })
+
+  it('reads an absent version as EDV_SCHEME_VERSION', () => {
+    const currentEpoch = 'epoch-1'
+    const epochIds = ['epoch-1']
+    expect(
+      epochRostersEqual(
+        { ...descriptor({ currentEpoch, epochIds }), version: undefined },
+        {
+          ...descriptor({ currentEpoch, epochIds }),
+          version: EDV_SCHEME_VERSION
+        }
+      )
+    ).toBe(true)
+  })
+
+  it('reads a differing scheme as different', () => {
+    const currentEpoch = 'epoch-1'
+    const epochIds = ['epoch-1']
+    const other = {
+      ...descriptor({ currentEpoch, epochIds }),
+      scheme: 'other'
+    } as unknown as CollectionEncryption
+    expect(
+      epochRostersEqual(descriptor({ currentEpoch, epochIds }), other)
+    ).toBe(false)
+  })
+
+  it('reads the same configuration with a different hmac member as equal', () => {
+    const currentEpoch = 'epoch-1'
+    const epochIds = ['epoch-1']
+    const hmac = (kid: string) => ({
+      id: 'urn:hmac',
+      type: 'Sha256HmacKey2019',
+      recipients: [recipient(kid)]
+    })
+    expect(
+      epochRostersEqual(
+        { ...descriptor({ currentEpoch, epochIds }), hmac: hmac('did:key:zA') },
+        { ...descriptor({ currentEpoch, epochIds }), hmac: hmac('did:key:zB') }
+      )
+    ).toBe(true)
   })
 
   it('reads the same roster with different recipients as equal', () => {

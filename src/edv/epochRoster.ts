@@ -3,10 +3,10 @@
  */
 /**
  * Crypto-free predicates over a Collection's `encryption` descriptor: whether it
- * carries a usable key-epoch roster, and whether two descriptors name the same
- * roster. Neither touches key material, so a caller deciding what to do with a
- * descriptor -- open it, refuse it fail-closed, rebuild a cipher for it -- does
- * not have to pull in the epoch crypto to ask.
+ * carries a usable key-epoch roster, and whether two descriptors carry the same
+ * epoch configuration. Neither touches key material, so a caller deciding what
+ * to do with a descriptor -- open it, refuse it fail-closed, rebuild a cipher
+ * for it -- does not have to pull in the epoch crypto to ask.
  *
  * These exist because every consumer that holds descriptors (a local replica
  * deciding whether a collection is encrypted, a sync layer deciding whether a
@@ -15,6 +15,7 @@
  * consumers to be worth anything.
  */
 import { EncryptionError } from '../errors.js'
+import { EDV_SCHEME_VERSION } from './constants.js'
 import type {
   CollectionEncryption,
   CollectionEncryptionEpoch
@@ -46,19 +47,28 @@ export function hasKeyEpochs(
 }
 
 /**
- * Whether two descriptors name the same key-epoch roster: their `currentEpoch`
- * values are equal AND their `epochs` lists carry the same epoch ids in the same
- * order. An `undefined` descriptor equals only another `undefined` one, so a
- * caller holding nothing yet reads a freshly-read descriptor as a change.
+ * Whether two descriptors carry the same epoch configuration: equal `scheme`,
+ * equal `version`, equal `currentEpoch`, AND the same epoch ids in the same
+ * order. An absent `version` compares as `EDV_SCHEME_VERSION`, the value the
+ * codec reads it as. This is the value the encrypted collections spec defines as the epoch
+ * configuration, the one a client pins, so a consumer pinning a descriptor
+ * with this comparator implements that pin. An `undefined` descriptor equals
+ * only another `undefined` one, so a caller holding nothing yet reads a
+ * freshly-read descriptor as a change.
  *
- * This is roster IDENTITY, not descriptor equality: the recipients wrapped
- * inside each epoch are deliberately not compared. Adding or removing a reader
- * within an existing epoch changes which recipients an epoch wraps its key to,
- * but leaves every epoch id and the write epoch alone, so the keys this reader
+ * This is configuration identity, not descriptor equality. Two parts of the
+ * descriptor are deliberately outside it. The recipients wrapped inside each
+ * epoch are not compared: adding or removing a reader within an existing epoch
+ * leaves every epoch id and the write epoch alone, so the keys this reader
  * already resolved stay correct and a cipher built from the older descriptor
- * stays valid. Only a rotation -- a new epoch appended and `currentEpoch` moved
- * onto it -- changes what a reader must resolve, and that is exactly what an
- * inequality here reports.
+ * stays valid. The `hmac` member is not compared either. The spec states that
+ * on pure point state neither is covered by the pin, so a host can substitute
+ * them undetected here. Only the log form of the descriptor authenticates
+ * them.
+ *
+ * A rotation (a new epoch appended and `currentEpoch` moved onto it) reads as
+ * a change, and so does any move of `scheme` or `version`, including a
+ * `version` decrease a pinning consumer must refuse.
  *
  * @param [current] {CollectionEncryption}   the descriptor in hand
  * @param [next] {CollectionEncryption}   the descriptor to compare it against
@@ -71,7 +81,12 @@ export function epochRostersEqual(
   if (current === undefined || next === undefined) {
     return current === undefined && next === undefined
   }
-  if (current.currentEpoch !== next.currentEpoch) {
+  if (
+    current.scheme !== next.scheme ||
+    (current.version ?? EDV_SCHEME_VERSION) !==
+      (next.version ?? EDV_SCHEME_VERSION) ||
+    current.currentEpoch !== next.currentEpoch
+  ) {
     return false
   }
   const currentIds = (current.epochs ?? []).map(epoch => epoch.id)

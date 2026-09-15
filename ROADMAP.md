@@ -831,37 +831,6 @@ is, so this is about the next write and about stating the window honestly.
 
 discovered-from: whole-codebase review, 2026-09-11.
 
-### WCL-57: `epochRostersEqual` does not compare the whole epoch configuration
-
-- status: todo
-- priority: medium
-- labels: encryption, key-epochs, spec
-- touches:
-  - was-react, wallet-core: they use `epochRostersEqual` as a
-    cipher-invalidation trigger, and a stricter comparator makes more
-    descriptors compare unequal, so their refresh paths need a check
-- acceptance:
-  - [ ] `epochRostersEqual` compares `scheme` and `version` alongside
-        `currentEpoch` and the ordered epoch ids
-  - [ ] Its JSDoc says it implements the spec's pinned epoch configuration, and
-        that recipients inside an epoch and the `hmac` member are deliberately
-        outside it
-
-The spec defines the value a client pins as the epoch configuration: its
-`scheme`, `version`, `currentEpoch`, and the ordered list of epoch ids. The
-point-state integrity story rests entirely on that pin. `epochRostersEqual`
-compares only `currentEpoch` and the ordered epoch ids, and never reads `scheme`
-or `version`. It is the only comparator this package exports for the purpose,
-and ARCHITECTURE.md presents it as roster identity, so a consumer pinning with
-it believes it is implementing the spec's pin and is not. Concretely it reports
-"same roster" for a descriptor whose `version` moved from 2 down to 1, or whose
-`scheme` changed. No live impact while `EDV_SCHEME_VERSION` is 1 and `edv` is
-the only scheme; it becomes live at the first version bump. The refusable
-version decrease this closes is the pin half of what 60 observes on the codec
-side.
-
-discovered-from: whole-codebase review, 2026-09-11.
-
 ### WCL-58: A key-wrap authentication failure is reported as a membership decision
 
 - status: todo
