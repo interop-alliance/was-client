@@ -279,7 +279,8 @@ const same = was.space(space.id)
 // Read the Space Metadata object (null if missing or not visible to you).
 const desc = await space.describe() // { id, type: ['Space'], name, controller } | null
 
-// Upsert: merges the given fields over the current Metadata object.
+// Upsert: merges the given fields over the current Metadata object. The
+// write is pinned to that read's ETag and re-merges on a lost race.
 await space.configure({ name: 'Home (renamed)' })
 
 // Lost-update-safe writes: read the Metadata object with its ETag, then

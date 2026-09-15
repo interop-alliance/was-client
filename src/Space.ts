@@ -26,6 +26,7 @@ import {
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
+import { composeAndSwap } from './internal/cas.js'
 import {
   collectionWritableFields,
   unreadableDescriptionError
@@ -272,6 +273,12 @@ export class Space {
    * Creates or updates the space by id (upsert). Merges the given fields over
    * the current description; `controller` defaults to the wrapped signer's DID.
    *
+   * The merge runs against the same read the write is pinned to (`If-Match`
+   * with that read's `ETag`), and rebases with it: a rival write landing in
+   * between fails the precondition, and the description is re-read and merged
+   * over rather than clobbered. A backend that serves no validator gets an
+   * unconditional `PUT`.
+   *
    * Fails closed when the current description is unreadable and the caller did
    * not supply a full description (both `name` and `controller`), mirroring
    * {@link Collection.configure}: WAS returns 404 for both not-found and
@@ -281,7 +288,8 @@ export class Space {
    * ownership change) and dropping the existing `name`. Pass `force: true` to
    * proceed anyway (a deliberate create through a handle), or supply both
    * `name` and `controller` explicitly so nothing is merged from the unreadable
-   * current.
+   * current. The check runs against each attempt's baseline, so a rebase that
+   * re-reads nothing is refused the same way.
    *
    * @param desc {object}
    * @param [desc.name] {string}
@@ -295,60 +303,73 @@ export class Space {
    * @param [desc.force] {boolean}   proceed even when the current description is
    *   unreadable and a full description is not supplied (see above)
    * @param [desc.current] {SpaceMetadata | null}   the current description,
-   *   when the caller has already read it -- the merge and the fail-closed
-   *   check then run against this instead of a second `describe()` round trip.
-   *   `null` means the caller read it and found the Space absent or
-   *   unreadable, which is a supplied answer; omitting the member entirely is
-   *   what asks for the read. Supplying a description this handle's own writes
-   *   have since superseded would merge stale fields forward, so pass only a
-   *   read the caller itself made and has not written over
+   *   when the caller has already read it -- the first attempt's merge and
+   *   fail-closed check then run against this instead of a second read. Its
+   *   `etag`, when present, is the validator that attempt pins to, so a copy
+   *   another client has since overwritten loses the compare-and-swap and is
+   *   re-read rather than merged forward. `null` means the caller read it and
+   *   found the Space absent or unreadable, which is a supplied answer;
+   *   omitting the member entirely is what asks for the read
    * @returns {Promise<Omit<SpaceMetadata, 'type'> & { type?: string[] }>}   the
-   *   description as written; `type` is absent when it was neither supplied
-   *   nor read from the current description, since the server's value is then
-   *   unknown
+   *   description as written by the last attempt; `type` is absent when it
+   *   was neither supplied nor read from the current description, since the
+   *   server's value is then unknown
    */
   async configure(desc: {
     name?: string
     controller?: string
     type?: string[]
     force?: boolean
-    current?: SpaceMetadata | null
+    current?: (SpaceMetadata & { etag?: string }) | null
   }): Promise<Omit<SpaceMetadata, 'type'> & { type?: string[] }> {
-    const current =
-      desc.current !== undefined ? desc.current : await this.describe()
-    if (
-      current === null &&
-      !desc.force &&
-      !(desc.name !== undefined && desc.controller !== undefined)
-    ) {
-      throw unreadableDescriptionError({
-        operation: `configure space "${this.id}"`,
-        consequence:
-          'merging forward could silently change the controller or drop the ' +
-          'existing name',
-        advice:
-          'Supply both `name` and `controller` explicitly, use a ' +
-          'read-capable capability, or pass `force: true` if you are ' +
-          'creating a new space.'
-      })
-    }
-    const name = desc.name ?? current?.name
-    const controller =
-      desc.controller ?? current?.controller ?? this.#context.controllerDid
-    const type = desc.type ?? current?.type
-    await send(this.#context, {
-      path: this.#metaPath,
-      method: 'PUT',
-      capability: this.#capability,
-      json: spaceMetadataBody({ id: this.id, name, controller, type })
+    const written = await composeAndSwap({
+      read: async () => {
+        const read = await this.describeWithEtag()
+        return read === null
+          ? { value: null }
+          : { value: read.description, etag: read.etag }
+      },
+      ...(desc.current !== undefined && {
+        current: { value: desc.current, etag: desc.current?.etag }
+      }),
+      compose: (current: SpaceMetadata | null) => {
+        if (
+          current === null &&
+          !desc.force &&
+          !(desc.name !== undefined && desc.controller !== undefined)
+        ) {
+          throw unreadableDescriptionError({
+            operation: `configure space "${this.id}"`,
+            consequence:
+              'merging forward could silently change the controller or drop ' +
+              'the existing name',
+            advice:
+              'Supply both `name` and `controller` explicitly, use a ' +
+              'read-capable capability, or pass `force: true` if you are ' +
+              'creating a new space.'
+          })
+        }
+        return spaceMetadataBody({
+          id: this.id,
+          name: desc.name ?? current?.name,
+          controller:
+            desc.controller ??
+            current?.controller ??
+            this.#context.controllerDid,
+          type: desc.type ?? current?.type
+        })
+      },
+      write: async (body, { ifMatch }) => {
+        await this.replaceDescription(body, { ifMatch })
+        return body
+      },
+      operation: 'Space configuration'
     })
     return {
-      id: this.id,
-      ...(type !== undefined ? { type } : {}),
-      ...(name !== undefined ? { name } : {}),
+      ...written,
       // `controller` is a user-supplied DID string; assert it as the branded
       // `IDID` the wire type now uses (the server validates the DID form).
-      controller: controller as SpaceMetadata['controller']
+      controller: written.controller as SpaceMetadata['controller']
     }
   }
 

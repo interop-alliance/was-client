@@ -6,8 +6,10 @@
  * caller's change against it, write it back under `If-Match`, and rebase on a
  * lost race (a `412`) by re-reading. The recipient primitives drive it with an
  * `EncryptionDescriptorStore`; `Collection.declareIndex` drives it with a
- * `/meta`-backed store. A new caller wanting CAS adapts its host to
- * {@link CasStore} rather than hand-rolling a fourth loop.
+ * `/meta`-backed store. The Collection and Space Metadata writes drive it
+ * through {@link composeAndSwap}, which builds a write body from the stored
+ * value. A new caller wanting CAS adapts its host to {@link CasStore} rather
+ * than hand-rolling another loop.
  */
 import { PreconditionFailedError, ValidationError } from '../errors.js'
 
@@ -187,4 +189,74 @@ export async function compareAndSwap<T>({
       'operation.',
     { cause: lastError as Error }
   )
+}
+
+/**
+ * A merging write over a versioned object, run through {@link compareAndSwap}.
+ * `compose` is handed a baseline read and returns the write body, and `write`
+ * sends that body pinned to the baseline's validator. A lost race (a `412`)
+ * re-reads, re-composes, and re-sends, so a merge is only applied over a
+ * version this write observed. A baseline carrying no validator makes its
+ * attempt an unconditional write (`ifMatch` is `undefined`), which is all a
+ * backend without `conditional-writes` offers.
+ *
+ * Unlike a plain {@link CasStore}, the body is not the stored value itself.
+ * The stored value may be `null` (an absent or unreadable object), and
+ * `compose` decides whether proceeding from it is safe; a refusal it throws
+ * propagates unchanged. `compose` runs once per attempt, so a caller that
+ * needs what was merged reads it from the value `write` resolves, which is the
+ * last attempt's.
+ *
+ * @param options {object}
+ * @param options.read {function}   reads a fresh baseline and its validator;
+ *   may throw a caller-specific refusal (e.g. for an unreadable object)
+ * @param [options.current] {object}   a baseline the caller has already read,
+ *   used for the first attempt only; a rebase calls `read`
+ * @param options.compose {function}   baseline to write body (may be async)
+ * @param options.write {function}   sends the body under `ifMatch`; a stale
+ *   validator throws `PreconditionFailedError` (412)
+ * @param options.operation {string}   what the caller is doing, for the
+ *   exhaustion error's message
+ * @param [options.maxAttempts] {number}   defaults to {@link DEFAULT_CAS_ATTEMPTS}
+ * @returns {Promise<R>}   what the successful `write` resolved
+ */
+export async function composeAndSwap<B, W extends object, R>({
+  read,
+  current,
+  compose,
+  write,
+  operation,
+  maxAttempts
+}: {
+  read: () => Promise<{ value: B; etag?: string }>
+  current?: { value: B; etag?: string }
+  compose: (baseline: B) => W | Promise<W>
+  write: (body: W, precondition: { ifMatch?: string }) => Promise<R>
+  operation: string
+  maxAttempts?: number
+}): Promise<R> {
+  let seed = current
+  let written: { result: R } | undefined
+  await compareAndSwap<B | W>({
+    store: {
+      read: async () => {
+        // The caller's baseline is consumed once, so a rebase always re-reads.
+        const baseline = seed ?? (await read())
+        seed = undefined
+        return { value: baseline.value, etag: baseline.etag }
+      },
+      replace: async (body, { ifMatch }) => {
+        written = { result: await write(body as W, { ifMatch }) }
+      }
+    },
+    // The store only ever reads a baseline and only ever replaces a body.
+    mutate: value => compose(value as B),
+    operation,
+    ...(maxAttempts !== undefined && { maxAttempts })
+  })
+  if (written === undefined) {
+    // Unreachable for a typed caller: `compose` always returns a body.
+    throw new ValidationError(`${operation} composed no write body.`)
+  }
+  return written.result
 }

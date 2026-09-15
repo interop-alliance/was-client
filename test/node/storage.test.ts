@@ -1281,6 +1281,147 @@ describe('Space.configure() type carry-forward', () => {
   })
 })
 
+describe('Space.configure() compare-and-swap', () => {
+  const stored = {
+    id: 's',
+    type: ['Space'],
+    name: 'Old',
+    controller: 'did:example:alice'
+  }
+
+  /**
+   * Throws the stub error shape `mapError` reads a status off.
+   *
+   * @param status {number}
+   * @returns {never}
+   */
+  function failWith(status: number): never {
+    throw { status, response: { status } }
+  }
+
+  it('re-merges over a rival write on a 412 rebase', async () => {
+    // Client A renames while client B promotes the controller. A's first PUT
+    // is pinned to the version it read and loses; the rebase re-reads and
+    // re-merges, so B's controller survives instead of being reverted.
+    let version = 1
+    const calls: RequestArgs[] = []
+    const client = clientWithStub(args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        return version === 1
+          ? jsonResponse({
+              data: stored,
+              status: 200,
+              headers: { etag: '"1"' }
+            })
+          : jsonResponse({
+              data: { ...stored, controller: 'did:example:bob' },
+              status: 200,
+              headers: { etag: '"2"' }
+            })
+      }
+      if (version === 1) {
+        version = 2
+        failWith(412)
+      }
+      return jsonResponse({ status: 204, headers: { etag: '"3"' } })
+    })
+    const result = await client.space('s').configure({ name: 'Renamed' })
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT', 'GET', 'PUT'])
+    expect(calls[1]?.headers?.['if-match']).toBe('"1"')
+    expect(calls[1]?.json).toMatchObject({
+      name: 'Renamed',
+      controller: 'did:example:alice'
+    })
+    expect(calls[3]?.headers?.['if-match']).toBe('"2"')
+    expect(calls[3]?.json).toMatchObject({
+      name: 'Renamed',
+      controller: 'did:example:bob'
+    })
+    // The result is the last attempt's merge.
+    expect(result.controller).toBe('did:example:bob')
+  })
+
+  it("pins the first attempt to the caller's `current.etag`", async () => {
+    // The supplied baseline is used once: its write is pinned to its `etag`,
+    // and the rebase after a lost race reads a fresh one.
+    let rejected = false
+    const calls: RequestArgs[] = []
+    const client = clientWithStub(args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        return jsonResponse({
+          data: { ...stored, name: 'Rival' },
+          status: 200,
+          headers: { etag: '"6"' }
+        })
+      }
+      if (!rejected) {
+        rejected = true
+        failWith(412)
+      }
+      return jsonResponse({ status: 204, headers: { etag: '"7"' } })
+    })
+    await client.space('s').configure({
+      controller: 'did:example:bob',
+      current: {
+        ...stored,
+        etag: '"5"'
+      } as SpaceMetadata & { etag: string }
+    })
+    expect(calls.map(call => call.method)).toEqual(['PUT', 'GET', 'PUT'])
+    expect(calls[0]?.headers?.['if-match']).toBe('"5"')
+    expect(calls[0]?.json).not.toHaveProperty('etag')
+    expect(calls[2]?.headers?.['if-match']).toBe('"6"')
+    expect(calls[2]?.json).toMatchObject({
+      name: 'Rival',
+      controller: 'did:example:bob'
+    })
+  })
+
+  it('sends no If-Match against a backend that serves no validator', async () => {
+    const calls: RequestArgs[] = []
+    const client = clientWithStub(args => {
+      calls.push(args)
+      return args.method === 'GET'
+        ? jsonResponse({ data: stored, status: 200 })
+        : jsonResponse({ status: 204 })
+    })
+    await client.space('s').configure({ name: 'Renamed' })
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
+    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
+    expect(calls[1]?.json).toMatchObject({
+      name: 'Renamed',
+      controller: 'did:example:alice'
+    })
+  })
+
+  it('fails closed when the rebase re-reads an unreadable description', async () => {
+    // The guard runs against each attempt's baseline: a Space that turns
+    // unreadable between attempts is refused rather than merged forward.
+    let rejected = false
+    const calls: RequestArgs[] = []
+    const client = clientWithStub(args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        return rejected
+          ? failWith(404)
+          : jsonResponse({
+              data: stored,
+              status: 200,
+              headers: { etag: '"1"' }
+            })
+      }
+      rejected = true
+      return failWith(412)
+    })
+    await expect(
+      client.space('s').configure({ name: 'Renamed' })
+    ).rejects.toThrow(ValidationError)
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT', 'GET'])
+  })
+})
+
 describe('resource.getText() / getBytes() on a JSON-typed resource', () => {
   /**
    * Builds a client whose GET response carries pre-parsed JSON `data` and a

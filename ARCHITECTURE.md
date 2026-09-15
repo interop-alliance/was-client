@@ -606,6 +606,11 @@ No locks; safety is optimistic (ETag/CAS) throughout
   the stored object -- the server-managed members and the members this write
   states itself are dropped, everything else travels -- so a member this client
   does not model survives a write it is not about.
+- `Space.configure` merges the same way: its body is built from the Space
+  Metadata read it is pinned to, and a lost race re-reads and re-merges. Both
+  containers share one loop, `composeAndSwap` in `internal/cas.ts`, which runs
+  on the generic `compareAndSwap` retry loop. A backend that serves no validator
+  gets an unconditional write.
 - `declareIndex` reconciles against the persisted index schema with the same
   metadata ETag: read, merge, conditional write, bounded retry on 412, so two
   clients declaring different attributes at once do not erase each other.

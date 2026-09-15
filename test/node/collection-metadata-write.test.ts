@@ -119,6 +119,36 @@ describe('the merge runs against the version the write pins to', () => {
     expect(writes[1]?.headers?.['if-match']).toBe('"2"')
   })
 
+  it("re-reads on a 412 rebase of a write seeded with the caller's read", async () => {
+    // The caller's own read seeds the first attempt, so the handle's remembered
+    // read is never taken. The lost write must still discard it; otherwise the
+    // rebase re-pins to the stale validator and wastes an attempt on a second
+    // 412.
+    let etag = '"1"'
+    const { client, calls } = clientWith(args => {
+      if (args.method === 'GET') {
+        return served({ id: 'c', type: ['Collection'], name: 'Old' }, etag)
+      }
+      if (etag === '"1"') {
+        etag = '"2"'
+        failWith(412)
+      }
+      if (args.headers?.['if-match'] !== etag) {
+        failWith(412)
+      }
+      return jsonResponse({ status: 204, headers: { etag: '"3"' } })
+    })
+    const collection = client.space('s').collection('c')
+    const read = await collection.describeWithEtag()
+    await collection.configure({
+      name: 'Renamed',
+      current: { ...read!.description, etag: read!.etag }
+    })
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT', 'GET', 'PUT'])
+    expect(calls[1]?.headers?.['if-match']).toBe('"1"')
+    expect(calls[3]?.headers?.['if-match']).toBe('"2"')
+  })
+
   it('composes the write against the read the caller just made', async () => {
     // `describe()` and the write that follows it are one GET plus one PUT: the
     // read carries the validator the write pins to, so it is the baseline

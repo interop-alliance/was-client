@@ -1516,37 +1516,6 @@ together.
 
 discovered-from: code review of the v0.5 path-layout diff (WCL-41), 2026-09-12.
 
-### WCL-100: `Space.configure()` writes the Space Metadata object without a validator
-
-- status: todo
-- priority: medium
-- labels: conditional-writes, cas, space, api
-- acceptance:
-  - [ ] `Space.configure()` pins its `PUT` to the `ETag` of the read it merged
-        against (the caller's `current`, or its own `describeWithEtag()`) when
-        the backend serves one
-  - [ ] A `412` rebases through the shared `compareAndSwap` loop: re-read,
-        re-merge, re-send, as `Collection.configure()` does
-  - [ ] The compose-against-baseline, pinned-write, rebase-on-412 shape lives in
-        one internal helper that both `Collection.#writeStored` and the Space
-        write use, rather than a second hand-rolled loop
-  - [ ] Unit tests cover the lost-race rebase and the no-validator backend for
-        the Space write
-
-`Space.configure()` is still the pre-v0.5 unconditional read-then-`PUT`: it
-reads the current object (or takes the caller's), merges `name`, `controller`
-and `type` over it, and sends a full replacement with no `ifMatch`. Two
-concurrent configures (a rename and a controller change, say) silently clobber
-each other. The v0.5 merge rebuilt the Collection side of the same shape --
-`Collection.#writeStored` composes against a fresh baseline, pins the write, and
-rebases on a `412` -- and ARCHITECTURE.md now describes both containers as one
-object under one `metaVersion` validator, so the two are expected to behave the
-same way and do not. `replaceDescription()` already accepts `ifMatch` for a
-caller-driven compare-and-swap; this item makes the merging convenience safe by
-default rather than leaving the pin to the caller.
-
-discovered-from: simplify review of the WCL-41 diff, 2026-09-12.
-
 ### WCL-79: Local invariants the log store adapter can enforce itself
 
 - status: todo

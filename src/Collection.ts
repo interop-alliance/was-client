@@ -69,7 +69,7 @@ import {
   readEtag,
   writeHeaders
 } from './internal/conditional.js'
-import { compareAndSwap } from './internal/cas.js'
+import { compareAndSwap, composeAndSwap } from './internal/cas.js'
 import { readMeta, patchCustom } from './internal/meta.js'
 import { codecRequestContext, insertResource } from './internal/write.js'
 import {
@@ -490,6 +490,9 @@ export class Collection {
       body: StoredCollectionMetadata,
       precondition: { ifMatch?: string; ifNoneMatch?: boolean }
     ): Promise<{ metadata?: CollectionMetadata; etag?: string }> => {
+      // A write supersedes whatever this handle last read, even one that loses
+      // (a `412`), so a rebase never reuses that read.
+      this.#recentRead = undefined
       const response = await send(this.#context, {
         path: this.#metaPath,
         method: 'PUT',
@@ -498,8 +501,6 @@ export class Collection {
         headers: writeHeaders({ precondition })
       })
       const created = dataOrNull<CollectionMetadata>(response)
-      // The write superseded whatever this handle last read.
-      this.#recentRead = undefined
       return {
         ...(created !== null && { metadata: created }),
         etag: readEtag(response)
@@ -508,23 +509,20 @@ export class Collection {
     if (ifNoneMatch === true) {
       return put(await compose(null), { ifNoneMatch: true })
     }
-    // The baseline for one attempt: the caller's own read, then this handle's
-    // most recent read, then a fresh `GET`. Each is consumed once, so a rebase
-    // always re-reads.
-    let seed = current ?? undefined
-    const baseline = async (): Promise<{
-      metadata: StoredCollectionMetadata | null
+    // A fresh baseline: this handle's most recent read, then a `GET`. The
+    // recent read is consumed once, so a rebase always issues the `GET`.
+    const read = async (): Promise<{
+      value: StoredCollectionMetadata | null
       etag?: string
     }> => {
-      const reused = seed ?? this.#takeRecentRead(ifMatch)
-      seed = undefined
-      if (reused !== undefined) {
-        return reused
+      const recent = this.#takeRecentRead(ifMatch)
+      if (recent !== undefined) {
+        return { value: recent.metadata, etag: recent.etag }
       }
-      const read = await this.#readStored()
+      const stored = await this.#readStored()
       this.#recentRead = undefined
-      if (read !== null) {
-        return read
+      if (stored !== null) {
+        return { value: stored.metadata, etag: stored.etag }
       }
       if (allowAbsent !== true) {
         throw new NotFoundError(
@@ -536,30 +534,24 @@ export class Collection {
             'create it only if it is absent.'
         )
       }
-      return { metadata: null }
+      return { value: null }
     }
+    // The caller's own read, when it supplied one, is the first baseline.
+    const seed =
+      current != null
+        ? { value: current.metadata, etag: current.etag }
+        : undefined
     if (ifMatch !== undefined) {
-      const attempt = await baseline()
-      return put(await compose(attempt.metadata), { ifMatch })
+      const attempt = seed ?? (await read())
+      return put(await compose(attempt.value), { ifMatch })
     }
-    let written: { metadata?: CollectionMetadata; etag?: string } = {}
-    await compareAndSwap<StoredCollectionMetadata | null>({
-      store: {
-        read: async () => {
-          const attempt = await baseline()
-          return {
-            value: attempt.metadata,
-            ...(attempt.etag !== undefined && { etag: attempt.etag })
-          }
-        },
-        replace: async (body, { ifMatch: pinned }) => {
-          written = await put(body ?? {}, { ifMatch: pinned })
-        }
-      },
-      operation,
-      mutate: compose
+    return composeAndSwap({
+      read,
+      ...(seed !== undefined && { current: seed }),
+      compose,
+      write: put,
+      operation
     })
-    return written
   }
 
   /**

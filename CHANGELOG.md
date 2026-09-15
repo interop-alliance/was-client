@@ -15,6 +15,14 @@
 
 ### Fixed
 
+- `Space.configure()` pins its `PUT` to the `ETag` of the description it merged
+  over, and re-reads and re-merges on a `412`. Before, concurrent configures
+  overwrote each other. `current` accepts an optional `etag` for the first
+  attempt. A backend without a validator still gets an unconditional `PUT`.
+- A Collection Metadata write that loses a race (a `412`) after the caller
+  supplied `current` now re-reads before retrying. Before, the retry reused the
+  handle's stale earlier read, pinned to the old `ETag` again, and wasted one of
+  its attempts on a second `412`.
 - `Collection.replaceDescription()`, `Collection.setMeta()`, and a
   conditional-codec `Resource.put()` throw `ValidationError` for `ifMatch` plus
   `ifNoneMatch: true`. Before, the Collection writes sent a create and dropped
