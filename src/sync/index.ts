@@ -17,8 +17,8 @@
  *   Collection provisioning, and its Space half alone (ensure the Space once,
  *   then thread the returned description through every collection).
  * - `isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
- *   `isUnknownEpochError` / `isKeyUnwrapError` / `isIntegrityError` -- the
- *   classification contract for the signals
+ *   `isUnknownEpochError` / `isKeyUnwrapError` / `isIntegrityError` /
+ *   `isNotSupportedError` -- the classification contract for the signals
  *   below. A consumer matches by `err.name` and never with `instanceof`,
  *   because every one of these errors is raised inside a seam the app injects
  *   (the port, the caller's `DocCipher`) and that seam can resolve to a second
@@ -37,7 +37,11 @@
  * key for it, so a refresh cannot help). So is the tamper signal
  * (`IntegrityError`: the stored body does not verify against the resource id
  * it was read under). `EncryptionError`, the fail-closed umbrella both
- * `KeyUnwrapError` and `IntegrityError` fall under, rides along. The classes are exported
+ * `KeyUnwrapError` and `IntegrityError` fall under, rides along. So does the
+ * affordance gate (`NotSupportedError`), which a guarded write raises before
+ * any request when the collection's backend advertises no `conditional-writes`
+ * -- a permanent refusal, so a replication driver stops rather than retries.
+ * The classes are exported
  * for construction and for a caller inside one resolved copy; across a package
  * boundary the predicates are the contract
  * (`decisions/0001-cross-package-errors-match-by-name.md`).
@@ -52,6 +56,7 @@ export { isEncryptedEnvelope } from './envelope.js'
 export { createPlaintextDocCipher } from './plaintextCipher.js'
 export { ensureSpace, ensureSpaceAndCollection } from './provisioning.js'
 export {
+  isNotSupportedError,
   isSyncAuthError,
   isSyncConflictError,
   isSyncNotFoundError,
@@ -63,6 +68,7 @@ export {
   EncryptionError,
   IntegrityError,
   KeyUnwrapError,
+  NotSupportedError,
   UnknownEpochError,
   WasSyncAuthError,
   WasSyncConflictError,

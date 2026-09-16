@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 105
+nextAvailableId: 107
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -1992,3 +1992,75 @@ mapping option 2). That hides the id from the provider while letting the client
 re-derive the URL from the human id. Cost: an HMAC index key to manage and
 distribute (alongside the content keys), plus collision/uniqueness handling --
 why it is deferred past the first encrypted increment.
+
+### WCL-105: The affordance gate refuses where the spec says degrade to last-writer-wins
+
+- status: todo
+- priority: medium
+- labels: conditional-writes, conformance, spec-alignment
+- touches:
+  - wallet-attached-storage-spec: WASS-40 settles the surrounding question; this
+    item is the client-side conformance half and stands whichever way that goes
+- acceptance:
+  - [ ] The divergence is resolved in one direction: either the spec gains text
+        sanctioning a fail-closed refusal, or was-client stops refusing
+  - [ ] Whichever way it goes, the reason is recorded rather than left implicit
+        in `unenforcedPreconditionError`'s message
+  - [ ] `touches:` entries resolved
+
+Context: `assertPreconditionEnforced` refuses a guarded write with
+`NotSupportedError` when the collection's backend advertises no
+`conditional-writes` (`src/internal/conditional.ts:180-221`), on the reasoning
+that a backend which ignores the header turns a guarded push into a silent
+overwrite. The spec does not ask for that. Its Conditional Requests section is
+only a SHOULD: "a client SHOULD use these preconditions only against a backend
+that advertises support." The EDV-over-WAS profile is more explicit in the other
+direction, where the mapping "degrades to advisory: the `sequence` is still
+carried in the envelope but is not enforced, and writes are last-writer-wins".
+No normative text anywhere tells a client to refuse the write. (Section names
+rather than line numbers: spec.md was mid-edit when this was filed. Both
+quotations verified against the working tree 2026-09-16.)
+
+So this client is stricter than the specification it implements, and a
+conformance suite written from the spec would not predict its behavior. The
+refusal is probably the better engineering choice, which is the point: if it is,
+the spec should say so, and if it is not, the client should stop doing it. Note
+the inconsistency is already internal as well -- `patchCustom`
+(`src/internal/meta.ts:237-252`) degrades rather than refusing, dropping its
+compare-and-swap pin so `setName` / `setTags` become last-write-wins, which is
+exactly what the spec describes and exactly what the rest of the gate refuses to
+do.
+
+If WASS-40 lands as proposed this item mostly evaporates, since there would be
+no non-advertising backend left for either behavior to apply to. It is filed
+separately because it is a live conformance question today and does not depend
+on that outcome.
+
+discovered-from: was-sync WS-15.
+
+### WCL-106: Remove the conditional-writes affordance gate once it is baseline
+
+- status: draft
+- priority: medium
+- labels: conditional-writes, cleanup, breaking
+- blocked-by: WASS-40 in the spec repo
+
+Draft because the spec change it follows is not approved yet; it gains
+acceptance criteria when WASS-40 is.
+
+Context: if conditional writes become a baseline requirement, an audit puts
+roughly 525 source and 730 test lines in this package attributable to their
+being optional. The shape of the removal: `preconditionsEnforced` and
+`assertPreconditionEnforced`'s `no-feature` reason go, while the `no-validator`
+reason stays, since a read that returned no ETag is a separate problem that
+survives (CORS can hide the header from a browser client). `FeatureProbe` keeps
+its other consumers but loses `descriptorAbsent()`. `isNotSupportedError` and
+the `NotSupportedError` re-export leave the `/sync` subpath, though the class
+stays on the core entry for `chunked-streams` and the other affordances. The
+degraded fallbacks go with it: `WasTransport.insert`'s non-atomic
+`HEAD`-then-`PUT` path and `#exists()`, `compareAndSwap`'s `allowUnconditional`
+opt-out, and `patchCustom`'s pin-dropping. Several public types tighten from
+optional `etag` to required. `Collection.ts:451-458`'s no-client-side-remedy
+limitation closes.
+
+discovered-from: was-sync WS-15.

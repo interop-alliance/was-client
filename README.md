@@ -768,7 +768,6 @@ const descriptor = await space.registerBackend({
   id: 'gdrive-personal', // unique within the Space
   name: 'My Google Drive',
   provider: 'google-drive', // selects the server-side adapter
-  storageMode: ['document', 'blob'],
   connection: {
     kind: 'oauth2-google',
     authorizationCode: '4/0Ab...', // one-time PKCE code (or a refreshToken)

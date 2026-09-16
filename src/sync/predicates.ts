@@ -6,8 +6,10 @@
  * meet: the port's two wire signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), its opt-in revoked-access signal
  * (`WasSyncAuthError`), the cipher's two no-key signals (the stale-descriptor
- * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), and its
- * tamper signal (`IntegrityError`).
+ * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), its tamper
+ * signal (`IntegrityError`), and the client's affordance gate
+ * (`NotSupportedError`), raised before the request when the backend advertises
+ * no `conditional-writes`.
  *
  * They live beside the classes that assign the names they match (`errors.ts`)
  * because every one of those errors is raised inside a seam the consuming app
@@ -19,6 +21,9 @@
  * becomes a fatal cycle error, and a create-loss re-mint rethrows instead of
  * re-minting. Each class assigns its `name` explicitly, which is what makes the
  * string a contract (`decisions/0001-cross-package-errors-match-by-name.md`).
+ * The affordance gate is raised outside a seam, in this copy, but is matched
+ * the same way: one rule for the set, so a consumer needs no per-signal memory
+ * of which ones an `instanceof` would have survived.
  *
  * Each returns a plain boolean rather than a type guard: the guard would narrow
  * to this copy's class, the very identity the rule declines to depend on. A
@@ -120,4 +125,23 @@ export function isKeyUnwrapError(err: unknown): boolean {
  */
 export function isIntegrityError(err: unknown): boolean {
   return nameOf(err) === 'IntegrityError'
+}
+
+/**
+ * Whether an error is the client's affordance-gate refusal
+ * (`NotSupportedError`): the operation needs an optional backend feature the
+ * collection's backend does not advertise. On the sync port it is the guarded
+ * write refused before any request, when `putContent`, `deleteContent` or
+ * `putMeta` names `ifMatch` / `ifNoneMatch` against a backend listing no
+ * `conditional-writes`. Permanent, and the one refusal a replication driver
+ * must NOT retry: a backend that does not advertise the feature will not start
+ * enforcing preconditions on a later attempt, so a retry loop would re-send the
+ * same batch forever. Raised before the request, so the matched value carries
+ * no `status`.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {boolean}
+ */
+export function isNotSupportedError(err: unknown): boolean {
+  return nameOf(err) === 'NotSupportedError'
 }

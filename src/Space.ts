@@ -593,8 +593,7 @@ export class Space {
    * connection (the re-consent path), use {@link updateBackend}.
    *
    * @param registration {BackendRegistration}   the backend to register
-   *   (`{ id, provider, connection: { kind, ... }, name?, storageMode?,
-   *   features? }`)
+   *   (`{ id, provider, connection: { kind, ... }, name?, features? }`)
    * @returns {Promise<BackendDescriptor>}   the sanitized descriptor of the
    *   newly registered backend
    */

@@ -4,8 +4,9 @@
 /**
  * The `./sync` subpath's error classification (`isSyncConflictError` /
  * `isSyncNotFoundError` / `isSyncAuthError` / `isUnknownEpochError` /
- * `isKeyUnwrapError`, `src/sync/predicates.ts`; the last also ships from
- * `./edv`, beside the cipher that raises it).
+ * `isKeyUnwrapError` / `isNotSupportedError`, `src/sync/predicates.ts`;
+ * `isKeyUnwrapError` also ships from `./edv`, beside the cipher that raises
+ * it).
  *
  * All five signals are raised inside app-injected seams -- the `WasSyncPort`
  * for the three wire signals, the caller's `DocCipher` for the two no-key
@@ -23,11 +24,13 @@ import { describe, it, expect } from 'vitest'
 import { isKeyUnwrapError as isKeyUnwrapErrorFromEdv } from '../../src/edv/index.js'
 import {
   isKeyUnwrapError,
+  isNotSupportedError,
   isSyncAuthError,
   isSyncConflictError,
   isSyncNotFoundError,
   isUnknownEpochError,
   KeyUnwrapError,
+  NotSupportedError,
   UnknownEpochError,
   WasSyncAuthError,
   WasSyncConflictError,
@@ -48,7 +51,8 @@ const PREDICATES = [
   isSyncConflictError,
   isSyncNotFoundError,
   isSyncAuthError,
-  isUnknownEpochError
+  isUnknownEpochError,
+  isNotSupportedError
 ]
 
 describe('the sync error predicates', () => {
@@ -112,11 +116,12 @@ describe('the sync error predicates', () => {
     }
   })
 
-  it('keeps the four signals apart, and rejects everything else', () => {
+  it('keeps the signals apart, and rejects everything else', () => {
     const conflict = foreignRealmError('WasSyncConflictError')
     expect(isSyncNotFoundError(conflict)).toBe(false)
     expect(isSyncAuthError(conflict)).toBe(false)
     expect(isUnknownEpochError(conflict)).toBe(false)
+    expect(isNotSupportedError(conflict)).toBe(false)
 
     for (const predicate of PREDICATES) {
       expect(predicate(new Error('plain'))).toBe(false)
@@ -161,5 +166,33 @@ describe('the sync error predicates', () => {
     expect(isKeyUnwrapError(new Error('socket hang up'))).toBe(false)
     expect(isKeyUnwrapError(undefined)).toBe(false)
     expect(isKeyUnwrapError(null)).toBe(false)
+  })
+})
+
+describe('the affordance-gate predicate', () => {
+  it('classifies the refusal, own class and foreign realm alike', () => {
+    const own = new NotSupportedError(
+      "This write carries a precondition and the collection's backend does " +
+        "not advertise the 'conditional-writes' feature."
+    )
+    const foreign = foreignRealmError('NotSupportedError')
+
+    expect(foreign instanceof NotSupportedError).toBe(false)
+    expect(isNotSupportedError(own)).toBe(true)
+    expect(isNotSupportedError(foreign)).toBe(true)
+  })
+
+  it('carries no status, since the refusal precedes the request', () => {
+    // A replication driver reads the absence as "never reached the server", so
+    // there is nothing transient to back off from.
+    const err = new NotSupportedError('no conditional-writes')
+    expect(isNotSupportedError(err)).toBe(true)
+    expect((err as { status?: unknown }).status).toBeUndefined()
+  })
+
+  it('does not match the wire signals or the base class name', () => {
+    expect(isNotSupportedError(new WasSyncConflictError())).toBe(false)
+    expect(isNotSupportedError(new WasSyncAuthError(403))).toBe(false)
+    expect(isNotSupportedError(foreignRealmError('WasError'))).toBe(false)
   })
 })

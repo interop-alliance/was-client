@@ -1,5 +1,19 @@
 # @interop/was-client Changelog
 
+## 0.67.0 - TBD
+
+### Removed
+
+- The `storageMode` member of a backend registration, dropped from the spec and
+  from `@interop/storage-core`; the register example no longer sets it.
+
+### Added
+
+- `isNotSupportedError` on the `./sync` subpath, beside the other `err.name`
+  predicates, and the `NotSupportedError` class re-exported there. A replication
+  driver classifies the guarded-write refusal without importing the core entry,
+  and treats it as permanent rather than retrying the batch.
+
 ## 0.66.0 - 2026-09-16
 
 ### Changed
