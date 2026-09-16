@@ -190,7 +190,7 @@ export type CodecWrite = EncodedWrite | ChunkedWrite
  * @returns {boolean}
  */
 export function isChunkedWrite(write: CodecWrite): write is ChunkedWrite {
-  return (write as ChunkedWrite).chunked === true
+  return (write as ChunkedWrite).chunked
 }
 
 /**

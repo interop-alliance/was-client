@@ -19,9 +19,10 @@ import {
   WasServerError,
   EncryptionError,
   EncryptOnlyCipherError,
+  NotSupportedError,
   PreconditionFailedError
 } from '../../src/index.js'
-import type { CollectionEncryption } from '../../src/index.js'
+import type { CollectionEncryption, IZcap } from '../../src/index.js'
 import { Space } from '../../src/Space.js'
 import { Collection } from '../../src/Collection.js'
 import { Resource } from '../../src/Resource.js'
@@ -260,6 +261,56 @@ describe('compareAndSwap on an absent store', () => {
   })
 })
 
+describe('compareAndSwap on a read with no validator', () => {
+  const unversioned = (
+    replaced: Array<{ value: string; ifMatch?: string }>
+  ) => ({
+    async read() {
+      return { value: 'current' }
+    },
+    async replace(value: string, { ifMatch }: { ifMatch?: string }) {
+      replaced.push({ value, ifMatch })
+    }
+  })
+
+  it('refuses the unconditional replace before writing', async () => {
+    const replaced: Array<{ value: string; ifMatch?: string }> = []
+    const failure = await compareAndSwap<string>({
+      store: unversioned(replaced),
+      mutate: () => 'next',
+      operation: 'Index declaration'
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(NotSupportedError)
+    expect((failure as Error).message).toMatch(
+      /^Index declaration was refused: the read it is pinned to returned no ETag/
+    )
+    expect(replaced).toEqual([])
+  })
+
+  it('writes nothing and refuses nothing when mutate reports no change', async () => {
+    const replaced: Array<{ value: string; ifMatch?: string }> = []
+    const result = await compareAndSwap<string>({
+      store: unversioned(replaced),
+      mutate: () => null,
+      operation: 'Index declaration'
+    })
+    expect(result).toBe('current')
+    expect(replaced).toEqual([])
+  })
+
+  it('sends the unconditional replace when the caller opts out', async () => {
+    const replaced: Array<{ value: string; ifMatch?: string }> = []
+    const result = await compareAndSwap<string>({
+      store: unversioned(replaced),
+      mutate: () => 'next',
+      operation: 'Metadata update',
+      allowUnconditional: true
+    })
+    expect(result).toBe('next')
+    expect(replaced).toEqual([{ value: 'next', ifMatch: undefined }])
+  })
+})
+
 describe('compareAndSwap on a 412 raised by read()', () => {
   it('rebases the read the same way as a stale replace', async () => {
     // A store's read can observe a concurrent write mid-read (the governed
@@ -393,5 +444,192 @@ describe('changes feed shape guards', () => {
     )
     const documents = await client.space('s').collection('c').documents()
     expect(documents?.map(doc => doc.id)).toEqual(['a'])
+  })
+})
+
+describe('Resource preconditions and the backend-feature gate', () => {
+  /**
+   * A plaintext collection whose backend descriptor either lists `features` or
+   * cannot be read at all (`'unreadable'`, the 404 WAS masks an unauthorized
+   * read as). Records every request's method and URL.
+   *
+   * @param backend {string[] | 'unreadable'}
+   * @returns {object}
+   */
+  function plaintextClient(backend: string[] | 'unreadable') {
+    const calls: Array<{ method?: string; url?: string }> = []
+    const client = clientWithStub(({ method, url }) => {
+      calls.push({ method, url })
+      if (url?.endsWith('/backend')) {
+        if (backend === 'unreadable') {
+          throw Object.assign(new Error('HTTP 404'), { status: 404 })
+        }
+        return jsonResponse({
+          data: { id: 'urn:backend:demo', features: backend }
+        })
+      }
+      if (method === 'GET') {
+        return jsonResponse({
+          data: { id: 'c', type: ['Collection'], name: 'Plain' }
+        })
+      }
+      return jsonResponse({ headers: { etag: '"g.2"' } })
+    })
+    return { client, calls }
+  }
+
+  /**
+   * The handle a plain `space().collection().resource()` walk produces.
+   *
+   * @param backend {string[] | 'unreadable'}
+   * @returns {object}
+   */
+  function walkedResource(backend: string[] | 'unreadable') {
+    const { client, calls } = plaintextClient(backend)
+    return { resource: client.space('s').collection('c').resource('r'), calls }
+  }
+
+  it('refuses a put naming ifMatch before sending it', async () => {
+    const { resource, calls } = walkedResource([])
+    await expect(resource.put({ a: 1 }, { ifMatch: '"g.1"' })).rejects.toThrow(
+      NotSupportedError
+    )
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([])
+  })
+
+  it('refuses a put naming ifNoneMatch before sending it', async () => {
+    const { resource, calls } = walkedResource([])
+    await expect(resource.put({ a: 1 }, { ifNoneMatch: true })).rejects.toThrow(
+      /does not advertise the 'conditional-writes' feature/
+    )
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([])
+  })
+
+  it('sends an unguarded put without probing the backend', async () => {
+    const { resource, calls } = walkedResource([])
+    await resource.put({ a: 1 })
+    expect(calls.filter(call => call.url?.endsWith('/backend'))).toEqual([])
+    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+  })
+
+  it('sends a guarded put when the backend advertises the feature', async () => {
+    const { resource, calls } = walkedResource(['conditional-writes'])
+    await resource.put({ a: 1 }, { ifMatch: '"g.1"' })
+    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+  })
+
+  it('refuses a delete naming ifMatch before sending it', async () => {
+    const { resource, calls } = walkedResource([])
+    await expect(resource.delete({ ifMatch: '"g.1"' })).rejects.toThrow(
+      NotSupportedError
+    )
+    expect(calls.filter(call => call.method === 'DELETE')).toEqual([])
+    await resource.delete()
+    expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(1)
+  })
+
+  it('refuses a setMeta naming ifMatch before sending it', async () => {
+    // A Resource's metadata validator is a Resource-level validator, so it is
+    // gated like its content -- unlike the Collection Metadata object's own
+    // `metaVersion`, which a server maintains regardless of the backend.
+    const { resource, calls } = walkedResource([])
+    await expect(
+      resource.setMeta({ custom: { name: 'A' } }, { ifMatch: '"m.1"' })
+    ).rejects.toThrow(NotSupportedError)
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([])
+  })
+
+  it('degrades setName to a last-write-wins update instead of refusing', async () => {
+    // `setName` pins on a validator it read itself, so an unenforceable pin is
+    // dropped rather than refused -- the same fallback a backend serving no
+    // validator at all gets, which keeps a rename working there.
+    const { resource, calls } = walkedResource([])
+    await resource.setName('New')
+    const writes = calls.filter(call => call.method === 'PUT')
+    expect(writes).toHaveLength(1)
+  })
+
+  it('sends a guarded put and delete under a resource-scoped capability', async () => {
+    // A capability delegated for one Resource cannot read the collection-level
+    // backend descriptor, and WAS masks that as a 404. The write still carries
+    // its precondition: the server, which does enforce it, answers.
+    const { client, calls } = plaintextClient('unreadable')
+    const capability = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: 'urn:zcap:scoped',
+      invocationTarget: 'https://was.example/space/s/c/r'
+    } as unknown as IZcap
+    const resource = client.fromCapability(capability) as Resource
+
+    await resource.put({ a: 1 }, { ifMatch: '"g.1"' })
+    await resource.delete({ ifMatch: '"g.1"' })
+    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(1)
+  })
+})
+
+describe('the client-shared backend-feature probe', () => {
+  /**
+   * Counts descriptor reads across every handle one client builds.
+   *
+   * @returns {object}
+   */
+  function countingClient() {
+    let probes = 0
+    const client = clientWithStub(({ method, url }) => {
+      if (url?.endsWith('/backend')) {
+        probes += 1
+        return jsonResponse({
+          data: { id: 'urn:backend:demo', features: ['conditional-writes'] }
+        })
+      }
+      if (method === 'GET') {
+        return jsonResponse({
+          data: { id: 'c', type: ['Collection'], name: 'Plain' }
+        })
+      }
+      return jsonResponse({ headers: { etag: '"g.2"' } })
+    })
+    return { client, probes: () => probes }
+  }
+
+  it('reads one collection descriptor once across separately built handles', async () => {
+    const { client, probes } = countingClient()
+    for (const id of ['r1', 'r2', 'r3']) {
+      await client
+        .space('s')
+        .collection('c')
+        .resource(id)
+        .put({ a: 1 }, { ifMatch: '"g.1"' })
+    }
+    expect(probes()).toBe(1)
+  })
+
+  it('does not share a probe across collections or capabilities', async () => {
+    // A descriptor read is answered per capability (WAS masks a read the
+    // capability cannot make as a 404), so two handles share a probe only when
+    // they would send the same request.
+    const { client, probes } = countingClient()
+    const capability = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: 'urn:zcap:one',
+      invocationTarget: 'https://was.example/space/s/c1/'
+    } as unknown as IZcap
+    await client
+      .space('s')
+      .collection('c1')
+      .resource('r')
+      .put({ a: 1 }, { ifMatch: '"g.1"' })
+    await client
+      .space('s')
+      .collection('c2')
+      .resource('r')
+      .put({ a: 1 }, { ifMatch: '"g.1"' })
+    await client
+      .space('s')
+      .collection('c1', { capability })
+      .resource('r')
+      .put({ a: 1 }, { ifMatch: '"g.1"' })
+    expect(probes()).toBe(3)
   })
 })

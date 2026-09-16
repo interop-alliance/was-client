@@ -216,7 +216,11 @@ export class WasClient {
         zcapClient: this.zcapClient,
         controllerDid: this.controllerDid,
         encryption: this.encryption,
-        service: () => this.service()
+        service: () => this.service(),
+        // Shared by every handle this client builds, so a collection's backend
+        // descriptor is read once per bound capability rather than once per
+        // handle. Lives on the context because that is what handles carry.
+        backendFeatures: new Map()
       }
     }
     return this.#cachedContext

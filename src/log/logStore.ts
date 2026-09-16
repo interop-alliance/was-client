@@ -19,11 +19,17 @@
  * document under a human-readable id. A Collection's history log is never
  * encrypted and runs no codec: the server reads its head itself.
  *
- * Both the append and the create ride the backend's `conditional-writes`
- * feature -- the profile requires it (without the precondition, concurrent
- * appends silently overwrite one another instead of failing into the caller's
- * rebase-and-retry loop). A lost race -- a stale `ifMatch`, or a guarded
- * create against a log that already exists -- is rethrown as the library's
+ * Both the append and the create depend on their precondition being enforced --
+ * the profile requires it (without it, concurrent appends silently overwrite
+ * one another instead of failing into the caller's rebase-and-retry loop). On
+ * a Resource host that is the backend's `conditional-writes` feature, and
+ * `Resource.put` refuses the write before it is sent when the backend was read
+ * and does not advertise it. A Collection's history log carries its own
+ * validator, which a server implementing the sub-resource honors whether or
+ * not the backend advertises the feature, so nothing gates that host. Either
+ * way an append is refused when the read it extends returned no validator.
+ * A lost race -- a stale `ifMatch`, or a guarded create against a log that
+ * already exists -- is rethrown as the library's
  * `ResourceLogConflictError` with the transport's `PreconditionFailedError`
  * as `cause`, which is the port's one conflict signal and what the library's
  * rebase loop catches (by `name` rather than `instanceof`, since the error
@@ -39,6 +45,7 @@ import {
 import type { Collection } from '../Collection.js'
 import type { Resource } from '../Resource.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
+import { unenforcedPreconditionError } from '../internal/conditional.js'
 import { ENCODER, LOG_CONTENT_TYPE } from '../internal/content.js'
 
 export { LOG_CONTENT_TYPE }
@@ -157,6 +164,12 @@ export function resourceLogStore(
           'Cannot append to resource log: append must follow a read on the ' +
             'same store instance.'
         )
+      }
+      if (ifMatch === undefined) {
+        throw unenforcedPreconditionError({
+          operation: 'Cannot append to the resource log',
+          reason: 'no-validator'
+        })
       }
       const separator = lastReadBody.endsWith('\n') ? '' : '\n'
       const extended =

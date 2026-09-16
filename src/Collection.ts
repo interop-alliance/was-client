@@ -44,7 +44,7 @@ import {
 } from './internal/codec.js'
 import type { CodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
-import type { BackendFeatures } from './internal/features.js'
+import type { BackendFeatures, FeatureProbe } from './internal/features.js'
 import {
   collectWalk,
   signedPageWalk,
@@ -256,6 +256,18 @@ export class Collection {
 
   get #policyPath(): string {
     return collectionPolicy(this.spaceId, this.id)
+  }
+
+  /**
+   * The memoized backend-feature probe this handle and its child resource
+   * handles share. A store built over the handle (a history log store, the
+   * sync port) gates its guarded writes on it without a second descriptor
+   * read. Reading it performs no I/O.
+   *
+   * @returns {FeatureProbe}
+   */
+  get features(): FeatureProbe {
+    return this.#features
   }
 
   /**

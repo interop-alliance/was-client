@@ -23,14 +23,16 @@ import {
   WasSyncConflictError,
   WasSyncNotFoundError,
   AuthRequiredError,
+  NotSupportedError,
   PreconditionFailedError,
   NotFoundError,
   QuotaExceededError,
   WasError,
   WasServerError
 } from '../../src/index.js'
-import type { IZcap } from '../../src/index.js'
+import type { FeatureProbe, IZcap } from '../../src/index.js'
 import type { SyncStatus } from '../../src/sync/index.js'
+import { stubFeatures } from '../helpers/codec.js'
 
 type RequestOptions = {
   path?: string
@@ -71,13 +73,17 @@ const COLL = 'private-credentials'
 
 /**
  * Builds a fake `WasClient` whose `request` is a spy driven by a per-test
- * handler, and whose `space().collection().changes()` is a separate spy.
+ * handler, and whose `space().collection().changes()` is a separate spy. The
+ * collection's feature probe advertises `conditional-writes` unless the test
+ * passes its own.
  */
 function makeWas(options: {
   onRequest?: (opts: RequestOptions) => unknown
   onChanges?: () => unknown
   changesResult?: unknown
+  features?: FeatureProbe
 }) {
+  const features = options.features ?? stubFeatures(['conditional-writes'])
   // Records the handle options the port passes to `space().collection(...)`, so
   // the capability-threading test can assert them.
   const collectionOptions: unknown[] = []
@@ -93,11 +99,12 @@ function makeWas(options: {
     space: () => ({
       collection: (_collectionId: string, handleOptions?: unknown) => {
         collectionOptions.push(handleOptions)
-        return { changes }
+        return { changes, features }
       }
     })
   }
-  // The port only touches `request` and `space().collection().changes()`.
+  // The port only touches `request` and the collection's `changes()` and
+  // `features`.
   return { was: was as never, request, changes, collectionOptions }
 }
 
@@ -300,6 +307,85 @@ describe('createWasSyncPort.putMeta', () => {
     expect(calls[0]!.method).toBe('PUT')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1/meta`)
     expect(calls[0]!.json).toEqual({ custom: { name: 'Alice' } })
+  })
+})
+
+describe('createWasSyncPort on a backend without conditional-writes', () => {
+  const setup = () => {
+    const calls: RequestOptions[] = []
+    const { was } = makeWas({
+      features: stubFeatures([]),
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null, { etag: '"g.2"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+    return { port, calls }
+  }
+
+  it('refuses every precondition-bearing write before sending it', async () => {
+    const { port, calls } = setup()
+    await expect(
+      port.putContent({ id: 'res-1', data: { a: 1 }, ifMatch: '"g.1"' })
+    ).rejects.toThrow(NotSupportedError)
+    await expect(
+      port.putContent({ id: 'res-1', data: { a: 1 }, ifNoneMatch: true })
+    ).rejects.toThrow(/does not advertise the 'conditional-writes' feature/)
+    await expect(
+      port.deleteContent({ id: 'res-1', ifMatch: '"g.1"' })
+    ).rejects.toThrow(NotSupportedError)
+    await expect(
+      port.putMeta({ id: 'res-1', custom: { name: 'A' }, ifMatch: '"g.1"' })
+    ).rejects.toThrow(NotSupportedError)
+    expect(calls).toEqual([])
+  })
+
+  it('sends an unguarded write', async () => {
+    const { port, calls } = setup()
+    await port.putContent({ id: 'res-1', data: { a: 1 } })
+    await port.deleteContent({ id: 'res-1' })
+    await port.putMeta({ id: 'res-1', custom: { name: 'A' } })
+    expect(calls.map(call => call.method)).toEqual(['PUT', 'DELETE', 'PUT'])
+  })
+})
+
+describe('createWasSyncPort when the backend descriptor cannot be read', () => {
+  // The probe caches a definitive 404 -- the collection deleted and
+  // re-provisioned under the same id, or a capability that cannot read the
+  // descriptor -- so refusing here would disable guarded pushes for the port's
+  // whole lifetime and pre-empt the port's own not-found signals.
+  const setup = (onRequest: (opts: RequestOptions) => unknown) => {
+    const { was } = makeWas({
+      features: stubFeatures([], { descriptorAbsent: true }),
+      onRequest
+    })
+    return createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+  }
+
+  it('sends the precondition-bearing write', async () => {
+    const calls: RequestOptions[] = []
+    const port = setup(opts => {
+      calls.push(opts)
+      return response(null, { etag: '"g.2"' })
+    })
+
+    expect(
+      await port.putContent({ id: 'res-1', data: { a: 1 }, ifMatch: '"g.1"' })
+    ).toEqual({ version: 2, etag: '"g.2"' })
+    await port.deleteContent({ id: 'res-1', ifMatch: '"g.1"' })
+    await port.putMeta({ id: 'res-1', custom: { name: 'A' }, ifMatch: '"g.1"' })
+    expect(calls.map(call => call.method)).toEqual(['PUT', 'DELETE', 'PUT'])
+    expect(calls[0]!.headers).toMatchObject({ 'if-match': '"g.1"' })
+  })
+
+  it('still raises the port not-found signal on a guarded delete', async () => {
+    const port = setup(() => {
+      throw httpError(404)
+    })
+    await expect(
+      port.deleteContent({ id: 'res-1', ifMatch: '"g.1"' })
+    ).rejects.toBeInstanceOf(WasSyncNotFoundError)
   })
 })
 

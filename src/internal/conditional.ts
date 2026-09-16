@@ -5,11 +5,17 @@
  * Helpers for conditional writes (the server's `conditional-writes` feature):
  * assembling a write's request headers from an optional content-type plus the
  * `If-Match` / `If-None-Match: *` preconditions, reading the `ETag` a write
- * response returns, and checking a caller's precondition against the document a
- * conditional codec's write path pre-read.
+ * response returns, checking a caller's precondition against the document a
+ * conditional codec's write path pre-read, and refusing a precondition the
+ * backend cannot be shown to enforce.
  */
 import type { EncodedWrite, ResponseLike } from '../codec.js'
-import { PreconditionFailedError, ValidationError } from '../errors.js'
+import {
+  NotSupportedError,
+  PreconditionFailedError,
+  ValidationError
+} from '../errors.js'
+import type { FeatureProbe } from './features.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -127,6 +133,112 @@ export function writeHeaders({
     headers[KEY_EPOCH_HEADER.toLowerCase()] = epoch
   }
   return Object.keys(headers).length > 0 ? headers : undefined
+}
+
+/**
+ * The refusal for a guarded write whose guard the backend cannot be shown to
+ * enforce. Every such gate builds its error here, so the messages do not
+ * drift apart. The reasons:
+ *
+ * - `no-validator`: the read the write is pinned to returned no `ETag`, so the
+ *   write would go out with no `If-Match` at all.
+ * - `no-feature`: the backend descriptor was read and does not list
+ *   `conditional-writes`. Such a backend may serve an `ETag` on reads and still
+ *   ignore `If-Match` / `If-None-Match` on writes.
+ *
+ * @param options {object}
+ * @param options.operation {string}   what was refused, as the message's
+ *   opening clause (e.g. `Cannot append to the resource log`)
+ * @param options.reason {'no-validator' | 'no-feature'}
+ * @returns {NotSupportedError}
+ */
+export function unenforcedPreconditionError({
+  operation,
+  reason
+}: {
+  operation: string
+  reason: 'no-validator' | 'no-feature'
+}): NotSupportedError {
+  const consequence =
+    'so a concurrent change could be silently overwritten instead of ' +
+    'failing with a 412.'
+  if (reason === 'no-validator') {
+    return new NotSupportedError(
+      `${operation}: the read it is pinned to returned no ETag validator, ` +
+        `so the write would go out unconditionally, ${consequence} Use a ` +
+        "backend that advertises the 'conditional-writes' feature."
+    )
+  }
+  return new NotSupportedError(
+    `${operation}: the write carries a precondition, but the collection's ` +
+      "backend does not advertise the 'conditional-writes' feature and may " +
+      `ignore it, ${consequence} Use a backend that advertises conditional ` +
+      'writes.'
+  )
+}
+
+/**
+ * Refuses a write that names a precondition the backend cannot be shown to
+ * enforce, throwing {@link unenforcedPreconditionError}. A write that names
+ * none (see {@link namedPrecondition}) never probes the backend.
+ *
+ * A descriptor that could not be read at all is not evidence either way, and
+ * the write proceeds. The probe reads a collection-level path
+ * (`GET .../backend`), so a capability whose `invocationTarget` sits below the
+ * Collection -- one delegated for a single Resource -- can never read it, and
+ * WAS masks that as a 404. Refusing there would lock every such capability out
+ * of conditional writes for the handle's lifetime, and would do the same to a
+ * handle whose collection was briefly absent, since the probe caches a
+ * definitive answer. The server still answers the write on its own terms: a
+ * 412 where the precondition fails, a 404 where the collection is gone.
+ *
+ * A transient probe failure (a network error, a `401`, a `5xx`) propagates as
+ * the probe's own error, so a retrying caller still sees it as transient.
+ *
+ * @param options {object}
+ * @param options.features {FeatureProbe}   the handle's backend-feature probe
+ * @param [options.precondition] {WritePrecondition}   the write's precondition
+ * @param options.operation {string}   what would be refused, as the message's
+ *   opening clause
+ * @returns {Promise<void>}
+ */
+export async function assertPreconditionEnforced({
+  features,
+  precondition,
+  operation
+}: {
+  features: FeatureProbe
+  precondition?: WritePrecondition
+  operation: string
+}): Promise<void> {
+  if (namedPrecondition(precondition) === undefined) {
+    return
+  }
+  if (await preconditionsEnforced(features)) {
+    return
+  }
+  throw unenforcedPreconditionError({ operation, reason: 'no-feature' })
+}
+
+/**
+ * Whether a precondition sent to this backend can be relied on: it advertises
+ * `conditional-writes`, or its descriptor could not be read at all and is
+ * therefore no evidence against it (see {@link assertPreconditionEnforced}).
+ *
+ * The predicate behind the refusal, for the one caller that degrades instead
+ * of refusing: `patchCustom`'s compare-and-swap, whose pin is its own and
+ * whose documented fallback is a last-write-wins update.
+ *
+ * @param features {FeatureProbe}
+ * @returns {Promise<boolean>}
+ */
+export async function preconditionsEnforced(
+  features: FeatureProbe
+): Promise<boolean> {
+  return (
+    (await features.has('conditional-writes')) ||
+    (await features.descriptorAbsent())
+  )
 }
 
 /**

@@ -17,6 +17,8 @@ import { toUrl } from './paths.js'
 import { dataOrNull } from './content.js'
 import { readEtag } from './conditional.js'
 import type { EncryptionProvider } from '../codec.js'
+// Type-only, so the features <-> request pairing stays a compile-time cycle.
+import type { BackendFeatures } from './features.js'
 import type { IZcap, RequestInput, ServiceInfo } from '../types.js'
 
 /**
@@ -32,6 +34,15 @@ export interface ClientContext {
   controllerDid: string
   encryption?: EncryptionProvider
   service: () => Promise<ServiceInfo>
+  /**
+   * The client's shared backend-feature probes, keyed by descriptor request
+   * (collection path plus bound capability id). Handles built separately --
+   * `fromCapability` per resource, `collection(id)` in a loop -- then share one
+   * `GET .../backend` instead of repeating it per handle. Optional: a context
+   * assembled without one (a test fixture, `WasTransport`'s own requester)
+   * simply builds an unshared probe per handle, as before.
+   */
+  backendFeatures?: Map<string, BackendFeatures>
 }
 
 /**

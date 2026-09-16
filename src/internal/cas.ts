@@ -12,6 +12,7 @@
  * than hand-rolling another loop.
  */
 import { PreconditionFailedError, ValidationError } from '../errors.js'
+import { unenforcedPreconditionError } from './conditional.js'
 
 /**
  * How many times {@link compareAndSwap} retries a stale (`412`) write before
@@ -90,6 +91,13 @@ export function isPreconditionFailed(err: unknown): boolean {
  * retry): nothing is written and the current value is returned as-is. Any other error `mutate` throws
  * propagates unchanged.
  *
+ * A read that returns a value with no validator is refused before the write
+ * with `NotSupportedError`: the replace would carry no `If-Match`, so a lost
+ * race would silently overwrite the rival write instead of rebasing on it. A
+ * caller whose host legitimately offers only the unconditional write passes
+ * `allowUnconditional`. A `mutate` that resolves `null` writes nothing and so
+ * is never refused.
+ *
  * When the store reports no value yet (`read()` resolves `null`), the optional
  * `onAbsent` supplies the seed to mutate instead, and the result is written
  * with the store's create-if-absent guard. Without `onAbsent`, or on a store
@@ -106,6 +114,8 @@ export function isPreconditionFailed(err: unknown): boolean {
  * @param [options.onAbsent] {function}   returns the seed to mutate when the
  *   store holds no value yet; may throw a caller-specific refusal
  * @param [options.maxAttempts] {number}   defaults to {@link DEFAULT_CAS_ATTEMPTS}
+ * @param [options.allowUnconditional] {boolean}   send the replace without
+ *   `If-Match` when the read returned no validator, instead of refusing
  * @returns {Promise<T>}   the written (or current) value
  */
 export async function compareAndSwap<T>({
@@ -113,13 +123,15 @@ export async function compareAndSwap<T>({
   mutate,
   operation,
   onAbsent,
-  maxAttempts = DEFAULT_CAS_ATTEMPTS
+  maxAttempts = DEFAULT_CAS_ATTEMPTS,
+  allowUnconditional = false
 }: {
   store: CasStore<T>
   mutate: (value: T) => T | null | Promise<T | null>
   operation: string
   onAbsent?: () => T
   maxAttempts?: number
+  allowUnconditional?: boolean
 }): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -171,6 +183,12 @@ export async function compareAndSwap<T>({
       // The value already reflects the desired state: nothing to write.
       return current.value
     }
+    if (current.etag === undefined && !allowUnconditional) {
+      throw unenforcedPreconditionError({
+        operation: `${operation} was refused`,
+        reason: 'no-validator'
+      })
+    }
     try {
       await store.replace(next, { ifMatch: current.etag })
       return next
@@ -198,7 +216,9 @@ export async function compareAndSwap<T>({
  * re-reads, re-composes, and re-sends, so a merge is only applied over a
  * version this write observed. A baseline carrying no validator makes its
  * attempt an unconditional write (`ifMatch` is `undefined`), which is all a
- * backend without `conditional-writes` offers.
+ * backend without `conditional-writes` offers. This is the loop's
+ * `allowUnconditional` opt-out: the Collection and Space Metadata writes that
+ * drive it keep working on such a backend.
  *
  * Unlike a plain {@link CasStore}, the body is not the stored value itself.
  * The stored value may be `null` (an absent or unreadable object), and
@@ -252,6 +272,7 @@ export async function composeAndSwap<B, W extends object, R>({
     // The store only ever reads a baseline and only ever replaces a body.
     mutate: value => compose(value as B),
     operation,
+    allowUnconditional: true,
     ...(maxAttempts !== undefined && { maxAttempts })
   })
   if (written === undefined) {

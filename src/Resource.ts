@@ -14,7 +14,11 @@ import { send } from './internal/request.js'
 import { collectionCodecHolder } from './internal/codec.js'
 import { collectionBackendFeatures } from './internal/features.js'
 import type { FeatureProbe } from './internal/features.js'
-import { writeHeaders, readEtag } from './internal/conditional.js'
+import {
+  assertPreconditionEnforced,
+  writeHeaders,
+  readEtag
+} from './internal/conditional.js'
 import { withCodec } from './internal/withCodec.js'
 import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
 import { ENCODER, decodedText } from './internal/content.js'
@@ -82,8 +86,8 @@ export class Resource {
   /**
    * The backend-feature probe: the parent collection's shared one when this
    * handle came from `collection.resource(id)`, otherwise one built (and
-   * memoized) for this handle. Consulted by the conditional-codec write path
-   * (see `upsertResource`).
+   * memoized) for this handle. Consulted by the write paths before sending a
+   * precondition the backend might not enforce (see `upsertResource`).
    */
   readonly #features: FeatureProbe
 
@@ -310,8 +314,10 @@ export class Resource {
    * needs read access (a PUT-only capability can only create, and only against
    * a backend advertising `conditional-writes`; see `upsertResource`) -- and a
    * precondition the pre-read already contradicts fails locally with the same
-   * `PreconditionFailedError` the server would return. Returns the new
-   * `etag`.
+   * `PreconditionFailedError` the server would return. A named precondition
+   * throws `NotSupportedError` when the backend descriptor was read and
+   * advertises no `conditional-writes`, since a backend that ignores it would
+   * overwrite silently. Returns the new `etag`.
    *
    * @param data {ResourceData}
    * @param options {object}
@@ -348,13 +354,20 @@ export class Resource {
   /**
    * Deletes the resource. Idempotent. Pass `ifMatch` (the backend's
    * `conditional-writes` feature) to delete only if the resource's current ETag
-   * matches; a stale validator throws `PreconditionFailedError` (412).
+   * matches; a stale validator throws `PreconditionFailedError` (412). An
+   * `ifMatch` against a backend whose descriptor was read and advertises no
+   * `conditional-writes` throws `NotSupportedError` before any request.
    *
    * @param options {object}
    * @param [options.ifMatch] {string}   delete only if the ETag matches
    * @returns {Promise<void>}
    */
   async delete(options: { ifMatch?: string } = {}): Promise<void> {
+    await assertPreconditionEnforced({
+      features: this.#features,
+      precondition: options,
+      operation: `Cannot delete the resource "${this.id}"`
+    })
     await send(this.#context, {
       path: this.#path,
       method: 'DELETE',
@@ -432,6 +445,7 @@ export class Resource {
       codec: this.#codec(),
       custom: meta.custom ?? {},
       slot: { kind: 'resource', id: this.id },
+      features: this.#features,
       ifMatch: options.ifMatch,
       ifNoneMatch: options.ifNoneMatch,
       capability: this.#capability
@@ -450,7 +464,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return patchCustom(this, { name })
+    return patchCustom(this, { name }, 'Metadata update', this.#features)
   }
 
   /**
@@ -461,7 +475,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return patchCustom(this, { tags })
+    return patchCustom(this, { tags }, 'Metadata update', this.#features)
   }
 
   get #policyPath(): string {

@@ -13,11 +13,41 @@
   from its chunk resources and resolves a `Blob`.
 - `Collection.codecContext()` is public, so a sync replica can pass it to
   `DocCipher.decrypt`.
+- Breaking: guarded writes against a backend whose descriptor was read and lists
+  no `conditional-writes` throw `NotSupportedError` before any request. This
+  covers `Resource.put` (whatever the collection's codec), `Resource.delete` and
+  `Resource.setMeta` when they name `ifMatch` or `ifNoneMatch`, everything
+  layered over them (`resourceLogStore({ resource })`,
+  `resourceDescriptorStore`), and the sync port's `putContent`, `deleteContent`,
+  and `putMeta` when they name a precondition. A descriptor that could not be
+  read is not evidence either way, so the write proceeds: the probe reads a
+  collection-level path, which a capability delegated for a single Resource can
+  never read.
+- `resourceLogStore({ collection })`, `Collection.setMeta`,
+  `Collection.replaceDescription` and `configure` are not gated on
+  `conditional-writes`. The governing history log and the Collection Metadata
+  object version their own sub-resources, which a server implementing them
+  honors regardless of the backend feature.
+- `Resource.setName` and `setTags` drop their compare-and-swap pin, rather than
+  refusing, on a backend advertising no `conditional-writes`; the update is then
+  last-write-wins, as it already was against a backend serving no validator.
+- Breaking: the recipient primitives, `declareIndex` / `declareIndexes`, and
+  provisioning's late encryption declaration throw `NotSupportedError` when
+  their read returned no `ETag`, instead of writing unconditionally. Collection
+  and Space `configure`, `setMeta`, `setName`, and `setTags` still write
+  unconditionally in that case.
+- `logGovernedDescriptorStore`'s `replace` without a validator throws
+  `NotSupportedError` instead of `ValidationError`.
 
 ### Added
 
 - `isIntegrityError` predicate and an `IntegrityError` re-export on the `./sync`
   subpath.
+- `Collection.features` exposes the handle's memoized backend-feature probe.
+- Backend-feature probes are shared across every handle a client builds for the
+  same collection and bound capability, so rebuilding handles (`fromCapability`
+  per resource, `collection(id)` in a loop) reads the backend descriptor once
+  rather than once per handle.
 
 ### Fixed
 

@@ -178,14 +178,45 @@ export class BackendFeatures implements FeatureProbe {
 }
 
 /**
- * Builds the {@link BackendFeatures} probe for a collection, reading its
- * backend descriptor with a signed `GET` through the shared request layer --
- * the probe the core handles (Collection/Resource) hold, mirroring the one
+ * The cache key for one collection's probe under one capability. A descriptor
+ * read is answered per-capability (WAS masks a read the capability cannot make
+ * as a 404, which the probe caches as a definitive answer), so two handles may
+ * share a probe only when they would send the same request. An unbound handle
+ * keys on the empty string, which no capability id can collide with.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.capability] {IZcap}
+ * @returns {string}
+ */
+function probeKey({
+  spaceId,
+  collectionId,
+  capability
+}: {
+  spaceId: string
+  collectionId: string
+  capability?: IZcap
+}): string {
+  return `${collectionBackend(spaceId, collectionId)}\n${capability?.id ?? ''}`
+}
+
+/**
+ * The {@link BackendFeatures} probe for a collection, reading its backend
+ * descriptor with a signed `GET` through the shared request layer -- the probe
+ * the core handles (Collection/Resource) hold, mirroring the one
  * `WasTransport` builds over its own requester. A descriptor that is not
  * readable with the bound capability surfaces as a 404 (WAS masks unauthorized
  * reads), which the probe treats as "no features advertised" -- so every
  * affordance gate falls closed for a capability that cannot read the
  * descriptor.
+ *
+ * Probes are shared across every handle on one client that would send the same
+ * descriptor request, so a caller that rebuilds handles (`fromCapability` per
+ * resource, or `collection(id)` in a loop) pays one `GET .../backend` per
+ * collection rather than one per handle. `Collection.resource()` still passes
+ * its own probe to its children directly, which needs no lookup at all.
  *
  * @param context {ClientContext}
  * @param options {object}
@@ -202,7 +233,12 @@ export function collectionBackendFeatures(
     capability
   }: { spaceId: string; collectionId: string; capability?: IZcap }
 ): BackendFeatures {
-  return new BackendFeatures(async () => {
+  const key = probeKey({ spaceId, collectionId, capability })
+  const cached = context.backendFeatures?.get(key)
+  if (cached !== undefined) {
+    return cached
+  }
+  const probe = new BackendFeatures(async () => {
     const response = await send(context, {
       path: collectionBackend(spaceId, collectionId),
       method: 'GET',
@@ -212,4 +248,6 @@ export function collectionBackendFeatures(
     // the probe maps it to "absent"), so this null-guard is for the type only.
     return response === null ? null : readJsonData(response)
   })
+  context.backendFeatures?.set(key, probe)
+  return probe
 }

@@ -134,7 +134,12 @@ state on top of that:
 - `Collection` owns a memoized `CodecHolder` and a `BackendFeatures` probe;
   `collection.resource(id)` hands children resolver thunks so they share the
   parent's memoized codec and feature probe (and its `reset()`). A standalone
-  `Resource` builds its own.
+  `Resource` takes the probe for its collection from the client's shared cache
+  (`ClientContext.backendFeatures`, keyed by descriptor path plus bound
+  capability id), so rebuilding handles -- `fromCapability` per resource, or
+  `collection(id)` in a loop -- reads one descriptor per collection rather than
+  one per handle. Codecs stay per-handle: a handle may carry an encryption
+  override, which the descriptor read has no equivalent of.
 - `WasClient.fromCapability(zcap)` parses `invocationTarget` back into a handle
   at the right depth via `parseSpaceTarget`.
 
@@ -626,7 +631,11 @@ No locks; safety is optimistic (ETag/CAS) throughout
   Metadata read it is pinned to, and a lost race re-reads and re-merges. Both
   containers share one loop, `composeAndSwap` in `internal/cas.ts`, which runs
   on the generic `compareAndSwap` retry loop. A backend that serves no validator
-  gets an unconditional write.
+  gets an unconditional write. That is the loop's `allowUnconditional` opt-out,
+  which the handles' `setName` / `setTags` also take. Every other
+  `compareAndSwap` caller (the recipient primitives, `declareIndex`,
+  provisioning's late encryption declaration) is refused with
+  `NotSupportedError` when its read returns no validator.
 - `declareIndex` reconciles against the persisted index schema with the same
   metadata ETag: read, merge, conditional write, bounded retry on 412, so two
   clients declaring different attributes at once do not erase each other.
@@ -641,16 +650,54 @@ No locks; safety is optimistic (ETag/CAS) throughout
 
 ## Feature detection
 
-`internal/features.ts` probes the Collection's backend descriptor once for its
-advertised `features` tokens (`conditional-writes`, `blinded-index-query`,
-`chunked-streams`, `changes-query`). Definitive absence (404/405/501) is cached
-as "no features"; transient failures are not cached. The two roads to "no
-features" stay distinguishable (`FeatureProbe.descriptorAbsent()`): a descriptor
-that was read and lists none, versus one that could not be read at all (no such
-endpoint, a deleted collection, or a capability that cannot read it). A gate
-consults it so its error names the right cause instead of calling a capable
-server incapable. Every gate **falls closed**: without `conditional-writes`, an
-EDV insert against a masked 404 is refused rather than risking a silent clobber;
+`internal/features.ts` probes the Collection's backend descriptor once per
+client and bound capability for its advertised `features` tokens
+(`conditional-writes`, `blinded-index-query`, `chunked-streams`,
+`changes-query`). Definitive absence (404/405/501) is cached as "no features";
+transient failures are not cached. The two roads to "no features" stay
+distinguishable (`FeatureProbe.descriptorAbsent()`): a descriptor that was read
+and lists none, versus one that could not be read at all (no such endpoint, a
+deleted collection, or a capability that cannot read it). A gate consults it so
+its error names the right cause instead of calling a capable server incapable.
+An affordance gate **falls closed**: without `conditional-writes`, an EDV insert
+against a masked 404 is refused rather than risking a silent clobber.
+
+The same probe gates a caller's own precondition, on the narrower rule that only
+a descriptor that was read is evidence. `assertPreconditionEnforced` in
+`internal/conditional.ts` is the one gate: it refuses a named precondition with
+`NotSupportedError` before the write is sent when the descriptor lists no
+`conditional-writes` -- a backend can serve an `ETag` on reads and still ignore
+the precondition on writes, so the validator alone is not evidence. It runs in
+`upsertResource` (whatever the collection's codec), in `Resource.delete`, in
+`writeMeta` (so `Resource.setMeta`), and in the codec-bypassing sync port's
+writes. The stores layered over `Resource.put` -- the resource log over a
+Resource, the resource descriptor stores -- inherit it and do not repeat it. An
+unreadable descriptor proceeds instead: the probe reads a collection-level path,
+so a capability delegated for a single Resource can never read it (WAS masks
+that as a 404, which the probe caches), and refusing would shut such a
+capability out of conditional writes entirely. The server still answers the
+guarded write on its own terms. The refusal is built by
+`unenforcedPreconditionError`, shared with the no-validator refusals.
+
+Two write targets carry their own validator and are not gated: the Collection
+Metadata object and the governing history log at `/meta/log`. A server
+implementing them maintains the version and honors both preconditions regardless
+of the backend feature, so `Collection.setMeta`, `Collection.replaceDescription`
+and `configure` send `ifMatch` / `ifNoneMatch` ungated, and
+`resourceLogStore({ collection })` sends its compare-and-swap append and guarded
+genesis create unconditioned on `conditional-writes` (`putHistoryLog` refuses an
+unconditional write on its own). A Resource's `/meta` validator is not in that
+group: it is a Resource-level validator, present only on a backend that
+advertises the feature, so `Resource.setMeta` is gated and the sync port's
+`putMeta` with it.
+
+`setName` / `setTags` degrade rather than refuse. Their pin is one `patchCustom`
+read itself, not one the caller named, so on a Resource whose backend advertises
+no `conditional-writes` the read reports no validator and the loop takes its
+`allowUnconditional` path -- the same last-write-wins update a backend serving
+no validator at all gets. The Collection side passes no probe, since its
+`metaVersion` always stands.
+
 `WasTransport` degrades insert to non-atomic HEAD-then-PUT and throws
 `NotSupportedError` for query/chunk operations. The codec's own chunked-blob
 routing checks `chunked-streams` before its first write (and before a read

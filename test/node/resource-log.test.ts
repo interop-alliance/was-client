@@ -272,3 +272,17 @@ describe('resourceLogStore over a Collection history log', () => {
     )
   })
 })
+
+describe('resourceLogStore on a read with no validator', () => {
+  it('refuses an append before any write', async () => {
+    const { resource, state } = fakeLogResource(
+      serializeResourceLog([entryAt(1)])
+    )
+    const store = resourceLogStore({ resource })
+    await store.read()
+    await expect(
+      store.append(entryAt(2), { ifMatch: undefined as unknown as string })
+    ).rejects.toThrow(/returned no ETag validator/)
+    expect(state.puts).toEqual([])
+  })
+})

@@ -48,6 +48,7 @@ import {
 } from '@interop/vh-resource-log'
 import type { Collection } from '../Collection.js'
 import { PreconditionFailedError, ValidationError } from '../errors.js'
+import { unenforcedPreconditionError } from '../internal/conditional.js'
 import {
   isGovernedDescriptor,
   unreadableDescriptionError
@@ -296,10 +297,10 @@ export function logGovernedDescriptorStore({
     async replace(descriptor, { ifMatch }) {
       const logSigner = requireSigner('replace')
       if (ifMatch === undefined) {
-        throw new ValidationError(
-          'Cannot replace the governed descriptor: the backend returned no ' +
-            'validator, and the profile forbids an unconditional write.'
-        )
+        throw unenforcedPreconditionError({
+          operation: 'Cannot replace the governed descriptor',
+          reason: 'no-validator'
+        })
       }
       /**
        * An append builds on the head this instance last verified. A replace

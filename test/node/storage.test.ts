@@ -35,21 +35,44 @@ import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
  * @param [options.fail] {number}      an HTTP status to throw instead
  * @param [options.etag] {string}      an `ETag` header to return on every
  *   response (the backend's `conditional-writes` validator)
- * @returns {object} { client, calls }
+ * @param [options.stubBackend] {boolean}   answer the backend-descriptor path
+ *   with a `conditional-writes` descriptor, recorded in `probes` rather than
+ *   `calls` (default). Pass `false` to hand that path back to `data`, for the
+ *   tests that are about `collection.backend()` itself.
+ * @returns {object} { client, calls, probes }
  */
 function clientWithRequestSpy({
   data,
   fail,
-  etag
-}: { data?: unknown; fail?: number; etag?: string } = {}): {
+  etag,
+  stubBackend = true
+}: {
+  data?: unknown
+  fail?: number
+  etag?: string
+  stubBackend?: boolean
+} = {}): {
   client: WasClient
   calls: RequestArgs[]
+  probes: RequestArgs[]
 } {
   const calls: RequestArgs[] = []
+  const probes: RequestArgs[] = []
   const client = clientWithStub(args => {
-    calls.push(args)
+    // The backend-feature probe is infrastructure a guarded write runs on its
+    // own, not a request the handle was asked to make, so it is recorded apart
+    // from `calls` -- which stays the operation under test, indexable by the
+    // order the handle issues its requests in.
+    const probing = stubBackend && args.url?.endsWith('/backend') === true
+    ;(probing ? probes : calls).push(args)
     if (fail !== undefined) {
       throw { status: fail, response: { status: fail } }
+    }
+    if (probing) {
+      return jsonResponse({
+        data: { id: 'urn:backend:demo', features: ['conditional-writes'] },
+        status: 200
+      })
     }
     return jsonResponse({
       data,
@@ -57,7 +80,7 @@ function clientWithRequestSpy({
       headers: etag !== undefined ? { etag } : {}
     })
   })
-  return { client, calls }
+  return { client, calls, probes }
 }
 
 describe('space.backends()', () => {
@@ -232,7 +255,10 @@ describe('collection.backend()', () => {
       name: 'Server Filesystem',
       managedBy: 'server'
     }
-    const { client, calls } = clientWithRequestSpy({ data: backend })
+    const { client, calls } = clientWithRequestSpy({
+      data: backend,
+      stubBackend: false
+    })
     const result = await client.space('s').collection('c').backend()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/backend')
     expect(calls[0]?.method).toBe('GET')
@@ -701,12 +727,16 @@ describe('resource.setName() / setTags()', () => {
     // The read-modify-write must thread the `meta()` etag as `If-Match`, or a
     // concurrent `setTags()` would be silently erased by this full-replacement
     // write even on a conditional-writes backend.
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls, probes } = clientWithRequestSpy({
       data: { contentType: 'application/json', custom: { name: 'Old' } },
       etag: '"meta-v1"'
     })
     await client.space('s').collection('c').resource('r').setName('New')
     expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
+    // The pin stands only because the backend advertises the feature, which
+    // the write read once (see `probes`); without it the update degrades to
+    // last-write-wins rather than refusing.
+    expect(probes).toHaveLength(1)
   })
 
   it('setTags() pins the write to the meta etag (lost-update guard)', async () => {

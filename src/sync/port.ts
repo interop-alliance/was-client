@@ -28,7 +28,13 @@
  * WriteAck} -- the write's raw `etag` (re-read only if the backend sent
  * none) plus its `version` parsed out of it -- so a caller can record acked
  * revisions immediately and echo `etag` back verbatim as a later write's
- * `ifMatch`.
+ * `ifMatch`. A write carrying `ifMatch` or `ifNoneMatch` is refused with
+ * `NotSupportedError` before it is sent when the collection's backend
+ * descriptor was read and advertises no `conditional-writes`, since a backend
+ * that ignores the header would turn a guarded push into a silent overwrite. A
+ * descriptor that could not be read is not evidence either way and the push
+ * goes out, so a collection that is briefly absent does not disable guarded
+ * pushes for the port's lifetime.
  *
  * Bypassing the codec is not bypassing the error mapper. Every failure caught
  * here goes through the client's own `mapError` first, so the port's signals
@@ -39,6 +45,7 @@ import type { WasClient } from '../WasClient.js'
 import type { HttpResponse } from '@interop/http-client'
 import {
   KEY_EPOCH_HEADER,
+  assertPreconditionEnforced,
   readEtag,
   writeHeaders
 } from '../internal/conditional.js'
@@ -280,7 +287,8 @@ export function createWasSyncPort({
 
   // Construction is I/O-free (the codec/feature probes are lazy thunks) and
   // `changes()` never resolves the codec, so it ships the stored bodies
-  // verbatim -- what this codec-bypassing port requires.
+  // verbatim -- what this codec-bypassing port requires. Its feature probe
+  // also gates the port's precondition-bearing writes.
   const changesCollection = was
     .space(spaceId)
     .collection(collectionId, { capability })
@@ -371,6 +379,11 @@ export function createWasSyncPort({
 
     async putContent({ id, data, ifMatch, ifNoneMatch, epoch }) {
       try {
+        await assertPreconditionEnforced({
+          features: changesCollection.features,
+          precondition: { ifMatch, ifNoneMatch },
+          operation: `Cannot write the resource "${id}"`
+        })
         const response = await was.request({
           capability,
           path: contentPath(id),
@@ -389,6 +402,11 @@ export function createWasSyncPort({
 
     async deleteContent({ id, ifMatch }) {
       try {
+        await assertPreconditionEnforced({
+          features: changesCollection.features,
+          precondition: { ifMatch },
+          operation: `Cannot delete the resource "${id}"`
+        })
         const response = await was.request({
           capability,
           path: contentPath(id),
@@ -413,6 +431,11 @@ export function createWasSyncPort({
 
     async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
       try {
+        await assertPreconditionEnforced({
+          features: changesCollection.features,
+          precondition: { ifMatch, ifNoneMatch },
+          operation: `Cannot write the metadata of resource "${id}"`
+        })
         const response = await was.request({
           capability,
           path: metaPath(id),

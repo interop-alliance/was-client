@@ -33,7 +33,11 @@ import {
   memoryLogStore
 } from '@interop/vh-resource-log/testing'
 
-import { PreconditionFailedError, ValidationError } from '../../src/index.js'
+import {
+  NotSupportedError,
+  PreconditionFailedError,
+  ValidationError
+} from '../../src/index.js'
 import type { CollectionEncryption } from '../../src/index.js'
 import type { Collection } from '../../src/Collection.js'
 import {
@@ -623,7 +627,10 @@ describe('logGovernedDescriptorStore over any resource log', () => {
       recipients: [reader.recipient]
     })
     await expect(store.replace(descriptor, {})).rejects.toThrow(
-      /forbids an unconditional write/
+      NotSupportedError
+    )
+    await expect(store.replace(descriptor, {})).rejects.toThrow(
+      /returned no ETag validator/
     )
   })
 

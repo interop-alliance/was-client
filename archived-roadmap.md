@@ -2289,3 +2289,81 @@ is done: see the `touches:` annotations. No site needed a new comparison, and
 the dcw plaintext site delegates to the seam through DCW-78.
 
 discovered-from: whole-codebase review, 2026-09-11.
+
+### WCL-50: Preconditions are emitted without probing that the backend enforces them
+
+- status: done (2026-09-15)
+- priority: high
+- labels: conditional-writes, fail-closed, cas, log, encryption, correctness
+- touches:
+  - wallet-core: `ensureUserKeyRoster`, the log-governed descriptor store, and
+    the sync engine, which classify the port's thrown errors by name: filed as
+    WC-235 for the `keys-collectionLogStore` test fake, which lacks a `features`
+    probe. No production change: `NotSupportedError` matches no classified name,
+    so it propagates as fatal
+  - was-sync: the same error-name classification on the `./sync` subpath: filed
+    as WS-15 -- `pushWrites.ts` retries every non-conflict error with backoff,
+    so the permanent refusal would be retried forever
+  - freewallet, dcw: `addRecipient` / `removeRecipient` / `replaceRecipient`,
+    `ensureSpaceAndCollection`, and any supported backend that would be left
+    unable to write a log: no action -- both target only the reference server,
+    whose server-managed backends all advertise `conditional-writes`, and
+    neither registers an external backend
+- acceptance:
+  - [x] A shared refusal helper lives beside `writeHeaders` in
+        `src/internal/conditional.ts`, so the refusal messages do not drift
+  - [x] `compareAndSwap` refuses when `read()` returns a value with no
+        validator, with an explicit opt-out for a caller that wants the
+        unconditional write
+  - [x] `src/log/logStore.ts` refuses `append` and `create` on a backend that
+        advertises no `conditional-writes`
+  - [x] `src/sync/port.ts` refuses a precondition-bearing write against a
+        backend advertising no `conditional-writes`
+  - [x] `Resource.put` / `Resource.delete` gate a caller-named precondition on
+        the same probe when the codec is non-conditional
+  - [x] `resourceDescriptorStore` reaches the probe the `Resource` handle
+        already holds
+
+Four modules assert that their guards "ride the backend's `conditional-writes`
+feature" while only the EDV insert path actually consults it -- grep confirms
+`internal/write.ts` is the sole `conditional-writes` call site in `src/`. The
+family has one root and three independent instances. `src/internal/cas.ts:160`
+is the root for the CAS group: driven with a store whose `read()` resolves
+`{ value, etag: undefined }`, `compareAndSwap` calls `replace` once with
+`ifMatch: undefined` and reports success, and `writeHeaders` emits no header for
+an undefined validator, so the request is a plain PUT. Every CAS caller inherits
+that with no local defect of its own: `Collection.declareIndex`,
+`casUpdateDescriptor` for the recipient primitives, the late encryption
+declaration in provisioning, and both plain descriptor stores, which only
+forward the `ifMatch` the loop hands them. `src/log/logStore.ts:154`,
+`src/sync/port.ts` (`putContent`, `deleteContent`, `writeAck`) and
+`Resource.put` / `Resource.delete` on the non-conditional branch are separate
+instances of the same policy gap, each with its own owner. The counter-evidence
+that this is an omission rather than a design choice sits in the same codebase:
+`logGovernedDescriptorStore.replace` and `upsertResource`'s masked-404 branch
+already refuse for exactly this reason.
+
+Two scope limits the item must carry. WCL-32 settled the description-endpoint
+case the opposite way -- a precondition on the Collection Description or Space
+endpoint is a property of those endpoints rather than a backend feature token,
+so no client gate is possible there -- which refutes the
+`collectionDescriptorStore` half of this family. Scope the work to the sites
+where the feature token actually exists: Resource writes, EDV document writes,
+the log store, and the sync port. And the CAS guard must key on "the read
+returned no validator" rather than on the feature token alone. The residual
+exposure this closes is the backend that emits an `ETag` on GET but ignores
+`If-Match` / `If-None-Match` on PUT, which is the common case for BYOS object
+stores and is why WAS carries the token at all. One item rather than five, so
+the decision is made once.
+
+discovered-from: whole-codebase review, 2026-09-11.
+
+2026-09-15: landed in was-client 0.66.0. The refusals throw the existing
+`NotSupportedError`, built by `unenforcedPreconditionError` in
+`src/internal/conditional.ts`. `composeAndSwap` (Collection and Space Metadata
+writes) and `patchCustom` (`setName` / `setTags`) take the `allowUnconditional`
+opt-out. `logGovernedDescriptorStore.replace`'s no-validator refusal moved to
+the same helper, so it is now `NotSupportedError` rather than `ValidationError`.
+The handles expose their probe as `Collection.features` / `Resource.features`.
+Resource metadata writes (`Resource.setMeta`) remain ungated, as the acceptance
+list scoped them out.

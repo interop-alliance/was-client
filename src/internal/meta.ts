@@ -17,7 +17,13 @@ import { compareAndSwap } from './cas.js'
 import type { MetaReadSlot, MetaWriteSlot, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
-import { readEtag, writeHeaders } from './conditional.js'
+import {
+  assertPreconditionEnforced,
+  preconditionsEnforced,
+  readEtag,
+  writeHeaders
+} from './conditional.js'
+import type { FeatureProbe } from './features.js'
 import { withCodec } from './withCodec.js'
 import type {
   IZcap,
@@ -129,6 +135,11 @@ export async function readMeta<
  *   properties, as a full replacement
  * @param options.slot {MetaWriteSlot}   the `meta` slot being written, which
  *   an encrypting codec binds into the envelope
+ * @param options.features {FeatureProbe}   the handle's backend-feature probe.
+ *   A Resource's metadata validator is a Resource-level validator, so a named
+ *   precondition is refused when the backend advertises no `conditional-writes`
+ *   (unlike the Collection Metadata object's `metaVersion`, which a server
+ *   maintains regardless and `Collection.setMeta` therefore does not gate)
  * @param [options.ifMatch] {string}       update only if the `meta` ETag matches
  * @param [options.ifNoneMatch] {boolean}  write only if no metadata is set
  * @param [options.capability] {IZcap}
@@ -141,6 +152,7 @@ export async function writeMeta(
     codec: codecPromise,
     custom,
     slot,
+    features,
     ifMatch,
     ifNoneMatch,
     capability
@@ -149,11 +161,17 @@ export async function writeMeta(
     codec: Promise<ResourceCodec>
     custom: ResourceMetadataCustomInput
     slot: MetaWriteSlot
+    features: FeatureProbe
     ifMatch?: string
     ifNoneMatch?: boolean
     capability?: IZcap
   }
 ): Promise<{ etag?: string }> {
+  await assertPreconditionEnforced({
+    features,
+    precondition: { ifMatch, ifNoneMatch },
+    operation: `Cannot write the metadata at "${metaPath}"`
+  })
   const codec = await codecPromise
   const { custom: encoded } = await codec.encodeMeta({ custom, slot })
   const response = await send(context, {
@@ -182,11 +200,22 @@ export async function writeMeta(
  * alike, so a concurrent `configure` -- or an epoch rotation -- legitimately
  * invalidates an in-flight annotation write.
  *
+ * `features` is the Resource side's: a Resource's metadata validator is
+ * gated on `conditional-writes`, so on a backend that advertises none the read
+ * reports no validator and the loop takes its `allowUnconditional` path -- the
+ * same last-write-wins update a backend serving no validator at all gets. That
+ * keeps `setName` / `setTags` working there rather than refusing, which is what
+ * `setMeta` does for a precondition the caller named itself. The Collection
+ * side passes none: its `metaVersion` is maintained regardless of the backend
+ * feature, so its pin always stands.
+ *
  * @param handle {object}   the Collection or Resource handle to patch
  * @param patch {ResourceMetadataCustom}   the properties to merge over the
  *   current `custom`
  * @param operation {string}   what the caller is doing, for the exhaustion
  *   error (e.g. `Metadata update`)
+ * @param [features] {FeatureProbe}   the handle's backend-feature probe, when
+ *   its metadata validator is gated on `conditional-writes`
  * @returns {Promise<void>}
  */
 export async function patchCustom(
@@ -198,15 +227,19 @@ export async function patchCustom(
     ): Promise<{ etag?: string }>
   },
   patch: ResourceMetadataCustom,
-  operation = 'Metadata update'
+  operation = 'Metadata update',
+  features?: FeatureProbe
 ): Promise<void> {
   await compareAndSwap<ResourceMetadataCustom>({
     store: {
       read: async () => {
         const current = await handle.meta()
+        const pinnable =
+          features === undefined || (await preconditionsEnforced(features))
+        const etag = pinnable ? current?.etag : undefined
         return {
           value: current?.custom ?? {},
-          ...(current?.etag !== undefined && { etag: current.etag })
+          ...(etag !== undefined && { etag })
         }
       },
       replace: async (custom, { ifMatch }) => {
@@ -214,6 +247,9 @@ export async function patchCustom(
       }
     },
     operation,
+    // A handle's name and tags stay writable on a backend that serves no
+    // metadata validator; the write is then last-write-wins.
+    allowUnconditional: true,
     mutate: custom => ({ ...custom, ...patch })
   })
 }

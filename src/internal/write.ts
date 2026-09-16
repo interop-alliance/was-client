@@ -32,6 +32,7 @@ import { send } from './request.js'
 import type { FeatureProbe } from './features.js'
 import {
   assertPreconditionAgainstPreRead,
+  assertPreconditionEnforced,
   assertSinglePrecondition,
   encodedPrecondition,
   writeHeaders,
@@ -246,6 +247,13 @@ export async function insertResource(
  *   masked-404 insert would silently overwrite the existing document and reset
  *   its sequence. The insert-after-null-pre-read is therefore refused (fail
  *   closed) unless the backend advertises the feature.
+ * - A caller's named precondition is refused with `NotSupportedError` when the
+ *   backend descriptor was read and advertises no `conditional-writes`,
+ *   whatever the collection's codec. A backend that ignores `If-Match` would
+ *   otherwise turn the caller's compare-and-swap into a silent overwrite. This
+ *   is the one gate every guarded write through a handle passes, so the stores
+ *   layered over `Resource.put` (the resource log, the descriptor stores) do
+ *   not repeat it.
  *
  * @param context {ClientContext}
  * @param options {object}
@@ -254,8 +262,8 @@ export async function insertResource(
  * @param options.id {string}                    the resource id
  * @param options.data {ResourceData}            the plaintext value
  * @param options.features {FeatureProbe}         the handle's shared
- *   `BackendFeatures` probe; consulted only for a conditional codec's
- *   insert-after-null-pre-read
+ *   `BackendFeatures` probe; consulted for a named precondition and for a
+ *   conditional codec's insert-after-null-pre-read
  * @param [options.contentType] {string}         caller-supplied content type
  * @param [options.capability] {IZcap}
  * @param [options.precondition] {WritePrecondition}   the caller's explicit
@@ -289,6 +297,11 @@ export async function upsertResource(
   // Checked before the pre-read, whose comparison would otherwise answer the
   // pair with a 412 either way.
   assertSinglePrecondition(precondition)
+  await assertPreconditionEnforced({
+    features,
+    precondition,
+    operation: `Cannot write the resource at "${path}"`
+  })
   let current: HttpResponse | null | undefined
   if (codec.conditionalWrites) {
     current = await send(context, {

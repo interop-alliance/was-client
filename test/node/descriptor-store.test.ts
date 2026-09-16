@@ -595,3 +595,25 @@ describe('collectionDescriptorStore description-field forwarding', () => {
     ])
   })
 })
+
+describe('resourceDescriptorStore on a read with no validator', () => {
+  it('refuses a recipient change before any write', async () => {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const roster = fakeRosterResource(await seedDescriptor([alice]))
+    const unversioned = {
+      ...roster,
+      getWithEtag: async () => ({ data: roster._state.content })
+    }
+    await expect(
+      addRecipient({
+        store: resourceDescriptorStore({
+          resource: unversioned as unknown as Resource
+        }),
+        recipient: recipientOf(bob),
+        owner: { keyAgreementKey: alice.kak }
+      })
+    ).rejects.toThrow(/Recipient change was refused: the read it is pinned to/)
+    expect(roster._state.puts).toEqual([])
+  })
+})

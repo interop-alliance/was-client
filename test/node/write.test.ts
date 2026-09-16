@@ -458,3 +458,92 @@ describe('upsertResource: insert gate on a non-conditional backend', () => {
     expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
   })
 })
+
+describe('upsertResource: a named precondition is gated whatever the codec', () => {
+  const plaintextCodec = {
+    ...conditionalCodec,
+    conditionalWrites: undefined
+  } as unknown as ResourceCodec
+
+  it('refuses when the backend was read and advertises no conditional-writes', async () => {
+    const { context, calls } = contextWithStatuses()
+    await expect(
+      upsertResource(context, {
+        path: '/space/s/c/r',
+        codec: plaintextCodec,
+        id: 'r',
+        data: { v: 1 },
+        features: stubFeatures([]),
+        precondition: { ifMatch: '"caller"' }
+      })
+    ).rejects.toThrow(/does not advertise the 'conditional-writes' feature/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('sends the precondition when the backend descriptor could not be read', async () => {
+    // An unreadable descriptor is not evidence that the backend ignores the
+    // precondition: a capability delegated for one resource can never read the
+    // collection-level descriptor, and WAS masks that as a 404. The server
+    // answers the guarded write itself.
+    const { context, calls } = contextWithStatuses()
+    await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: plaintextCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: stubFeatures([], { descriptorAbsent: true }),
+      precondition: { ifMatch: '"caller"' }
+    })
+    expect(calls.map(call => call.method)).toEqual(['PUT'])
+    expect(calls[0]!.headers?.['if-match']).toBe('"caller"')
+  })
+
+  it('propagates a transient probe failure as itself', async () => {
+    const { context, calls } = contextWithStatuses()
+    const outage = new Error('descriptor read failed')
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: plaintextCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: featureProbeFrom(async () => {
+        throw outage
+      }),
+      precondition: { ifNoneMatch: true }
+    }).catch((err: unknown) => err)
+    expect(failure).toBe(outage)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses a conditional codec before its pre-read', async () => {
+    // A conditional codec pins the write to the caller's baseline and sends it
+    // as its own precondition, so it needs the same enforcement -- and the
+    // refusal lands before the codec's pre-read GET.
+    const { context, calls } = contextWithStatuses()
+    await expect(
+      upsertResource(context, {
+        path: '/space/s/c/r',
+        codec: conditionalCodec,
+        id: 'r',
+        data: { v: 1 },
+        features: stubFeatures([]),
+        precondition: { ifMatch: '"caller"' }
+      })
+    ).rejects.toThrow(/does not advertise the 'conditional-writes' feature/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('does not probe the backend for an unguarded write', async () => {
+    const { context, calls } = contextWithStatuses()
+    await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: plaintextCodec,
+      id: 'r',
+      data: { v: 1 },
+      features: featureProbeFrom(async () => {
+        throw new Error('features must not be consulted')
+      })
+    })
+    expect(calls.map(call => call.method)).toEqual(['PUT'])
+  })
+})
