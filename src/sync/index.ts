@@ -13,6 +13,11 @@
  * - `createPlaintextDocCipher` / `isEncryptedEnvelope` -- the identity cipher
  *   for a plaintext content-addressed collection, and the envelope predicate,
  *   both free of the `@interop/was-client/edv` crypto graph.
+ * - `requireResourceId` -- the guard both built-in ciphers run first, exported
+ *   so a consumer writing its own `DocCipher` refuses a missing resource id
+ *   the same way instead of hand-rolling the check. It raises a
+ *   `ValidationError`, which reports a caller passing no id rather than a
+ *   condition to classify and recover from, so no predicate ships for it.
  * - `ensureSpaceAndCollection` / `ensureSpace` -- idempotent Space +
  *   Collection provisioning, and its Space half alone (ensure the Space once,
  *   then thread the returned description through every collection).
@@ -54,7 +59,11 @@ export { createWasSyncPort, KEY_EPOCH_HEADER, parseEtag } from './port.js'
 // The sync subpath's names for the client's own error accessors, so a
 // sync-only consumer reads a raw ky/ezcap failure without importing the core
 // entry.
-export { httpStatus as errorStatus, errorMessage } from '../errors.js'
+export {
+  httpStatus as errorStatus,
+  errorMessage,
+  requireResourceId
+} from '../errors.js'
 export { contentCid, cidFrom, deriveSpaceId } from './cid.js'
 export { isEncryptedEnvelope } from './envelope.js'
 export { createPlaintextDocCipher } from './plaintextCipher.js'

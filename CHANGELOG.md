@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.69.0 - TBD
+
+### Added
+
+- `requireResourceId` is exported from `@interop/was-client/sync`. It is the
+  guard both built-in ciphers already run before verifying a stored body, so a
+  consumer writing its own `DocCipher` refuses a missing resource id with the
+  same `ValidationError` instead of hand-rolling the check.
+
 ## 0.68.0 - 2026-09-16
 
 ### Changed
