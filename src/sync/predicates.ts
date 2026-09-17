@@ -6,10 +6,13 @@
  * meet: the port's two wire signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), its opt-in revoked-access signal
  * (`WasSyncAuthError`), the cipher's two no-key signals (the stale-descriptor
- * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), its tamper
- * signal (`IntegrityError`), and the client's affordance gate
- * (`NotSupportedError`), raised before the request when the operation cannot
- * be carried out as asked.
+ * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), and its
+ * tamper signal (`IntegrityError`).
+ *
+ * `isNotSupportedError` rides along for the client's affordance gate. That
+ * refusal belongs to the rest of the package rather than to this subpath,
+ * which raises it on neither a push nor a pull. The predicate's own doc says
+ * where it does come from.
  *
  * They live beside the classes that assign the names they match (`errors.ts`)
  * because every one of those errors is raised inside a seam the consuming app
@@ -129,13 +132,23 @@ export function isIntegrityError(err: unknown): boolean {
 
 /**
  * Whether an error is the client's affordance-gate refusal
- * (`NotSupportedError`): the operation cannot be carried out as asked. On a
- * replication path it is the guarded write refused because the read it is
- * pinned to returned no `ETag` validator, and a chunked envelope a cipher was
- * built with no route to. Permanent, and the one refusal a replication driver
- * must NOT retry: nothing about a later attempt changes the answer, so a retry
- * loop would re-send the same batch forever. Raised before the request, so the
- * matched value carries no `status`.
+ * (`NotSupportedError`): the operation cannot be carried out as asked.
+ * Permanent, since nothing about a later attempt changes the answer. Raised
+ * before the request, so the matched value carries no `status`.
+ *
+ * It takes two forms. A guarded write refuses when the read it is pinned to
+ * returned no `ETag` validator, so the write would go out unconditionally;
+ * every such gate builds the error through `unenforcedPreconditionError`, in
+ * `log/logStore.ts`, `edv/logGovernedDescriptorStore.ts` and
+ * `internal/cas.ts`. A cipher refuses a chunked envelope it was built with no
+ * route to, in `edv/EdvCodec.ts` and `edv/WasTransport.ts`.
+ *
+ * Neither form arises on this subpath. Conditional writes are a baseline
+ * server requirement, so the sync port passes `ifMatch` / `ifNoneMatch`
+ * through with no gate in front of them, and it moves stored bodies verbatim
+ * without the codec. The predicate is exported here so a consumer of `/log` or
+ * `/edv` can classify the refusal by the same `err.name` rule as every other
+ * signal, not because a replication driver can meet it.
  *
  * @param err {unknown}   the caught error
  * @returns {boolean}

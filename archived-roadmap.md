@@ -2650,3 +2650,82 @@ merge (an omitted `name` keeps the stored one), so an echo would be a guess and
 body, so both answer with a required `description` regardless, and both take it
 from the server's answer on a create, where the server is the authority on the
 members it settles (a Space's `type`).
+
+### WCL-110: `isNotSupportedError` outlived the replication path its docs describe
+
+- status: done (2026-09-17)
+- priority: low
+- labels: sync, errors, docs, conditional-writes, cleanup
+- touches:
+  - was-sync: SHIPPED (WS-16, 2026-09-17). The driver removed its classification
+    of the refusal, the controller's `isPermanentRefusal`, and the give-up path
+    behind it; it imports the predicate no longer. Nothing left to file there
+  - wallet-core: unaffected. WC-237 would have been the second consumer and was
+    closed `done (2026-09-16; withdrawn without implementation)` on this same
+    spec change, so no code there ever matched the name
+- acceptance:
+  - [x] `isNotSupportedError`'s doc (`src/sync/predicates.ts:130-142`) stops
+        placing the refusal on a replication path. The sync port raises it on
+        neither a read nor a write, so "On a replication path it is the guarded
+        write refused because the read it is pinned to returned no `ETag`
+        validator" names a thing that cannot happen, and "the one refusal a
+        replication driver must NOT retry" prescribes a path no driver has
+  - [x] The `/sync` entry's header (`src/sync/index.ts:41-43`) drops the same
+        claim: the affordance gate is not something "a guarded write raises
+        before any request" on this subpath, and the trailing "so a replication
+        driver stops rather than retries" is the sentence that cost a driver a
+        give-up path it has now deleted
+  - [x] Both rewrites say where the refusal IS raised, so the next reader can
+        tell whether it can reach them: `src/log/logStore.ts:167`,
+        `src/edv/logGovernedDescriptorStore.ts:300`, and
+        `src/internal/cas.ts:181`, all through `unenforcedPreconditionError`,
+        plus `EdvCodec`'s chunked-envelope refusal (`src/edv/EdvCodec.ts:744`)
+        and `WasTransport`'s (`src/edv/WasTransport.ts:440`)
+  - [x] Whether the predicate stays exported from `./sync` is decided and
+        recorded rather than left implicit. It has no consumer anywhere in the
+        ecosystem today (swept 2026-09-17: only this repo's own definition,
+        re-export, and test). Keeping it is defensible -- a consumer of the log
+        store or the EDV transport meets the error, and the `err.name` rule
+        applies there as everywhere -- but the subpath it is exported from is
+        the one place it cannot arise, which is what made the docs wrong
+  - [x] If it is removed: a CHANGELOG entry under a new version, marked
+        breaking, dated TBD, naming was-sync 0.5.0 as the release that stopped
+        importing it. If it stays: no CHANGELOG entry, since a doc correction
+        changes no behavior
+  - [x] `touches:` entries resolved
+
+Context: the predicate was added in 0.67.0 for one caller -- was-sync's push
+handler, which needed to tell a permanent refusal from a transient write failure
+so RxDB's backoff would stop re-sending a batch no attempt could land. WCL-106
+then removed the reason that refusal existed on the sync path: with conditional
+writes a baseline server requirement, `createWasSyncPort` passes `ifMatch` /
+`ifNoneMatch` straight into `writeHeaders` with no gate, and it bypasses the
+codec besides, so neither the precondition refusal nor the chunked one can reach
+a replication driver. was-sync WS-16 deleted its half on 2026-09-17 after
+verifying that reachability. What is left here is a predicate with no consumer
+and, more to the point, two doc comments that still tell a replication driver to
+build the path WS-16 just removed.
+
+The removal half is a judgment call rather than an obvious yes, which is why it
+is an acceptance box rather than the item's title. The doc half is not: the
+sentences are wrong today, and they are the kind of wrong that gets read as a
+requirement.
+
+discovered-from: was-sync WS-16.
+
+Resolved: option A, the docs-only fix. The predicate stays exported from
+`./sync` and nothing about its behavior changed, so there is no CHANGELOG entry.
+Removing it would have left a `/log` or `/edv` consumer that meets the refusal
+with no predicate at all, hand-writing the `err.name` match that
+`decisions/0001-cross-package-errors-match-by-name.md` exists to supply, in
+exchange for tidying a subpath that has no consumer to tidy it for. Moving the
+export to the entries that raise the refusal was considered and declined as out
+of scope.
+
+Three comments were rewritten rather than the two the acceptance boxes named:
+the module header of `src/sync/predicates.ts` opened on "the errors a
+replication path can meet" and listed the affordance gate among them, the same
+claim as the predicate's own doc. All three now say the refusal's two forms and
+where each is raised, and say plainly that this subpath raises it on neither a
+push nor a pull, so the export reads as a convenience for `/log` and `/edv`
+consumers rather than as a path a driver must handle.

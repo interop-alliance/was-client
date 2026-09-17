@@ -20,10 +20,11 @@
  *   `isUnknownEpochError` / `isKeyUnwrapError` / `isIntegrityError` /
  *   `isNotSupportedError` -- the classification contract for the signals
  *   below. A consumer matches by `err.name` and never with `instanceof`,
- *   because every one of these errors is raised inside a seam the app injects
- *   (the port, the caller's `DocCipher`) and that seam can resolve to a second
- *   copy of this package. Reading a property off the matched value, such as
- *   `status` on an auth error, is the intended shape.
+ *   because these errors are raised inside a seam the app injects (the port,
+ *   the caller's `DocCipher`) and that seam can resolve to a second copy of
+ *   this package. The affordance gate is raised outside a seam but matched the
+ *   same way, so the rule has no exceptions. Reading a property off the
+ *   matched value, such as `status` on an auth error, is the intended shape.
  *
  * The 412 conflict / 404 not-found port signals (`WasSyncConflictError` /
  * `WasSyncNotFoundError`), and the opt-in revoked-access signal
@@ -38,9 +39,12 @@
  * (`IntegrityError`: the stored body does not verify against the resource id
  * it was read under). `EncryptionError`, the fail-closed umbrella both
  * `KeyUnwrapError` and `IntegrityError` fall under, rides along. So does the
- * affordance gate (`NotSupportedError`), which a guarded write raises before
- * any request when the read it is pinned to returned no `ETag` validator -- a
- * permanent refusal, so a replication driver stops rather than retries.
+ * affordance gate (`NotSupportedError`), a permanent refusal raised before any
+ * request: by a guarded write whose pinned read returned no `ETag` validator
+ * (`/log`, `/edv`, and the client's own content-addressed store), and by a
+ * cipher handed a chunked envelope it has no route to (`/edv`). This subpath
+ * raises it on neither a push nor a pull, and is where the predicate for it
+ * ships, so a consumer of those entries can match it by name too.
  * The classes are exported
  * for construction and for a caller inside one resolved copy; across a package
  * boundary the predicates are the contract
