@@ -149,7 +149,7 @@ describe('space.revoke (revocation)', () => {
         rejectWith: {
           status: 400,
           data: {
-            type: 'https://wallet.storage/spec#invalid-request-body',
+            type: 'https://w3id.org/pws#invalid-request-body',
             title: 'Invalid Revoke Capability request',
             errors: [
               { detail: 'The provided capability delegation is invalid.' }

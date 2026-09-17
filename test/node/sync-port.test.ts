@@ -660,8 +660,8 @@ describe('errorMessage', () => {
 })
 
 describe('createWasSyncPort error classification', () => {
-  const PRECONDITION_FAILED = 'https://wallet.storage/spec#precondition-failed'
-  const QUOTA_EXCEEDED = 'https://wallet.storage/spec#quota-exceeded'
+  const PRECONDITION_FAILED = 'https://w3id.org/pws#precondition-failed'
+  const QUOTA_EXCEEDED = 'https://w3id.org/pws#quota-exceeded'
 
   /** A port whose every request fails with the given problem response. */
   function refusingPort(status: number, type: string) {
@@ -697,7 +697,7 @@ describe('createWasSyncPort error classification', () => {
   })
 
   it('carries the problem fields and a cause onto a delete not-found', async () => {
-    const raw = problemError(404, 'https://wallet.storage/spec#not-found')
+    const raw = problemError(404, 'https://w3id.org/pws#not-found')
     const { was } = makeWas({
       onRequest: () => {
         throw raw
@@ -711,7 +711,7 @@ describe('createWasSyncPort error classification', () => {
     expect(err).toBeInstanceOf(WasSyncNotFoundError)
     expect(err).toMatchObject({
       status: 404,
-      type: 'https://wallet.storage/spec#not-found',
+      type: 'https://w3id.org/pws#not-found',
       requestUrl: raw.requestUrl
     })
     expect((err as Error).cause).toBe(raw)
@@ -728,7 +728,7 @@ describe('createWasSyncPort error classification', () => {
   })
 
   it('types a read failure the port has no signal for', async () => {
-    const err = await refusingPort(500, 'https://wallet.storage/spec#storage')
+    const err = await refusingPort(500, 'https://w3id.org/pws#storage')
       .get({ id: 'res-1' })
       .catch((caught: unknown) => caught)
     expect(err).toBeInstanceOf(WasError)
@@ -736,7 +736,7 @@ describe('createWasSyncPort error classification', () => {
   })
 
   it('carries the problem fields onto the auth signal', async () => {
-    const raw = problemError(403, 'https://wallet.storage/spec#not-authorized')
+    const raw = problemError(403, 'https://w3id.org/pws#not-authorized')
     const { was } = makeWas({
       onRequest: () => {
         throw raw

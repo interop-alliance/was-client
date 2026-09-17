@@ -17,7 +17,7 @@ export interface WasErrorOptions {
   status?: number
   /**
    * The problem-kind URI from the response body's `type` (e.g.
-   * `https://wallet.storage/spec#quota-exceeded`), when the server sent one.
+   * `https://w3id.org/pws#quota-exceeded`), when the server sent one.
    */
   type?: string
   title?: string
@@ -374,7 +374,7 @@ type WasErrorClass = new (
 
 /**
  * Extracts the fragment of a problem-type URI (the part after `#`, e.g.
- * `quota-exceeded` from `https://wallet.storage/spec#quota-exceeded`).
+ * `quota-exceeded` from `https://w3id.org/pws#quota-exceeded`).
  * @param problemType {string}   a `ProblemTypes` URI
  * @returns {string}
  */

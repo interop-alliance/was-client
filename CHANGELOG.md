@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.67.1 - TBD
+
+### Changed
+
+- Documentation and test expectations follow the problem-type base identifier
+  rename to `https://w3id.org/pws`. Error mapping keys off the fragment of a
+  problem type, not its base, so behavior is unchanged.
+
 ## 0.67.0 - 2026-09-16
 
 ### Removed

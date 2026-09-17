@@ -2049,14 +2049,14 @@ why it is deferred past the first encrypted increment.
 - touches:
   - encrypted-collections-spec ECS-9: SHIPPED (2026-09-16). The identifier is
     `https://w3id.org/pws/encrypted-collections`, the current version is `0.1`,
-    and an entry carries `version` (required), `url` (optional), and an
-    optional `features` array whose two tokens are `blinded-index-query` and
+    and an entry carries `version` (required), `url` (optional), and an optional
+    `features` array whose two tokens are `blinded-index-query` and
     `governed-history-logs`. An unrecognized token is ignored, an absent array
     means neither affordance, and support for one is never inferred from the
     other. This item is unblocked
   - storage-core: a version-entry type for the new key. The shape is
-    `PwsVersionEntry` minus `spaces`, so a reuse may do; decide when the
-    parsing below is written
+    `PwsVersionEntry` minus `spaces`, so a reuse may do; decide when the parsing
+    below is written
 - acceptance:
   - [ ] `src/internal/service.ts` reads the WAS-EC version entry alongside the
         PWS one, exposing its tokens without conflating them with the
@@ -2066,16 +2066,16 @@ why it is deferred past the first encrypted increment.
         advertises no `blinded-index-query`, so a capable-looking server that
         has not enabled the profile fails with a named cause rather than a bare
         `501`
-  - [ ] Whether `governed-history-logs` gets a gate of its own is decided
-        rather than left implicit; today nothing reads it. ECS-9 gives the
-        decision a sharper input: a writer is required to consult the token
-        before choosing between a point-state descriptor and the log form,
-        because the two are written through different endpoints, which points
-        at `src/log/logStore.ts` rather than at a read path
+  - [ ] Whether `governed-history-logs` gets a gate of its own is decided rather
+        than left implicit; today nothing reads it. ECS-9 gives the decision a
+        sharper input: a writer is required to consult the token before choosing
+        between a point-state descriptor and the log form, because the two are
+        written through different endpoints, which points at
+        `src/log/logStore.ts` rather than at a read path
   - [ ] No `chunked-streams` gate comes back. Under ECS-9 a listed entry is
-        itself the claim that the chunk endpoints are served, and no token
-        names them, so the chunked write path gates on the entry's presence or
-        on nothing at all
+        itself the claim that the chunk endpoints are served, and no token names
+        them, so the chunked write path gates on the entry's presence or on
+        nothing at all
   - [ ] README.md and ARCHITECTURE.md's "Conditional writes" section record
         where the WAS-EC tokens live, beside the `changes-query` note WCL-106
         added

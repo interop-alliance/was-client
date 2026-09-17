@@ -75,8 +75,7 @@ describe('mapError', () => {
   })
 
   describe('problem-type (data.type) dispatch', () => {
-    const typeUri = (kind: string): string =>
-      `https://wallet.storage/spec#${kind}`
+    const typeUri = (kind: string): string => `https://w3id.org/pws#${kind}`
 
     it('dispatches quota-exceeded to QuotaExceededError', () => {
       expect(
