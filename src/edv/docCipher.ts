@@ -186,8 +186,7 @@ export interface EdvDocCipher extends DocCipher {
  * @param [options.spaceId] {string}   the WAS Space holding the collection.
  *   It gives the codec a route to a chunked document's chunk resources, so a
  *   `decrypt` that also passes a request context reassembles a chunked
- *   envelope. Without it such a `decrypt` throws `NotSupportedError`, as it
- *   does when the backend does not advertise `chunked-streams`.
+ *   envelope. Without it such a `decrypt` throws `NotSupportedError`.
  * @param [options.idDerivation] {'content' | 'random'}   defaults to `'content'`
  * @param options.encryption {CollectionEncryption}   the collection's
  *   encryption descriptor; must carry the key-epoch roster (every encrypted

@@ -116,12 +116,13 @@ export class NotImplementedError extends WasError {
 }
 
 /**
- * A client-side, fail-closed affordance gate: the operation needs an optional
- * backend feature the collection's backend does not advertise (e.g.
- * `chunked-streams` for an auto-routed large encrypted blob). Raised before any
- * request is sent, so it carries no HTTP status. Recover by writing to a
- * collection whose backend advertises the feature, or by keeping the payload
- * within what a single request can carry.
+ * A client-side, fail-closed affordance gate: the operation cannot be carried
+ * out as asked (a guarded write whose read returned no `ETag` validator, a
+ * `DocCipher` built with no route to a chunked document's chunk resources, a
+ * transport method the EDV-over-WAS profile does not define). Raised before any
+ * request is sent, so it carries no HTTP status. A server that does not
+ * implement an optional part of the protocol answers `501`
+ * (`NotImplementedError`) instead; this is the client refusing on its own.
  */
 export class NotSupportedError extends WasError {
   override name = 'NotSupportedError'

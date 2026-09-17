@@ -22,9 +22,8 @@
  *   pinning plus whatever governance the hosting profile adds -- for a
  *   log-governed descriptor (the Resource Log Profile), the verified entry
  *   proofs and the chain-head pin. Both the compare-and-swap and the
- *   create-if-absent guard ride the backend's `conditional-writes` feature,
- *   and `Resource.put` refuses either write before it is sent when the backend
- *   descriptor was read and does not advertise it. The hosting collection may
+ *   create-if-absent guard ride the server's conditional writes. The hosting
+ *   collection may
  *   be plaintext or encrypted -- a conditional codec pins the write to the
  *   `ifMatch` passed here rather than to its own pre-read -- but an encrypted
  *   host must be created under an id its codec mints (the EDV codec refuses a
@@ -163,10 +162,9 @@ export function collectionDescriptorStore({
  * Collection Metadata object): rollback/tamper detection rests on client-side
  * epoch pinning plus whatever governance the hosting profile adds (for a
  * log-governed descriptor, the Resource Log Profile's verified entry proofs
- * and chain-head pin), and the CAS/create guards ride the backend's
- * `conditional-writes` feature. Both writes go through `Resource.put`, which
- * throws `NotSupportedError` when the backend descriptor was read and does not
- * advertise the feature, whatever the host's codec. The hosting collection may
+ * and chain-head pin), and the CAS/create guards ride the server's conditional
+ * writes. Both writes go through `Resource.put`, whatever the host's codec.
+ * The hosting collection may
  * be plaintext or encrypted: a conditional codec pins the write to the
  * `ifMatch` this store passes rather than to the ETag its own pre-read
  * observed. On an encrypted host the resource id must be one the codec mints,

@@ -3,7 +3,8 @@
  */
 /**
  * Integration test: a Collection's governing history log against a live WAS
- * server (the backend's `governed-history-logs` feature). The `/log`
+ * server (the encrypted-collections profile's `governed-history-logs`
+ * feature). The `/log`
  * subpath's `resourceLogStore({ collection })` speaks the store port's three
  * operations at the `/meta/log` sub-resource: a guarded genesis create
  * declares the Collection log-governed, a compare-and-swap append extends it,

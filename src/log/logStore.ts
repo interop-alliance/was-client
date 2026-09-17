@@ -6,7 +6,7 @@
  * the two places a WAS server keeps a resource log. A log may be a WAS
  * Resource's entire body (the user key roster's `key-map/user-key.jsonl`), or
  * a Collection's governing history log at the `/meta/log` sub-resource (the
- * backend's `governed-history-logs` feature, from which the server derives
+ * encrypted-collections profile's `governed-history-logs` feature, from which the server derives
  * the Collection's served `encryption` member). Either way the log is stored
  * as `text/jsonl`, with the port's read-with-etag, compare-and-swap append,
  * and guarded genesis create mapped onto the target's conditional writes.
@@ -21,13 +21,11 @@
  *
  * Both the append and the create depend on their precondition being enforced --
  * the profile requires it (without it, concurrent appends silently overwrite
- * one another instead of failing into the caller's rebase-and-retry loop). On
- * a Resource host that is the backend's `conditional-writes` feature, and
- * `Resource.put` refuses the write before it is sent when the backend was read
- * and does not advertise it. A Collection's history log carries its own
- * validator, which a server implementing the sub-resource honors whether or
- * not the backend advertises the feature, so nothing gates that host. Either
- * way an append is refused when the read it extends returned no validator.
+ * one another instead of failing into the caller's rebase-and-retry loop).
+ * Conditional writes are a baseline server requirement on a Resource host, and
+ * a Collection's history log carries its own validator, which a server
+ * implementing the sub-resource honors. Either way an append is refused when
+ * the read it extends returned no validator.
  * A lost race -- a stale `ifMatch`, or a guarded create against a log that
  * already exists -- is rethrown as the library's
  * `ResourceLogConflictError` with the transport's `PreconditionFailedError`
@@ -167,8 +165,7 @@ export function resourceLogStore(
       }
       if (ifMatch === undefined) {
         throw unenforcedPreconditionError({
-          operation: 'Cannot append to the resource log',
-          reason: 'no-validator'
+          operation: 'Cannot append to the resource log'
         })
       }
       const separator = lastReadBody.endsWith('\n') ? '' : '\n'

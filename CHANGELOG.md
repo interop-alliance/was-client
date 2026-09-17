@@ -4,6 +4,32 @@
 
 ### Removed
 
+- Breaking: the backend-feature vocabulary, in full. Conditional writes and key
+  epochs are baseline WAS server requirements, `chunked-streams` is a
+  conformance requirement of the profiles that define the chunk endpoints, and
+  `changes-query` moved to the service description's `features`, so no
+  backend-level token is left to probe. Gone: `src/internal/features.ts`
+  (`FeatureProbe`, `BackendFeatures`, `collectionBackendFeatures`), the
+  `FeatureProbe` export from the core entry, `Collection.features`,
+  `CodecRequestContext.features`, and the `features` option on `WasTransport`.
+  `blinded-index-query` and `governed-history-logs` will be tokens of the WAS-EC
+  version entry once that profile registers one; until then the server's `501`
+  is the only signal, as it already was for `Collection.find()`.
+- Breaking: the degraded paths the vocabulary paid for. `WasTransport.insert` is
+  always the atomic `PUT` with `If-None-Match: *` (the non-atomic
+  `HEAD`-then-`PUT` fallback is gone); `compareAndSwap` has no
+  `allowUnconditional` opt-out, so `Collection.setMeta` / `configure`,
+  `Space.configure` and `setName` / `setTags` are a guarded compare-and-swap
+  over anything already stored, and creating from an absent object is the
+  guarded `PUT` with `If-None-Match: *`; `Resource.put` no longer refuses an
+  insert-after-unreadable-pre-read, since the server enforces the
+  `If-None-Match: *` guard.
+- Breaking: the `no-feature` refusal. `NotSupportedError` no longer means "the
+  backend advertises no `conditional-writes`". The `no-validator` refusal stays:
+  a guarded write whose read returned no `ETag` is still refused, since CORS can
+  hide the header from a browser client. `setName` / `setTags` on metadata that
+  cannot be read now throw `NotFoundError` rather than patching onto an empty
+  object.
 - The `storageMode` member of a backend registration, dropped from the spec and
   from `@interop/storage-core`; the register example no longer sets it.
 

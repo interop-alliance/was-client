@@ -3,13 +3,10 @@
  */
 /**
  * Shared test helpers for the codec seam: the single-request narrowing of
- * `ResourceCodec` several suites assert against, a stub backend-feature
- * probe for the affordance gates, and an in-memory backend for chunked reads
- * and writes.
+ * `ResourceCodec` several suites assert against, and an in-memory backend for
+ * chunked reads and writes.
  */
 import type { HttpResponse } from '@interop/http-client'
-import { featureProbeFrom } from '../../src/internal/features.js'
-import type { FeatureProbe } from '../../src/internal/features.js'
 import type {
   CodecRequestContext,
   EncodedWrite,
@@ -28,27 +25,6 @@ export type SingleWriteCodec = Omit<ResourceCodec, 'encode'> & {
 }
 
 /**
- * A stub {@link FeatureProbe} over a fixed token list, for the tests that drive
- * an affordance gate without a server.
- *
- * @param tokens {string[]}   the feature tokens the backend advertises
- * @param [options] {object}
- * @param [options.descriptorAbsent] {boolean}   whether the probe should report
- *   that the backend descriptor could not be read at all (as opposed to one
- *   that was read and lists `tokens`)
- * @returns {FeatureProbe}
- */
-export function stubFeatures(
-  tokens: string[],
-  { descriptorAbsent = false }: { descriptorAbsent?: boolean } = {}
-): FeatureProbe {
-  return featureProbeFrom(
-    async () => tokens,
-    async () => descriptorAbsent
-  )
-}
-
-/**
  * An in-memory WAS backend for the chunked-blob tests: it answers the request
  * context a handle hands the codec, storing every `PUT` body under its path and
  * serving it back on `GET`. That is the whole surface `WasTransport` needs, so
@@ -57,17 +33,10 @@ export function stubFeatures(
  * It also answers `DELETE` (dropping the stored body), which the chunked
  * write's failure cleanup needs.
  *
- * @param [options] {object}
- * @param [options.features] {string[]}   the backend's advertised affordances
- * @param [options.descriptorAbsent] {boolean}   whether the feature probe
- *   should report that the backend descriptor could not be read at all
  * @returns {object}   the request context, the stored bodies by path, and the
  *   ordered lists of read, written and deleted paths
  */
-export function memoryBackend({
-  features = ['chunked-streams', 'conditional-writes'],
-  descriptorAbsent = false
-}: { features?: string[]; descriptorAbsent?: boolean } = {}): {
+export function memoryBackend(): {
   context: CodecRequestContext
   store: Map<string, Uint8Array>
   reads: string[]
@@ -97,7 +66,6 @@ export function memoryBackend({
     } as unknown as HttpResponse
   }
   const context: CodecRequestContext = {
-    features: stubFeatures(features, { descriptorAbsent }),
     async request(input) {
       const path = input.path as string
       const method = input.method ?? 'GET'

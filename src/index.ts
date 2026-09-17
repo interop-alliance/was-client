@@ -44,8 +44,6 @@ export {
   mapError
 } from './errors.js'
 
-export type { FeatureProbe } from './internal/features.js'
-
 export { isChunkedWrite } from './codec.js'
 export type {
   ResourceCodec,

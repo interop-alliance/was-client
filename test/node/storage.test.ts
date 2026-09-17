@@ -17,6 +17,7 @@ import {
   WasClient,
   ValidationError,
   ConflictError,
+  NotSupportedError,
   PreconditionFailedError,
   WasServerError
 } from '../../src/index.js'
@@ -30,57 +31,43 @@ import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
  * `data` payload is reused for every call). When `fail` is set, the stub throws
  * an error carrying that HTTP status.
  *
+ * Every response carries an `ETag` by default (a WAS server versions every
+ * resource), so a compare-and-swap write always has something to pin
+ * `If-Match` to. Pass `etag: null` to serve none, for the one test covering
+ * that refusal.
+ *
  * @param options {object}
- * @param [options.data] {unknown}     the response `data` payload
- * @param [options.fail] {number}      an HTTP status to throw instead
- * @param [options.etag] {string}      an `ETag` header to return on every
- *   response (the backend's `conditional-writes` validator)
- * @param [options.stubBackend] {boolean}   answer the backend-descriptor path
- *   with a `conditional-writes` descriptor, recorded in `probes` rather than
- *   `calls` (default). Pass `false` to hand that path back to `data`, for the
- *   tests that are about `collection.backend()` itself.
- * @returns {object} { client, calls, probes }
+ * @param [options.data] {unknown}         the response `data` payload
+ * @param [options.fail] {number}          an HTTP status to throw instead
+ * @param [options.etag] {string | null}   the `ETag` header to return on every
+ *   response; defaults to `'"g.1"'`, or pass `null` for none
+ * @returns {object} { client, calls }
  */
 function clientWithRequestSpy({
   data,
   fail,
-  etag,
-  stubBackend = true
+  etag = '"g.1"'
 }: {
   data?: unknown
   fail?: number
-  etag?: string
-  stubBackend?: boolean
+  etag?: string | null
 } = {}): {
   client: WasClient
   calls: RequestArgs[]
-  probes: RequestArgs[]
 } {
   const calls: RequestArgs[] = []
-  const probes: RequestArgs[] = []
   const client = clientWithStub(args => {
-    // The backend-feature probe is infrastructure a guarded write runs on its
-    // own, not a request the handle was asked to make, so it is recorded apart
-    // from `calls` -- which stays the operation under test, indexable by the
-    // order the handle issues its requests in.
-    const probing = stubBackend && args.url?.endsWith('/backend') === true
-    ;(probing ? probes : calls).push(args)
+    calls.push(args)
     if (fail !== undefined) {
       throw { status: fail, response: { status: fail } }
-    }
-    if (probing) {
-      return jsonResponse({
-        data: { id: 'urn:backend:demo', features: ['conditional-writes'] },
-        status: 200
-      })
     }
     return jsonResponse({
       data,
       status: 200,
-      headers: etag !== undefined ? { etag } : {}
+      headers: etag !== null ? { etag } : {}
     })
   })
-  return { client, calls, probes }
+  return { client, calls }
 }
 
 describe('space.backends()', () => {
@@ -98,19 +85,6 @@ describe('space.backends()', () => {
   it('returns null when the space is missing or not visible (404)', async () => {
     const { client } = clientWithRequestSpy({ fail: 404 })
     expect(await client.space('s').backends()).toBeNull()
-  })
-
-  it('surfaces a backend descriptor `features` array', async () => {
-    const backends = [
-      {
-        id: 'default',
-        name: 'Server Filesystem',
-        features: ['conditional-writes']
-      }
-    ]
-    const { client } = clientWithRequestSpy({ data: backends })
-    const result = await client.space('s').backends()
-    expect(result?.[0]?.features).toContain('conditional-writes')
   })
 })
 
@@ -255,10 +229,7 @@ describe('collection.backend()', () => {
       name: 'Server Filesystem',
       managedBy: 'server'
     }
-    const { client, calls } = clientWithRequestSpy({
-      data: backend,
-      stubBackend: false
-    })
+    const { client, calls } = clientWithRequestSpy({ data: backend })
     const result = await client.space('s').collection('c').backend()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/backend')
     expect(calls[0]?.method).toBe('GET')
@@ -268,18 +239,6 @@ describe('collection.backend()', () => {
   it('returns null when the collection is missing or not visible (404)', async () => {
     const { client } = clientWithRequestSpy({ fail: 404 })
     expect(await client.space('s').collection('c').backend()).toBeNull()
-  })
-
-  it('surfaces the backend descriptor `features` array', async () => {
-    // `features` advertises optional server affordances (e.g. conditional-writes).
-    const backend = {
-      id: 'default',
-      name: 'Server Filesystem',
-      features: ['conditional-writes']
-    }
-    const { client } = clientWithRequestSpy({ data: backend })
-    const result = await client.space('s').collection('c').backend()
-    expect(result?.features).toContain('conditional-writes')
   })
 })
 
@@ -318,7 +277,8 @@ describe('resource.meta()', () => {
     const result = await client.space('s').collection('c').resource('r').meta()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/r/meta')
     expect(calls[0]?.method).toBe('GET')
-    expect(result).toEqual(meta)
+    // A WAS server serves an ETag on every read, so the metadata carries one.
+    expect(result).toEqual({ ...meta, etag: '"g.1"' })
   })
 
   it('returns null when the resource is missing or not visible (404)', async () => {
@@ -374,7 +334,8 @@ describe('collection.meta()', () => {
     const result = await client.space('s').collection('c').meta()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta')
     expect(calls[0]?.method).toBe('GET')
-    expect(result).toEqual(meta)
+    // A WAS server serves an ETag on every read, so the metadata carries one.
+    expect(result).toEqual({ ...meta, etag: '"g.1"' })
   })
 
   it('reports custom as {} when the server omitted it (no metadata written)', async () => {
@@ -604,10 +565,10 @@ describe('collection.setName() / setTags()', () => {
       }
     })
     await client.space('s').collection('c').setName('New')
-    // Two reads of the object (the patch's, then the write's compose step) and
-    // one PUT.
-    expect(calls[2]?.method).toBe('PUT')
-    expect(calls[2]?.json).toEqual({
+    // The patch's read carries the write's compose baseline forward (see
+    // `#recentRead`), so this is one GET and one PUT.
+    expect(calls[1]?.method).toBe('PUT')
+    expect(calls[1]?.json).toEqual({
       id: 'c',
       custom: { name: 'New', tags: { project: 'demo' } }
     })
@@ -622,7 +583,7 @@ describe('collection.setName() / setTags()', () => {
       }
     })
     await client.space('s').collection('c').setTags({ status: 'final' })
-    expect(calls[2]?.json).toEqual({
+    expect(calls[1]?.json).toEqual({
       id: 'c',
       custom: { name: 'Keep', tags: { status: 'final' } }
     })
@@ -639,14 +600,6 @@ describe('collection.setName() / setTags()', () => {
     expect(calls).toHaveLength(2)
     expect(calls[1]?.method).toBe('PUT')
     expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
-  })
-
-  it('setName() omits If-Match when the backend returned no etag', async () => {
-    const { client, calls } = clientWithRequestSpy({
-      data: { id: 'c', type: ['Collection'], custom: {} }
-    })
-    await client.space('s').collection('c').setName('New')
-    expect(calls[2]?.headers?.['if-match']).toBeUndefined()
   })
 
   it('rebases the patch when a concurrent write invalidates it (412)', async () => {
@@ -726,17 +679,13 @@ describe('resource.setName() / setTags()', () => {
   it('setName() pins the write to the meta etag (lost-update guard)', async () => {
     // The read-modify-write must thread the `meta()` etag as `If-Match`, or a
     // concurrent `setTags()` would be silently erased by this full-replacement
-    // write even on a conditional-writes backend.
-    const { client, calls, probes } = clientWithRequestSpy({
+    // write.
+    const { client, calls } = clientWithRequestSpy({
       data: { contentType: 'application/json', custom: { name: 'Old' } },
       etag: '"meta-v1"'
     })
     await client.space('s').collection('c').resource('r').setName('New')
     expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
-    // The pin stands only because the backend advertises the feature, which
-    // the write read once (see `probes`); without it the update degrades to
-    // last-write-wins rather than refusing.
-    expect(probes).toHaveLength(1)
   })
 
   it('setTags() pins the write to the meta etag (lost-update guard)', async () => {
@@ -748,12 +697,20 @@ describe('resource.setName() / setTags()', () => {
     expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
   })
 
-  it('setName() omits If-Match when the backend returned no etag', async () => {
+  it('refuses the write when the read carries no ETag validator', async () => {
+    // A WAS server serves an ETag on every resource read; a read with none
+    // (e.g. a browser client whose CORS configuration hides the header)
+    // leaves the read-modify-write with nothing to pin `If-Match` to. It is
+    // refused before any write goes out rather than degrading to
+    // last-write-wins.
     const { client, calls } = clientWithRequestSpy({
-      data: { contentType: 'application/json', custom: {} }
+      data: { contentType: 'application/json', custom: {} },
+      etag: null
     })
-    await client.space('s').collection('c').resource('r').setName('New')
-    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
+    await expect(
+      client.space('s').collection('c').resource('r').setName('New')
+    ).rejects.toBeInstanceOf(NotSupportedError)
+    expect(calls).toHaveLength(1)
   })
 })
 
@@ -942,7 +899,11 @@ describe('Collection.configure() unreadable-description guard', () => {
       .space('s')
       .collection('docs')
       .configure({ name: 'x', force: true })
-    expect(calls.some(call => call.method === 'PUT')).toBe(true)
+    const put = calls.find(call => call.method === 'PUT')
+    // A guarded create: a collection that exists but was unreadable is not
+    // overwritten (the server answers 412).
+    expect(put?.headers?.['if-none-match']).toBe('*')
+    expect(put?.headers?.['if-match']).toBeUndefined()
     expect(result.name).toBe('x')
   })
 
@@ -1065,7 +1026,11 @@ describe('Space.configure() unreadable-description guard', () => {
   it('proceeds with force: true (deliberate create through a handle)', async () => {
     const { client, calls } = guardedClient()
     const result = await client.space('s').configure({ name: 'x', force: true })
-    expect(calls.some(call => call.method === 'PUT')).toBe(true)
+    const put = calls.find(call => call.method === 'PUT')
+    // A guarded create: a space that exists but was unreadable is not
+    // overwritten (the server answers 412).
+    expect(put?.headers?.['if-none-match']).toBe('*')
+    expect(put?.headers?.['if-match']).toBeUndefined()
     expect(result.name).toBe('x')
   })
 
@@ -1226,12 +1191,15 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
 
 describe('configure() with a supplied current description', () => {
   it('Space.configure merges from `current` without reading it back', async () => {
+    // The validator the caller's own read returned: the write pins to it
+    // rather than re-reading the object to acquire one.
     const current = {
       id: 's',
       type: ['Space', 'AuxiliarySpace'],
       name: 'Existing',
-      controller: 'did:example:alice'
-    } as SpaceMetadata
+      controller: 'did:example:alice',
+      etag: '"g.1"'
+    } as SpaceMetadata & { etag: string }
     const { client, calls } = clientWithRequestSpy()
     await client.space('s').configure({ name: 'Renamed', current })
     // One request, the PUT: `type` and `controller` still carry forward, from
@@ -1250,8 +1218,9 @@ describe('configure() with a supplied current description', () => {
       id: 'docs',
       type: ['Collection'],
       name: 'Docs',
-      backend: { id: 'custom' }
-    } as CollectionMetadata
+      backend: { id: 'custom' },
+      etag: '"g.1"'
+    } as CollectionMetadata & { etag: string }
     const { client, calls } = clientWithRequestSpy()
     await client
       .space('s')
@@ -1286,7 +1255,10 @@ describe('Space.configure() type carry-forward', () => {
       if (args.method === 'GET') {
         return {
           status: 200,
-          headers: new Headers({ 'content-type': 'application/json' }),
+          headers: new Headers({
+            'content-type': 'application/json',
+            etag: '"1"'
+          }),
           data: current,
           async json() {
             return current
@@ -1406,23 +1378,6 @@ describe('Space.configure() compare-and-swap', () => {
     expect(calls[2]?.json).toMatchObject({
       name: 'Rival',
       controller: 'did:example:bob'
-    })
-  })
-
-  it('sends no If-Match against a backend that serves no validator', async () => {
-    const calls: RequestArgs[] = []
-    const client = clientWithStub(args => {
-      calls.push(args)
-      return args.method === 'GET'
-        ? jsonResponse({ data: stored, status: 200 })
-        : jsonResponse({ status: 204 })
-    })
-    await client.space('s').configure({ name: 'Renamed' })
-    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
-    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
-    expect(calls[1]?.json).toMatchObject({
-      name: 'Renamed',
-      controller: 'did:example:alice'
     })
   })
 

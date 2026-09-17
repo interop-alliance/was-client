@@ -624,54 +624,6 @@ describe('EdvCodec: chunked blob auto-routing', () => {
     expect(out).toEqual(blob)
   })
 
-  it('refuses to write anything when the backend lacks chunked-streams', async () => {
-    const codec = await chunkingCodec()
-    const backend = memoryBackend({ features: ['conditional-writes'] })
-    const plan = (await codec.encode({
-      data: blob,
-      contentType: 'application/octet-stream'
-    })) as ChunkedWrite
-    await expect(plan.execute(backend.context)).rejects.toBeInstanceOf(
-      NotSupportedError
-    )
-    // The gate runs before the first write, so no document stub is left behind.
-    expect(backend.writes).toEqual([])
-  })
-
-  it('names the descriptor it read when the backend lacks the feature', async () => {
-    const codec = await chunkingCodec()
-    const backend = memoryBackend({ features: ['conditional-writes'] })
-    const plan = (await codec.encode({
-      data: blob,
-      contentType: 'application/octet-stream'
-    })) as ChunkedWrite
-    const failure = await plan
-      .execute(backend.context)
-      .catch((err: unknown) => err)
-    expect((failure as Error).message).toMatch(/which it does not/)
-    expect((failure as Error).message).not.toMatch(/could not be read/)
-  })
-
-  it('names an unreadable backend descriptor instead of blaming the server', async () => {
-    // The descriptor 404s (no such endpoint, a deleted collection, or a
-    // capability that cannot read it), which also probes as "no features". The
-    // gate must not report that as an incapable server.
-    const codec = await chunkingCodec()
-    const backend = memoryBackend({ features: [], descriptorAbsent: true })
-    const plan = (await codec.encode({
-      data: blob,
-      contentType: 'application/octet-stream'
-    })) as ChunkedWrite
-    const failure = await plan
-      .execute(backend.context)
-      .catch((err: unknown) => err)
-    expect(failure).toBeInstanceOf(NotSupportedError)
-    expect((failure as Error).message).toMatch(
-      /backend descriptor could not be read at all/
-    )
-    expect(backend.writes).toEqual([])
-  })
-
   it('refuses the chunked path outright on a codec built with no transport', async () => {
     // The local-replica build injects no transport factory, so the codec holds
     // no route it could address a document and its chunks with -- the refusal
@@ -827,7 +779,6 @@ describe('EdvCodec: chunked blob auto-routing', () => {
     failure: Error
   }): CodecRequestContext {
     return {
-      features: context.features,
       async request(input) {
         if (failOn(input as { path?: string; method?: string })) {
           throw failure
@@ -899,7 +850,6 @@ describe('EdvCodec: chunked blob auto-routing', () => {
     })) as ChunkedWrite
     const failure = Object.assign(new Error('HTTP 413'), { status: 413 })
     const context: CodecRequestContext = {
-      features: backend.context.features,
       async request(input) {
         const path = input.path as string
         if (input.method === 'PUT' && path.includes('/chunks/')) {
@@ -1181,11 +1131,11 @@ describe('EdvCodec: non-envelope guard', () => {
 describe('EdvCodec: conditional writes (sequence enforcement)', () => {
   /**
    * A read response the codec's `encode` accepts as `current`: the prior
-   * envelope plus an `ETag` header (the server's conditional-writes validator).
+   * envelope plus an `ETag` header (the server's per-resource validator).
    *
    * @param body {Uint8Array | Blob}   the prior encoded envelope bytes
-   * @param etag {string | null}       the prior ETag (null to simulate a backend
-   *   without the conditional-writes feature)
+   * @param etag {string | null}       the prior ETag (null to simulate a read
+   *   that reached the client without its `ETag` header)
    * @returns {object}
    */
   function currentFrom(

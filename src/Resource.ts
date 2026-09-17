@@ -12,13 +12,7 @@ import { assertNotReserved } from './internal/reserved.js'
 import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { collectionCodecHolder } from './internal/codec.js'
-import { collectionBackendFeatures } from './internal/features.js'
-import type { FeatureProbe } from './internal/features.js'
-import {
-  assertPreconditionEnforced,
-  writeHeaders,
-  readEtag
-} from './internal/conditional.js'
+import { writeHeaders, readEtag } from './internal/conditional.js'
 import { withCodec } from './internal/withCodec.js'
 import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
 import { ENCODER, decodedText } from './internal/content.js'
@@ -83,13 +77,6 @@ export class Resource {
    * here.
    */
   readonly #codec: () => Promise<ResourceCodec>
-  /**
-   * The backend-feature probe: the parent collection's shared one when this
-   * handle came from `collection.resource(id)`, otherwise one built (and
-   * memoized) for this handle. Consulted by the write paths before sending a
-   * precondition the backend might not enforce (see `upsertResource`).
-   */
-  readonly #features: FeatureProbe
 
   /**
    * @param options {object}
@@ -102,8 +89,6 @@ export class Resource {
    *   codec, so a resource handle obtained via `collection.resource(id)` does
    *   not repeat the backend() round-trip. A standalone resource resolves its
    *   own.
-   * @param [options.features] {FeatureProbe}   the parent collection's shared
-   *   backend-feature probe. A standalone resource probes its own.
    * @param [options.encryption] {EncryptionOverride}   per-handle encryption
    *   override for a standalone resource (ignored when `codec` is supplied --
    *   the shared parent codec wins)
@@ -115,7 +100,6 @@ export class Resource {
     resourceId,
     capability,
     codec,
-    features,
     encryption
   }: {
     context: ClientContext
@@ -124,7 +108,6 @@ export class Resource {
     resourceId: string
     capability?: IZcap
     codec?: () => Promise<ResourceCodec>
-    features?: FeatureProbe
     encryption?: EncryptionOverride
   }) {
     // Guard the id against the Reserved Path Segment Registry up front, so a
@@ -152,13 +135,6 @@ export class Resource {
       })
       this.#codec = () => holder.get()
     }
-    this.#features =
-      features ??
-      collectionBackendFeatures(context, {
-        spaceId,
-        collectionId,
-        capability
-      })
   }
 
   get #path(): string {
@@ -167,16 +143,12 @@ export class Resource {
 
   /**
    * The signed-request context handed to a codec that drives its own I/O (the
-   * EDV codec reading a chunked blob back), bound to this handle's capability
-   * and sharing its feature probe.
+   * EDV codec reading a chunked blob back), bound to this handle's capability.
    *
    * @returns {CodecRequestContext}
    */
   #codecContext(): CodecRequestContext {
-    return codecRequestContext(this.#context, {
-      features: this.#features,
-      capability: this.#capability
-    })
+    return codecRequestContext(this.#context, { capability: this.#capability })
   }
 
   /**
@@ -207,14 +179,13 @@ export class Resource {
   }
 
   /**
-   * Reads the resource together with its `ETag` validator (the backend's
-   * `conditional-writes` feature) -- the Resource counterpart of
-   * `Collection.meta`. The `ETag` is the opaque validator to pass
-   * to {@link put}'s `ifMatch` for a lost-update-safe (compare-and-swap)
+   * Reads the resource together with its `ETag` validator -- the Resource
+   * counterpart of `Collection.meta`. The `ETag` is the opaque validator to
+   * pass to {@link put}'s `ifMatch` for a lost-update-safe (compare-and-swap)
    * write. The value is decoded like {@link get} (JSON parsed, binary as a
    * `Blob`, decrypted on an encrypted collection). Returns `null` if the
    * resource is missing or not visible to you (404 conflation caveat); `etag`
-   * is absent against a backend that does not version resources.
+   * is absent only where the header did not reach the client.
    *
    * With `{ as: 'text' }` the decoded value is projected to its text body
    * instead: a text-family or binary body reads as UTF-8 text, a JSON body is
@@ -303,21 +274,17 @@ export class Resource {
    * `text/html`. An unrecognized/absent extension sends no content-type, and the
    * server applies its own required-`Content-Type` rule.
    *
-   * Conditional writes (the backend's `conditional-writes` feature): pass
-   * `ifMatch` (the ETag from a prior read/write) for an update-if-unchanged, or
-   * `ifNoneMatch: true` for a create-if-absent. A failed precondition throws
-   * `PreconditionFailedError` (412). They work the same on an encrypted
-   * collection: the codec manages the precondition on its own when the caller
-   * names none (the EDV `sequence` becomes the enforced ETag), and pins the
-   * write to the caller's baseline when one is given. Because that codec
-   * pre-reads the current document, updating an existing encrypted document
-   * needs read access (a PUT-only capability can only create, and only against
-   * a backend advertising `conditional-writes`; see `upsertResource`) -- and a
-   * precondition the pre-read already contradicts fails locally with the same
-   * `PreconditionFailedError` the server would return. A named precondition
-   * throws `NotSupportedError` when the backend descriptor was read and
-   * advertises no `conditional-writes`, since a backend that ignores it would
-   * overwrite silently. Returns the new `etag`.
+   * Conditional writes: pass `ifMatch` (the ETag from a prior read/write) for
+   * an update-if-unchanged, or `ifNoneMatch: true` for a create-if-absent. A
+   * failed precondition throws `PreconditionFailedError` (412). They work the
+   * same on an encrypted collection: the codec manages the precondition on its
+   * own when the caller names none (the EDV `sequence` becomes the enforced
+   * ETag), and pins the write to the caller's baseline when one is given.
+   * Because that codec pre-reads the current document, updating an existing
+   * encrypted document needs read access (a PUT-only capability can only
+   * create; see `upsertResource`) -- and a precondition the pre-read already
+   * contradicts fails locally with the same `PreconditionFailedError` the
+   * server would return. Returns the new `etag`.
    *
    * @param data {ResourceData}
    * @param options {object}
@@ -340,7 +307,6 @@ export class Resource {
       codec,
       id: this.id,
       data,
-      features: this.#features,
       contentType: options.contentType,
       capability: this.#capability,
       precondition: {
@@ -352,22 +318,15 @@ export class Resource {
   }
 
   /**
-   * Deletes the resource. Idempotent. Pass `ifMatch` (the backend's
-   * `conditional-writes` feature) to delete only if the resource's current ETag
-   * matches; a stale validator throws `PreconditionFailedError` (412). An
-   * `ifMatch` against a backend whose descriptor was read and advertises no
-   * `conditional-writes` throws `NotSupportedError` before any request.
+   * Deletes the resource. Idempotent. Pass `ifMatch` to delete only if the
+   * resource's current ETag matches; a stale validator throws
+   * `PreconditionFailedError` (412).
    *
    * @param options {object}
    * @param [options.ifMatch] {string}   delete only if the ETag matches
    * @returns {Promise<void>}
    */
   async delete(options: { ifMatch?: string } = {}): Promise<void> {
-    await assertPreconditionEnforced({
-      features: this.#features,
-      precondition: options,
-      operation: `Cannot delete the resource "${this.id}"`
-    })
     await send(this.#context, {
       path: this.#path,
       method: 'DELETE',
@@ -393,10 +352,9 @@ export class Resource {
    * decodes it (decrypts, via the codec) so a caller always sees plaintext
    * `{ name, tags }`. A resource with no user metadata reports `custom` as `{}`.
    *
-   * Against a backend with the `conditional-writes` feature the result also
-   * carries the metadata's current `etag` (the `/meta` `metaVersion` validator)
-   * -- pass it as `setMeta(meta, { ifMatch })` for a lost-update-safe metadata
-   * update.
+   * The result also carries the metadata's current `etag` (the `/meta`
+   * `metaVersion` validator) -- pass it as `setMeta(meta, { ifMatch })` for a
+   * lost-update-safe metadata update.
    *
    * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
    */
@@ -422,9 +380,9 @@ export class Resource {
    * server-visible plaintext -- transparently, the same call works on plaintext
    * and encrypted collections alike.
    *
-   * Conditional metadata writes (the backend's `conditional-writes` feature):
-   * pass `ifMatch` (the `etag` from a prior `meta()`) for an
-   * update-if-unchanged, or `ifNoneMatch: true` for a write-only-if-no-metadata.
+   * Conditional metadata writes: pass `ifMatch` (the `etag` from a prior
+   * `meta()`) for an update-if-unchanged, or `ifNoneMatch: true` for a
+   * write-only-if-no-metadata.
    * A failed precondition throws `PreconditionFailedError` (412). The `/meta`
    * ETag (`metaVersion`) is independent of the content ETag. Returns the new
    * `etag`.
@@ -445,7 +403,6 @@ export class Resource {
       codec: this.#codec(),
       custom: meta.custom ?? {},
       slot: { kind: 'resource', id: this.id },
-      features: this.#features,
       ifMatch: options.ifMatch,
       ifNoneMatch: options.ifNoneMatch,
       capability: this.#capability
@@ -455,16 +412,15 @@ export class Resource {
   /**
    * Sets the resource's human-readable `name` (the value surfaced in collection
    * listings), preserving any existing `tags`. Convenience over `setMeta()`.
-   * The write is pinned to the `etag` the `meta()` read returned (when the
-   * backend supports `conditional-writes`), so a concurrent metadata write
-   * surfaces as `PreconditionFailedError` instead of being silently erased by
-   * this full-replacement write.
+   * The write is pinned to the `etag` the `meta()` read returned, so a
+   * concurrent metadata write surfaces as `PreconditionFailedError` instead of
+   * being silently erased by this full-replacement write.
    *
    * @param name {string}
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return patchCustom(this, { name }, 'Metadata update', this.#features)
+    return patchCustom(this, { name })
   }
 
   /**
@@ -475,7 +431,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return patchCustom(this, { tags }, 'Metadata update', this.#features)
+    return patchCustom(this, { tags })
   }
 
   get #policyPath(): string {

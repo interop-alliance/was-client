@@ -298,8 +298,7 @@ export function logGovernedDescriptorStore({
       const logSigner = requireSigner('replace')
       if (ifMatch === undefined) {
         throw unenforcedPreconditionError({
-          operation: 'Cannot replace the governed descriptor',
-          reason: 'no-validator'
+          operation: 'Cannot replace the governed descriptor'
         })
       }
       /**

@@ -217,7 +217,7 @@ info.version // '0.5'
 info.entry // the chosen `PwsVersionEntry`
 info.description // the whole `ServiceDescription`
 info.spacesUrl // the Spaces Repository URL, or undefined
-info.features // e.g. ['listing', 'collection-management', ...]
+info.features // e.g. ['listing', 'collection-management', 'changes-query', ...]
 info.hasFeature('quotas') // false when the token is absent
 
 // Discover again, e.g. before relying on an affordance a host may have dropped.
@@ -611,7 +611,7 @@ await collection.setMeta({ custom: { name: 'Vault', tags: { app: 'wallet' } } })
 await collection.setName('Renamed vault') // keeps existing tags
 await collection.setTags({ app: 'wallet' }) // keeps existing name
 
-// Conditional metadata write, against a `conditional-writes` backend.
+// Conditional metadata write.
 await collection.setMeta({ custom: { name: 'Vault' } }, { ifMatch: meta?.etag })
 // ...or create the Collection only if it does not exist yet:
 await collection.setMeta({ custom: { name: 'Vault' } }, { ifNoneMatch: true })
@@ -690,10 +690,10 @@ const { descriptor } = await store.read() // verified head state, `history` kept
 
 ### Conditional writes (optimistic concurrency)
 
-Against a backend that advertises the `conditional-writes` feature (see below),
-a Resource carries a strong **`ETag`** validator that changes on every write.
-Use it to prevent the lost-update problem -- two clients that both read version
-_N_ and each write _N+1_, the second silently clobbering the first.
+Every Resource carries a strong **`ETag`** validator that changes on every write
+(conditional writes are a baseline WAS server requirement). Use it to prevent
+the lost-update problem -- two clients that both read version _N_ and each write
+_N+1_, the second silently clobbering the first.
 
 ```ts
 const { etag } = await collection.put('doc', { v: 1 }) // writes return the ETag
@@ -740,19 +740,20 @@ const usage = await collection.quota() // BackendUsage | null
 // usage: { id, state, usageBytes, limit, restrictedActions, measuredAt, ... }
 ```
 
-A `BackendDescriptor`'s optional `features` array advertises optional **server
-affordances** -- things the backend actively does beyond the baseline read/write
-API (e.g. `conditional-writes`, `blinded-index-query`, `chunked-streams`). An
-absent token means the backend makes no claim to it, so treat it as unsupported
-rather than assuming a default. (Client-side encryption is _not_ a backend
-feature -- see below.)
+A `BackendDescriptor` says where a Collection's data lives; it advertises no
+optional affordances. Server-wide affordances are read from the service
+description instead:
 
 ```ts
-const backend = await collection.backend()
-if (backend?.features?.includes('conditional-writes')) {
-  // backend enforces If-Match / If-None-Match write preconditions
+const info = await was.service()
+if (info.hasFeature('changes-query')) {
+  // the server serves the replication change feed
 }
 ```
+
+An absent token means the server makes no claim to it, so treat it as
+unsupported rather than assuming a default. (Client-side encryption is _not_ a
+server affordance -- see below.)
 
 ### Registering a Bring-Your-Own-Storage backend
 
@@ -917,12 +918,13 @@ scope for now):
 - **Binary.** A `Blob`/`Uint8Array` up to `maxBlobBytes` (512 KiB by default) is
   encrypted as a single document. A larger one is routed automatically by
   `add()` to the chunked-stream path: one document plus its chunk resources,
-  read back transparently by `get()`. That needs the backend's `chunked-streams`
-  feature, checked before anything is written (`NotSupportedError` otherwise).
-  Two limits apply. Auto-routing is an `add()` affordance -- `put(id, bigBlob)`
-  is refused, since replacing an existing document's chunks is not automated.
-  And a content-addressed collection (`idDerivation: 'content'`) is refused too:
-  a chunked write stores the document twice, so no single ciphertext derives its
+  read back transparently by `get()`. Serving the chunk endpoints is a
+  conformance requirement of a server that offers encrypted collections, so
+  there is no client-side gate -- one that does not answers `501`. Two limits
+  apply. Auto-routing is an `add()` affordance -- `put(id, bigBlob)` is refused,
+  since replacing an existing document's chunks is not automated. And a
+  content-addressed collection (`idDerivation: 'content'`) is refused too: a
+  chunked write stores the document twice, so no single ciphertext derives its
   id. Tune the threshold and the chunk size with
   `createEdvEncryption({ maxBlobBytes, chunkSize })`.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
@@ -988,9 +990,10 @@ Two properties are worth planning around:
   an attribute the schema does not declare throws `ValidationError` rather than
   silently matching nothing.
 
-Requires the collection's backend to advertise `blinded-index-query`; a backend
-without it answers `501` (`NotImplementedError`). `find()` / `declareIndex()` on
-a plaintext collection throw -- there is no client-side index there.
+Serving the blinded-index query profile is a conformance requirement of a server
+that offers encrypted collections; one that does not answers `501`
+(`NotImplementedError`). `find()` / `declareIndex()` on a plaintext collection
+throw -- there is no client-side index there.
 
 Note that `collection.setMeta({ custom })` replaces the whole `custom` object,
 schema included; the `setName()` / `setTags()` sugar merges instead and leaves
@@ -1150,9 +1153,9 @@ re-exports none of them.
   governing history log" above). The store does read-with-etag of the full log,
   compare-and-swap append conditioned on that etag, and the guarded create of a
   genesis entry. Appends carry the prior lines' bytes forward verbatim. Both
-  writes ride the backend's `conditional-writes` feature, which the profile
-  requires; a lost race rethrows the library's `ResourceLogConflictError` with
-  the transport's `PreconditionFailedError` as `cause`.
+  writes ride the server's conditional writes, which the profile requires; a
+  lost race rethrows the library's `ResourceLogConflictError` with the
+  transport's `PreconditionFailedError` as `cause`.
 
 ### Export and import
 

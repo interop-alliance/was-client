@@ -8,10 +8,10 @@
  * content type, and normalizes server responses into the
  * error names `EdvClientCore` dispatches on (`DuplicateError`,
  * `InvalidStateError`, `NotFoundError`). They also cover the blinded-index
- * `find` query (method + path + body shape + verbatim response) and the
- * operations that stay unsupported in this profile -- `updateIndex` (index
- * entries ride inside the stored envelope) and the chunked-stream methods --
- * which throw `NotSupportedError`.
+ * `find` query (method + path + body shape + verbatim response), the chunked
+ * stream methods, and `updateIndex`, which stays unsupported in this profile
+ * (index entries ride inside the stored envelope) and throws
+ * `NotSupportedError`.
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { HttpResponse } from '@interop/http-client'
@@ -67,9 +67,8 @@ function dataResponse(body: unknown): HttpResponse {
 
 /**
  * Builds a write-response stub: bodiless, carrying the `ETag` validator a
- * server acks a write with (none by default, as a backend without
- * `conditional-writes` answers). The transport reads it to surface its last
- * document write.
+ * server acks a write with (none by default, for a test that does not care).
+ * The transport reads it to surface its last document write.
  *
  * @param [etag] {string}   the validator to return, if any
  * @returns {HttpResponse}
@@ -91,34 +90,38 @@ function transport(request: ReturnType<typeof vi.fn>, contentType?: string) {
   })
 }
 
-describe('WasTransport — insert (advisory fallback, no conditional-writes)', () => {
+describe('WasTransport -- insert', () => {
   /**
-   * A request stub for a backend WITHOUT the `conditional-writes` feature: the
-   * backend-descriptor GET answers 404 (or 501-era servers -- any failure means
-   * "no feature"), the `HEAD` existence check answers `headStatus`, and writes
-   * succeed.
+   * A request stub whose PUT answers `putStatus` (or succeeds when undefined).
    *
-   * @param [headStatus] {number}   status for the HEAD existence check
+   * @param [putStatus] {number}   status the PUT fails with
    * @returns {ReturnType<typeof vi.fn>}
    */
-  function advisoryRequest(headStatus?: number) {
-    return vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        throw httpError(404) // no backend descriptor -> no feature
-      }
-      if (input.method === 'HEAD' && headStatus !== undefined) {
-        throw httpError(headStatus)
+  function insertRequest(putStatus?: number) {
+    return vi.fn(async (_input: { method?: string }) => {
+      if (putStatus !== undefined) {
+        throw httpError(putStatus)
       }
       return writeResponse()
     })
   }
 
+  it('inserts with a single atomic PUT + If-None-Match: *', async () => {
+    const request = insertRequest()
+    await transport(request).insert({ encrypted: encryptedDoc('zAbc') })
+    const methods = request.mock.calls.map(
+      ([input]) => (input as { method?: string }).method
+    )
+    // One PUT and nothing else -- no descriptor probe, no HEAD pre-check.
+    expect(methods).toEqual(['PUT'])
+    const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect((put.headers as Record<string, string>)['if-none-match']).toBe('*')
+  })
+
   it('PUTs the envelope as application/json (default) at the resource path', async () => {
-    const request = advisoryRequest(404) // existence check: absent
+    const request = insertRequest()
     const doc = encryptedDoc('zAbc')
     await transport(request).insert({ encrypted: doc })
-
-    // Last call is the PUT.
     const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
     expect(put.method).toBe('PUT')
     expect(put.path).toBe('/space/space%201/docs/zAbc')
@@ -128,18 +131,8 @@ describe('WasTransport — insert (advisory fallback, no conditional-writes)', (
     expect(decodeBody(put.body)).toEqual(doc)
   })
 
-  it('checks existence with a bodiless HEAD, not a GET of the envelope', async () => {
-    const request = advisoryRequest(404)
-    await transport(request).insert({ encrypted: encryptedDoc('zAbc') })
-    const methods = request.mock.calls.map(
-      ([input]) => (input as { method?: string }).method
-    )
-    expect(methods).toContain('HEAD')
-    expect(methods.filter(method => method === 'PUT')).toHaveLength(1)
-  })
-
   it('honors a custom content type (JOSE_CONTENT_TYPE)', async () => {
-    const request = advisoryRequest(404)
+    const request = insertRequest()
     await transport(request, JOSE_CONTENT_TYPE).insert({
       encrypted: encryptedDoc('zEdv')
     })
@@ -149,100 +142,22 @@ describe('WasTransport — insert (advisory fallback, no conditional-writes)', (
     )
   })
 
-  it('throws DuplicateError when the document id already exists', async () => {
-    // HEAD (existence check) resolves -> the resource exists.
-    const request = advisoryRequest()
-    await expect(
-      transport(request).insert({ encrypted: encryptedDoc() })
-    ).rejects.toMatchObject({ name: 'DuplicateError' })
-    // It must NOT have attempted a PUT.
-    expect(
-      request.mock.calls.every(
-        ([input]) => (input as { method?: string }).method !== 'PUT'
-      )
-    ).toBe(true)
-  })
-
-  it('maps a 409 unique-attribute conflict on the advisory PUT to DuplicateError', async () => {
-    // No backend descriptor -> no conditional-writes; HEAD says absent; the
-    // PUT then rejects 409 (a unique blinded attribute already held).
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        throw httpError(404)
-      }
-      if (input.method === 'HEAD') {
-        throw httpError(404)
-      }
-      throw httpError(409) // PUT
-    })
-    await expect(
-      transport(request).insert({ encrypted: encryptedDoc() })
-    ).rejects.toMatchObject({ name: 'DuplicateError' })
-  })
-})
-
-describe('WasTransport — insert (conditional-writes backend)', () => {
-  /**
-   * A request stub for a backend WITH the `conditional-writes` feature: the
-   * backend-descriptor GET returns it, and the PUT answers `putStatus` (or
-   * succeeds when undefined).
-   *
-   * @param [putStatus] {number}   status the PUT fails with
-   * @returns {ReturnType<typeof vi.fn>}
-   */
-  function conditionalRequest(putStatus?: number) {
-    const descriptor = { id: 'default', features: ['conditional-writes'] }
-    return vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        return {
-          data: descriptor,
-          async json() {
-            return descriptor
-          }
-        } as unknown as HttpResponse
-      }
-      if (putStatus !== undefined) {
-        throw httpError(putStatus)
-      }
-      return writeResponse()
-    })
-  }
-
-  it('inserts with a single atomic PUT + If-None-Match: * (no pre-check)', async () => {
-    const request = conditionalRequest()
-    await transport(request).insert({ encrypted: encryptedDoc('zAbc') })
-    const methods = request.mock.calls.map(
-      ([input]) => (input as { method?: string }).method
-    )
-    // One GET (the backend descriptor, memoized), then the PUT -- no HEAD.
-    expect(methods).toEqual(['GET', 'PUT'])
-    const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
-    expect((put.headers as Record<string, string>)['if-none-match']).toBe('*')
-  })
-
   it('maps the 412 create-if-absent rejection to DuplicateError', async () => {
-    const request = conditionalRequest(412)
+    const request = insertRequest(412)
     await expect(
       transport(request).insert({ encrypted: encryptedDoc() })
     ).rejects.toMatchObject({ name: 'DuplicateError' })
   })
 
-  it('maps a 409 unique-attribute conflict on the conditional PUT to DuplicateError', async () => {
-    const request = conditionalRequest(409)
+  it('maps a 409 unique-attribute conflict to DuplicateError', async () => {
+    const request = insertRequest(409)
     await expect(
       transport(request).insert({ encrypted: encryptedDoc() })
     ).rejects.toMatchObject({ name: 'DuplicateError' })
   })
 
-  it('memoizes the backend-feature probe across inserts', async () => {
-    const request = conditionalRequest()
-    const wasTransport = transport(request)
-    await wasTransport.insert({ encrypted: encryptedDoc('zAbc') })
-    await wasTransport.insert({ encrypted: encryptedDoc('zDef') })
-    const gets = request.mock.calls.filter(
-      ([input]) => (input as { method?: string }).method === 'GET'
-    )
-    expect(gets).toHaveLength(1)
+  it('requires an encrypted document', async () => {
+    await expect(transport(vi.fn()).insert()).rejects.toBeInstanceOf(TypeError)
   })
 })
 
@@ -314,29 +229,17 @@ describe('WasTransport — get', () => {
 
 describe('WasTransport -- find (blinded-index query)', () => {
   /**
-   * A request stub for the `find` path: the backend-descriptor GET advertises
-   * `features` (defaulting to include `blinded-index-query`, the affordance
-   * `find` gates on), and the POST `/query` answers with `body`.
+   * A request stub for the `find` path: the POST `/query` answers with `body`.
    *
-   * @param body {object}          the server's query response body (POST /query)
-   * @param [features] {string[]}   the backend features the descriptor advertises
+   * @param body {object}   the server's query response body (POST /query)
    * @returns {ReturnType<typeof vi.fn>}
    */
-  function queryRequest(
-    body: object,
-    features: string[] = ['blinded-index-query']
-  ) {
-    return vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        return dataResponse({ id: 'default', features })
-      }
-      return dataResponse(body)
-    })
+  function queryRequest(body: object) {
+    return vi.fn(async (_input: { method?: string }) => dataResponse(body))
   }
 
   /**
-   * The POST `/query` call from a `find` request stub -- the last call, since
-   * the memoized backend-descriptor GET precedes it.
+   * The POST `/query` call from a `find` request stub.
    *
    * @param request {ReturnType<typeof vi.fn>}
    * @returns {Record<string, unknown>}
@@ -441,27 +344,8 @@ describe('WasTransport -- find (blinded-index query)', () => {
     })
   })
 
-  it('throws NotSupportedError -- and makes no POST -- when the backend does not advertise blinded-index-query', async () => {
-    const request = queryRequest({ documents: [], hasMore: false }, [])
-    await expect(
-      transport(request).find({
-        query: { index: 'urn:hmac:1', has: ['bName'] }
-      })
-    ).rejects.toMatchObject({ name: 'NotSupportedError' })
-    const methods = request.mock.calls.map(
-      ([input]) => (input as { method?: string }).method
-    )
-    expect(methods).not.toContain('POST')
-  })
-
   it('maps a 404 from the query POST to NotFoundError', async () => {
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        return dataResponse({
-          id: 'default',
-          features: ['blinded-index-query']
-        })
-      }
+    const request = vi.fn(async () => {
       throw httpError(404) // POST /query
     })
     await expect(
@@ -485,117 +369,6 @@ describe('WasTransport -- find (blinded-index query)', () => {
   })
 })
 
-describe('WasTransport -- backend-feature probe resilience', () => {
-  it('re-probes after a transient failure (503) and then uses the atomic insert path', async () => {
-    let getCalls = 0
-    const descriptor = { id: 'default', features: ['conditional-writes'] }
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        getCalls += 1
-        if (getCalls === 1) {
-          throw httpError(503) // transient descriptor read failure
-        }
-        return dataResponse(descriptor)
-      }
-      return writeResponse() // PUT (or HEAD) succeeds
-    })
-    const wasTransport = transport(request)
-
-    // First insert: the probe fails transiently, so insert fails loud rather
-    // than silently degrading to the non-atomic HEAD+PUT path -- and makes no
-    // PUT at all.
-    await expect(
-      wasTransport.insert({ encrypted: encryptedDoc('zAbc') })
-    ).rejects.toMatchObject({ status: 503 })
-    expect(
-      request.mock.calls.some(
-        ([input]) => (input as { method?: string }).method === 'PUT'
-      )
-    ).toBe(false)
-
-    // Second insert: the memo was cleared, so it re-probes, learns
-    // `conditional-writes`, and uses the atomic `If-None-Match: *` create.
-    await wasTransport.insert({ encrypted: encryptedDoc('zDef') })
-    const put = request.mock.calls.at(-1)![0] as Record<string, unknown>
-    expect(put.method).toBe('PUT')
-    expect((put.headers as Record<string, string>)['if-none-match']).toBe('*')
-    expect(getCalls).toBe(2)
-  })
-
-  it('after a transient probe failure then success, find() works', async () => {
-    let getCalls = 0
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        getCalls += 1
-        if (getCalls === 1) {
-          throw httpError(503)
-        }
-        return dataResponse({
-          id: 'default',
-          features: ['blinded-index-query']
-        })
-      }
-      return dataResponse({ documents: [], hasMore: false })
-    })
-    const wasTransport = transport(request)
-
-    // First find: the probe fails transiently, so the transport error surfaces
-    // (fail loud) instead of a spurious NotSupportedError.
-    await expect(
-      wasTransport.find({ query: { index: 'urn:hmac:1', has: ['bName'] } })
-    ).rejects.toMatchObject({ status: 503 })
-
-    // Second find: the re-probe succeeds and the blinded query runs.
-    const result = await wasTransport.find({
-      query: { index: 'urn:hmac:1', has: ['bName'] }
-    })
-    expect(result).toEqual({ documents: [], hasMore: false })
-    expect(getCalls).toBe(2)
-  })
-
-  it('caches a successful probe that lists no features (single GET across calls)', async () => {
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        return dataResponse({ id: 'default', features: [] })
-      }
-      return dataResponse({ documents: [], hasMore: false })
-    })
-    const wasTransport = transport(request)
-    const query = { index: 'urn:hmac:1', has: ['bName'] }
-    await expect(wasTransport.find({ query })).rejects.toMatchObject({
-      name: 'NotSupportedError'
-    })
-    await expect(wasTransport.find({ query })).rejects.toMatchObject({
-      name: 'NotSupportedError'
-    })
-    const gets = request.mock.calls.filter(
-      ([input]) => (input as { method?: string }).method === 'GET'
-    )
-    expect(gets).toHaveLength(1)
-  })
-
-  it('caches a definitive "endpoint absent" (404) probe (single GET across calls)', async () => {
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        throw httpError(404) // descriptor endpoint legitimately absent
-      }
-      return dataResponse({ documents: [], hasMore: false })
-    })
-    const wasTransport = transport(request)
-    const query = { index: 'urn:hmac:1', has: ['bName'] }
-    await expect(wasTransport.find({ query })).rejects.toMatchObject({
-      name: 'NotSupportedError'
-    })
-    await expect(wasTransport.find({ query })).rejects.toMatchObject({
-      name: 'NotSupportedError'
-    })
-    const gets = request.mock.calls.filter(
-      ([input]) => (input as { method?: string }).method === 'GET'
-    )
-    expect(gets).toHaveLength(1)
-  })
-})
-
 describe('WasTransport -- updateIndex (unsupported, sharpened message)', () => {
   it('rejects with NotSupportedError pointing at update()', async () => {
     await expect(transport(vi.fn()).updateIndex()).rejects.toMatchObject({
@@ -614,22 +387,17 @@ describe('WasTransport -- chunked streams (storeChunk / getChunk)', () => {
   } as unknown as IEDVChunk
 
   /**
-   * A request stub for a backend WITH the `chunked-streams` affordance: the
-   * backend-descriptor GET answers the feature list, and every other request is
-   * handled by `handle`.
+   * A request stub for the chunk paths: every request is handled by `handle`.
    *
-   * @param handle {Function}   handles the non-descriptor requests
+   * @param handle {Function}   handles the chunk requests
    * @returns {ReturnType<typeof vi.fn>}
    */
   function chunkedRequest(
     handle: (input: { path?: string; method?: string }) => unknown
   ) {
-    return vi.fn(async (input: { path?: string; method?: string }) => {
-      if (input.path?.endsWith('/backend') && input.method === 'GET') {
-        return dataResponse({ features: ['chunked-streams'] })
-      }
-      return handle(input)
-    })
+    return vi.fn(async (input: { path?: string; method?: string }) =>
+      handle(input)
+    )
   }
 
   it('PUTs a serialized chunk to its own chunks/{index} URL as opaque bytes', async () => {
@@ -682,31 +450,6 @@ describe('WasTransport -- chunked streams (storeChunk / getChunk)', () => {
     await expect(
       transport(request).getChunk({ docId: 'doc1', chunkIndex: 9 })
     ).rejects.toMatchObject({ name: 'NotFoundError' })
-  })
-
-  it('gates both chunk methods on the chunked-streams affordance', async () => {
-    // Backend advertises no features: against a server with no /chunks/{n}
-    // route, the 404 must NOT be misdiagnosed as a missing parent document
-    // (storeChunk) or a missing chunk (getChunk) -- both methods refuse up
-    // front with NotSupportedError instead.
-    const request = vi.fn(async (input: { method?: string }) => {
-      if (input.method === 'GET') {
-        throw httpError(404) // no backend descriptor -> no features
-      }
-      throw httpError(404) // no /chunks route either
-    })
-    const wasTransport = transport(request)
-    await expect(
-      wasTransport.storeChunk({ docId: 'doc1', chunk })
-    ).rejects.toMatchObject({ name: 'NotSupportedError' })
-    await expect(
-      wasTransport.getChunk({ docId: 'doc1', chunkIndex: 2 })
-    ).rejects.toMatchObject({ name: 'NotSupportedError' })
-    // No chunk request was ever sent -- only the (cached) descriptor probe.
-    const nonGets = request.mock.calls.filter(
-      ([input]) => (input as { method?: string }).method !== 'GET'
-    )
-    expect(nonGets).toHaveLength(0)
   })
 
   it('requires docId and chunk', async () => {

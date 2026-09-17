@@ -102,7 +102,7 @@ describeLive('resource-hosted descriptor store (live server)', () => {
     expect(descriptor.currentEpoch).toBe(descriptor.epochs![0]!.id)
 
     // The roster is stored verbatim as the resource's content, with a live
-    // ETag validator alongside (the conditional-writes feature).
+    // ETag validator alongside.
     const stored = await roster.getWithEtag()
     expect(stored).not.toBeNull()
     expect(stored!.data).toEqual(descriptor)

@@ -161,8 +161,9 @@ export class WasClient {
    *
    * Every signed request waits on this discovery, so a caller rarely needs to
    * call it first. It is the way to read the server-wide affordances:
-   * `features` (an open token list, where an absent token means unsupported)
-   * and `spacesUrl` (absent when the server has no Spaces Repository).
+   * `features` (an open token list -- e.g. `changes-query` -- where an absent
+   * token means unsupported) and `spacesUrl` (absent when the server has no
+   * Spaces Repository).
    * Unsigned public reads (`publicRead`, `publicListCollection`, ...) address
    * an absolute URL that may be on another server, and do not wait on it.
    *
@@ -216,11 +217,7 @@ export class WasClient {
         zcapClient: this.zcapClient,
         controllerDid: this.controllerDid,
         encryption: this.encryption,
-        service: () => this.service(),
-        // Shared by every handle this client builds, so a collection's backend
-        // descriptor is read once per bound capability rather than once per
-        // handle. Lives on the context because that is what handles carry.
-        backendFeatures: new Map()
+        service: () => this.service()
       }
     }
     return this.#cachedContext

@@ -98,10 +98,10 @@ the reasons, so the split is not re-proposed without new facts:
   `@interop/was-client` never evaluates `src/edv/`, bundler or not, so the
   isolation does not depend on tree-shaking (which Metro does poorly).
 - A package boundary would fall on seams that are private today. `src/edv/`
-  imports `internal/content`, `internal/conditional`, `internal/indexSchema`,
-  and `internal/features`; a separate package would have to import them as
-  public, semver-bound exports of the core package, freezing exactly the modules
-  the content and conditional-write work is still reshaping.
+  imports `internal/content`, `internal/conditional` and `internal/indexSchema`;
+  a separate package would have to import them as public, semver-bound exports
+  of the core package, freezing exactly the modules the content and
+  conditional-write work is still reshaping.
 - Every codec-seam change would become a two-package release train, and the
   tests that drive the codec through a real `Collection` would need a published
   testing subpath.
@@ -131,15 +131,10 @@ state on top of that:
 
 - A bound `capability` (delegated zcap) flows from parent to child as the
   default (`options.capability ?? this.#capability`).
-- `Collection` owns a memoized `CodecHolder` and a `BackendFeatures` probe;
-  `collection.resource(id)` hands children resolver thunks so they share the
-  parent's memoized codec and feature probe (and its `reset()`). A standalone
-  `Resource` takes the probe for its collection from the client's shared cache
-  (`ClientContext.backendFeatures`, keyed by descriptor path plus bound
-  capability id), so rebuilding handles -- `fromCapability` per resource, or
-  `collection(id)` in a loop -- reads one descriptor per collection rather than
-  one per handle. Codecs stay per-handle: a handle may carry an encryption
-  override, which the descriptor read has no equivalent of.
+- `Collection` owns a memoized `CodecHolder`; `collection.resource(id)` hands
+  children a resolver thunk so they share the parent's memoized codec (and its
+  `reset()`). A standalone `Resource` resolves its own. Codecs stay per-handle:
+  a handle may carry an encryption override.
 - `WasClient.fromCapability(zcap)` parses `invocationTarget` back into a handle
   at the right depth via `parseSpaceTarget`.
 
@@ -261,21 +256,20 @@ The first is the escape hatch for a payload one request cannot carry. `encode`
 returns either an `EncodedWrite` or a `ChunkedWrite` plan (`isChunkedWrite`
 discriminates them). A plan carries the resource id it will write to and an
 `execute` method; `insertResource` runs it over a `CodecRequestContext` -- the
-handle's signed `request` primitive plus its memoized feature probe -- instead
-of sending one request. That `request` goes through the same mapped `send` path
-core uses, so a codec-driven write fails with the typed `WasError` subclasses
-the calling method documents (the raw `HttpResponse` still comes back, and the
-typed errors carry the HTTP `status`, so a status-dispatching driver such as
-`WasTransport` is unaffected). `upsertResource` refuses a plan, so auto-routing
-is an `add()` affordance only; the refusal message is scheme-agnostic and
-appends the plan's own `guidance` string, since only the codec knows which
-low-level API drives that write directly. `decode` takes the same context, so a
-codec whose stored form spans several resources can read the remainder. The sync
-`DocCipher` forwards a context when its caller passes one
-(`collection.codecContext()`), and reads chunks only when it was built with the
-collection's `spaceId`, which gives its codec a route to the chunk resources. A
-caller with no request layer omits the context, and such a document then fails
-loudly rather than decoding to a stub.
+handle's signed `request` primitive -- instead of sending one request. That
+`request` goes through the same mapped `send` path core uses, so a codec-driven
+write fails with the typed `WasError` subclasses the calling method documents
+(the raw `HttpResponse` still comes back, and the typed errors carry the HTTP
+`status`, so a status-dispatching driver such as `WasTransport` is unaffected).
+`upsertResource` refuses a plan, so auto-routing is an `add()` affordance only;
+the refusal message is scheme-agnostic and appends the plan's own `guidance`
+string, since only the codec knows which low-level API drives that write
+directly. `decode` takes the same context, so a codec whose stored form spans
+several resources can read the remainder. The sync `DocCipher` forwards a
+context when its caller passes one (`collection.codecContext()`), and reads
+chunks only when it was built with the collection's `spaceId`, which gives its
+codec a route to the chunk resources. A caller with no request layer omits the
+context, and such a document then fails loudly rather than decoding to a stub.
 
 An `EncodedWrite` from the EDV codec carries the envelope twice: `body`, the
 wire bytes, and `envelope`, the object form the codec already holds. `body` is a
@@ -345,11 +339,11 @@ Two integration levels share `src/edv/`:
 - **`WasTransport`** (EDV-native): an `@interop/edv-client` `Transport` that
   maps EDV document operations onto WAS resource CRUD ("vault per collection",
   EDV doc id is the WAS resource id), including blinded-index `find` and chunked
-  streams, gated on server features. The EDV core owns the write sequence and
-  discards the responses, so the transport surfaces the outcome of its last
-  document write (`lastDocumentWrite`: the id and the server's `ETag`) and
-  offers a non-EDV `deleteDocument` -- the two things a driver needs to report a
-  write's validator and to undo a half-finished one.
+  streams. The EDV core owns the write sequence and discards the responses, so
+  the transport surfaces the outcome of its last document write
+  (`lastDocumentWrite`: the id and the server's `ETag`) and offers a non-EDV
+  `deleteDocument` -- the two things a driver needs to report a write's
+  validator and to undo a half-finished one.
 
 Multi-recipient sharing uses **key epochs** (`epochCrypto`/`epochKeys`/
 `recipients`): an epoch is a fresh X25519 key whose secret is wrapped to each
@@ -648,61 +642,38 @@ No locks; safety is optimistic (ETag/CAS) throughout
   one round trip) and is `reset()` when `configure` or `replaceDescription`
   changes the encryption descriptor.
 
-## Feature detection
+## Conditional writes
 
-`internal/features.ts` probes the Collection's backend descriptor once per
-client and bound capability for its advertised `features` tokens
-(`conditional-writes`, `blinded-index-query`, `chunked-streams`,
-`changes-query`). Definitive absence (404/405/501) is cached as "no features";
-transient failures are not cached. The two roads to "no features" stay
-distinguishable (`FeatureProbe.descriptorAbsent()`): a descriptor that was read
-and lists none, versus one that could not be read at all (no such endpoint, a
-deleted collection, or a capability that cannot read it). A gate consults it so
-its error names the right cause instead of calling a capable server incapable.
-An affordance gate **falls closed**: without `conditional-writes`, an EDV insert
-against a masked 404 is refused rather than risking a silent clobber.
+Conditional writes are a baseline WAS server requirement: every resource read
+serves a strong `ETag`, and a server honors `If-Match` and `If-None-Match: *` on
+every write. The client therefore sends a precondition as given and lets the
+server answer it, with no capability probe of its own. Server-wide affordances
+(`changes-query`, and the WAS-EC profile's own tokens once that profile
+registers a version entry) live in the service description, read through
+`client.service().features`; `internal/service.ts` parses it. Serving the chunk
+endpoints and the blinded-index query profile is a conformance requirement of
+the profiles that define them, so neither carries a client-side gate -- a server
+that does not implement one answers `501`.
 
-The same probe gates a caller's own precondition, on the narrower rule that only
-a descriptor that was read is evidence. `assertPreconditionEnforced` in
-`internal/conditional.ts` is the one gate: it refuses a named precondition with
-`NotSupportedError` before the write is sent when the descriptor lists no
-`conditional-writes` -- a backend can serve an `ETag` on reads and still ignore
-the precondition on writes, so the validator alone is not evidence. It runs in
-`upsertResource` (whatever the collection's codec), in `Resource.delete`, in
-`writeMeta` (so `Resource.setMeta`), and in the codec-bypassing sync port's
-writes. The stores layered over `Resource.put` -- the resource log over a
-Resource, the resource descriptor stores -- inherit it and do not repeat it. An
-unreadable descriptor proceeds instead: the probe reads a collection-level path,
-so a capability delegated for a single Resource can never read it (WAS masks
-that as a 404, which the probe caches), and refusing would shut such a
-capability out of conditional writes entirely. The server still answers the
-guarded write on its own terms. The refusal is built by
-`unenforcedPreconditionError`, shared with the no-validator refusals.
+One refusal survives, in `internal/conditional.ts`:
+`unenforcedPreconditionError` builds the `NotSupportedError` a guarded write
+raises when the read it is pinned to returned no `ETag` at all, so the write
+would go out unconditionally. That is a transport or deployment problem rather
+than a server declining to version -- most often a browser client whose CORS
+configuration does not expose `ETag` to script. It is raised by `compareAndSwap`
+(`internal/cas.ts`) before the replace, and directly by the log stores.
 
-Two write targets carry their own validator and are not gated: the Collection
-Metadata object and the governing history log at `/meta/log`. A server
-implementing them maintains the version and honors both preconditions regardless
-of the backend feature, so `Collection.setMeta`, `Collection.replaceDescription`
-and `configure` send `ifMatch` / `ifNoneMatch` ungated, and
-`resourceLogStore({ collection })` sends its compare-and-swap append and guarded
-genesis create unconditioned on `conditional-writes` (`putHistoryLog` refuses an
-unconditional write on its own). A Resource's `/meta` validator is not in that
-group: it is a Resource-level validator, present only on a backend that
-advertises the feature, so `Resource.setMeta` is gated and the sync port's
-`putMeta` with it.
-
-`setName` / `setTags` degrade rather than refuse. Their pin is one `patchCustom`
-read itself, not one the caller named, so on a Resource whose backend advertises
-no `conditional-writes` the read reports no validator and the loop takes its
-`allowUnconditional` path -- the same last-write-wins update a backend serving
-no validator at all gets. The Collection side passes no probe, since its
-`metaVersion` always stands.
-
-`WasTransport` degrades insert to non-atomic HEAD-then-PUT and throws
-`NotSupportedError` for query/chunk operations. The codec's own chunked-blob
-routing checks `chunked-streams` before its first write (and before a read
-fetches chunks), so an unsupported server never ends up holding a document stub
-with no chunks; it raises the typed `NotSupportedError` from `src/errors.ts`.
+`compareAndSwap` is therefore always conditional over a stored value:
+`composeAndSwap` (the Collection and Space Metadata writes) and `patchCustom`
+(`setName` / `setTags`) pin every attempt to the validator of the read they
+composed against, and rebase on a `412`. The create from nothing is guarded too:
+a `composeAndSwap` baseline that reads as absent (`null`) takes the loop's
+create path, a `PUT` with `If-None-Match: *`, so an object that exists but was
+unreadable (a masked 404) fails the precondition instead of being overwritten.
+That is what `configure({ force })` and `space.createCollection()` do.
+`patchCustom` has no such path -- it refuses with `NotFoundError` when the
+metadata cannot be read at all, so a masked 404 cannot turn a rename into a
+create.
 
 ## Invariants worth knowing before you change things
 
@@ -873,9 +844,6 @@ it, and otherwise cover the client-side concepts this file names.
 - **Sync checkpoint** -- the change feed's keyset resume position
   `{ id, updatedAt }`, server time only and opaque to the client. See The sync
   layer.
-- **Feature probe** -- the once-per-Collection read of the backend descriptor's
-  advertised `features` tokens, which also distinguishes "read and lists none"
-  from "could not be read" (`src/internal/features.ts`). See Feature detection.
 - **Masked 404** -- a 404 that means "missing OR not visible to you", because
   WAS returns unauthorized as not-found. It is what the fail-closed rules exist
   to handle. See The 404-vs-null convention.
@@ -889,7 +857,7 @@ it, and otherwise cover the client-side concepts this file names.
 | Request/transport behavior        | `src/internal/request.ts`                                                    |
 | Supported spec versions           | `src/internal/service.ts` (`SUPPORTED_PWS_VERSIONS`)                         |
 | Write preconditions, ETags        | `src/internal/conditional.ts`, `src/internal/write.ts`                       |
-| New server feature gate           | `src/internal/features.ts` + the call sites it gates                         |
+| Server affordance token           | `src/internal/service.ts` (the service description's `features`)             |
 | New error kind                    | `src/errors.ts` (`ERROR_CLASS_BY_KIND`), problem type upstream               |
 | Encryption format or key handling | `src/edv/` (never in core; keep the seam interface-only)                     |
 | Descriptor read or refresh policy | `src/edv/acquire.ts`, `src/edv/refresh.ts`, `src/edv/refreshingDocCipher.ts` |

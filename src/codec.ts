@@ -31,7 +31,6 @@
  *   silently writing plaintext.
  */
 import type { HttpResponse } from '@interop/http-client'
-import type { FeatureProbe } from './internal/features.js'
 import type { WritePrecondition } from './internal/conditional.js'
 import type {
   CollectionEncryption,
@@ -116,9 +115,8 @@ export interface EncodedWrite {
 
 /**
  * The signed-request escape hatch core hands a codec that needs to drive its
- * own multi-request I/O, plus the collection's shared backend-feature probe.
- * Bound to one collection handle and its capability, so a codec never sees the
- * zcap machinery.
+ * own multi-request I/O. Bound to one collection handle and its capability, so
+ * a codec never sees the zcap machinery.
  *
  * `request` returns the raw `HttpResponse` (the `was.request()` surface
  * `WasTransport` consumes) but throws the client's typed `WasError` subclasses,
@@ -126,14 +124,9 @@ export interface EncodedWrite {
  * still a write of the caller's `add()`, so its failures must be the errors
  * `add()` documents. The typed errors carry the HTTP `status`, so a consumer
  * that dispatches on status (`WasTransport`) is unaffected.
- *
- * `features` is the handle's memoized probe, so a codec's affordance gate costs
- * no extra round trip -- and can tell "the backend advertises no such feature"
- * from "the backend descriptor could not be read at all".
  */
 export interface CodecRequestContext {
   request(input: RequestInput): Promise<HttpResponse>
-  features: FeatureProbe
 }
 
 /**
@@ -190,7 +183,7 @@ export type CodecWrite = EncodedWrite | ChunkedWrite
  * @returns {boolean}
  */
 export function isChunkedWrite(write: CodecWrite): write is ChunkedWrite {
-  return (write as ChunkedWrite).chunked
+  return (write as ChunkedWrite).chunked === true
 }
 
 /**

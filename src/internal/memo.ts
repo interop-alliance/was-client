@@ -3,8 +3,8 @@
  */
 /**
  * The shared "memoize an in-flight promise, but only cache a success" helper.
- * Several lazily-resolved singletons across the client -- a handle's codec, a
- * backend-feature probe, a lazily-unwrapped epoch key -- want the same three
+ * Several lazily-resolved singletons across the client -- a handle's codec,
+ * the service description, a lazily-unwrapped epoch key -- want the same three
  * properties: concurrent callers share one round-trip, a rejection is not
  * cached (so the next call retries rather than replaying a stale failure), and
  * a reset drops whatever is held. Written once here so the three cannot drift

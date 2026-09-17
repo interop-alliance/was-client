@@ -184,9 +184,10 @@ export interface AddResult {
   url: string
   contentType?: string
   /**
-   * The created resource's strong `ETag` validator, when the backend advertises
-   * the `conditional-writes` feature (absent otherwise). Pass it to a later
-   * `put(id, data, { ifMatch })` for a lost-update-safe update.
+   * The created resource's strong `ETag` validator. Pass it to a later
+   * `put(id, data, { ifMatch })` for a lost-update-safe update. Absent only
+   * where the header did not reach the client (a browser client needs `ETag`
+   * in the server's `Access-Control-Expose-Headers`).
    */
   etag?: string
 }

@@ -2,12 +2,12 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Helpers for conditional writes (the server's `conditional-writes` feature):
+ * Helpers for conditional writes (a baseline WAS server requirement):
  * assembling a write's request headers from an optional content-type plus the
  * `If-Match` / `If-None-Match: *` preconditions, reading the `ETag` a write
  * response returns, checking a caller's precondition against the document a
- * conditional codec's write path pre-read, and refusing a precondition the
- * backend cannot be shown to enforce.
+ * conditional codec's write path pre-read, and refusing a write whose pin the
+ * read it is based on never supplied.
  */
 import type { EncodedWrite, ResponseLike } from '../codec.js'
 import {
@@ -15,7 +15,6 @@ import {
   PreconditionFailedError,
   ValidationError
 } from '../errors.js'
-import type { FeatureProbe } from './features.js'
 
 /**
  * The request header the server reads a content write's key-epoch id from,
@@ -136,115 +135,40 @@ export function writeHeaders({
 }
 
 /**
- * The refusal for a guarded write whose guard the backend cannot be shown to
- * enforce. Every such gate builds its error here, so the messages do not
- * drift apart. The reasons:
+ * The refusal for a guarded write whose pin the read it is based on never
+ * supplied: the read returned no `ETag` validator, so the write would go out
+ * with no `If-Match` at all. Every such gate builds its error here, so the
+ * messages do not drift apart.
  *
- * - `no-validator`: the read the write is pinned to returned no `ETag`, so the
- *   write would go out with no `If-Match` at all.
- * - `no-feature`: the backend descriptor was read and does not list
- *   `conditional-writes`. Such a backend may serve an `ETag` on reads and still
- *   ignore `If-Match` / `If-None-Match` on writes.
+ * A WAS server versions every resource, so a missing validator is a transport
+ * or deployment problem, not a server declining to version. Most often it is a
+ * browser client whose CORS configuration does not expose `ETag` to script.
  *
  * @param options {object}
  * @param options.operation {string}   what was refused, as the message's
  *   opening clause (e.g. `Cannot append to the resource log`)
- * @param options.reason {'no-validator' | 'no-feature'}
  * @returns {NotSupportedError}
  */
 export function unenforcedPreconditionError({
-  operation,
-  reason
-}: {
-  operation: string
-  reason: 'no-validator' | 'no-feature'
-}): NotSupportedError {
-  const consequence =
-    'so a concurrent change could be silently overwritten instead of ' +
-    'failing with a 412.'
-  if (reason === 'no-validator') {
-    return new NotSupportedError(
-      `${operation}: the read it is pinned to returned no ETag validator, ` +
-        `so the write would go out unconditionally, ${consequence} Use a ` +
-        "backend that advertises the 'conditional-writes' feature."
-    )
-  }
-  return new NotSupportedError(
-    `${operation}: the write carries a precondition, but the collection's ` +
-      "backend does not advertise the 'conditional-writes' feature and may " +
-      `ignore it, ${consequence} Use a backend that advertises conditional ` +
-      'writes.'
-  )
-}
-
-/**
- * Refuses a write that names a precondition the backend cannot be shown to
- * enforce, throwing {@link unenforcedPreconditionError}. A write that names
- * none (see {@link namedPrecondition}) never probes the backend.
- *
- * A descriptor that could not be read at all is not evidence either way, and
- * the write proceeds. The probe reads a collection-level path
- * (`GET .../backend`), so a capability whose `invocationTarget` sits below the
- * Collection -- one delegated for a single Resource -- can never read it, and
- * WAS masks that as a 404. Refusing there would lock every such capability out
- * of conditional writes for the handle's lifetime, and would do the same to a
- * handle whose collection was briefly absent, since the probe caches a
- * definitive answer. The server still answers the write on its own terms: a
- * 412 where the precondition fails, a 404 where the collection is gone.
- *
- * A transient probe failure (a network error, a `401`, a `5xx`) propagates as
- * the probe's own error, so a retrying caller still sees it as transient.
- *
- * @param options {object}
- * @param options.features {FeatureProbe}   the handle's backend-feature probe
- * @param [options.precondition] {WritePrecondition}   the write's precondition
- * @param options.operation {string}   what would be refused, as the message's
- *   opening clause
- * @returns {Promise<void>}
- */
-export async function assertPreconditionEnforced({
-  features,
-  precondition,
   operation
 }: {
-  features: FeatureProbe
-  precondition?: WritePrecondition
   operation: string
-}): Promise<void> {
-  if (namedPrecondition(precondition) === undefined) {
-    return
-  }
-  if (await preconditionsEnforced(features)) {
-    return
-  }
-  throw unenforcedPreconditionError({ operation, reason: 'no-feature' })
-}
-
-/**
- * Whether a precondition sent to this backend can be relied on: it advertises
- * `conditional-writes`, or its descriptor could not be read at all and is
- * therefore no evidence against it (see {@link assertPreconditionEnforced}).
- *
- * The predicate behind the refusal, for the one caller that degrades instead
- * of refusing: `patchCustom`'s compare-and-swap, whose pin is its own and
- * whose documented fallback is a last-write-wins update.
- *
- * @param features {FeatureProbe}
- * @returns {Promise<boolean>}
- */
-export async function preconditionsEnforced(
-  features: FeatureProbe
-): Promise<boolean> {
-  return (
-    (await features.has('conditional-writes')) ||
-    (await features.descriptorAbsent())
+}): NotSupportedError {
+  return new NotSupportedError(
+    `${operation}: the read it is pinned to returned no ETag validator, so ` +
+      'the write would go out unconditionally, and a concurrent change could ' +
+      'be silently overwritten instead of failing with a 412. A WAS server ' +
+      'serves an ETag on every resource read; check that the response is not ' +
+      'losing the header on the way (a browser client needs `ETag` in the ' +
+      "server's `Access-Control-Expose-Headers`)."
   )
 }
 
 /**
  * Reads the strong `ETag` validator a write/read response returned, or
- * `undefined` when the backend sent none (it does not advertise the
- * `conditional-writes` feature).
+ * `undefined` when none reached the client (a WAS server serves one on every
+ * resource; a browser client can still be denied it by a CORS configuration
+ * that does not expose the header).
  *
  * @param response {ResponseLike | null}
  * @returns {string | undefined}
@@ -268,9 +192,9 @@ export function readEtag(response: ResponseLike | null): string | undefined {
  *
  * The thrown error is the same `PreconditionFailedError` (412) the server
  * would answer with, so a compare-and-swap retry loop needs no special case
- * for an encrypted collection. A backend that returned no `ETag` on the
- * pre-read advertises no `conditional-writes` feature, so there is nothing to
- * compare against and the caller's `ifMatch` is left to the server.
+ * for an encrypted collection. A pre-read that carried no `ETag` leaves
+ * nothing to compare against locally, and the caller's `ifMatch` is left to
+ * the server.
  *
  * @param options {object}
  * @param options.path {string}                       the resource path written

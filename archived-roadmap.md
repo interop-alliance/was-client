@@ -2367,3 +2367,229 @@ the same helper, so it is now `NotSupportedError` rather than `ValidationError`.
 The handles expose their probe as `Collection.features` / `Resource.features`.
 Resource metadata writes (`Resource.setMeta`) remain ungated, as the acceptance
 list scoped them out.
+
+### WCL-105: The affordance gate refuses where the spec says degrade to last-writer-wins
+
+- status: done (2026-09-16)
+- priority: medium
+- labels: conditional-writes, conformance, spec-alignment
+- touches:
+  - wallet-attached-storage-spec: WASS-40 settles the surrounding question; this
+    item is the client-side conformance half and stands whichever way that goes
+- acceptance:
+  - [x] The divergence is resolved in one direction: either the spec gains text
+        sanctioning a fail-closed refusal, or was-client stops refusing
+  - [x] Whichever way it goes, the reason is recorded rather than left implicit
+        in `unenforcedPreconditionError`'s message
+  - [x] `touches:` entries resolved
+
+Context: `assertPreconditionEnforced` refuses a guarded write with
+`NotSupportedError` when the collection's backend advertises no
+`conditional-writes` (`src/internal/conditional.ts:180-221`), on the reasoning
+that a backend which ignores the header turns a guarded push into a silent
+overwrite. The spec does not ask for that. Its Conditional Requests section is
+only a SHOULD: "a client SHOULD use these preconditions only against a backend
+that advertises support." The EDV-over-WAS profile is more explicit in the other
+direction, where the mapping "degrades to advisory: the `sequence` is still
+carried in the envelope but is not enforced, and writes are last-writer-wins".
+No normative text anywhere tells a client to refuse the write. (Section names
+rather than line numbers: spec.md was mid-edit when this was filed. Both
+quotations verified against the working tree 2026-09-16.)
+
+So this client is stricter than the specification it implements, and a
+conformance suite written from the spec would not predict its behavior. The
+refusal is probably the better engineering choice, which is the point: if it is,
+the spec should say so, and if it is not, the client should stop doing it. Note
+the inconsistency is already internal as well -- `patchCustom`
+(`src/internal/meta.ts:237-252`) degrades rather than refusing, dropping its
+compare-and-swap pin so `setName` / `setTags` become last-write-wins, which is
+exactly what the spec describes and exactly what the rest of the gate refuses to
+do.
+
+If WASS-40 lands as proposed this item mostly evaporates, since there would be
+no non-advertising backend left for either behavior to apply to. It is filed
+separately because it is a live conformance question today and does not depend
+on that outcome.
+
+discovered-from: was-sync WS-15.
+
+2026-09-16: WASS-40 shipped. Conditional writes are now a baseline server
+requirement in spec.md, so the divergence this item tracked is resolved by
+outcome (b): the client stops refusing, because there is no longer a
+non-advertising backend for the refusal to apply to. The removal work is
+WCL-106.
+
+2026-09-16: closed by WCL-106. The client stops refusing: the gate and the whole
+backend-feature probe behind it are deleted, and `patchCustom` is now an
+always-guarded compare-and-swap rather than the pin-dropping outlier this item
+named. `unenforcedPreconditionError` keeps only the no-validator reason, whose
+message now says why a validator can be missing (a browser client whose CORS
+configuration does not expose `ETag`).
+
+### WCL-106: Remove the backend-feature-vocabulary gates now that they are baseline or moved
+
+- status: done (2026-09-16)
+- priority: medium
+- labels: conditional-writes, cleanup, breaking, wire-contract
+- touches:
+  - storage-core: `BackendDescriptor.features` (`src/was.ts:664`) and
+    `BackendRegistration.features` (`src/was.ts:727`) are removed from the wire
+    type entirely, since no backend-level token remains once
+    `conditional-writes` is baseline and `chunked-streams` moves to WAS-EC
+    conformance; `PwsVersionEntry.features` (`src/was.ts:859`) gains the note
+    that `changes-query` lives there. Suggest filing an SC-N item there to make
+    the type change; not filed by this item. ANNOTATED (2026-09-16): still
+    unfiled. This client no longer reads either member, so the stale wire types
+    cost nothing until someone removes them
+  - was-client (this repo): README.md and ARCHITECTURE.md carry the backend
+    `features` examples and the "Feature detection" section documenting the
+    probe this item deletes; both need rewriting alongside the code. DONE
+    (2026-09-16): the README's backend walkthrough now reads the service
+    description's `features`, and ARCHITECTURE's section is rewritten as
+    "Conditional writes"
+  - encrypted-collections-spec ECS-9: `blinded-index-query` and
+    `governed-history-logs` move to a version entry ECS-9 has not yet registered
+    an identifier for; the `WasTransport` gate on `blinded-index-query` cannot
+    move until that identifier exists (partial blocker on this item's own
+    acceptance box for that gate; everything else proceeds without it). VERIFIED
+    (2026-09-16): ECS-9 is still `status: todo` and encrypted-collections-spec
+    declares no identifier, so the gate is removed here rather than moved, and
+    `find()` relies on the server's `501` in the meantime
+- acceptance:
+  - [x] `assertPreconditionEnforced`'s `no-feature` reason and
+        `preconditionsEnforced` (`src/internal/conditional.ts:130-243`) are
+        deleted; `no-validator` stays, since a read with no `ETag` is a separate
+        problem that survives (CORS can hide the header from a browser client)
+  - [x] `WasTransport.insert`'s non-atomic `HEAD`-then-`PUT` fallback
+        (`src/edv/WasTransport.ts:313-345`) and `#exists()`
+        (`src/edv/WasTransport.ts:445-455`) are deleted; insert is always the
+        atomic `PUT` with `If-None-Match: *`
+  - [x] `compareAndSwap`'s `allowUnconditional` opt-out
+        (`src/internal/cas.ts:98-134,186,275`) and `patchCustom`'s pin-dropping
+        fallback (`src/internal/meta.ts:203-252`) are deleted; `setName` /
+        `setTags` become an always-guarded compare-and-swap
+  - [x] `Collection.ts:451-458`'s no-client-side-remedy limitation (a descriptor
+        rotation landing between a compose read and an unconditional write) is
+        deleted; the write is always conditional now
+  - [x] `chunked-streams` leaves the vocabulary:
+        `EdvCodec.#assertChunkedStreams` and its `chunked-streams` /
+        `descriptorAbsent` checks (`src/edv/EdvCodec.ts:778-800`, called at
+        `:863` and `:1093`) are deleted; serving the chunk endpoints is a bare
+        requirement of WAS-EC conformance and needs no client-side gate,
+        matching the pattern `Collection.find()` already uses for
+        `blinded-index-query` ("no client-side feature probe -- a backend that
+        does not implement the profile answers 501")
+  - [x] `changes-query` moves to the service description: `Collection.ts:1693`
+        and `:1787`'s doc comments ("Requires the collection's backend to
+        advertise the `changes-query` feature") are rewritten to say it is
+        advertised server-wide (`client.service().features`, already readable
+        via the existing `PwsVersionEntry` machinery in
+        `src/internal/service.ts`); no new client-side gate is added, since
+        `changes()` already has none and relies on the server's `501`
+  - [x] `WasTransport.#requireFeature('blinded-index-query', ...)`
+        (`src/edv/WasTransport.ts:462-490`) moves from probing the collection
+        backend descriptor to reading the WAS-EC version entry in the service
+        description, once ECS-9 names that entry (see the `touches:` note above;
+        left as the open half if ECS-9 has not landed yet). RESOLVED
+        (2026-09-16) by removal rather than by moving: ECS-9 has not landed, so
+        the gate is deleted with the rest of the probe and `find()` relies on
+        the server's `501`. Re-adding it over the WAS-EC version entry is
+        WCL-108, a new mechanism rather than a survivor of this one
+  - [x] With no backend-level token left to probe, the backend-descriptor probe
+        itself is deleted: `src/internal/features.ts` in full (`FeatureProbe`,
+        `BackendFeatures`, `collectionBackendFeatures`, `descriptorAbsent()`,
+        `DESCRIPTOR_ABSENT_STATUSES`), its exports from `src/index.ts` and
+        `src/codec.ts`, `Collection.#features` and the public
+        `Collection.features` getter, `Resource.#features`, and every
+        `features:` parameter threaded through `src/internal/write.ts`,
+        `src/internal/meta.ts`, `src/internal/conditional.ts`,
+        `src/sync/port.ts`, `src/edv/EdvCodec.ts`, and
+        `src/edv/WasTransport.ts`. A future probe over the WAS-EC version entry
+        (the item above) is a new, separate mechanism, not a survivor of this
+        one
+  - [x] `Collection.backend()`'s doc comment (`src/Collection.ts:1935-1948`)
+        drops the `features` advertisement paragraph; the `BackendDescriptor`
+        type no longer carries a `features` member once the storage-core touches
+        entry lands
+  - [x] Public types whose `etag?` was optional only because a non-conditional
+        backend could omit the validator become required; types whose `etag?`
+        reflects the CORS-visibility caveat on a read stay optional. (Flagged
+        for verification during implementation: this repo's `etag?:` occurrences
+        were not individually classified while filing this item.)
+  - [x] Test fixtures across `test/node/write.test.ts`,
+        `test/node/edv-codec.test.ts`, `test/node/edv.test.ts`,
+        `test/node/sync-port.test.ts`, `test/node/storage.test.ts`,
+        `test/node/review-fixes.test.ts`,
+        `test/node/log-governed-descriptor-store.test.ts`, and
+        `test/helpers/codec.ts` (`stubFeatures`, `featureProbeFrom`) drop the
+        backend `features` array and the deleted probe helpers; a backend
+        descriptor in a fixture carries no `features` member at all.
+        `test/node/service.test.ts`'s server-wide `features` fixtures are
+        unaffected -- that is the service description, not a backend
+  - [x] `NotSupportedError` and `isNotSupportedError` (the `./sync` re-export)
+        stay: they still cover the moved `blinded-index-query` /
+        `governed-history-logs` gates and other `NotImplementedError`-adjacent
+        cases; only the call sites this item deletes stop throwing it
+  - [x] README.md's backend-`features` walkthrough (around the "Backend
+        affordances" section, roughly lines 740-755, 920, and 991) and
+        ARCHITECTURE.md's "Feature detection" section (roughly lines 640-710)
+        and its invariants-table row for "New server feature gate" (line 892)
+        are rewritten to match: no backend-level probe, `changes-query` and the
+        WAS-EC-entry tokens documented at the service-description level
+  - [x] A CHANGELOG.md bullet records the breaking removal (baseline conditional
+        writes and key epochs; `changes-query` moved to the service description;
+        `blinded-index-query` / `governed-history-logs` pending the WAS-EC
+        version entry), under a new version, dated TBD
+  - [x] `touches:` entries resolved
+
+Context: if conditional writes become a baseline requirement, an audit puts
+roughly 525 source and 730 test lines in this package attributable to their
+being optional. The shape of the removal: `preconditionsEnforced` and
+`assertPreconditionEnforced`'s `no-feature` reason go, while the `no-validator`
+reason stays, since a read that returned no ETag is a separate problem that
+survives (CORS can hide the header from a browser client). `FeatureProbe` keeps
+its other consumers but loses `descriptorAbsent()`. `isNotSupportedError` and
+the `NotSupportedError` re-export leave the `/sync` subpath, though the class
+stays on the core entry for `chunked-streams` and the other affordances. The
+degraded fallbacks go with it: `WasTransport.insert`'s non-atomic
+`HEAD`-then-`PUT` path and `#exists()`, `compareAndSwap`'s `allowUnconditional`
+opt-out, and `patchCustom`'s pin-dropping. Several public types tighten from
+optional `etag` to required. `Collection.ts:451-458`'s no-client-side-remedy
+limitation closes.
+
+discovered-from: was-sync WS-15.
+
+2026-09-16: WASS-40 shipped, widening this item beyond `conditional-writes`. The
+spec removes the Backend `features` property entirely rather than leaving
+`conditional-writes` as the sole survivor, which changes the shape of this
+item's third paragraph above: `FeatureProbe` does not "keep its other consumers"
+-- with `conditional-writes` baseline, `chunked-streams` moved to a gateless
+WAS-EC conformance requirement, and `changes-query` / `blinded-index-query` /
+`governed-history-logs` all moved to server-wide or WAS-EC-version-entry tokens,
+no backend-level token is left for `src/internal/features.ts`'s probe to answer,
+so the probe itself is deleted rather than trimmed. The acceptance checklist
+above reflects the full removal; the original paragraph is left in place as the
+record of what this item looked like before WASS-40 settled its scope.
+
+2026-09-16: implemented, except the one box ECS-9 blocks.
+`src/internal/ features.ts` is deleted outright, along with
+`Collection.features`, `CodecRequestContext.features`, `WasTransport`'s
+`features` option, the `FeatureProbe` export, and the `backendFeatures` map on
+`ClientContext`; no handle reads `GET .../backend` any more. `WasTransport.find`
+and the two chunk methods lost their gates with it, so `find()` now relies on
+the server's `501` the way `Collection.find()` already did -- re-adding the gate
+over the WAS-EC version entry is new work for whoever lands ECS-9, not a
+survivor of this probe. `compareAndSwap` is unconditionally guarded over a
+stored value, which also closed WCL-105's `patchCustom` outlier; `patchCustom`
+refuses an unreadable metadata read with `NotFoundError` rather than patching
+onto an empty object, since dropping the pin is no longer an option.
+`composeAndSwap` grew an explicit create path for the one write that
+legitimately carries no pin: a baseline that reads as absent, which is what
+`configure({ force })` sends.
+
+On the `etag?` classification the checklist asked for: every optional `etag` in
+this repo is reachable from a response header the client reads, and CORS can
+hide `ETag` from a browser client on a write response as easily as on a read, so
+none of them tightened to required. Their doc comments changed instead -- from
+"absent against a backend without `conditional-writes`" to naming the
+CORS-visibility caveat.

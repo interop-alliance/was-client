@@ -29,10 +29,8 @@ import { PreconditionFailedError, ValidationError } from '../errors.js'
 import type { IZcap, ResourceData } from '../types.js'
 import type { ClientContext } from './request.js'
 import { send } from './request.js'
-import type { FeatureProbe } from './features.js'
 import {
   assertPreconditionAgainstPreRead,
-  assertPreconditionEnforced,
   assertSinglePrecondition,
   encodedPrecondition,
   writeHeaders,
@@ -88,10 +86,10 @@ export async function sendEncodedWrite(
 
 /**
  * Builds the {@link CodecRequestContext} core hands a codec that drives its own
- * I/O: the signed-request primitive bound to this handle's capability, plus the
- * handle's memoized backend-feature probe. The codec never sees the zcap
- * machinery, and the raw `HttpResponse` it gets back matches the
- * `was.request()` escape hatch, which is what `WasTransport` consumes.
+ * I/O: the signed-request primitive bound to this handle's capability. The
+ * codec never sees the zcap machinery, and the raw `HttpResponse` it gets back
+ * matches the `was.request()` escape hatch, which is what `WasTransport`
+ * consumes.
  *
  * Requests go through the same mapped `send` path the core write paths use, so
  * a codec-driven write fails with the typed `WasError` subclasses the calling
@@ -101,14 +99,12 @@ export async function sendEncodedWrite(
  *
  * @param context {ClientContext}
  * @param options {object}
- * @param options.features {FeatureProbe}   the handle's memoized backend-feature
- *   probe
  * @param [options.capability] {IZcap}     capability attached to each request
  * @returns {CodecRequestContext}
  */
 export function codecRequestContext(
   context: ClientContext,
-  { features, capability }: { features: FeatureProbe; capability?: IZcap }
+  { capability }: { capability?: IZcap } = {}
 ): CodecRequestContext {
   return {
     async request(input) {
@@ -116,8 +112,7 @@ export function codecRequestContext(
       // this surface never sets, so the response is always present.
       const response = await send(context, { capability, ...input })
       return response as HttpResponse
-    },
-    features
+    }
   }
 }
 
@@ -150,7 +145,7 @@ export type InsertOutcome =
  * A codec may also answer the encode with a multi-request plan (the EDV codec's
  * chunked blob write). The plan is then executed over the handle's signed
  * request context instead of being sent as one request; it owns its own
- * preconditions and feature gating.
+ * preconditions.
  *
  * A codec that mints its own id (e.g. the encrypting codec's EDV id) writes it
  * by `PUT` to that id's path; a codec that mints none (the identity codec)
@@ -171,9 +166,6 @@ export type InsertOutcome =
  *   codec-minted id
  * @param options.codec {ResourceCodec}    the collection's resolved codec
  * @param options.data {ResourceData}      the plaintext value
- * @param options.features {FeatureProbe}   the handle's shared backend-feature
- *   probe, handed to a codec's multi-request plan so its affordance gate costs
- *   no extra round trip
  * @param [options.contentType] {string}   caller-supplied content type
  * @param [options.capability] {IZcap}
  * @returns {Promise<InsertOutcome>}
@@ -185,7 +177,6 @@ export async function insertResource(
     pathForId,
     codec,
     data,
-    features,
     contentType,
     capability
   }: {
@@ -193,7 +184,6 @@ export async function insertResource(
     pathForId: (id: string) => string
     codec: ResourceCodec
     data: ResourceData
-    features: FeatureProbe
     contentType?: string
     capability?: IZcap
   }
@@ -201,7 +191,7 @@ export async function insertResource(
   const write = await codec.encode({ data, contentType })
   if (isChunkedWrite(write)) {
     const { id, etag } = await write.execute(
-      codecRequestContext(context, { features, capability })
+      codecRequestContext(context, { capability })
     )
     return {
       chunked: true,
@@ -238,22 +228,10 @@ export async function insertResource(
  * - The pre-read cannot distinguish "absent" from "unreadable with this
  *   capability" (WAS masks unauthorized reads as 404), so a conditional codec
  *   encodes a fresh insert (`If-None-Match: *`) in both cases. When the target
- *   in fact exists, a conditional-writes backend rejects that insert with 412;
- *   that 412 is re-thrown here with a message naming the real cause, instead
- *   of surfacing as an inexplicable failed create. Conditional codecs
- *   therefore need read access to update an existing document.
- * - A backend that does NOT advertise `conditional-writes` ignores the
- *   `If-None-Match: *` guard, so the 412 safety net above never fires there: a
- *   masked-404 insert would silently overwrite the existing document and reset
- *   its sequence. The insert-after-null-pre-read is therefore refused (fail
- *   closed) unless the backend advertises the feature.
- * - A caller's named precondition is refused with `NotSupportedError` when the
- *   backend descriptor was read and advertises no `conditional-writes`,
- *   whatever the collection's codec. A backend that ignores `If-Match` would
- *   otherwise turn the caller's compare-and-swap into a silent overwrite. This
- *   is the one gate every guarded write through a handle passes, so the stores
- *   layered over `Resource.put` (the resource log, the descriptor stores) do
- *   not repeat it.
+ *   in fact exists, the server rejects that insert with 412; that 412 is
+ *   re-thrown here with a message naming the real cause, instead of surfacing
+ *   as an inexplicable failed create. Conditional codecs therefore need read
+ *   access to update an existing document.
  *
  * @param context {ClientContext}
  * @param options {object}
@@ -261,9 +239,6 @@ export async function insertResource(
  * @param options.codec {ResourceCodec}          the collection's resolved codec
  * @param options.id {string}                    the resource id
  * @param options.data {ResourceData}            the plaintext value
- * @param options.features {FeatureProbe}         the handle's shared
- *   `BackendFeatures` probe; consulted for a named precondition and for a
- *   conditional codec's insert-after-null-pre-read
  * @param [options.contentType] {string}         caller-supplied content type
  * @param [options.capability] {IZcap}
  * @param [options.precondition] {WritePrecondition}   the caller's explicit
@@ -277,7 +252,6 @@ export async function upsertResource(
     codec,
     id,
     data,
-    features,
     contentType,
     capability,
     precondition: callerPrecondition
@@ -286,7 +260,6 @@ export async function upsertResource(
     codec: ResourceCodec
     id: string
     data: ResourceData
-    features: FeatureProbe
     contentType?: string
     capability?: IZcap
     precondition?: WritePrecondition
@@ -297,11 +270,6 @@ export async function upsertResource(
   // Checked before the pre-read, whose comparison would otherwise answer the
   // pair with a 412 either way.
   assertSinglePrecondition(precondition)
-  await assertPreconditionEnforced({
-    features,
-    precondition,
-    operation: `Cannot write the resource at "${path}"`
-  })
   let current: HttpResponse | null | undefined
   if (codec.conditionalWrites) {
     current = await send(context, {
@@ -314,24 +282,6 @@ export async function upsertResource(
     // pre-read just observed, so a lost race fails here rather than being
     // encoded into a sequence advance the server would then reject.
     assertPreconditionAgainstPreRead({ path, current, precondition })
-    if (current === null && !(await conditionalWrites({ path, features }))) {
-      // The write would be encoded as a fresh insert guarded only by
-      // `If-None-Match: *`, which this backend ignores -- so if the document in
-      // fact exists but is unreadable with this capability (the masked-404
-      // ambiguity), the PUT would silently destroy it. Refuse rather than risk
-      // the clobber.
-      throw new ValidationError(
-        `Cannot create the document at "${path}": no current document is ` +
-          'readable there, which cannot distinguish "absent" from "exists ' +
-          'but unreadable with this capability" (WAS masks unauthorized ' +
-          "reads as 404), and the collection's backend does not advertise " +
-          "the 'conditional-writes' feature -- so the server could not " +
-          'reject the write either, and an existing document would be ' +
-          'silently overwritten. Use a backend with conditional writes, a ' +
-          'capability that can read the current document and the backend ' +
-          'descriptor, or add() to mint a fresh document id.'
-      )
-    }
   }
   const write = await codec.encode({
     id,
@@ -384,50 +334,12 @@ export async function upsertResource(
         `Cannot update the document at "${path}": it exists, but its current ` +
           'version is not readable with this capability (WAS masks ' +
           'unauthorized reads as 404), so the write was encoded as a fresh ' +
-          'insert and the server rejected it. A conditional-writes codec ' +
+          'insert and the server rejected it. A conditional codec ' +
           '(e.g. the EDV codec) needs read access to update an existing ' +
           'document.',
         { status, type, title, details, requestUrl, cause: err }
       )
     }
     throw err
-  }
-}
-
-/**
- * Whether the backend advertises `conditional-writes`, with a probe failure
- * reported as the fail-closed refusal it leads to rather than raw.
- *
- * The probe rethrows transient failures on purpose (a network error, a `401`,
- * a `429`, a non-`501` `5xx`), so a blip on `GET .../backend` would otherwise
- * surface on a first write as an unrelated `WasServerError` or
- * `AuthRequiredError`. The write is refused either way -- an unprobed backend
- * is one whose guard cannot be relied on -- but the refusal says which
- * question went unanswered, and keeps the probe's own error as its `cause`.
- *
- * @param options {object}
- * @param options.path {string}   the resource path being written
- * @param options.features {FeatureProbe}
- * @returns {Promise<boolean>}
- */
-async function conditionalWrites({
-  path,
-  features
-}: {
-  path: string
-  features: FeatureProbe
-}): Promise<boolean> {
-  try {
-    return await features.has('conditional-writes')
-  } catch (err) {
-    throw new ValidationError(
-      `Cannot create the document at "${path}": no current document is ` +
-        "readable there, and the collection's backend descriptor could not " +
-        'be read, so whether the backend enforces the `If-None-Match: *` ' +
-        'guard is unknown. Retry once the backend descriptor is reachable, ' +
-        'use a capability that can read it, or add() to mint a fresh ' +
-        'document id.',
-      { cause: err }
-    )
   }
 }

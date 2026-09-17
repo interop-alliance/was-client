@@ -72,8 +72,8 @@ export interface SyncPage extends Omit<ChangesPage, 'documents'> {
  * the change feed remains the authority on ordering).
  *
  * `etag` and `metaEtag` are the raw, opaque `ETag` validators the content and
- * `/meta` reads returned (absent against a backend that does not version
- * resources) -- pass one back verbatim as a later write's `ifMatch`. `version`
+ * `/meta` reads returned (absent only where the header did not reach the
+ * client) -- pass one back verbatim as a later write's `ifMatch`. `version`
  * and `metaVersion` are the revision numbers parsed out of them, for
  * comparison or display only.
  */
@@ -94,8 +94,8 @@ export interface MasterState {
  * opaque `etag` validator it lives behind, exactly as the server sent it.
  * Pass `etag` back verbatim as a later write's `ifMatch` -- it can no longer
  * be synthesized from `version` alone, since the server's `ETag` also embeds a
- * per-record generation marker ahead of the version. `etag` is absent against
- * a backend that does not version resources; read `version` only to compare
+ * per-record generation marker ahead of the version. `etag` is absent only
+ * where the header did not reach the client; read `version` only to compare
  * or display a revision number.
  */
 export interface WriteAck {
@@ -211,11 +211,10 @@ export interface WasSyncPort {
  * - `decrypt` also takes an optional `context`, the signed-request surface a
  *   codec reads a multi-resource document through. With it, an EDV cipher
  *   reassembles a chunked envelope from its chunk resources. Without it, such
- *   an envelope throws `EncryptionError`. A cipher built without a `spaceId`,
- *   or a backend that does not advertise `chunked-streams`, throws
- *   `NotSupportedError`. A replica gets one from its
- *   Collection handle (`collection.codecContext()`). A binary document
- *   decrypts to a `Blob`, and everything else to `Json`.
+ *   an envelope throws `EncryptionError`. A cipher built without a `spaceId`
+ *   throws `NotSupportedError`. A replica gets one from its Collection handle
+ *   (`collection.codecContext()`). A binary document decrypts to a `Blob`, and
+ *   everything else to `Json`.
  */
 export interface DocCipher {
   encrypt(options: {

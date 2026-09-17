@@ -39,8 +39,8 @@
  * it was read under). `EncryptionError`, the fail-closed umbrella both
  * `KeyUnwrapError` and `IntegrityError` fall under, rides along. So does the
  * affordance gate (`NotSupportedError`), which a guarded write raises before
- * any request when the collection's backend advertises no `conditional-writes`
- * -- a permanent refusal, so a replication driver stops rather than retries.
+ * any request when the read it is pinned to returned no `ETag` validator -- a
+ * permanent refusal, so a replication driver stops rather than retries.
  * The classes are exported
  * for construction and for a caller inside one resolved copy; across a package
  * boundary the predicates are the contract

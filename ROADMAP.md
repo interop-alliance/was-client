@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 107
+nextAvailableId: 109
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -306,6 +306,54 @@ than a default.
 
 Siblings, each owning its own repo's half: wallet-core WC-152, freewallet
 FW-392.
+
+### WCL-107: Require an authorization profile entry in the service description and read the signature members from it
+
+- status: todo
+- priority: medium
+- labels: service-description, authorization, spec-alignment, wire-contract
+- touches:
+  - wallet-attached-storage-spec: WASS-44. SHIPPED (2026-09-16): the zCap
+    profile is the companion spec `PWS-AUTHZ`
+    (`https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/`),
+    identifier `https://w3id.org/pws/authz-profile`, version `0.1`. Core's
+    Selecting a Version now says a server that lists no authorization profile
+    the client implements is incompatible, and the profile's entry (not core's)
+    carries `signatureAlgorithms` and `zcapCryptosuites`
+  - storage-core: `PwsVersionEntry` (`src/was.ts:839-843`) loses the two members
+    and a new `AuthzProfileVersionEntry` carries them: SC-7 (filed 2026-09-16,
+    published as 0.17.0)
+  - was-teaching-server: WAS-112 lists the entry and moves the members; this
+    item's tests need a server past that item (the pair rule of LEARNINGS.md
+    applies)
+  - was-client (this repo): README.md and ARCHITECTURE.md (the Service
+    description and Service discovery glossary entries around lines 790-794, and
+    the `src/internal/service.ts` paragraph around line 148) describe the
+    one-key selection this item widens
+- acceptance:
+  - [ ] `selectServiceVersion` (`src/internal/service.ts`) also looks up
+        `https://w3id.org/pws/authz-profile` (a new `AUTHZ_PROFILE_ID` beside
+        `PWS_SPEC_ID`) and throws `IncompatibleServerError` when no entry there
+        names a version this client speaks (`0.1`), with a message naming the
+        offered versions as the core check does
+  - [ ] `ServiceInfo` exposes the chosen profile entry (its version and, when
+        present, `signatureAlgorithms` / `zcapCryptosuites`), typed with
+        storage-core's new entry type; nothing reads the two members off the
+        core entry any more
+  - [ ] `test/node/service.test.ts` (around lines 49-50) moves the two members
+        onto a profile entry in its fixtures, and gains a case for a description
+        with a core entry but no profile entry
+  - [ ] README.md and ARCHITECTURE.md describe the two-key selection and cite
+        the profile spec for the credential the client constructs:
+        `https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#performing-authorized-api-calls`,
+        `https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#request-body-integrity-digest-header`
+  - [ ] CHANGELOG entry notes that a server listing no
+        `https://w3id.org/pws/authz-profile` entry is now refused
+
+Filed 2026-09-16 from WASS-44. The client already constructs exactly what the
+profile describes (an Ed25519 `did:key` capability invocation with the `Digest`
+header); this item only makes it check that the server says it accepts that, in
+the place the spec now says to look.
 
 ## Whole-codebase review findings (2026-09-11)
 
@@ -1993,74 +2041,61 @@ re-derive the URL from the human id. Cost: an HMAC index key to manage and
 distribute (alongside the content keys), plus collision/uniqueness handling --
 why it is deferred past the first encrypted increment.
 
-### WCL-105: The affordance gate refuses where the spec says degrade to last-writer-wins
+### WCL-108: Gate the blinded-index query on the WAS-EC service-description version entry
 
 - status: todo
 - priority: medium
-- labels: conditional-writes, conformance, spec-alignment
+- labels: encrypted-collections, service-description, blinded-index
 - touches:
-  - wallet-attached-storage-spec: WASS-40 settles the surrounding question; this
-    item is the client-side conformance half and stands whichever way that goes
+  - encrypted-collections-spec ECS-9: SHIPPED (2026-09-16). The identifier is
+    `https://w3id.org/pws/encrypted-collections`, the current version is `0.1`,
+    and an entry carries `version` (required), `url` (optional), and an
+    optional `features` array whose two tokens are `blinded-index-query` and
+    `governed-history-logs`. An unrecognized token is ignored, an absent array
+    means neither affordance, and support for one is never inferred from the
+    other. This item is unblocked
+  - storage-core: a version-entry type for the new key. The shape is
+    `PwsVersionEntry` minus `spaces`, so a reuse may do; decide when the
+    parsing below is written
 - acceptance:
-  - [ ] The divergence is resolved in one direction: either the spec gains text
-        sanctioning a fail-closed refusal, or was-client stops refusing
-  - [ ] Whichever way it goes, the reason is recorded rather than left implicit
-        in `unenforcedPreconditionError`'s message
+  - [ ] `src/internal/service.ts` reads the WAS-EC version entry alongside the
+        PWS one, exposing its tokens without conflating them with the
+        server-wide `features` of the core entry
+  - [ ] `WasTransport.find()` and `Collection.find()` consult it and refuse with
+        `NotSupportedError` before the `POST .../query` when the server
+        advertises no `blinded-index-query`, so a capable-looking server that
+        has not enabled the profile fails with a named cause rather than a bare
+        `501`
+  - [ ] Whether `governed-history-logs` gets a gate of its own is decided
+        rather than left implicit; today nothing reads it. ECS-9 gives the
+        decision a sharper input: a writer is required to consult the token
+        before choosing between a point-state descriptor and the log form,
+        because the two are written through different endpoints, which points
+        at `src/log/logStore.ts` rather than at a read path
+  - [ ] No `chunked-streams` gate comes back. Under ECS-9 a listed entry is
+        itself the claim that the chunk endpoints are served, and no token
+        names them, so the chunked write path gates on the entry's presence or
+        on nothing at all
+  - [ ] README.md and ARCHITECTURE.md's "Conditional writes" section record
+        where the WAS-EC tokens live, beside the `changes-query` note WCL-106
+        added
+  - [ ] A CHANGELOG.md entry, under a new version, dated TBD
   - [ ] `touches:` entries resolved
 
-Context: `assertPreconditionEnforced` refuses a guarded write with
-`NotSupportedError` when the collection's backend advertises no
-`conditional-writes` (`src/internal/conditional.ts:180-221`), on the reasoning
-that a backend which ignores the header turns a guarded push into a silent
-overwrite. The spec does not ask for that. Its Conditional Requests section is
-only a SHOULD: "a client SHOULD use these preconditions only against a backend
-that advertises support." The EDV-over-WAS profile is more explicit in the other
-direction, where the mapping "degrades to advisory: the `sequence` is still
-carried in the envelope but is not enforced, and writes are last-writer-wins".
-No normative text anywhere tells a client to refuse the write. (Section names
-rather than line numbers: spec.md was mid-edit when this was filed. Both
-quotations verified against the working tree 2026-09-16.)
+Context: WCL-106 deleted the backend-descriptor probe outright, which took the
+`blinded-index-query` gate in `WasTransport.find()` with it. Nothing is broken
+by that -- serving the profile is a conformance requirement, and a server that
+does not implement it answers `501`, which is what `Collection.find()` has
+always relied on. What is lost is the sharper client-side error: a refusal that
+names the missing affordance, raised before a request goes out. Re-adding it is
+a new mechanism reading a new source (the WAS-EC version entry in the service
+description), not a restoration of the deleted probe, which is why it is a
+separate item rather than an open box on WCL-106.
 
-So this client is stricter than the specification it implements, and a
-conformance suite written from the spec would not predict its behavior. The
-refusal is probably the better engineering choice, which is the point: if it is,
-the spec should say so, and if it is not, the client should stop doing it. Note
-the inconsistency is already internal as well -- `patchCustom`
-(`src/internal/meta.ts:237-252`) degrades rather than refusing, dropping its
-compare-and-swap pin so `setName` / `setTags` become last-write-wins, which is
-exactly what the spec describes and exactly what the rest of the gate refuses to
-do.
+The gate is worth having only if it is cheap. The service description is already
+discovered once per client and memoized (`WasClient.service()`), so reading one
+more entry from it costs no round trip -- unlike the per-collection descriptor
+read the old probe paid for. That is the argument for doing this at all, and
+ECS-9 landed on 2026-09-16.
 
-If WASS-40 lands as proposed this item mostly evaporates, since there would be
-no non-advertising backend left for either behavior to apply to. It is filed
-separately because it is a live conformance question today and does not depend
-on that outcome.
-
-discovered-from: was-sync WS-15.
-
-### WCL-106: Remove the conditional-writes affordance gate once it is baseline
-
-- status: draft
-- priority: medium
-- labels: conditional-writes, cleanup, breaking
-- blocked-by: WASS-40 in the spec repo
-
-Draft because the spec change it follows is not approved yet; it gains
-acceptance criteria when WASS-40 is.
-
-Context: if conditional writes become a baseline requirement, an audit puts
-roughly 525 source and 730 test lines in this package attributable to their
-being optional. The shape of the removal: `preconditionsEnforced` and
-`assertPreconditionEnforced`'s `no-feature` reason go, while the `no-validator`
-reason stays, since a read that returned no ETag is a separate problem that
-survives (CORS can hide the header from a browser client). `FeatureProbe` keeps
-its other consumers but loses `descriptorAbsent()`. `isNotSupportedError` and
-the `NotSupportedError` re-export leave the `/sync` subpath, though the class
-stays on the core entry for `chunked-streams` and the other affordances. The
-degraded fallbacks go with it: `WasTransport.insert`'s non-atomic
-`HEAD`-then-`PUT` path and `#exists()`, `compareAndSwap`'s `allowUnconditional`
-opt-out, and `patchCustom`'s pin-dropping. Several public types tighten from
-optional `etag` to required. `Collection.ts:451-458`'s no-client-side-remedy
-limitation closes.
-
-discovered-from: was-sync WS-15.
+discovered-from: WCL-106.

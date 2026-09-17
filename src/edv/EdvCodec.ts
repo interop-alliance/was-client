@@ -39,10 +39,8 @@
  *   encoding carried in the document `meta`. A blob over `maxBlobBytes` is
  *   auto-routed by `add()` to the chunked-stream path instead: `encode` returns
  *   a multi-request plan the write path executes, storing one document plus its
- *   chunk resources over a `WasTransport` of the codec's own. That needs the
- *   backend's `chunked-streams` affordance, checked before the first write.
- *   Reads reassemble transparently, so `get()` returns the same `Blob` either
- *   way.
+ *   chunk resources over a `WasTransport` of the codec's own. Reads reassemble
+ *   transparently, so `get()` returns the same `Blob` either way.
  * - **Enforced sequence (conditional writes).** The codec sets
  *   `conditionalWrites`, so the write path pre-reads the current envelope and
  *   hands it to `encode`: an update advances `sequence` from its prior value and
@@ -53,10 +51,7 @@
  *   a compare-and-swap loop works the same on an encrypted collection as on a
  *   plaintext one. A stale write surfaces as a `PreconditionFailedError` (412)
  *   -- the lost-update guard -- rather than the old advisory
- *   last-writer-wins. Against a backend that does
- *   not advertise `conditional-writes` (no ETag) an update degrades to
- *   advisory, and a create-by-put is refused by the write path (the masked-404
- *   pre-read could otherwise silently clobber; see `upsertResource`).
+ *   last-writer-wins.
  * - **Encrypted metadata.** A Resource's user-writable `custom`
  *   (`name`/`tags`, via `setName`/`setTags`/`setMeta`) is
  *   encrypted into an EDV Document envelope with the same `documentCipher` used
@@ -137,13 +132,13 @@ import {
  * Default threshold above which an encrypted binary write is routed to the
  * chunked-stream path instead of being sealed into one document, measured in
  * raw (pre-base64) bytes. It is a routing threshold, not a hard cap: `add()`
- * carries a larger blob as a document plus chunk resources, which needs the
- * backend's `chunked-streams` feature. 512 KiB: a single-document envelope is
- * stored as a JSON-family content type routed through the server's in-memory
- * JSON body parser (a ~1 MiB cap), and a binary payload inflates ~33% inside
- * the document (base64) and again ~33% in the JWE ciphertext (base64url) --
- * ~1.78x total, so 512 KiB raw stays safely under the cap. Raise
- * `maxBlobBytes` against a server with a larger JSON body limit.
+ * carries a larger blob as a document plus chunk resources. 512 KiB: a
+ * single-document envelope is stored as a JSON-family content type routed
+ * through the server's in-memory JSON body parser (a ~1 MiB cap), and a
+ * binary payload inflates ~33% inside the document (base64) and again ~33% in
+ * the JWE ciphertext (base64url) -- ~1.78x total, so 512 KiB raw stays safely
+ * under the cap. Raise `maxBlobBytes` against a server with a larger JSON
+ * body limit.
  */
 const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
 
@@ -198,7 +193,6 @@ export function wasTransportFactory({
       spaceId,
       collectionId,
       contentType,
-      features: context.features,
       ...(documentHeaders !== undefined && { documentHeaders })
     })
 }
@@ -342,9 +336,9 @@ export class EdvCodec implements ResourceCodec {
   /**
    * The size of each encrypted chunk a routed write emits, or `undefined` to
    * take the EDV core's default (1 MiB). One chunk is one upload, so it has to
-   * stay under the backend's `maxUploadBytes`; nothing here can check that (the
-   * feature probe answers affordance tokens, not the backend's constraints), so
-   * a chunk over the limit surfaces as the server's 413.
+   * stay under the backend's `maxUploadBytes`; nothing here can check that (a
+   * server advertises no such constraint), so a chunk over the limit surfaces
+   * as the server's 413.
    */
   readonly #chunkSize?: number
   readonly #idDerivation: 'random' | 'content'
@@ -418,9 +412,9 @@ export class EdvCodec implements ResourceCodec {
    *   is routed to the chunked-stream path instead of one document
    * @param [options.chunkSize] {number}   the size of each encrypted chunk a
    *   routed write emits (defaults to the EDV core's 1 MiB). One chunk is one
-   *   upload, so it must stay under the backend's `maxUploadBytes`; that
-   *   constraint is not advertised through the feature probe, so it is the
-   *   caller's to respect (see `createEdvEncryption`)
+   *   upload, so it must stay under the backend's `maxUploadBytes`; the
+   *   server advertises no such constraint, so it is the caller's to respect
+   *   (see `createEdvEncryption`)
    * @param options.idDerivation {string}           how `add()` mints a document
    *   id: `'random'` (classic `generateId()`) or `'content'` (derived from the
    *   JWE ciphertext, content-addressed)
@@ -719,16 +713,10 @@ export class EdvCodec implements ResourceCodec {
       // pre-read, so the two agree by the time this runs.
       //
       // Otherwise pin an update to the server's current ETag and guard a fresh
-      // insert with create-if-absent. An update's `If-Match` carries a
-      // server-provided ETag, so it degrades to an advisory write against a
-      // backend without the conditional-writes feature (the ETag is absent). A
-      // fresh insert's `If-None-Match: *` needs no server-provided validator
-      // and so is emitted unconditionally by design -- it expresses the
-      // insert's intent (create-only-if-absent). A backend that does not honor
-      // it would ignore it, so the write path refuses the
-      // insert-after-null-pre-read up front on such a backend (see
-      // `upsertResource`) -- a masked-404 pre-read must not silently overwrite
-      // an existing document there.
+      // insert with create-if-absent. A fresh insert's `If-None-Match: *`
+      // needs no server-provided validator: it expresses the insert's intent
+      // (create-only-if-absent), and the server enforces it, so a masked-404
+      // pre-read cannot silently overwrite an existing document.
       ...(precondition ??
         (priorDoc
           ? { ifMatch: readEtag(current ?? null) }
@@ -741,9 +729,7 @@ export class EdvCodec implements ResourceCodec {
 
   /**
    * Builds the `WasTransport` the chunked-stream paths drive, over the signed
-   * requester core supplied and this codec's injected factory. The handle's
-   * memoized feature probe is passed straight through, so the transport's own
-   * affordance gates cost no extra descriptor read.
+   * requester core supplied and this codec's injected factory.
    *
    * @param context {CodecRequestContext}
    * @param [documentHeaders] {Record<string, string>}   extra headers for
@@ -764,47 +750,6 @@ export class EdvCodec implements ResourceCodec {
       )
     }
     return this.#transportFactory({ context, documentHeaders })
-  }
-
-  /**
-   * Refuses the operation unless the collection's backend advertises the
-   * `chunked-streams` affordance. Checked before the first write, so an
-   * unsupported server never ends up holding a document stub with no chunks.
-   *
-   * @param context {CodecRequestContext}
-   * @param what {string}   the operation, for the message
-   * @returns {Promise<void>}
-   */
-  async #assertChunkedStreams(
-    context: CodecRequestContext,
-    what: string
-  ): Promise<void> {
-    if (await context.features.has('chunked-streams')) {
-      return
-    }
-    // "No features" has two causes, and only one of them is about the server's
-    // capabilities: a descriptor that was read and lists no `chunked-streams`,
-    // versus a descriptor that could not be read at all (no backend descriptor
-    // endpoint, a deleted collection, or a capability that cannot read it --
-    // WAS masks unauthorized reads as 404). Name the one that applies, so a
-    // capable server whose collection is gone does not look incapable.
-    if (await context.features.descriptorAbsent()) {
-      throw new NotSupportedError(
-        `${what} needs the collection's backend to advertise the ` +
-          `'chunked-streams' feature, but the backend descriptor could not be ` +
-          'read at all: the collection may not exist, or this capability may ' +
-          'not be able to read its descriptor. Confirm the collection and the ' +
-          'capability, then retry.'
-      )
-    }
-    throw new NotSupportedError(
-      `${what} needs the collection's backend to advertise the ` +
-        `'chunked-streams' feature, which it does not. Store the blob in a ` +
-        'collection on a backend that supports chunked streams, or keep the ' +
-        `payload under the ${this.#maxBlobBytes}-byte single-document ` +
-        "threshold (raise it with the provider's `maxBlobBytes` where the " +
-        'server accepts a larger body).'
-    )
   }
 
   /**
@@ -857,10 +802,8 @@ export class EdvCodec implements ResourceCodec {
         'This payload is too large for a single encrypted document, so it is ' +
         'stored as a document plus chunk resources. Drive the write yourself ' +
         'with `EdvClientCore.update({ doc, stream, transport })` over a ' +
-        '`WasTransport`, against a server whose backend advertises the ' +
-        "'chunked-streams' feature.",
+        '`WasTransport`.',
       execute: async (context: CodecRequestContext) => {
-        await this.#assertChunkedStreams(context, 'Writing a large blob')
         // The EDV core owns the write and swallows the responses, so the
         // transport reports the document write it made: whether one landed at
         // all (the cleanup decision below) and the validator the server acked
@@ -1090,7 +1033,6 @@ export class EdvCodec implements ResourceCodec {
           "another document's chunks."
       )
     }
-    await this.#assertChunkedStreams(context, 'Reading a large blob')
     const keyAgreementKey = this.#readKeys.find(key => key.id === keyId)
     const stream = (await this.#edv.getStream({
       doc: { id, stream: { chunks } } as IEDVDocument,

@@ -43,8 +43,6 @@ import {
   identityCodec
 } from './internal/codec.js'
 import type { CodecHolder } from './internal/codec.js'
-import { collectionBackendFeatures } from './internal/features.js'
-import type { BackendFeatures, FeatureProbe } from './internal/features.js'
 import {
   collectWalk,
   signedPageWalk,
@@ -185,12 +183,6 @@ export class Collection {
    * without discovering a descriptor from stored state.
    */
   readonly #encryptionOverride?: EncryptionOverride
-  /**
-   * The shared backend-feature probe for this collection (memoized on a
-   * definitive answer), consulted by the conditional-codec write path and
-   * shared with child resource handles the way the codec is.
-   */
-  readonly #features: BackendFeatures
 
   /**
    * @param options {object}
@@ -237,11 +229,6 @@ export class Collection {
       override: encryption,
       capability
     })
-    this.#features = collectionBackendFeatures(context, {
-      spaceId,
-      collectionId,
-      capability
-    })
   }
 
   /**
@@ -259,21 +246,8 @@ export class Collection {
   }
 
   /**
-   * The memoized backend-feature probe this handle and its child resource
-   * handles share. A store built over the handle (a history log store, the
-   * sync port) gates its guarded writes on it without a second descriptor
-   * read. Reading it performs no I/O.
-   *
-   * @returns {FeatureProbe}
-   */
-  get features(): FeatureProbe {
-    return this.#features
-  }
-
-  /**
    * The signed-request context handed to a codec that drives its own I/O (the
-   * EDV codec reading a chunked blob back), bound to this handle's capability
-   * and sharing its memoized feature probe.
+   * EDV codec reading a chunked blob back), bound to this handle's capability.
    *
    * Public so a sync replica can pass it to `DocCipher.decrypt`, which then
    * reassembles a chunked envelope from its chunk resources on this
@@ -282,10 +256,7 @@ export class Collection {
    * @returns {CodecRequestContext}
    */
   codecContext(): CodecRequestContext {
-    return codecRequestContext(this.#context, {
-      features: this.#features,
-      capability: this.#capability
-    })
+    return codecRequestContext(this.#context, { capability: this.#capability })
   }
 
   /**
@@ -445,17 +416,7 @@ export class Collection {
    *   compare-and-swap attempt limit. One validator covers configuration and
    *   annotations alike, so a configuration change now legitimately invalidates
    *   an in-flight annotation write; rebasing is the normal outcome, not an
-   *   error. A backend without `conditional-writes` serves no validator, and
-   *   the write stays the unconditional upsert it has always been.
-   *
-   * Limitation, on a backend without `conditional-writes` only: the body
-   * re-sends the stored `encryption` descriptor, and with no validator to pin
-   * the `PUT` to, a descriptor rotation landing between the compose read and
-   * the write is re-sent as the older roster -- refused as a spurious
-   * `invalid-request-body` ("epochs is append-only") by a server enforcing the
-   * descriptor invariants, and rolled back by one that does not. There is no
-   * client-side remedy without a validator or a partial-update form, neither of
-   * which WAS v0.5 offers (WCL-99).
+   *   error.
    *
    * The absent-object rule is the masked-404 fail-closed policy at write level:
    * a `null` read means "missing OR not visible to you", and composing against
@@ -473,8 +434,7 @@ export class Collection {
    * @param [options.current] {object}   an object the caller has already read,
    *   used as the first attempt's baseline instead of re-reading it: the write
    *   composes against it and pins to its validator, and a rebase re-reads. A
-   *   baseline carrying no validator makes the first attempt unconditional,
-   *   which is what a backend without `conditional-writes` offers anyway
+   *   baseline carrying no validator is refused by the compare-and-swap loop
    * @param [options.allowAbsent] {boolean}   compose against nothing (an
    *   upsert) instead of throwing `NotFoundError` when the object cannot be
    *   read
@@ -907,7 +867,7 @@ export class Collection {
    * no keys for, which is why {@link describe} -- the configuration read -- goes
    * without it.
    *
-   * Against a backend with the `conditional-writes` feature the result also
+   * The result also
    * carries the object's current `etag` (its `metaVersion` validator) -- pass it
    * as `setMeta(meta, { ifMatch })` for a lost-update-safe update. One
    * validator covers the whole object: a configuration write and an annotation
@@ -956,8 +916,8 @@ export class Collection {
    * and encrypted collections alike. The key epoch the codec stamps the
    * envelope with travels as a top-level `epoch` member of the same body.
    *
-   * Conditional writes (the backend's `conditional-writes` feature): pass
-   * `ifMatch` (the `etag` from a prior {@link meta} or {@link describe}) for an
+   * Conditional writes: pass `ifMatch` (the `etag` from a prior {@link meta}
+   * or {@link describe}) for an
    * update-if-unchanged, and a failed precondition throws
    * `PreconditionFailedError` (412). Without one the write is pinned to the
    * version it composed the configuration from and rebases on a lost race.
@@ -1037,11 +997,10 @@ export class Collection {
   /**
    * Sets the Collection's annotation-level human-readable `name`, preserving
    * any existing `tags`. Convenience over `setMeta()`. The write is pinned to
-   * the `etag` the `meta()` read returned (when the backend supports
-   * `conditional-writes`) and rebases on a lost race, so a concurrent write --
-   * an annotation write or a configuration change, which share the one
-   * validator -- is re-read and re-applied rather than silently erased by this
-   * full-replacement write.
+   * the `etag` the `meta()` read returned and rebases on a lost race, so a
+   * concurrent write -- an annotation write or a configuration change, which
+   * share the one validator -- is re-read and re-applied rather than silently
+   * erased by this full-replacement write.
    *
    * On an encrypted collection this is the collection's client-encrypted name
    * surface: the codec seals it into the `custom` envelope, and by convention
@@ -1086,8 +1045,8 @@ export class Collection {
   }
 
   /**
-   * Reads the Collection's governing history log (the backend's
-   * `governed-history-logs` feature): the JSON Lines body served at the
+   * Reads the Collection's governing history log (the encrypted-collections
+   * profile's `governed-history-logs` feature): the JSON Lines body served at the
    * `/meta/log` sub-resource, verbatim, together with its `ETag`. The log is
    * not a Resource of the Collection (absent from listings and the `changes`
    * feed) and not part of the `/meta` object; it is versioned by its own
@@ -1376,8 +1335,10 @@ export class Collection {
    * one page: `limit` caps its size (the server clamps its own maximum), and a
    * `hasMore` page carries the `cursor` to pass back for the next one.
    *
-   * Requires the collection's backend to advertise the `blinded-index-query`
-   * feature; a backend without it answers `501` (`NotImplementedError`).
+   * Serving the blinded-index query profile is a conformance requirement of a
+   * server that offers encrypted collections, so there is no client-side
+   * probe; a server that does not implement it answers `501`
+   * (`NotImplementedError`).
    *
    * @param options {object}
    * @param [options.equals] {object | object[]}   attribute/value pairs to match
@@ -1403,9 +1364,8 @@ export class Collection {
       method: 'POST',
       capability: this.#capability,
       // The profile is bound here the way `changes()` binds its own: same
-      // endpoint, no client-side feature probe -- a backend that does not
-      // implement the profile answers 501, which is a clearer signal than a
-      // guess made from the backend descriptor.
+      // endpoint, no client-side gate -- a server that does not implement the
+      // profile answers 501.
       json: {
         profile: 'blinded-index',
         ...query,
@@ -1477,9 +1437,6 @@ export class Collection {
       collectionId: this.id,
       resourceId,
       capability: options.capability ?? this.#capability,
-      // Share this collection's memoized feature probe so per-resource handles
-      // do not each repeat the backend-descriptor round-trip.
-      features: this.#features,
       // A per-resource encryption override resolves its own codec (honoring the
       // override); without one, share this collection's resolved codec so the
       // resource handle does not repeat the descriptor-discovery round-trip.
@@ -1498,8 +1455,7 @@ export class Collection {
    *
    * On an encrypted collection a binary payload above the codec's
    * single-document threshold is auto-routed to the chunked-stream path, which
-   * needs the backend's `chunked-streams` feature (`NotSupportedError` without
-   * it, raised before anything is written).
+   * a server that does not serve the chunk endpoints answers with `501`.
    *
    * @param data {ResourceData}
    * @param options {object}
@@ -1517,7 +1473,6 @@ export class Collection {
       pathForId: mintedId => resourcePath(this.spaceId, this.id, mintedId),
       codec,
       data,
-      features: this.#features,
       contentType: options.contentType,
       capability: this.#capability
     })
@@ -1596,7 +1551,7 @@ export class Collection {
   /**
    * Creates or replaces a resource by id (upsert). Forwards the
    * conditional-write options (`ifMatch` / `ifNoneMatch`) to `Resource.put`;
-   * see it for the `conditional-writes` semantics. Returns the stored
+   * see it for the conditional-write semantics. Returns the stored
    * resource's new `etag`.
    *
    * @param resourceId {string}
@@ -1690,11 +1645,11 @@ export class Collection {
    * `limit` to its own maximum, so a short page can still be a full server
    * page.
    *
-   * Requires the collection's backend to advertise the `changes-query` feature
-   * (see `backend()`); a backend without it answers `501`. On an encrypted
-   * collection the documents' `data` / `custom` are the scheme's opaque
-   * envelopes (an EDV encrypted document under the v1 `edv` scheme) -- this
-   * method does not decrypt them, unlike `get()`.
+   * Requires the server to advertise the `changes-query` feature server-wide
+   * (`client.service().features`); a server without it answers `501`. On an
+   * encrypted collection the documents' `data` / `custom` are the scheme's
+   * opaque envelopes (an EDV encrypted document under the v1 `edv` scheme) --
+   * this method does not decrypt them, unlike `get()`.
    *
    * Malformed responses fail the call with a `WasServerError` instead of
    * passing through as a page: a 2xx response with no JSON body
@@ -1783,9 +1738,10 @@ export class Collection {
    * `list()`. Unlike `list()`, a 404 on a later page throws: the collection
    * vanished mid-walk, and the pages already read are not a snapshot of
    * anything. The server faults `changes()` rejects on (a bodiless 2xx, a
-   * live entry with no `data`, or a `501` from a backend without the
-   * `changes-query` feature) fail the walk with the same `WasServerError`, as
-   * does a server that repeats a checkpoint instead of advancing.
+   * live entry with no `data`, or a `501` from a server that does not
+   * advertise the `changes-query` feature) fail the walk with the same
+   * `WasServerError`, as does a server that repeats a checkpoint instead of
+   * advancing.
    *
    * @param [options] {object}
    * @param [options.limit] {number}   max documents per request (default 1000, the teaching server's maximum); the server reduces it to its own maximum
@@ -1938,12 +1894,11 @@ export class Collection {
    * you (404 conflation caveat). A server without backend support surfaces its
    * 501 as `NotImplementedError`.
    *
-   * The descriptor's optional `features` array advertises optional server
-   * affordances (e.g. `conditional-writes`, `blinded-index-query`,
-   * `chunked-streams`); an absent token means the backend makes no claim to it,
-   * so treat it as unsupported rather than assuming a default. (Client-side
-   * encryption is not a backend feature -- it is a per-collection client concern
-   * gated on the client's keys.)
+   * The descriptor names where the collection is stored; it advertises no
+   * optional affordances. Server-wide affordance tokens live in the service
+   * description (`client.service().features`). (Client-side encryption is
+   * neither -- it is a per-collection client concern gated on the client's
+   * keys.)
    *
    * @returns {Promise<BackendDescriptor | null>}
    */

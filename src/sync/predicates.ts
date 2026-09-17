@@ -8,8 +8,8 @@
  * (`WasSyncAuthError`), the cipher's two no-key signals (the stale-descriptor
  * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), its tamper
  * signal (`IntegrityError`), and the client's affordance gate
- * (`NotSupportedError`), raised before the request when the backend advertises
- * no `conditional-writes`.
+ * (`NotSupportedError`), raised before the request when the operation cannot
+ * be carried out as asked.
  *
  * They live beside the classes that assign the names they match (`errors.ts`)
  * because every one of those errors is raised inside a seam the consuming app
@@ -129,15 +129,13 @@ export function isIntegrityError(err: unknown): boolean {
 
 /**
  * Whether an error is the client's affordance-gate refusal
- * (`NotSupportedError`): the operation needs an optional backend feature the
- * collection's backend does not advertise. On the sync port it is the guarded
- * write refused before any request, when `putContent`, `deleteContent` or
- * `putMeta` names `ifMatch` / `ifNoneMatch` against a backend listing no
- * `conditional-writes`. Permanent, and the one refusal a replication driver
- * must NOT retry: a backend that does not advertise the feature will not start
- * enforcing preconditions on a later attempt, so a retry loop would re-send the
- * same batch forever. Raised before the request, so the matched value carries
- * no `status`.
+ * (`NotSupportedError`): the operation cannot be carried out as asked. On a
+ * replication path it is the guarded write refused because the read it is
+ * pinned to returned no `ETag` validator, and a chunked envelope a cipher was
+ * built with no route to. Permanent, and the one refusal a replication driver
+ * must NOT retry: nothing about a later attempt changes the answer, so a retry
+ * loop would re-send the same batch forever. Raised before the request, so the
+ * matched value carries no `status`.
  *
  * @param err {unknown}   the caught error
  * @returns {boolean}

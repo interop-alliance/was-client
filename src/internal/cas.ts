@@ -94,9 +94,7 @@ export function isPreconditionFailed(err: unknown): boolean {
  * A read that returns a value with no validator is refused before the write
  * with `NotSupportedError`: the replace would carry no `If-Match`, so a lost
  * race would silently overwrite the rival write instead of rebasing on it. A
- * caller whose host legitimately offers only the unconditional write passes
- * `allowUnconditional`. A `mutate` that resolves `null` writes nothing and so
- * is never refused.
+ * `mutate` that resolves `null` writes nothing and so is never refused.
  *
  * When the store reports no value yet (`read()` resolves `null`), the optional
  * `onAbsent` supplies the seed to mutate instead, and the result is written
@@ -114,8 +112,6 @@ export function isPreconditionFailed(err: unknown): boolean {
  * @param [options.onAbsent] {function}   returns the seed to mutate when the
  *   store holds no value yet; may throw a caller-specific refusal
  * @param [options.maxAttempts] {number}   defaults to {@link DEFAULT_CAS_ATTEMPTS}
- * @param [options.allowUnconditional] {boolean}   send the replace without
- *   `If-Match` when the read returned no validator, instead of refusing
  * @returns {Promise<T>}   the written (or current) value
  */
 export async function compareAndSwap<T>({
@@ -123,15 +119,13 @@ export async function compareAndSwap<T>({
   mutate,
   operation,
   onAbsent,
-  maxAttempts = DEFAULT_CAS_ATTEMPTS,
-  allowUnconditional = false
+  maxAttempts = DEFAULT_CAS_ATTEMPTS
 }: {
   store: CasStore<T>
   mutate: (value: T) => T | null | Promise<T | null>
   operation: string
   onAbsent?: () => T
   maxAttempts?: number
-  allowUnconditional?: boolean
 }): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -183,10 +177,9 @@ export async function compareAndSwap<T>({
       // The value already reflects the desired state: nothing to write.
       return current.value
     }
-    if (current.etag === undefined && !allowUnconditional) {
+    if (current.etag === undefined) {
       throw unenforcedPreconditionError({
-        operation: `${operation} was refused`,
-        reason: 'no-validator'
+        operation: `${operation} was refused`
       })
     }
     try {
@@ -214,27 +207,31 @@ export async function compareAndSwap<T>({
  * `compose` is handed a baseline read and returns the write body, and `write`
  * sends that body pinned to the baseline's validator. A lost race (a `412`)
  * re-reads, re-composes, and re-sends, so a merge is only applied over a
- * version this write observed. A baseline carrying no validator makes its
- * attempt an unconditional write (`ifMatch` is `undefined`), which is all a
- * backend without `conditional-writes` offers. This is the loop's
- * `allowUnconditional` opt-out: the Collection and Space Metadata writes that
- * drive it keep working on such a backend.
+ * version this write observed. A baseline that was read and carries no
+ * validator is refused by the loop, like any other compare-and-swap with
+ * nothing to pin to.
  *
  * Unlike a plain {@link CasStore}, the body is not the stored value itself.
- * The stored value may be `null` (an absent or unreadable object), and
+ * The stored value may be `null` -- an absent or unreadable object -- and
  * `compose` decides whether proceeding from it is safe; a refusal it throws
- * propagates unchanged. `compose` runs once per attempt, so a caller that
- * needs what was merged reads it from the value `write` resolves, which is the
- * last attempt's.
+ * propagates unchanged. A `null` baseline is the loop's create path: there is
+ * no version to pin to, so `write` is called with `ifNoneMatch: true`, the
+ * guarded create-if-absent. An object that exists but was unreadable (WAS
+ * masks an unauthorized read as 404) then fails the precondition instead of
+ * being overwritten. `compose` runs once per attempt, so a caller that needs
+ * what was merged reads it from the value `write` resolves, which is the last
+ * attempt's.
  *
  * @param options {object}
  * @param options.read {function}   reads a fresh baseline and its validator;
  *   may throw a caller-specific refusal (e.g. for an unreadable object)
  * @param [options.current] {object}   a baseline the caller has already read,
  *   used for the first attempt only; a rebase calls `read`
- * @param options.compose {function}   baseline to write body (may be async)
- * @param options.write {function}   sends the body under `ifMatch`; a stale
- *   validator throws `PreconditionFailedError` (412)
+ * @param options.compose {function}   baseline to write body (may be async);
+ *   handed `null` when nothing is stored
+ * @param options.write {function}   sends the body under `ifMatch`, or under
+ *   `ifNoneMatch: true` on the create path; a failed precondition throws
+ *   `PreconditionFailedError` (412)
  * @param options.operation {string}   what the caller is doing, for the
  *   exhaustion error's message
  * @param [options.maxAttempts] {number}   defaults to {@link DEFAULT_CAS_ATTEMPTS}
@@ -251,7 +248,10 @@ export async function composeAndSwap<B, W extends object, R>({
   read: () => Promise<{ value: B; etag?: string }>
   current?: { value: B; etag?: string }
   compose: (baseline: B) => W | Promise<W>
-  write: (body: W, precondition: { ifMatch?: string }) => Promise<R>
+  write: (
+    body: W,
+    precondition: { ifMatch?: string; ifNoneMatch?: boolean }
+  ) => Promise<R>
   operation: string
   maxAttempts?: number
 }): Promise<R> {
@@ -263,16 +263,24 @@ export async function composeAndSwap<B, W extends object, R>({
         // The caller's baseline is consumed once, so a rebase always re-reads.
         const baseline = seed ?? (await read())
         seed = undefined
-        return { value: baseline.value, etag: baseline.etag }
+        // Nothing stored: the loop's create path, guarded by `If-None-Match`.
+        return baseline.value === null
+          ? null
+          : { value: baseline.value, etag: baseline.etag }
       },
       replace: async (body, { ifMatch }) => {
         written = { result: await write(body as W, { ifMatch }) }
+      },
+      create: async body => {
+        written = { result: await write(body as W, { ifNoneMatch: true }) }
       }
     },
     // The store only ever reads a baseline and only ever replaces a body.
     mutate: value => compose(value as B),
+    // The seed `compose` builds the create body from is the absent baseline
+    // itself, which every caller of this helper spells `null`.
+    onAbsent: () => null as B,
     operation,
-    allowUnconditional: true,
     ...(maxAttempts !== undefined && { maxAttempts })
   })
   if (written === undefined) {

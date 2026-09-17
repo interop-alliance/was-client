@@ -329,7 +329,7 @@ export function resourcePolicy(
 
 /**
  * `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex` -- a single
- * stored chunk of a chunked Resource (the `chunked-streams` feature). Member
+ * stored chunk of a chunked Resource. Member
  * form, no trailing slash: get / put / delete one chunk by its ordinal index.
  * The `chunkIndex` is a non-negative integer, emitted verbatim (it is never a
  * reserved or dot segment, so it needs no percent-encoding).

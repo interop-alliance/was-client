@@ -41,8 +41,9 @@ interface RequestArgs {
 /**
  * Builds a `WasClient` over a stub `ZcapClient` that records every request and
  * routes by URL. A GET returns `readData` (with `readContentType`); writes
- * return an empty 204-ish response. (No `/backend` route: the keys switch never
- * probes the backend.)
+ * return an empty 204-ish response. Every read carries an `ETag` (a WAS server
+ * versions every resource), so a compare-and-swap write always has something
+ * to pin `If-Match` to.
  *
  * @param options {object}
  * @param [options.encryption] {EncryptionProvider}
@@ -54,7 +55,7 @@ function clientWithRouter({
   encryption,
   readData,
   readContentType = 'application/json',
-  readEtag,
+  readEtag = '"g.1"',
   writeEtag,
   readStatus = 200,
   descriptor
@@ -80,24 +81,6 @@ function clientWithRouter({
         const segments = new URL(args.url ?? '').pathname
           .split('/')
           .filter(Boolean)
-        // The backend-descriptor GET (`/space/{s}/{c}/backend`) answers the
-        // feature probe -- even when resource reads 404, so the conditional
-        // write path sees a `conditional-writes`-capable backend.
-        if (
-          segments.length === 4 &&
-          segments[0] === 'space' &&
-          segments[3] === 'backend'
-        ) {
-          const descriptor = { id: 'default', features: ['conditional-writes'] }
-          return {
-            status: 200,
-            headers: new Headers({ 'content-type': 'application/json' }),
-            data: descriptor,
-            async json() {
-              return descriptor
-            }
-          } as unknown as HttpResponse
-        }
         if (readStatus === 404) {
           throw { status: 404, response: { status: 404 } }
         }
@@ -212,13 +195,12 @@ function fakeCodec(log: string[], epoch?: string): ResourceCodec {
 }
 
 describe('codec seam: no provider (plaintext, unchanged)', () => {
-  it('add() POSTs to the items path and never probes the backend', async () => {
+  it('add() POSTs to the items path', async () => {
     const { client, calls } = clientWithRouter()
     const result = await client
       .space('s')
       .collection('c')
       .add({ hello: 'world' })
-    expect(calls.every(call => !call.url?.endsWith('/backend'))).toBe(true)
     expect(calls[0]?.method).toBe('POST')
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/')
     expect(result.id).toBe('server-minted')
@@ -541,7 +523,13 @@ describe('codec seam: configure() invalidates the memoized codec', () => {
           }
           return {
             status: 200,
-            headers: new Headers({ 'content-type': 'application/json' }),
+            // `configure()` composes and pins its write to this read's ETag
+            // (a WAS server versions every resource), so the stub must serve
+            // one.
+            headers: new Headers({
+              'content-type': 'application/json',
+              etag: '"g.1"'
+            }),
             data: description,
             async json() {
               return description

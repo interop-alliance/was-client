@@ -195,12 +195,12 @@ export class Space {
   }
 
   /**
-   * Reads the Space Metadata object together with its `ETag` validator (the
-   * server's `conditional-writes` support). The `ETag` is the opaque validator
-   * to pass to {@link replaceDescription}'s `ifMatch` for a lost-update-safe
-   * (compare-and-swap) description write. Returns `null` if the space is
-   * missing or not visible to you (404 conflation caveat); `etag` is absent
-   * against a server that does not version the Space Metadata object.
+   * Reads the Space Metadata object together with its `ETag` validator. The
+   * `ETag` is the opaque validator to pass to {@link replaceDescription}'s
+   * `ifMatch` for a lost-update-safe (compare-and-swap) description write.
+   * Returns `null` if the space is missing or not visible to you (404
+   * conflation caveat); `etag` is absent only where the header did not reach
+   * the client.
    *
    * @returns {Promise<{ description: SpaceMetadata; etag?: string } | null>}
    */
@@ -276,8 +276,8 @@ export class Space {
    * The merge runs against the same read the write is pinned to (`If-Match`
    * with that read's `ETag`), and rebases with it: a rival write landing in
    * between fails the precondition, and the description is re-read and merged
-   * over rather than clobbered. A backend that serves no validator gets an
-   * unconditional `PUT`.
+   * over rather than clobbered. A read that carries no validator is refused
+   * with `NotSupportedError` rather than written unconditionally.
    *
    * Fails closed when the current description is unreadable and the caller did
    * not supply a full description (both `name` and `controller`), mirroring
@@ -289,7 +289,9 @@ export class Space {
    * proceed anyway (a deliberate create through a handle), or supply both
    * `name` and `controller` explicitly so nothing is merged from the unreadable
    * current. The check runs against each attempt's baseline, so a rebase that
-   * re-reads nothing is refused the same way.
+   * re-reads nothing is refused the same way. Either escape hatch writes as a
+   * guarded create (`If-None-Match: *`), so a description that exists but is
+   * unreadable is still not overwritten: the server answers 412.
    *
    * @param desc {object}
    * @param [desc.name] {string}
@@ -359,8 +361,8 @@ export class Space {
           type: desc.type ?? current?.type
         })
       },
-      write: async (body, { ifMatch }) => {
-        await this.replaceDescription(body, { ifMatch })
+      write: async (body, precondition) => {
+        await this.replaceDescription(body, precondition)
         return body
       },
       operation: 'Space configuration'
@@ -566,9 +568,8 @@ export class Space {
    * the space is missing or not visible to you (404 conflation caveat). A
    * server without backend support surfaces its 501 as `NotImplementedError`.
    *
-   * Each descriptor's optional `features` array advertises optional server
-   * affordances (e.g. `conditional-writes`). See {@link Collection.backend} for
-   * the full note.
+   * A descriptor names where collections on it are stored; it advertises no
+   * optional affordances. See {@link Collection.backend} for the full note.
    *
    * @returns {Promise<BackendDescriptor[] | null>}
    */
@@ -593,7 +594,7 @@ export class Space {
    * connection (the re-consent path), use {@link updateBackend}.
    *
    * @param registration {BackendRegistration}   the backend to register
-   *   (`{ id, provider, connection: { kind, ... }, name?, features? }`)
+   *   (`{ id, provider, connection: { kind, ... }, name? }`)
    * @returns {Promise<BackendDescriptor>}   the sanitized descriptor of the
    *   newly registered backend
    */

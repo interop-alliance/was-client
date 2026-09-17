@@ -169,11 +169,11 @@ describe('the sync error predicates', () => {
   })
 })
 
-describe('the affordance-gate predicate', () => {
+describe('the NotSupportedError predicate', () => {
   it('classifies the refusal, own class and foreign realm alike', () => {
     const own = new NotSupportedError(
-      "This write carries a precondition and the collection's backend does " +
-        "not advertise the 'conditional-writes' feature."
+      'Space configuration was refused: the read it is pinned to returned ' +
+        'no ETag validator.'
     )
     const foreign = foreignRealmError('NotSupportedError')
 
@@ -185,7 +185,7 @@ describe('the affordance-gate predicate', () => {
   it('carries no status, since the refusal precedes the request', () => {
     // A replication driver reads the absence as "never reached the server", so
     // there is nothing transient to back off from.
-    const err = new NotSupportedError('no conditional-writes')
+    const err = new NotSupportedError('no ETag validator to pin to')
     expect(isNotSupportedError(err)).toBe(true)
     expect((err as { status?: unknown }).status).toBeUndefined()
   })
