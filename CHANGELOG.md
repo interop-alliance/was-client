@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.67.2 - TBD
+
+### Changed
+
+- Update to latest storage-core@0.18.0.
+
 ## 0.67.1 - 2026-09-16
 
 ### Changed
