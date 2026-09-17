@@ -491,7 +491,7 @@ describe('the plaintext index declaration', () => {
       plaintext: { indexes: ['title'] }
     })
     // The server answers an update with no body; the echo reports the merge.
-    expect(result.plaintext).toEqual({ indexes: ['title'] })
+    expect(result.description.plaintext).toEqual({ indexes: ['title'] })
   })
 
   it('carries the stored declaration forward through a write that omits it', async () => {
@@ -518,7 +518,7 @@ describe('the plaintext index declaration', () => {
       name: 'Renamed',
       plaintext: { indexes: ['title'] }
     })
-    expect(result.plaintext).toEqual({ indexes: ['title'] })
+    expect(result.description.plaintext).toEqual({ indexes: ['title'] })
   })
 
   it('replaces the stored declaration whole rather than merging entries', async () => {
@@ -591,5 +591,76 @@ describe('a custom this reader cannot open', () => {
     await expect(collection.meta()).rejects.toThrow(
       'not an envelope this reader can open'
     )
+  })
+})
+
+describe("Collection.configure() answers with the write's etag", () => {
+  it('reports the validator an update answered with', async () => {
+    const { client } = clientWith(args =>
+      args.method === 'GET'
+        ? served({ id: 'c', type: ['Collection'], name: 'Docs' }, '"1"')
+        : jsonResponse({ status: 204, headers: { etag: '"2"' } })
+    )
+    const { description, etag } = await client
+      .space('s')
+      .collection('c')
+      .configure({ name: 'Renamed', force: true })
+    expect(description.name).toBe('Renamed')
+    // The baseline a follow-on compare-and-swap pins to, without a re-read.
+    expect(etag).toBe('"2"')
+  })
+
+  it("reports the create's validator on the guarded-create path", async () => {
+    const { client } = clientWith(args => {
+      if (args.method === 'GET') {
+        failWith(404)
+      }
+      return jsonResponse({
+        data: { id: 'c', type: ['Collection'], name: 'Docs' },
+        status: 201,
+        headers: { etag: '"1"' }
+      })
+    })
+    const { description, etag } = await client
+      .space('s')
+      .collection('c')
+      .configure({ name: 'Docs', force: true })
+    expect(description.name).toBe('Docs')
+    expect(etag).toBe('"1"')
+  })
+
+  it("reports the LAST attempt's validator across a 412 rebase", async () => {
+    let version = 1
+    const { client } = clientWith(args => {
+      if (args.method === 'GET') {
+        return served(
+          { id: 'c', type: ['Collection'], name: 'Docs' },
+          version === 1 ? '"1"' : '"2"'
+        )
+      }
+      if (version === 1) {
+        version = 2
+        failWith(412)
+      }
+      return jsonResponse({ status: 204, headers: { etag: '"3"' } })
+    })
+    const { etag } = await client
+      .space('s')
+      .collection('c')
+      .configure({ name: 'Renamed', force: true })
+    expect(etag).toBe('"3"')
+  })
+
+  it('omits etag when the header did not reach the client', async () => {
+    const { client } = clientWith(args =>
+      args.method === 'GET'
+        ? served({ id: 'c', type: ['Collection'], name: 'Docs' }, '"1"')
+        : jsonResponse({ status: 204 })
+    )
+    const result = await client
+      .space('s')
+      .collection('c')
+      .configure({ name: 'Renamed', force: true })
+    expect(result).not.toHaveProperty('etag')
   })
 })

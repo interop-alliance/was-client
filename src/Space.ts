@@ -312,10 +312,15 @@ export class Space {
    *   re-read rather than merged forward. `null` means the caller read it and
    *   found the Space absent or unreadable, which is a supplied answer;
    *   omitting the member entirely is what asks for the read
-   * @returns {Promise<Omit<SpaceMetadata, 'type'> & { type?: string[] }>}   the
-   *   description as written by the last attempt; `type` is absent when it
-   *   was neither supplied nor read from the current description, since the
-   *   server's value is then unknown
+   * @returns {Promise<{ description: Omit<SpaceMetadata, 'type'> & { type?: string[] }; etag?: string }>}
+   *   the `description` the last attempt wrote, together with that write's
+   *   `etag` -- the validator to pass to {@link replaceDescription}'s
+   *   `ifMatch` for a follow-on compare-and-swap. A create takes the
+   *   description from the server's answer, so `type` carries the server's
+   *   value there; an update answers with no body, so the description is the
+   *   composed merge and `type` is absent when it was neither supplied nor
+   *   read from the current description. `etag` is absent only where the
+   *   header did not reach the client
    */
   async configure(desc: {
     name?: string
@@ -323,7 +328,10 @@ export class Space {
     type?: string[]
     force?: boolean
     current?: (SpaceMetadata & { etag?: string }) | null
-  }): Promise<Omit<SpaceMetadata, 'type'> & { type?: string[] }> {
+  }): Promise<{
+    description: Omit<SpaceMetadata, 'type'> & { type?: string[] }
+    etag?: string
+  }> {
     const written = await composeAndSwap({
       read: async () => {
         const read = await this.describeWithEtag()
@@ -362,16 +370,27 @@ export class Space {
         })
       },
       write: async (body, precondition) => {
-        await this.replaceDescription(body, precondition)
-        return body
+        // A create answers with the server's own description, which is the
+        // authority on the members the server settles (`type`). An update
+        // answers with no body, so the composed `body` is what was written.
+        const written = await this.replaceDescription(body, precondition)
+        return {
+          description: written.description ?? body,
+          etag: written.etag
+        }
       },
       operation: 'Space configuration'
     })
     return {
-      ...written,
-      // `controller` is a user-supplied DID string; assert it as the branded
-      // `IDID` the wire type now uses (the server validates the DID form).
-      controller: written.controller as SpaceMetadata['controller']
+      description: {
+        ...written.description,
+        // `controller` is a user-supplied DID string on the composed body;
+        // assert it as the branded `IDID` the wire type now uses (the server
+        // validates the DID form).
+        controller: written.description
+          .controller as SpaceMetadata['controller']
+      },
+      ...(written.etag !== undefined && { etag: written.etag })
     }
   }
 

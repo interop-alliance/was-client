@@ -21,8 +21,8 @@ importers:
         specifier: ^17.8.4
         version: 17.8.4
       '@interop/ezcap':
-        specifier: ^7.4.8
-        version: 7.4.8
+        specifier: ^7.4.9
+        version: 7.4.9
       '@interop/http-client':
         specifier: ^1.0.5
         version: 1.0.5
@@ -61,8 +61,8 @@ importers:
         specifier: 11.8.5
         version: 11.8.5
       '@interop/zcap':
-        specifier: 11.3.0
-        version: 11.3.0
+        specifier: 11.3.1
+        version: 11.3.1
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.63.0
@@ -251,8 +251,8 @@ packages:
       react-native-get-random-values:
         optional: true
 
-  '@interop/ezcap@7.4.8':
-    resolution: {integrity: sha512-bCGEefdY0oCXSOoq36GiRknxn7Xci3hAGVuUeJasOovSPsmypJ36p6TIbhPX8BLk1jXqSsU3cLZqbs1pRHWgEQ==}
+  '@interop/ezcap@7.4.9':
+    resolution: {integrity: sha512-pp5WiPkKZZLs3R+YE+FicH3BiqRxNyMO5XLqyZyYGuMmp7fk0PuDTfeSzCwOo32TsQijFRqUxGn0JLGh+K6nuA==}
     engines: {node: '>=20.0'}
 
   '@interop/http-client@1.0.5':
@@ -308,8 +308,8 @@ packages:
     resolution: {integrity: sha512-67xKx0LF1F6iQK8GQzk//XDdWB4cd2FUZtRqKWfMZih5ufMWG51Y/UYPhgEwOVmpbhE62NgS8SeE1SEa7Cgsdg==}
     engines: {node: '>=24.0'}
 
-  '@interop/zcap@11.3.0':
-    resolution: {integrity: sha512-R+9aAvovfBVfhTCtB/GG5B+iO+V5yRTojVLXRIxwwYZrjRFraF8CUNisYyRkJ9fY9xn7owgj5533ictdTOxLlg==}
+  '@interop/zcap@11.3.1':
+    resolution: {integrity: sha512-Eob4PYvhR0H49fuk9iwyHiPEPesZWDWMu1bfOkM0jTitTdrurAdFCPVT5aWr8kMk+R5YabjUlWhtWxYJbWzgcQ==}
     engines: {node: '>=24.0'}
 
   '@jridgewell/resolve-uri@3.1.2':
@@ -1416,7 +1416,7 @@ snapshots:
     transitivePeerDependencies:
       - expo-crypto
 
-  '@interop/ezcap@7.4.8':
+  '@interop/ezcap@7.4.9':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/data-integrity-proof': 3.4.5
@@ -1424,7 +1424,7 @@ snapshots:
       '@interop/http-client': 1.0.5
       '@interop/http-signature-zcap-invoke': 6.2.6
       '@interop/jsonld-signatures': 11.8.5
-      '@interop/zcap': 11.3.0
+      '@interop/zcap': 11.3.1
     transitivePeerDependencies:
       - expo-crypto
 
@@ -1495,7 +1495,7 @@ snapshots:
       '@noble/curves': 2.4.0
       '@scure/base': 2.4.0
 
-  '@interop/zcap@11.3.0':
+  '@interop/zcap@11.3.1':
     dependencies:
       '@digitalbazaar/zcap-context': 2.0.1
       '@interop/data-integrity-core': 8.7.1

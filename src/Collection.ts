@@ -570,14 +570,19 @@ export class Collection {
    *   rather than merged forward. `null` means the caller read it and found
    *   the collection absent or unreadable; omitting the member entirely is
    *   what asks for the read
-   * @returns {Promise<CollectionMetadata>}
+   * @returns {Promise<{ description: CollectionMetadata; etag?: string }>}
+   *   the `description` as merged and written by the last attempt, together
+   *   with that write's `etag` -- the validator to pass to
+   *   {@link replaceDescription}'s `ifMatch` for a follow-on
+   *   compare-and-swap. `etag` is absent only where the header did not reach
+   *   the client
    */
   async configure(
     desc: CollectionWritableFields & {
       force?: boolean
       current?: (CollectionMetadata & { etag?: string }) | null
     }
-  ): Promise<CollectionMetadata> {
+  ): Promise<{ description: CollectionMetadata; etag?: string }> {
     // What the last compose attempt merged, for the echoed return below (the
     // server answers an update with no body).
     let echoed: { type?: string[]; fields: CollectionWritableFields } = {
@@ -588,7 +593,7 @@ export class Collection {
       // read: the guard fires on it without a round trip of this handle's own.
       this.#refuseBlindMerge(desc)
     }
-    const { metadata } = await this.#writeStored({
+    const { metadata, etag } = await this.#writeStored({
       current:
         desc.current != null
           ? {
@@ -623,13 +628,14 @@ export class Collection {
       operation: 'Collection configuration'
     })
     this.#resetCodecIfDeclared(desc.encryption)
-    return (
-      metadata ?? {
+    return {
+      description: metadata ?? {
         id: this.id,
         type: echoed.type ?? ['Collection'],
         ...echoed.fields
-      }
-    )
+      },
+      ...(etag !== undefined && { etag })
+    }
   }
 
   /**

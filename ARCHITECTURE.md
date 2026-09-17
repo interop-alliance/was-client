@@ -630,6 +630,16 @@ No locks; safety is optimistic (ETag/CAS) throughout
   `compareAndSwap` caller (the recipient primitives, `declareIndex`,
   provisioning's late encryption declaration) is refused with
   `NotSupportedError` when its read returns no validator.
+- Both `configure` methods answer with `{ description, etag }`: the description
+  the last attempt wrote, and that write's validator. A caller that configures a
+  container and then writes it again under a compare-and-swap therefore has its
+  baseline without a re-read. A create takes the description from the server's
+  answer, which is the authority on the members the server settles (a Space's
+  `type`); an update answers with no body, so the description is the composed
+  merge. The two `replaceDescription` methods answer in the same shape, except
+  that `Space`'s `description` is absent on an update rather than falling back
+  to the body, since that PUT is a server-side merge and the body is not
+  necessarily the new state.
 - `declareIndex` reconciles against the persisted index schema with the same
   metadata ETag: read, merge, conditional write, bounded retry on 412, so two
   clients declaring different attributes at once do not erase each other.

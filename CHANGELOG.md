@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.68.0 - TBD
+
+### Changed
+
+- Breaking: `Space.configure` and `Collection.configure` answer with
+  `{ description, etag }` rather than the description alone. `etag` is the
+  validator the write itself returned, so a caller that configures a container
+  and then writes it again under a compare-and-swap no longer re-reads for a
+  baseline, or drops to `replaceDescription` and reimplements the create-race
+  handling `configure` owns. Both `replaceDescription` methods already answered
+  in this shape and are unchanged.
+- `Space.configure` takes its answered description from the server's body on a
+  create, instead of echoing the body it composed. The server is the authority
+  on the members it settles, so a create no longer reports `type` as absent
+  where the server had settled one. `Collection.configure` already did this.
+
 ## 0.67.2 - 2026-09-16
 
 ### Changed

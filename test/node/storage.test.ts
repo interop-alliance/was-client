@@ -811,8 +811,8 @@ describe('Collection reserved-id guard', () => {
       backend: { id: 'custom' },
       encryption: { scheme: 'edv' }
     })
-    expect(result.backend).toEqual({ id: 'custom' })
-    expect(result.encryption).toEqual({ scheme: 'edv' })
+    expect(result.description.backend).toEqual({ id: 'custom' })
+    expect(result.description.encryption).toEqual({ scheme: 'edv' })
   })
 
   it('merges the stored generator attribution forward on a rename', async () => {
@@ -837,8 +837,8 @@ describe('Collection reserved-id guard', () => {
       generator: 'did:key:zApp',
       generatorOrigin: 'https://app.example'
     })
-    expect(result.generator).toBe('did:key:zApp')
-    expect(result.generatorOrigin).toBe('https://app.example')
+    expect(result.description.generator).toBe('did:key:zApp')
+    expect(result.description.generatorOrigin).toBe('https://app.example')
   })
 })
 
@@ -904,7 +904,7 @@ describe('Collection.configure() unreadable-description guard', () => {
     // overwritten (the server answers 412).
     expect(put?.headers?.['if-none-match']).toBe('*')
     expect(put?.headers?.['if-match']).toBeUndefined()
-    expect(result.name).toBe('x')
+    expect(result.description.name).toBe('x')
   })
 
   it('proceeds when the caller supplies BOTH backend and encryption', async () => {
@@ -1031,7 +1031,7 @@ describe('Space.configure() unreadable-description guard', () => {
     // overwritten (the server answers 412).
     expect(put?.headers?.['if-none-match']).toBe('*')
     expect(put?.headers?.['if-match']).toBeUndefined()
-    expect(result.name).toBe('x')
+    expect(result.description.name).toBe('x')
   })
 
   it('proceeds when both name and controller are supplied explicitly', async () => {
@@ -1279,7 +1279,7 @@ describe('Space.configure() type carry-forward', () => {
       .configure({ controller: 'did:example:promoted' })
     const put = calls.find(call => call.method === 'PUT')
     expect(put?.json).toMatchObject({ type: current.type })
-    expect(result.type).toEqual(current.type)
+    expect(result.description.type).toEqual(current.type)
   })
 })
 
@@ -1340,8 +1340,9 @@ describe('Space.configure() compare-and-swap', () => {
       name: 'Renamed',
       controller: 'did:example:bob'
     })
-    // The result is the last attempt's merge.
-    expect(result.controller).toBe('did:example:bob')
+    // The result is the last attempt's merge, with that attempt's validator.
+    expect(result.description.controller).toBe('did:example:bob')
+    expect(result.etag).toBe('"3"')
   })
 
   it("pins the first attempt to the caller's `current.etag`", async () => {
@@ -1404,6 +1405,55 @@ describe('Space.configure() compare-and-swap', () => {
       client.space('s').configure({ name: 'Renamed' })
     ).rejects.toThrow(ValidationError)
     expect(calls.map(call => call.method)).toEqual(['GET', 'PUT', 'GET'])
+  })
+
+  it("answers with the server's description on the guarded-create path", async () => {
+    // A create answers with a body, and the server is the authority on the
+    // members it settles: the composed body carries no `type` (none was
+    // supplied, and there was nothing to read), so an echo of it would report
+    // `type` as absent while the server had settled one.
+    const calls: RequestArgs[] = []
+    const client = clientWithStub(args => {
+      calls.push(args)
+      if (args.method === 'GET') {
+        failWith(404)
+      }
+      return jsonResponse({
+        data: { ...stored, name: 'x', type: ['Space', 'ClientAnnex'] },
+        status: 201,
+        headers: { etag: '"1"' }
+      })
+    })
+    const result = await client.space('s').configure({ name: 'x', force: true })
+    expect(calls.find(call => call.method === 'PUT')?.json).not.toHaveProperty(
+      'type'
+    )
+    expect(result.description.name).toBe('x')
+    expect(result.description.type).toEqual(['Space', 'ClientAnnex'])
+    // The baseline a follow-on compare-and-swap pins to, without a re-read.
+    expect(result.etag).toBe('"1"')
+  })
+
+  it('answers with the composed merge on an update, which sends no body', async () => {
+    const client = clientWithStub(args =>
+      args.method === 'GET'
+        ? jsonResponse({ data: stored, status: 200, headers: { etag: '"1"' } })
+        : jsonResponse({ status: 204, headers: { etag: '"2"' } })
+    )
+    const result = await client.space('s').configure({ name: 'Renamed' })
+    expect(result.description.name).toBe('Renamed')
+    expect(result.description.controller).toBe('did:example:alice')
+    expect(result.etag).toBe('"2"')
+  })
+
+  it('omits etag when the header did not reach the client', async () => {
+    const client = clientWithStub(args =>
+      args.method === 'GET'
+        ? jsonResponse({ data: stored, status: 200, headers: { etag: '"1"' } })
+        : jsonResponse({ status: 204 })
+    )
+    const result = await client.space('s').configure({ name: 'Renamed' })
+    expect(result).not.toHaveProperty('etag')
   })
 })
 

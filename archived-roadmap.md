@@ -2593,3 +2593,60 @@ hide `ETag` from a browser client on a write response as easily as on a read, so
 none of them tightened to required. Their doc comments changed instead -- from
 "absent against a backend without `conditional-writes`" to naming the
 CORS-visibility caveat.
+
+### WCL-109: `configure` answers with the write's `etag`, at both container levels
+
+- status: done (2026-09-16)
+- priority: medium
+- labels: conditional-writes, api, space, collection
+
+- touches:
+  - wallet-core: `ensureClientAnnexSpace` (`src/clientAnnex/log.ts`) bypasses
+    `Space.configure` today for exactly this gap, hand-rolling the guarded
+    create, the 412 rebase, and the rival re-read that `compareAndSwap` /
+    `composeAndSwap` already run. Filed there as WC-240, whose acceptance is
+    taking that call site back through `configure` once this lands
+- acceptance:
+  - [x] `Space.configure` returns the written Description together with the
+        write's `etag`
+  - [x] `Collection.configure` returns its `CollectionMetadata` the same way
+  - [x] The two `replaceDescription` return shapes and these two are consistent,
+        so a caller needing a compare-and-swap baseline reads it off whichever
+        call it made
+  - [x] `touches:` entries resolved
+
+Context: a caller that configures a container and then immediately writes it
+again under a compare-and-swap needs the validator the configure wrote. Both
+`replaceDescription` methods hand one back; neither `configure` does, so such a
+caller either pays for a re-read or drops to `replaceDescription` and
+reimplements the create-race handling `configure` exists to own. The second is
+what wallet-core did.
+
+The value is already in hand at both sites, and is discarded on the way out.
+`Space.configure`'s `composeAndSwap` `write` closure (`src/Space.ts`) calls
+`this.replaceDescription(body, precondition)` and returns `body`, dropping the
+`{ description?, etag? }` that call resolved. `Collection.configure`
+(`src/Collection.ts:580`) destructures
+`const { metadata } = await this.#writeStored({...})` from a helper already
+typed `Promise<{ metadata?: CollectionMetadata; etag?: string }>`. So this is a
+return-shape decision rather than new plumbing.
+
+Two things to settle while here. Whether the return widens in place (a breaking
+change for anyone spreading the result) or a sibling method carries the
+validator. And the asymmetry between the two `replaceDescription` returns:
+`Collection`'s `description` is required, `Space`'s is optional, which is what
+makes a `Space` caller write a body-less-create fallback that a `Collection`
+caller does not need.
+
+discovered-from: the wallet-core cleanup pass over the 0.67 adaptation.
+
+Resolved: the return widened in place at both levels to
+`{ description, etag? }`, the shape both `replaceDescription` methods already
+answered in, rather than a sibling method. `replaceDescription` was left alone:
+`Collection`'s PUT is replace semantics, so echoing the sent body IS the new
+state and `description` is honestly required; `Space`'s PUT is a server-side
+merge (an omitted `name` keeps the stored one), so an echo would be a guess and
+`description` stays optional there. Both `configure` methods compose a full
+body, so both answer with a required `description` regardless, and both take it
+from the server's answer on a create, where the server is the authority on the
+members it settles (a Space's `type`).

@@ -280,8 +280,11 @@ const same = was.space(space.id)
 const desc = await space.describe() // { id, type: ['Space'], name, controller } | null
 
 // Upsert: merges the given fields over the current Metadata object. The
-// write is pinned to that read's ETag and re-merges on a lost race.
+// write is pinned to that read's ETag and re-merges on a lost race. It
+// answers with the merged description and the write's own ETag, so a
+// follow-on compare-and-swap needs no re-read.
 await space.configure({ name: 'Home (renamed)' })
+// { description: { id, type: ['Space'], name, controller }, etag? }
 
 // Lost-update-safe writes: read the Metadata object with its ETag, then
 // write it under `ifMatch` (412 `PreconditionFailedError` if it changed), or
@@ -338,8 +341,9 @@ const same = space.collection(collection.id)
 // Read the Collection Metadata object (null if missing or not visible).
 const desc = await collection.describe() // { id, type: ['Collection'], name } | null
 
-// Update (upsert; merges over the current Metadata object).
-await collection.configure({ name: 'Credentials' })
+// Update (upsert; merges over the current Metadata object). Answers with the
+// merged description and the write's own ETag, like `space.configure()`.
+await collection.configure({ name: 'Credentials' }) // { description, etag? }
 
 // List the collections in a space.
 const collections = await space.collections()
