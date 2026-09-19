@@ -21,10 +21,17 @@ import type { IZcap, RequestInput, ServiceInfo } from '../types.js'
 
 /**
  * The shared context threaded through every handle: the server base URL, the
- * wrapped ezcap client, the cached controller DID of its signer, the optional
+ * wrapped ezcap client, the controller DID of its signer, the optional
  * encryption provider that supplies an encrypting codec for the collections
  * the client holds keys for, and the memoized service discovery every signed
  * request waits on.
+ *
+ * `controllerDid` is a lazy read, not a stored string: `WasClient` backs it
+ * with a getter so that building a context (and therefore a handle) never
+ * requires an invocation signer. A client that holds only a delegation signer
+ * reads it as a `ValidationError`, at the two operations that actually need
+ * it (`createSpace`'s controller default and `rootCapability`'s client-side
+ * controller) rather than at construction.
  */
 export interface ClientContext {
   serverUrl: string

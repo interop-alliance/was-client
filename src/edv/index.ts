@@ -7,6 +7,15 @@
  * do not pull the `@interop/edv-client` / `@interop/minimal-cipher` crypto graph
  * unless they opt in by importing this subpath.
  *
+ * This is the full encrypted surface, online and offline. It re-exports
+ * `@interop/was-client/edv/core` -- the codec, the doc ciphers, the key
+ * epochs, the recipient operations, `resourceDescriptorStore`, the log-governed
+ * descriptor stores and the blinding keys, none of which need a server -- and
+ * adds the modules that do talk to one, `collectionDescriptorStore` among
+ * them. A consumer working offline imports `./edv/core` instead and keeps every
+ * transport module out of its graph; everything this entry exported before
+ * that entry existed still resolves from here.
+ *
  * Two integration levels:
  *
  * - `createEdvEncryption` -- the EDV keystore for the handle seam. Pass its
@@ -17,45 +26,9 @@
  * - `WasTransport` -- the standalone `@interop/edv-client`
  *   transport, for driving an `EdvClient` directly against WAS.
  *
- * Every encrypted collection carries a key-epoch roster from birth:
- * `ensureFirstEpoch` installs epoch[0] at provision time (create-if-absent;
- * the crypto-free `ensureSpaceAndCollection` only ensures the container), and
- * `initRecipients` / `addRecipient` / `removeRecipient` manage the readers and
- * rotate the epoch key, so the same `createEdvEncryption` provider
- * transparently encrypts each write under the current epoch and decrypts any
- * epoch a reader still holds.
- * They mutate the descriptor through the descriptor-store seam: the Collection
- * Description by default, or any `EncryptionDescriptorStore` -- e.g.
- * `resourceDescriptorStore` for a descriptor hosted as a plain JSON Resource.
- *
- * A collection provisioned with `ensureFirstEpoch({ blindedIndex: true })` also
- * carries a blinded-index HMAC key, distributed to recipients exactly like an
- * epoch key (see `hmacKey.ts`). It is installed at provisioning or never, and
- * never rotates.
- *
- * `hasKeyEpochs` and `epochRostersEqual` are the crypto-free predicates over a
- * descriptor: whether it carries a usable roster, and whether two descriptors
- * carry the same epoch configuration (`scheme`, `version`, `currentEpoch`, and
- * the ordered epoch ids; recipients and the `hmac` member deliberately
- * excluded).
- *
- * `x25519RecipientFromDidKey` is the one rule for turning a grantee named only
- * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a
- * recipient key is always derived from an identifier both sides already hold
- * rather than transmitted.
- *
- * A decrypt that finds no key raises one of two classes, and a caller scanning
- * rows must tell them apart: `UnknownEpochError` when the envelope's epoch is
- * not on the descriptor the reader holds (a re-read may fix it) and
- * `KeyUnwrapError` when the epoch IS listed but this reader has no key for it
- * (never a recipient, or removed and the epoch rotated since -- re-reading
- * cannot help). Both ship from this subpath beside the cipher that raises
- * them, so a consumer classifying what a cipher threw need not reach for the
- * package root. Both assign their `name` explicitly, and a consumer whose
- * cipher arrives through an injected seam matches on that name rather than
- * `instanceof`, since the seam may resolve to a second copy of this package:
- * `isKeyUnwrapError` here, and `isUnknownEpochError` on `./sync`, are those
- * matchers.
+ * `collectionDescriptorStore` is the `EncryptionDescriptorStore` over a live
+ * `Collection` handle's Collection Description, the default the recipient
+ * operations use when a caller names a collection rather than a store.
  *
  * Which epoch a collection encrypts under, and when to ask again, is the
  * descriptor acquisition and refresh policy every consumer running an
@@ -83,65 +56,63 @@
  *   re-reads the description, swaps itself, and retries exactly once per
  *   instance.
  */
+// The offline half, named one export at a time rather than with `export *`.
+// This entry is the one every online consumer imports, so its surface is
+// stated here: an export added to `core.ts` widens `./edv/core` only, and
+// widening `./edv` takes an edit to this list.
 export {
-  createEdvEncryption,
   EdvCodec,
-  wasTransportFactory
-} from './EdvCodec.js'
-export type { CodecTransportFactory, EdvKeys } from './EdvCodec.js'
-export { WasTransport } from './WasTransport.js'
-export { EDV_SCHEME_VERSION, JOSE_CONTENT_TYPE } from './constants.js'
-export {
+  EDV_SCHEME_VERSION,
+  JOSE_CONTENT_TYPE,
   ensureFirstEpoch,
   initRecipients,
   addRecipient,
   removeRecipient,
-  replaceRecipient
-} from './recipients.js'
-export type { RecipientPublicKey } from './recipients.js'
-export {
+  replaceRecipient,
   isEd25519DidKey,
-  x25519RecipientFromDidKey
-} from './didKeyRecipient.js'
-export {
-  collectionDescriptorStore,
-  resourceDescriptorStore
-} from './descriptorStore.js'
-export type { EncryptionDescriptorStore } from './descriptorStore.js'
-export {
+  x25519RecipientFromDidKey,
+  resourceDescriptorStore,
   EPOCH_CONFIGURATION_STATE_TYPE,
   logGovernedCollectionDescriptorStore,
   logGovernedDescriptorStore,
   readGovernedEpochConfiguration,
-  toEpochConfigurationState
-} from './logGovernedDescriptorStore.js'
-export type { LogGovernedDescriptorStore } from './logGovernedDescriptorStore.js'
-export {
+  toEpochConfigurationState,
+  didKeyResolver,
   mintEpoch,
   epochKeyIdFor,
   unwrapEpochSecret,
-  wrapEpochSecret
-} from './epochCrypto.js'
-export { hasKeyEpochs, epochRostersEqual } from './epochRoster.js'
-export { resolveEpochKeys } from './epochKeys.js'
-export type { ResolvedEpochKeys } from './epochKeys.js'
-export {
+  wrapEpochSecret,
+  hasKeyEpochs,
+  epochRostersEqual,
+  resolveEpochKeys,
   HMAC_KEY_TYPE,
   mintHmacKey,
   hmacKeyFromSecret,
-  resolveHmacKey
-} from './hmacKey.js'
-export type { BlindingKey } from './hmacKey.js'
-export {
+  resolveHmacKey,
   createEdvDocCipher,
   createEdvEncryptOnlyDocCipher,
   ownerRecipient,
   EncryptOnlyCipherError,
   KeyUnwrapError,
   UnknownEpochError,
-  isEncryptedEnvelope
-} from './docCipher.js'
-export type { DocCipher, EdvDocCipher } from './docCipher.js'
+  isEncryptedEnvelope,
+  isKeyUnwrapError
+} from './core.js'
+export type {
+  CodecTransportFactory,
+  EdvKeys,
+  RecipientPublicKey,
+  EncryptionDescriptorStore,
+  LogGovernedDescriptorStore,
+  ResolvedEpochKeys,
+  BlindingKey,
+  DocCipher,
+  EdvDocCipher
+} from './core.js'
+export { createEdvEncryption } from './encryption.js'
+export { wasTransportFactory } from './transportFactory.js'
+export { WasTransport } from './WasTransport.js'
+export { collectionDescriptorStore } from './descriptorStore.js'
 export {
   acquireDescriptor,
   acquireDescriptors,
@@ -153,4 +124,3 @@ export type {
 } from './acquire.js'
 export { DescriptorRefreshPolicy } from './refresh.js'
 export { createRefreshingEdvDocCipher } from './refreshingDocCipher.js'
-export { isKeyUnwrapError } from '../sync/predicates.js'

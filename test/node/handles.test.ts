@@ -17,6 +17,7 @@ import {
   ValidationError,
   AuthRequiredError
 } from '../../src/index.js'
+import type { IDID } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
 import {
   clientWithStub,
@@ -223,5 +224,142 @@ describe('Space.deleteWithOutcome / delete', () => {
   it('delete() still resolves void on a 404 (idempotent, regression pin)', async () => {
     const { client } = clientWithRequestSpy({ fail: 404 })
     await expect(client.space('s').delete()).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * `space()` accepts the same `HandleOptions` as `collection()` and
+ * `resource()`, so its `encryption` override is the default for every
+ * Collection reached through that handle. A `'plaintext'` default is the
+ * observable case: it short-circuits codec resolution, so an
+ * encryption-capable client neither consults its keystore nor reads the
+ * Collection Metadata object to discover a descriptor.
+ */
+describe('space() encryption default', () => {
+  /**
+   * Builds an encryption-capable `WasClient` over a stub that records every
+   * request URL and a keystore that fails if it is ever consulted.
+   *
+   * @returns {object}
+   * @returns return.client {WasClient}
+   * @returns return.urls {string[]}   the recorded request URLs
+   */
+  function encryptingClient(): { client: WasClient; urls: string[] } {
+    const urls: string[] = []
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      request(args: RequestArgs) {
+        urls.push(args.url as string)
+        if ((args.method ?? 'GET') === 'GET') {
+          return jsonResponse({ data: { id: 'c' } })
+        }
+        return jsonResponse()
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const encryption = {
+      async codecFor() {
+        throw new Error('the keystore must not be consulted for plaintext')
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['encryption']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient,
+      encryption,
+      serviceDescription: serviceDescriptionFor()
+    })
+    return { client, urls }
+  }
+
+  it("honors space('s', { encryption }) as the collection() default", async () => {
+    const { client, urls } = encryptingClient()
+    await client
+      .space('s', { encryption: 'plaintext' })
+      .collection('c')
+      .put('r', { hello: 'world' })
+    expect(urls).toEqual(['https://was.example/space/s/c/r'])
+  })
+
+  it('lets collection() override the space-level default', async () => {
+    const { client, urls } = encryptingClient()
+    await client
+      .space('s')
+      .collection('c', { encryption: 'plaintext' })
+      .put('r', { hello: 'world' })
+    expect(urls).toEqual(['https://was.example/space/s/c/r'])
+  })
+
+  it('without the default, discovers the descriptor from the metadata object', async () => {
+    const { client, urls } = encryptingClient()
+    await client.space('s').collection('c').put('r', { hello: 'world' })
+    expect(urls).toEqual([
+      'https://was.example/space/s/c/meta',
+      'https://was.example/space/s/c/r'
+    ])
+  })
+})
+
+/**
+ * `createCollection`'s `generator` is typed `IDID`, which the root entry
+ * exports: a caller holding a plain `string` needs the annotation to narrow
+ * to it, and the handle a create returns reflects the collection's own
+ * declaration rather than the Space handle's encryption default.
+ */
+describe('createCollection', () => {
+  it('accepts a generator narrowed to the exported IDID type', async () => {
+    const urls: string[] = []
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      request(args: RequestArgs) {
+        urls.push(args.url as string)
+        return jsonResponse({ data: { id: 'c' } })
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient,
+      serviceDescription: serviceDescriptionFor()
+    })
+
+    const appDid = 'did:key:zApp' as IDID
+    const collection = await client
+      .space('s')
+      .createCollection({ id: 'c', generator: appDid })
+    expect(collection.id).toBe('c')
+    expect(urls).toEqual(['https://was.example/space/s/'])
+  })
+
+  it('does not inherit the Space handle encryption default', async () => {
+    const urls: string[] = []
+    const zcapClient = {
+      invocationSigner: { id: 'did:example:alice#key-1' },
+      request(args: RequestArgs) {
+        urls.push(args.url as string)
+        return jsonResponse({ data: { id: 'c' } })
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const encryption = {
+      async codecFor() {
+        throw new Error('the keystore must not be consulted')
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['encryption']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      zcapClient,
+      encryption,
+      serviceDescription: serviceDescriptionFor()
+    })
+
+    // The Space handle defaults to `'plaintext'`, but a collection created
+    // without an `encryption` declaration takes descriptor discovery, so its
+    // first write reads the Collection Metadata object.
+    const collection = await client
+      .space('s', { encryption: 'plaintext' })
+      .createCollection({ id: 'c' })
+    await collection.put('r', { hello: 'world' })
+    expect(urls).toEqual([
+      'https://was.example/space/s/',
+      'https://was.example/space/s/c/meta',
+      'https://was.example/space/s/c/r'
+    ])
   })
 })

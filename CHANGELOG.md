@@ -2,7 +2,70 @@
 
 ## 0.70.0 - TBD
 
+### Added
+
+- `@interop/was-client/edv/core`, a second encrypted-collection entry point
+  carrying the transport-free half of the surface: `EdvCodec`, the doc ciphers,
+  the key-epoch and recipient primitives, the epoch roster helpers, the blinding
+  keys, `resourceDescriptorStore`, the log-governed descriptor store, and the
+  constants. A consumer that decrypts bytes it already holds imports this entry
+  and never evaluates `WasTransport` or anything behind it, since ESM evaluates
+  every module a barrel names. `@interop/was-client/edv` re-exports all of it
+  and adds the modules that talk to a server (`createEdvEncryption`,
+  `wasTransportFactory`, `WasTransport`, `collectionDescriptorStore`, descriptor
+  acquisition, `DescriptorRefreshPolicy`, `createRefreshingEdvDocCipher`).
+  Nothing was removed from `./edv`; online consumers keep importing it
+  unchanged. Install size does not change either -- the package keeps every
+  dependency it had.
+
+- `didKeyResolver` is exported from both encrypted entries. It was already the
+  resolver the codec hands the cipher, reachable only by deep import.
+
+- `IRootZcap` and `IDID` are exported from the root entry, `IRootZcap` also from
+  `@interop/was-client/paths` (the return type of its `rootCapability`), and
+  `CustomWithIndexSchema` from the root entry. All three were already the types
+  of a public value; none had a reachable annotation.
+
 ### Changed
+
+- `space(id, { encryption })` is honored. `HandleOptions` always declared the
+  member, but `WasClient.space()` dropped it, so an intended `'plaintext'`
+  override still encrypted. It is now the default for `space.collection(id)`,
+  which already forwarded it to `collection.resource(id)`. `createCollection` is
+  unaffected: the handle it returns reflects the collection's own `encryption`
+  declaration.
+
+- `WasClient`'s internal client context reads `controllerDid` lazily. A
+  `ZcapClient` holding a delegation signer and no invocation signer previously
+  threw `ValidationError: The wrapped ZcapClient has no invocationSigner id`
+  from `grant()` and `space()` -- naming a signer neither operation uses. The
+  DID is now read only where it is needed (`createSpace`'s controller default
+  and `rootCapability`'s client-side controller).
+
+- `was.grant()` with neither `target` nor `capability` throws `ValidationError`
+  instead of a raw ezcap `TypeError` a consumer catching `WasError` would miss.
+
+- Corrected the `zcaps` comment in `src/internal/paths.ts`. It claimed the
+  revocation route is deeper than any Collection route; both reach the same
+  depth. What makes a Collection named `zcaps` unable to shadow it is that a
+  zcap id is an absolute URI (so the final segment matches no reserved
+  sub-resource segment) and that the routes are method-disjoint. Comment only.
+
+- `readCollectionMetadata` moved from `src/internal/describe.ts` to
+  `src/internal/meta.ts`, beside the rest of the `meta` I/O. `describe.ts` is
+  now pure Collection Metadata object helpers with no transport import, so
+  `src/edv/descriptorStore.ts` and `src/edv/logGovernedDescriptorStore.ts` no
+  longer reach `internal/request.ts` at runtime. Internal only; no export or
+  behavior change.
+
+- `wasTransportFactory` and `createEdvEncryption` moved out of
+  `src/edv/EdvCodec.ts` into `src/edv/transportFactory.ts` and
+  `src/edv/encryption.ts`; `EdvCodec.ts` now imports `WasTransport` as a type
+  only, and `createEdvDocCipher` loads the transport factory with a dynamic
+  `import()` on the branch that has a `spaceId`. A caller building the offline
+  doc cipher, `buildEdvCodec` or `encryptOnlyEdvCodec` no longer evaluates
+  `WasTransport`. `@interop/was-client/edv` exports both functions under the
+  same names; no export or behavior change.
 
 - `src/edv/` imports `@interop/edv-client` through that package's new
   transport-free `./core` entry rather than its root, and the minimum version is

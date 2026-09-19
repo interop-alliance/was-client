@@ -114,5 +114,14 @@ export type {
   RequestInput,
   IZcap,
   IDelegatedZcap,
+  IRootZcap,
+  IDID,
   ISigner
 } from './types.js'
+
+/**
+ * The Collection Metadata `custom` object as the blinded-index code sees it --
+ * the user's own properties plus the `indexSchema` `declareIndex` persists.
+ * The annotation for a caller reading the schema off a `describe()` result.
+ */
+export type { CustomWithIndexSchema } from './internal/indexSchema.js'

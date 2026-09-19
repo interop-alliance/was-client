@@ -31,11 +31,11 @@ import type { ClientContext } from './request.js'
 import { prepareBody, parseResource } from './content.js'
 import {
   asCollectionMetadata,
-  readCollectionMetadata,
   storedEncryption,
   unreadableDescriptionError
 } from './describe.js'
 import type { StoredCollectionMetadata } from './describe.js'
+import { readCollectionMetadata } from './meta.js'
 import { readIndexSchema } from './indexSchema.js'
 import { Memo } from './memo.js'
 import { EncryptionError, NotImplementedError } from '../errors.js'

@@ -934,6 +934,32 @@ scope for now):
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
   do not (they return the stored representation).
 
+**Working offline.** A consumer that only decrypts bytes it already holds --
+opening an archived collection, say -- has no server to reach. Import
+`@interop/was-client/edv/core` instead of `@interop/was-client/edv`: it is the
+same codec, doc ciphers, key epochs, recipient operations, blinding keys,
+`resourceDescriptorStore`, and the log-governed descriptor stores, with every
+transport module left out of the import graph. `collectionDescriptorStore` stays
+on `./edv`, since it reads through a live `Collection` handle. The example below
+leaves `spaceId` unset. A cipher told which Space its collection lives in loads
+the transport factory for the chunked paths.
+
+```ts
+import { createEdvDocCipher } from '@interop/was-client/edv/core'
+
+const cipher = await createEdvDocCipher({
+  keyAgreementKey,
+  keyResolver,
+  collectionId,
+  encryption // the archived collection's encryption descriptor
+})
+const data = await cipher.decrypt({ id, envelope })
+```
+
+Online consumers keep importing `@interop/was-client/edv` and nothing changes
+for them: it re-exports everything `./edv/core` does and adds the transport
+(`WasTransport`, `createEdvEncryption`, descriptor acquisition and refresh).
+
 #### Searching an encrypted collection
 
 An encrypted collection can be searched by attribute without the server ever

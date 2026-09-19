@@ -59,6 +59,7 @@ import type {
   CollectionEncryption,
   CollectionMetadata,
   CollectionsList,
+  EncryptionOverride,
   GrantOptions,
   HandleOptions,
   IDID,
@@ -136,25 +137,31 @@ export class Space {
 
   readonly #context: ClientContext
   readonly #capability?: IZcap
+  readonly #encryption?: EncryptionOverride
 
   /**
    * @param options {object}
    * @param options.context {ClientContext}
    * @param options.spaceId {string}
    * @param [options.capability] {IZcap}   capability attached to every request
+   * @param [options.encryption] {EncryptionOverride}   default encryption
+   *   override for the Collections reached through this handle
    */
   constructor({
     context,
     spaceId,
-    capability
+    capability,
+    encryption
   }: {
     context: ClientContext
     spaceId: string
     capability?: IZcap
+    encryption?: EncryptionOverride
   }) {
     this.#context = context
     this.id = spaceId
     this.#capability = capability
+    this.#encryption = encryption
   }
 
   /**
@@ -444,6 +451,9 @@ export class Space {
    * @param collectionId {string}
    * @param options {object}
    * @param [options.capability] {IZcap}
+   * @param [options.encryption] {EncryptionOverride}   per-collection
+   *   encryption override; falls back to the one this Space handle was built
+   *   with (see {@link EncryptionOverride})
    * @returns {Collection}
    */
   collection(collectionId: string, options: HandleOptions = {}): Collection {
@@ -452,7 +462,7 @@ export class Space {
       spaceId: this.id,
       collectionId,
       capability: options.capability ?? this.#capability,
-      encryption: options.encryption
+      encryption: options.encryption ?? this.#encryption
     })
   }
 
@@ -529,8 +539,16 @@ export class Space {
         encryption: declared
       }) ??
         true)
-    return this.collection(createdId(response), {
-      encryption: canRoute ? declared : undefined
+    // Built directly rather than through `collection()`, which would fall back
+    // to this Space handle's own encryption default: the collection just
+    // declared its own `encryption`, and that declaration (or its absence) is
+    // what the returned handle must reflect.
+    return new Collection({
+      context: this.#context,
+      spaceId: this.id,
+      collectionId: createdId(response),
+      capability: this.#capability,
+      ...(canRoute && { encryption: declared })
     })
   }
 

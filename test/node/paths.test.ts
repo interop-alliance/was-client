@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { ValidationError } from '../../src/index.js'
+import type { IRootZcap } from '../../src/paths.js'
 import {
   spacePath,
   spaceMeta,
@@ -357,7 +358,13 @@ describe('the ./paths subpath barrel', () => {
     expect(rootCapabilityId(target)).toBe(
       `urn:zcap:root:${encodeURIComponent(target)}`
     )
-    expect(rootCapability({ target, controller: 'did:key:zAlice' })).toEqual({
+    // `IRootZcap` -- `rootCapability`'s return type -- is reachable from the
+    // same entry as the function, so a caller can annotate what it holds.
+    const root: IRootZcap = rootCapability({
+      target,
+      controller: 'did:key:zAlice'
+    })
+    expect(root).toEqual({
       '@context': 'https://w3id.org/zcap/v1',
       id: rootCapabilityId(target),
       invocationTarget: target,

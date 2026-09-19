@@ -57,7 +57,6 @@ import {
   carriedForward,
   collectionWritableFields,
   isGovernedDescriptor,
-  readCollectionMetadata,
   storedEncryption,
   unreadableDescriptionError
 } from './internal/describe.js'
@@ -68,7 +67,11 @@ import {
   writeHeaders
 } from './internal/conditional.js'
 import { compareAndSwap, composeAndSwap } from './internal/cas.js'
-import { readMeta, patchCustom } from './internal/meta.js'
+import {
+  readCollectionMetadata,
+  readMeta,
+  patchCustom
+} from './internal/meta.js'
 import { codecRequestContext, insertResource } from './internal/write.js'
 import {
   readPolicy,

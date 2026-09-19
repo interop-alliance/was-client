@@ -68,12 +68,8 @@ import {
 import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
 import { DEFAULT_CONTENT_TYPE } from './constants.js'
-import {
-  buildEdvCodec,
-  encryptOnlyEdvCodec,
-  wasTransportFactory
-} from './EdvCodec.js'
-import type { EdvCodec } from './EdvCodec.js'
+import { buildEdvCodec, encryptOnlyEdvCodec } from './EdvCodec.js'
+import type { CodecTransportFactory, EdvCodec } from './EdvCodec.js'
 import type { RecipientPublicKey } from './recipients.js'
 
 // `isEncryptedEnvelope` and the `DocCipher` interface live in the crypto-free
@@ -219,6 +215,21 @@ export async function createEdvDocCipher({
   encryption: CollectionEncryption
   meta?: { custom?: unknown }
 }): Promise<EdvDocCipher> {
+  // Only a cipher told which Space its collection lives in has a server to
+  // address, and only the chunked-stream paths address one. Loading the
+  // factory here rather than at module scope keeps `WasTransport` out of an
+  // offline caller's import graph: a `createEdvDocCipher` call with no
+  // `spaceId` evaluates no transport module at all.
+  let transportFactory: CodecTransportFactory | undefined
+  if (spaceId !== undefined) {
+    const { wasTransportFactory } = await import('./transportFactory.js')
+    transportFactory = wasTransportFactory({
+      spaceId,
+      collectionId,
+      contentType: DEFAULT_CONTENT_TYPE
+    })
+  }
+
   // One codec owns both axes. `buildEdvCodec` resolves this reader's per-epoch
   // keys from the descriptor: writes go under the descriptor's
   // `currentEpoch`, and reads pick the epoch key matching the envelope's
@@ -227,13 +238,7 @@ export async function createEdvDocCipher({
   try {
     codec = await buildEdvCodec({
       collectionId,
-      ...(spaceId !== undefined && {
-        transportFactory: wasTransportFactory({
-          spaceId,
-          collectionId,
-          contentType: DEFAULT_CONTENT_TYPE
-        })
-      }),
+      ...(transportFactory !== undefined && { transportFactory }),
       encryption,
       keys: { keyAgreementKey, keyResolver },
       idDerivation

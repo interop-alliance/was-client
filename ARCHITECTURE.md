@@ -35,13 +35,24 @@ src/identity/*.ts   Data-identity subpath (sibling, opt-in)
   @interop/capability-agent + @interop/x25519-key-agreement-key.
 
 src/edv/*.ts        Encryption subpath (sibling, opt-in)
-  EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochRoster,
-  recipients, descriptorStore, logGovernedDescriptorStore
+  EdvCodec, encryption/transportFactory, WasTransport, docCipher,
+  epochCrypto/epochKeys/epochRoster, recipients, descriptorStore,
+  logGovernedDescriptorStore
   Implements the interfaces in src/codec.ts; imports internal/* and the
   crypto deps (@interop/edv-client/core, @interop/minimal-cipher,
   @scure/base).
   logGovernedDescriptorStore is the one edv module that imports src/log/
   (the resourceLogStore adapter) and @interop/vh-resource-log (the verifier).
+  new WasTransport(...) is called only from transportFactory. encryption
+  builds that factory, and docCipher loads it through import() when a caller
+  names a Space. index.ts also re-exports the class, for callers driving an
+  EdvClient directly, so importing ./edv evaluates the transport module and
+  importing ./edv/core does not.
+  Two barrels over those modules: core.ts is the ./edv/core entry and names
+  only the offline exports (resourceDescriptorStore, not
+  collectionDescriptorStore, which reads through a live handle); index.ts is
+  ./edv, which re-exports core.ts and adds encryption, transportFactory,
+  WasTransport, collectionDescriptorStore, acquire and refresh on top.
 
 src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
   port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState,
@@ -63,9 +74,15 @@ src/log/*.ts        Resource-log subpath (sibling, opt-in)
 
 The load-bearing rule: **core does not import `src/edv/`, and neither do
 `src/sync/` or `src/log/`** (the one exception is `src/edv/constants.ts`, which
-itself reaches only core). The package ships six entry points in the
+itself reaches only core). The package ships seven entry points in the
 package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
-client. `./edv` and `./identity` are the two that leave core: `./edv` pulls the
+client. `./edv/core`, `./edv`, and `./identity` are the three that leave core.
+`./edv/core` is the transport-free half of the encrypted surface: the codec, the
+doc ciphers, the key epochs, the recipient operations, `resourceDescriptorStore`
+and the log-governed descriptor stores, and the blinding keys, none of which
+need a server. `./edv` is that barrel plus the modules that do talk to one
+(`WasTransport`, `createEdvEncryption`, `collectionDescriptorStore`, descriptor
+acquisition and refresh). Between them, the two entries pull the
 encrypted-collection graph (`@interop/edv-client/core`,
 `@interop/minimal-cipher`, `@interop/x25519-key-agreement-key`), and
 `./identity` pulls `@interop/capability-agent` and
@@ -81,13 +98,24 @@ points one way: `src/edv/docCipher.ts` implements the `DocCipher` interface that
 imports of each core entry and fails on any reach past this rule; `./identity`,
 like `./edv`, is not walked, since neither is a core entry.
 
+A second rule, one level further in, walks `./edv/core` itself and asserts it
+reaches no transport module and none of the HTTP packages
+(`@interop/http-client`, `@interop/http-signature-zcap-invoke`,
+`@interop/ezcap`). That walk counts runtime edges only: a type-only import is
+erased at build time, and `edv/EdvCodec.ts` legitimately names `WasTransport` as
+a type. The core-entry rule above counts type imports on purpose, since a type
+reach into `edv/` is the first step of a runtime one.
+
 `./edv` reaches `@interop/edv-client` through that package's transport-free
 `./core` entry (`EdvClientCore`, `EdvDocumentCipher`, `assertDocId` and the
 abstract `Transport`), not through its root. The root also carries `EdvClient`
 and `HttpsTransport`, which load `@interop/http-client` and
 `@interop/http-signature-zcap-invoke` at module scope. This package brings its
 own transport, `WasTransport`, and uses neither class, so importing the core
-entry keeps both HTTP packages out of the graph.
+entry keeps both HTTP packages out of the graph. The two `core` entries are the
+same idea at two levels: `@interop/edv-client/core` keeps a consumer of that
+package off its HTTP transport, and `@interop/was-client/edv/core` keeps a
+consumer of this one off its own.
 
 Every `ZcapClient` this package builds -- for invocations and delegations alike
 -- comes from one construction site, `zcapClientForSigner` in
@@ -127,6 +155,14 @@ point `src/edv/` is one of several providers and a package per provider is the
 natural shape). The seam is already clean, so the split would be mechanical
 then; doing it earlier promotes internals to public API for no consumer.
 
+The `./edv/core` split is a further use of this decision, one level in. An
+offline consumer -- `@interop/wallet-backup`, decrypting archived bytes with no
+server in reach -- wanted the transport modules out of its import graph without
+promoting `src/edv/`'s internals to public API, and a subpath entry gave it
+exactly that. That consumer does not meet either revisit criterion above: it
+still wants the crypto packages installed, and only wants them out of its
+runtime graph.
+
 ## The handle model
 
 `WasClient` (spaces repository) creates `Space` handles, which create
@@ -135,11 +171,19 @@ then; doing it earlier promotes internals to public API for no consumer.
 
 All handles share one `ClientContext` by reference (`src/internal/request.ts`):
 `{ serverUrl, zcapClient, controllerDid, encryption?, service }`. `service` is
-the client's memoized service discovery (see Service discovery). Per-handle
-state on top of that:
+the client's memoized service discovery (see Service discovery). `controllerDid`
+is a lazy getter over the wrapped client's invocation signer, so a client that
+holds only a delegation signer can still build handles and `grant()`; it throws
+only where it is read (`createSpace`'s controller default and `rootCapability`'s
+client-side controller). Per-handle state on top of that:
 
 - A bound `capability` (delegated zcap) flows from parent to child as the
-  default (`options.capability ?? this.#capability`).
+  default (`options.capability ?? this.#capability`). A per-handle `encryption`
+  override flows the same way: `space(id, { encryption })` is the default for
+  `space.collection(id)`, which is in turn the default for
+  `collection.resource(id)`. `createCollection` is the exception -- the handle
+  it returns reflects the collection's own `encryption` declaration, not the
+  Space handle's default.
 - `Collection` owns a memoized `CodecHolder`; `collection.resource(id)` hands
   children a resolver thunk so they share the parent's memoized codec (and its
   `reset()`). A standalone `Resource` resolves its own. Codecs stay per-handle:
@@ -255,8 +299,10 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
   forwards as the PUT body's top-level stamp (a plaintext codec surfaces none,
   and the server then clears the stamp).
 - `src/internal/codec.ts` -- the identity codec and the resolver policy.
-- `src/edv/EdvCodec.ts` -- the encrypting implementation and the
-  `createEdvEncryption` factory.
+- `src/edv/EdvCodec.ts` -- the encrypting implementation and the builds that
+  produce one (`buildEdvCodec`, `encryptOnlyEdvCodec`).
+- `src/edv/encryption.ts` -- the `createEdvEncryption` factory, the online half
+  of the seam.
 
 `encode` is a single-request transform in the ordinary case, with two
 qualifications.
@@ -332,19 +378,23 @@ Two integration levels share `src/edv/`:
   the codec (`random`, or `content`-derived for immutable content-addressed
   documents). A binary `add()` over `maxBlobBytes` is routed to the chunked
   path: the codec returns a plan that drives
-  `EdvClientCore.insert({ doc, stream, transport })` over a `WasTransport` of
-  its own, built from the write context. Routing is decided on the payload's
-  size alone and the payload is passed on as a stream, so an over-threshold blob
-  is never buffered whole by the codec. Reads reverse it through `getStream`,
-  trusting only AEAD-authenticated inputs sealed in the JWE payload: the
-  `meta.encoding` discriminator that says the document is chunked, the chunk
-  count, and the bound resource id the chunks are addressed by (never the
-  envelope's cleartext `id`). `maxBlobBytes` is therefore a routing threshold,
-  not a cap. The write is two-phase, so a failure partway would orphan an
-  undecryptable document stub: the plan best-effort deletes it and rethrows with
-  the original failure as `cause`. Content-addressed collections are the
-  exception: a chunked write stores the document twice, so no single ciphertext
-  derives its id, and the write is refused.
+  `EdvClientCore.insert({ doc, stream, transport })` over a `WasTransport`. The
+  codec does not construct that transport: a `CodecTransportFactory` is injected
+  by whichever build knows where the Collection lives, and a codec built without
+  one (the local-replica doc cipher) refuses the chunked path. The factory over
+  WAS is `wasTransportFactory` in `src/edv/transportFactory.ts`, which is the
+  only module that calls `new WasTransport(...)`. Routing is decided on the
+  payload's size alone and the payload is passed on as a stream, so an
+  over-threshold blob is never buffered whole by the codec. Reads reverse it
+  through `getStream`, trusting only AEAD-authenticated inputs sealed in the JWE
+  payload: the `meta.encoding` discriminator that says the document is chunked,
+  the chunk count, and the bound resource id the chunks are addressed by (never
+  the envelope's cleartext `id`). `maxBlobBytes` is therefore a routing
+  threshold, not a cap. The write is two-phase, so a failure partway would
+  orphan an undecryptable document stub: the plan best-effort deletes it and
+  rethrows with the original failure as `cause`. Content-addressed collections
+  are the exception: a chunked write stores the document twice, so no single
+  ciphertext derives its id, and the write is refused.
 - **`WasTransport`** (EDV-native): an `@interop/edv-client` `Transport` that
   maps EDV document operations onto WAS resource CRUD ("vault per collection",
   EDV doc id is the WAS resource id), including blinded-index `find` and chunked
@@ -738,7 +788,20 @@ create.
    crypto-free: its dependency, `@interop/vh-resource-log`, pulls
    `@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof
    kernel only, with no DID resolution.
-10. **A server's `next` link is untrusted.** Following it sends the caller's
+10. **The transport-free edv entry stays off the transport graph.** Importing
+    `./edv/core` evaluates no transport module and none of the HTTP packages.
+    That holds for static edges. `createEdvDocCipher` loads
+    `transportFactory.ts` through `import()` when the caller passes a `spaceId`,
+    so a caller that names a Space does reach the transport, and a bundler that
+    follows dynamic imports (Metro among them) still bundles it. A caller that
+    only decrypts bytes it already holds passes no `spaceId` and evaluates none
+    of it. `test/node/import-graph.test.ts` enforces the static closure, and
+    pins that gated `import()` as the only dynamic edge out of it. Both are
+    walked over runtime edges only, since a type-only import is erased at build
+    time. A new module under `src/edv/` that needs a server belongs behind
+    `./edv`, in the modules `edv/index.ts` adds on top, not in the `core.ts`
+    barrel.
+11. **A server's `next` link is untrusted.** Following it sends the caller's
     signed invocation, and with no bound capability ezcap synthesizes a root
     zcap for whatever URL it is given. `walkPages` follows a `next` only within
     the first page's origin and base path, never with a username or password in
@@ -817,9 +880,18 @@ it, and otherwise cover the client-side concepts this file names.
 - **Blinded index** -- the `indexed` entries written beside a JWE, and the
   blinded terms `Collection.find()` posts to the collection `/query` endpoint
   under the `blinded-index` profile. See The codec seam.
+- **edv core entry** -- the `@interop/was-client/edv/core` subpath
+  (`src/edv/core.ts`), the transport-free half of the encrypted surface: the
+  codec, the doc ciphers, the key epochs, the recipient operations,
+  `resourceDescriptorStore` and the log-governed descriptor stores, and the
+  blinding keys, with no server in the graph. `@interop/was-client/edv`
+  re-exports it and adds the modules that talk to a server,
+  `collectionDescriptorStore` among them. Avoid: core entry (that term names the
+  four subpaths that never reach `src/edv/`; this is a different,
+  encrypted-surface entry point). See The EDV layer and Layering.
 - **`EdvCodec`** -- the encrypting `ResourceCodec` implementation
-  (`src/edv/EdvCodec.ts`), reached through the `createEdvEncryption` factory.
-  See The EDV layer.
+  (`src/edv/EdvCodec.ts`), reached through the `createEdvEncryption` factory
+  (`src/edv/encryption.ts`). See The EDV layer.
 - **`WasTransport`** -- the EDV-native `@interop/edv-client` `Transport` that
   maps EDV document operations onto WAS resource CRUD, one vault per collection
   (`src/edv/`). See The EDV layer.

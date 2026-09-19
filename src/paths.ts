@@ -50,3 +50,4 @@ export {
 export type { ParsedSpacePath } from './internal/paths.js'
 
 export { rootCapabilityId, rootCapability } from './internal/revoke.js'
+export type { IRootZcap } from './types.js'

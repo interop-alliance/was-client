@@ -207,15 +207,22 @@ export class WasClient {
   #cachedContext?: ClientContext
 
   get #context(): ClientContext {
-    // `serverUrl`, `zcapClient` (and thus `controllerDid`), and `encryption`
-    // are all constructor-fixed, so the context is derived once and reused
-    // rather than re-deriving `controllerDid` and reallocating the object on
-    // every handle access.
+    // `serverUrl`, `zcapClient` and `encryption` are all constructor-fixed, so
+    // the context is derived once and reused rather than reallocating the
+    // object on every handle access.
     if (this.#cachedContext === undefined) {
+      const readControllerDid = () => this.controllerDid
       this.#cachedContext = {
         serverUrl: this.serverUrl,
         zcapClient: this.zcapClient,
-        controllerDid: this.controllerDid,
+        // Read lazily, so building a handle costs nothing and a
+        // delegation-only client (a `ZcapClient` with a delegation signer and
+        // no invocation signer) can still `grant()` and navigate. Only
+        // `createSpace`'s controller default and `rootCapability`'s
+        // client-side controller consult it, and both of those do invoke.
+        get controllerDid(): string {
+          return readControllerDid()
+        },
         encryption: this.encryption,
         service: () => this.service()
       }
@@ -229,13 +236,18 @@ export class WasClient {
    * @param spaceId {string}
    * @param options {object}
    * @param [options.capability] {IZcap}
+   * @param [options.encryption] {EncryptionOverride}   the default encryption
+   *   override for the Collections reached through this Space handle (see
+   *   `EncryptionOverride`); `space.collection(id, { encryption })` overrides
+   *   it per collection
    * @returns {Space}
    */
   space(spaceId: string, options: HandleOptions = {}): Space {
     return new Space({
       context: this.#context,
       spaceId,
-      capability: options.capability
+      capability: options.capability,
+      encryption: options.encryption
     })
   }
 

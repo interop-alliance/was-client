@@ -18,6 +18,7 @@
 import type { ClientContext } from './request.js'
 import { parseSpaceTarget, spacePath, toUrl } from './paths.js'
 import { rootCapabilityId } from './revoke.js'
+import { ValidationError } from '../errors.js'
 import type { GrantOptions, IDelegatedZcap, IZcap } from '../types.js'
 
 /**
@@ -59,11 +60,23 @@ function spaceRootCapabilityId({
  * @param context {ClientContext}
  * @param options {GrantOptions}
  * @returns {Promise<IDelegatedZcap>}
+ * @throws {ValidationError}   when neither `target` nor `capability` is given,
+ *   so the delegation names nothing to grant
  */
 export async function delegateGrant(
   context: ClientContext,
   { to, actions, expires, target, capability }: GrantOptions
 ): Promise<IDelegatedZcap> {
+  // The scoped sugar always prefills `target`, so this only catches a direct
+  // `was.grant()`. Without either member ezcap has no invocation target and no
+  // parent to take one from, and rejects the call with a bare `TypeError` a
+  // consumer catching `WasError` would miss.
+  if (target === undefined && capability === undefined) {
+    throw new ValidationError(
+      'A grant needs a `target` (the invocationTarget URL to grant) or a ' +
+        '`capability` (the parent capability to attenuate); neither was given.'
+    )
+  }
   const parent =
     capability ??
     (target === undefined

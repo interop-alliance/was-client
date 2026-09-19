@@ -2802,3 +2802,342 @@ asserts the root entry does reach them, so an emptied barrel cannot pass.
 was-client's own `test/node/import-graph.test.ts` needed no change, as the item
 predicted. Its core rule matches `specifier === pkg` or a `pkg/` prefix, and its
 guard case matches on prefix, so `@interop/edv-client/core` is covered by both.
+
+### WCL-112: `internal/describe.ts` imports the request wrapper for one function
+
+- status: done
+- done: 2026-09-18
+- priority: low
+- labels: encryption, import-graph, internal
+- acceptance:
+  - [x] `src/internal/describe.ts` has no import from `./request.js`, runtime or
+        type
+  - [x] `readCollectionMetadata` lives in a module that is allowed to import the
+        request wrapper, and its callers import it from there
+  - [x] `src/edv/descriptorStore.ts` and `src/edv/logGovernedDescriptorStore.ts`
+        no longer reach `internal/request.ts` through their static imports
+  - [x] No behavior change: the existing node and browser suites pass unedited
+        apart from import paths
+
+Context: `internal/describe.ts` holds the Collection Metadata object helpers.
+All of them are pure shape checks and projections except one,
+`readCollectionMetadata`, which performs the read and so imports
+`readDataWithEtag` from `internal/request.ts`. Two modules on the encrypted side
+import a pure helper from `describe.ts` and get the request wrapper with it.
+`edv/descriptorStore.ts` wants `unreadableDescriptionError`.
+`edv/logGovernedDescriptorStore.ts` wants that and `isGovernedDescriptor`. The
+second module is the home of `EPOCH_CONFIGURATION_STATE_TYPE` and
+`toEpochConfigurationState`, which an offline reader of an archived resource log
+needs. The request wrapper loads no external package at runtime (its
+`@interop/ezcap` and `@interop/http-client` imports are type-only), so the cost
+here is small. It still puts the transport layer's entry module in the graph of
+code that only parses a descriptor, and it would fail the test WCL-114 adds.
+
+Mechanics. `src/internal/describe.ts:22` is the import. Its one use is
+`readCollectionMetadata` at lines 244-249. The pure helpers two `edv/` modules
+take are `isGovernedDescriptor` (line 96) and `unreadableDescriptionError` (line
+278). The importers are `src/edv/descriptorStore.ts:34` (used at line 123,
+inside `collectionDescriptorStore` only) and
+`src/edv/logGovernedDescriptorStore.ts:52-55` (used at line 556). The other
+importers of `describe.ts` are `Collection.ts:63`, `Space.ts:33` and
+`sync/provisioning.ts:37`. Moving the one function is smaller than splitting
+`descriptorStore.ts` in two, which the scoping pass proposed. It also leaves
+`recipients.ts` and its `{ collection }` shorthand (`descriptorStoreFor`,
+`recipients.ts:1153-1170`) untouched, since `collectionDescriptorStore` then
+imports nothing but pure helpers and takes its `Collection` as a type.
+
+The scoping pass reported `logGovernedDescriptorStore.ts` as already free of
+transport imports. It is not, for the reason above.
+
+Resolution: `readCollectionMetadata` moved to `src/internal/meta.ts`, which
+already owns the `meta` I/O both handles share and already imports the request
+wrapper. `Collection.ts` and `internal/codec.ts` -- the two callers, not
+`Space.ts`, which never imported it -- take it from there; `Space.ts` keeps its
+`collectionWritableFields` and `unreadableDescriptionError` import unchanged.
+`describe.ts` dropped its `./request.js`, `./paths.js` and `IZcap` imports with
+the function, and its module header now states that nothing in it performs a
+request. A runtime-edge walk of both `edv/` modules confirms neither reaches
+`internal/request.ts`; their `Collection` and `Resource` imports are type-only.
+Node suite green (1037 tests); the one browser test fails identically on clean
+`main`, so it is unrelated.
+
+### WCL-113: `EdvCodec.ts` and `docCipher.ts` load `WasTransport` for callers with no server
+
+- status: done
+- done: 2026-09-18
+- priority: low
+- labels: encryption, import-graph, codec-seam
+- touches:
+  - was-client (this repo): SHIPPED. ARCHITECTURE.md's `EdvCodec` bullet in "The
+    EDV layer" now names the injected `CodecTransportFactory` and
+    `transportFactory.ts` as the only module that constructs a `WasTransport`;
+    the `src/edv/*.ts` block in the layering section lists the two new modules
+    and states the reach rule; the codec-seam module list and the `EdvCodec`
+    Glossary entry point at `encryption.ts` for `createEdvEncryption`
+- acceptance:
+  - [x] `src/edv/EdvCodec.ts` imports `WasTransport` as a type only
+  - [x] `wasTransportFactory` and `createEdvEncryption` live outside
+        `EdvCodec.ts`, in a module (or modules) on the online side, and
+        `edv/index.ts` still exports both under the same names
+  - [x] `createEdvDocCipher` called without `spaceId` evaluates no module that
+        imports `WasTransport`. Called with `spaceId`, it behaves as today,
+        including the chunked-stream paths
+  - [x] `createEdvEncryptOnlyDocCipher`, `buildEdvCodec` and
+        `encryptOnlyEdvCodec` are reachable without `WasTransport` in their
+        static graph
+  - [x] No behavior change: the existing node and browser suites pass unedited
+        apart from import paths
+
+Context: `EdvCodec` does the encrypting and decrypting for a collection. It can
+also write and read chunked streams, and for that it drives a `WasTransport`
+against the server. The class does not construct that transport. A
+`CodecTransportFactory` is injected by whichever build knows where the
+Collection lives, and a codec built without one refuses the chunked path. The
+design already separates the codec from the server. The file layout does not:
+the one function that constructs a `WasTransport`, and the `EncryptionProvider`
+that uses it, sit in the same file as the class. So every importer of the codec,
+including the offline doc cipher, evaluates `WasTransport.ts`.
+
+Mechanics. `src/edv/EdvCodec.ts:104` imports `WasTransport` at runtime. The only
+runtime use is `new WasTransport(...)` inside `wasTransportFactory` (lines
+181-198). Every other mention in the file is a type: the `CodecTransportFactory`
+return type (lines 166-169), the private factory field (line 359), and the
+`WasTransport` return and parameter types at lines 742 and 859. The one caller
+of the factory inside the file is `createEdvEncryption` (line 1884, the call at
+1927), which is the online `EncryptionProvider` and belongs with the transport.
+Moving those two functions out turns the import at line 104 into `import type`.
+`buildEdvCodec` (line 1969) and `encryptOnlyEdvCodec` (line 2151) stay.
+
+`src/edv/docCipher.ts:71-75` imports `wasTransportFactory` statically and calls
+it only when the caller passes `spaceId` (lines 228-236). An offline caller
+passes none. `createEdvDocCipher` is already async, so loading the factory with
+a dynamic `import()` inside that branch keeps the signature and drops the static
+edge. The alternative is a caller-supplied `transportFactory` option. That is a
+public API addition and needs the maintainer's decision, so the dynamic import
+is the default here.
+
+After WCL-111, `WasTransport.ts` (549 lines) imports only the transport-free
+edv-client entry and light internal modules (`errors`, `internal/content`,
+`internal/conditional`, `internal/paths`). What remains is one module evaluated
+for nothing. This item is what lets WCL-114 state its rule without an allowance.
+
+Landed as described. `wasTransportFactory` moved to
+`src/edv/transportFactory.ts` and `createEdvEncryption` to
+`src/edv/encryption.ts`; `EdvCodec.ts` keeps the `CodecTransportFactory` type,
+the class and both codec builds, and imports `WasTransport` with `import type`.
+`DEFAULT_MAX_BLOB_BYTES`, `EDV_SCHEME`, `guardEncryptionDescriptor` and
+`descriptorDefect` are exported from `EdvCodec.ts` so the provider can reach
+them; none is re-exported from `edv/index.ts`, so the public surface is
+unchanged. `docCipher.ts` loads the factory with
+`await import('./transportFactory.js')` inside the `spaceId` branch. A
+runtime-edge walk confirms `edv/docCipher.ts` and `edv/EdvCodec.ts` reach no
+transport module, while `edv/encryption.ts` and `edv/transportFactory.ts` do.
+Node suite green (1037 tests), browser suite green, lint and typecheck clean.
+
+### WCL-114: Publish a transport-free entry for the offline codec, and pin its import graph
+
+- status: done (2026-09-18)
+- priority: low
+- labels: encryption, packaging, import-graph, cross-repo
+- blocked-by: WCL-111, WCL-112, WCL-113
+- touches:
+  - was-client (this repo): SHIPPED. package.json `exports` carries
+    `./edv/core`; ARCHITECTURE.md's layering section explains the two encrypted
+    entries, "Subpaths, not packages" records the new entry as a further use of
+    that decision, invariant 10 states the rule (the old invariant 10 is now
+    11), and the Glossary gained the entry's term; README.md's encrypted
+    collections section introduces `@interop/was-client/edv/core` beside `./edv`
+  - wallet-backup: FOLLOW-UP, its WBU-3. A survey of that repo confirms the
+    entry covers it: every name its four `/edv` importers take
+    (`createEdvDocCipher` in `src/migrate/generations.ts`,
+    `EPOCH_CONFIGURATION_STATE_TYPE` in `src/migrate/descriptorLog.ts`,
+    `createEdvEncryptOnlyDocCipher`, `mintEpoch`, `ownerRecipient`,
+    `toEpochConfigurationState`, `wrapEpochSecret`, `EDV_SCHEME_VERSION` and the
+    `RecipientPublicKey` type in its fixtures and tests) is on the offline
+    entry, and it uses no online-only name at all. Its other was-client
+    dependency is the root `CollectionEncryption` type
+  - wallet-core: FILED as WC-247. Its offline-only importers
+    (`keyring/record.ts`, `keys/userKey.ts`, `keys/userKeyCascade.ts`,
+    `keys/userKeyRoster.ts`, `keys/rosterLogStore.ts`, `keys/spaceEpochs.ts`,
+    `webvh/didWebvh.ts`, `clientAnnex/credentialAnchoredGenesis.ts`, and the
+    files taking only the `EncryptionDescriptorStore` type) can repoint whole.
+    One production file, `src/descriptors/logSource.ts`, also takes
+    `EncryptionDescriptorSource`, and that is a type import, so it is erased at
+    build time and costs nothing at runtime
+  - was-react: unaffected (imports keep resolving from `./edv`). Confirmed: its
+    storage layer needs `createEdvEncryption`, `createRefreshingEdvDocCipher`,
+    `DescriptorRefreshPolicy` and the two descriptor seam types in `src/`
+  - freewallet: unaffected (imports keep resolving from `./edv`). Confirmed:
+    `stores/storageManager.ts`, `stores/wasRemoteStore.ts`,
+    `stores/refreshingCollectionCipher.ts`, `session/persistence.ts` and
+    `session/collectionLogStore.ts` take online-only names
+  - dcw: unaffected (imports keep resolving from `./edv`). Confirmed: its whole
+    sync stack (`sync/engineStart.ts`, `sync/syncManager.ts`,
+    `sync/docCipher.ts`) takes `wasDescriptorSource`,
+    `createRefreshingEdvDocCipher` and the descriptor seam types
+  - encrypted-collections-spec: unaffected. The "Parties to this contract" row
+    for was-client cites modules under `src/edv/` -- the codec, the chunked
+    paths, `epochCrypto` / `epochKeys`, the recipient operations,
+    `x25519RecipientFromDidKey` and the descriptor-store seam -- not the barrel
+    files, and the directory is unchanged. Every module it names except
+    `WasTransport` is in the offline half, and `WasTransport` is already called
+    out by name for the chunked-stream path. Row left as written
+- acceptance:
+  - [x] package.json `exports` gains one entry, with the four keys the other
+        entries carry. The name is the maintainer's call and is settled before
+        any code lands
+  - [x] The entry re-exports the offline set and nothing else: the doc cipher
+        factories, the `EdvCodec` class, the epoch and recipient primitives
+        (`mintEpoch`, `wrapEpochSecret`, `unwrapEpochSecret`, `epochKeyIdFor`,
+        `ownerRecipient`, `x25519RecipientFromDidKey`, `didKeyResolver`),
+        `resolveEpochKeys`, the epoch roster helpers, the blinding key
+        functions, the recipient operations that take an explicit
+        `EncryptionDescriptorStore` (`initRecipients`, `addRecipient`,
+        `removeRecipient`, `replaceRecipient`, `ensureFirstEpoch`),
+        `resourceDescriptorStore`, the log-governed descriptor store with
+        `EPOCH_CONFIGURATION_STATE_TYPE`, `toEpochConfigurationState` and
+        `readGovernedEpochConfiguration`, the constants, and the types those
+        need. The exact list is checked against what wallet-backup and
+        wallet-core import
+  - [x] `@interop/was-client/edv` re-exports the new entry and adds the online
+        set on top (`WasTransport`, `createEdvEncryption`,
+        `wasTransportFactory`, `collectionDescriptorStore`, `acquire.ts`,
+        `DescriptorRefreshPolicy`, `createRefreshingEdvDocCipher`). Its export
+        list is unchanged
+  - [x] `test/node/import-graph.test.ts` gains a block for the new entry. It
+        walks runtime edges only (the existing walker counts `import type` on
+        purpose, which is right for the core rule and wrong for this one) and
+        asserts the entry reaches none of `edv/WasTransport.ts`,
+        `internal/request.ts`, `WasClient.ts`, `Space.ts`, `Collection.ts`,
+        `Resource.ts`, and none of `@interop/http-client`,
+        `@interop/http-signature-zcap-invoke`, `@interop/ezcap`
+  - [x] The test has a positive case too: the entry does reach
+        `@interop/minimal-cipher` and the transport-free edv-client entry, so an
+        emptied barrel cannot pass
+  - [x] ARCHITECTURE.md records the rule as a numbered invariant and explains
+        the two entries in the layering section
+  - [x] A CHANGELOG.md entry, under a new version, dated TBD
+  - [x] `touches:` entries annotated
+
+Context: the file-level cuts in WCL-111 to WCL-113 do nothing for a consumer on
+their own. `@interop/was-client/edv` resolves to `src/edv/index.ts`, a barrel
+that re-exports the online and offline halves side by side (`WasTransport`,
+`createEdvEncryption` from `encryption.js`, `wasTransportFactory` from
+`transportFactory.js`, the refresh policy and the refreshing cipher). ESM
+evaluates every module a barrel names, whichever export the importer wants. An
+offline consumer needs an entry whose barrel names only offline modules. That is
+the same mechanism the package already uses to keep the core entries off the
+encrypted graph, applied one level further in.
+
+The rule also needs a test, because nothing else will hold it. Invariant 9 and
+`test/node/import-graph.test.ts` exist because a stray import is invisible in
+review. The current test walks the four core entries (`index.ts`, `paths.ts`,
+`log/index.ts`, `sync/index.ts`) and deliberately does not walk `./edv` or
+`./identity`. Its one assertion about `edv/index.ts` is that it does reach the
+encrypted-collection packages. The new block is the first to constrain anything
+under `src/edv/`.
+
+Two details to settle while doing it. `recipients.ts` imports
+`collectionDescriptorStore` for the `{ collection }` shorthand. After WCL-112
+that import reaches only pure helpers and a type, so the recipient operations
+can sit in the offline entry as they are. Confirm it with the new test before
+deciding anything about the shorthand. And `edv/acquire.ts` has no transport
+import at runtime (its `WasClient` import is type-only), but its purpose is an
+online descriptor read, so it stays in the online set with the refresh policy.
+
+New export names are public API shared across `@interop/*`, so the entry's name
+and its Glossary term are the maintainer's decision. Nothing here is a wire
+artifact: no field, label, salt or encoding changes.
+
+Landed as described. `src/edv/core.ts` is the new barrel and `./edv/core` the
+export-map entry. The CHANGELOG entry went under 0.70.0, the existing TBD-dated
+version at the top, beside WCL-111 to WCL-113; a new version on top of an
+unreleased one is not how this repo's changelog works. `src/edv/index.ts` is now
+`export * from './core.js'` plus the online set, so its export list grew by
+exactly one name, `didKeyResolver`, which was already the resolver the codec
+hands the cipher and was reachable only by deep import. Nothing was removed.
+
+Both details in the Context paragraph settled as predicted. The new test
+confirms `recipients.ts` keeps its `collectionDescriptorStore` import: after
+WCL-112 that reaches `descriptorStore.ts`, `internal/describe.ts` and
+`errors.ts` and stops, so the recipient operations sit in the offline entry
+unchanged and the `{ collection }` shorthand needs no decision. `edv/acquire.ts`
+stays online with the refresh policy.
+
+`test/node/import-graph.test.ts` gained `runtimeReachableFrom`, a second walker
+that skips `import type` and `export type`, and a
+`describe('the transport-free edv entry')` block over it. The original walker
+still counts type imports for the core-entry rule. A runtime walk from
+`edv/core.ts` reaches 25 modules under `src/` and eight packages, and none of
+the six transport modules or three HTTP packages. Removing an export from the
+barrel is caught by the positive cases, and adding `WasTransport` back to it
+fails the rule, both verified by mutation. Node suite green (1041 tests, up from
+1037), browser suite green, lint and typecheck clean.
+
+### WCL-94: `WasClient` API hygiene -- dropped options, eager signer, unreachable types
+
+- status: done
+- done: 2026-09-18
+- priority: low
+- labels: api, types, ergonomics
+- acceptance:
+  - [x] Passing `encryption` to `space()` is either honored as the default for
+        `Space.collection()` or a compile error
+  - [x] A `ZcapClient` with a delegation signer and no invocation signer can
+        `grant()`
+  - [x] `IRootZcap`, `IDID` and `CustomWithIndexSchema` are reachable from an
+        entry point
+  - [x] `grant()` without `target` or `capability` throws `ValidationError`
+        rather than a raw ezcap `TypeError`
+  - [x] The `zcaps` comment in `internal/paths.ts` states the real reasons the
+        segment cannot be shadowed
+
+Five small defects on the root entry point. `space()` is typed `HandleOptions`,
+which declares `encryption`, but constructs a `Space` from three fields and
+drops it; `Space.collection()` and `Collection.resource()` both forward the same
+option, so this one hop is the only place it is lost, and it fails closed (an
+intended plaintext override still encrypts). `#context` eagerly evaluates
+`controllerDid`, so a delegation-only client throws
+`ValidationError: The wrapped ZcapClient has no invocationSigner id` from both
+`grant()` and `space()` -- naming a signer neither operation uses.
+`controllerDid` is needed only by `createSpace`'s controller default and
+`rootCapability`'s client-side controller, so a lazy getter covers it; confirm
+no external consumer constructs a `ClientContext` first, since it is threaded
+into `src/edv` and the sync port. `IRootZcap` and `IDID` are exported from
+`types.ts` but not from `index.ts`, `paths.ts` exports the `rootCapability`
+value without the type of its own return, and `CustomWithIndexSchema` lives
+under `internal/` with no `./internal` subpath in the exports map, so an
+`indexSchema` reader has no reachable annotation. `GrantOptions` type-permits a
+call with neither `target` nor `capability`, which ezcap rejects with a
+`TypeError` a consumer catching `WasError` misses entirely. Last, `zcaps` is
+absent from `RESERVED_COLLECTION_IDS`, and the comment claiming the revocation
+route is deeper than any Collection route is wrong (both are four segments). The
+shadowing is still unreachable, because a zcap id must be an absolute URI and
+the routes are method-disjoint, so the fix is to correct the comment's
+reasoning. The reference server repeats the same faulty argument in its own
+comment.
+
+discovered-from: whole-codebase review, 2026-09-11.
+
+Resolution: `WasClient.space()` forwards `options.encryption` into the `Space`
+constructor, which stores it and uses it as the fallback in `Space.collection()`
+(`options.encryption ?? this.#encryption`), so the override now flows Space to
+Collection to Resource. `createCollection` builds its `Collection` directly
+rather than through `collection()`, so the handle it returns reflects the
+collection's own `encryption` declaration instead of inheriting the Space
+handle's default. `WasClient.#context` backs `controllerDid` with a getter over
+the client's own accessor; `ClientContext` keeps its `controllerDid: string`
+shape, and the only constructor of one is `WasClient` itself (the `src/edv` and
+sync consumers take a context, they never build one), so no consumer changed.
+`index.ts` exports `IRootZcap`, `IDID` and `CustomWithIndexSchema`; `paths.ts`
+exports `IRootZcap` beside the `rootCapability` value it types. `delegateGrant`
+refuses a call with neither `target` nor `capability` with a `ValidationError`
+before reaching ezcap; the scoped sugar always prefills `target`, so only a
+direct `was.grant()` can hit it. The `zcaps` comment now states the two real
+reasons (a zcap id is an absolute URI, so the final segment matches no reserved
+sub-resource segment; and the routes are method-disjoint). `GrantOptions` was
+left as-is rather than split into a union: `Space.grant` and `Collection.grant`
+legitimately take options with neither member, since `delegateGrantAt` fills
+`target`. Node suite green (1049 tests, up from 1042), browser suite green, lint
+and typecheck clean. The same faulty depth argument in was-teaching-server's own
+comment is unfixed and needs an item in that repo.

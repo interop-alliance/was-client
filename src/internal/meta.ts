@@ -8,15 +8,26 @@
  *
  * `writeMeta` is the Resource side alone. A Collection's `meta` write is a full
  * replacement of the merged Collection Metadata object -- configuration
- * members included -- so it is composed against a fresh read of that object in
- * `Collection`, and `patchCustom` below drives both handles' read-modify-write
- * helpers through a bounded compare-and-swap.
+ * members included -- so it is composed against a fresh read of that object,
+ * `readCollectionMetadata`, and `patchCustom` below drives both handles'
+ * read-modify-write helpers through a bounded compare-and-swap.
+ *
+ * `readCollectionMetadata` is the undecoded Collection read: one GET of the
+ * `meta` sub-resource in the wire form the server serves it, with `custom`
+ * left as stored, because the codec that would decode it is itself resolved
+ * from the same object's `encryption` member. It lives here rather than beside
+ * the Collection Metadata helpers in `describe.ts` so those stay free of the
+ * transport layer; the request shape (path, capability, null-unwrap,
+ * validator) is still stated in one place, shared by `Collection`'s read and
+ * write paths and by the codec resolver's descriptor discovery.
  */
 import { NotFoundError, WasServerError } from '../errors.js'
 import { compareAndSwap } from './cas.js'
+import type { StoredCollectionMetadata } from './describe.js'
+import { collectionMeta } from './paths.js'
 import type { MetaReadSlot, MetaWriteSlot, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
-import { send } from './request.js'
+import { readDataWithEtag, send } from './request.js'
 import { readEtag, writeHeaders } from './conditional.js'
 import { withCodec } from './withCodec.js'
 import type {
@@ -225,4 +236,34 @@ export async function patchCustom(
     operation,
     mutate: custom => ({ ...custom, ...patch })
   })
+}
+
+/**
+ * Reads the Collection Metadata object with its `metaVersion` validator, in the
+ * stored wire form. Returns `null` if the collection is missing or not visible
+ * to you (WAS returns 404 for both not-found and unauthorized); `etag` is
+ * absent against a backend that does not version the object.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.capability] {IZcap}   capability attached to the request
+ * @returns {Promise<{ metadata: StoredCollectionMetadata; etag?: string } | null>}
+ */
+export async function readCollectionMetadata(
+  context: ClientContext,
+  options: { spaceId: string; collectionId: string; capability?: IZcap }
+): Promise<{ metadata: StoredCollectionMetadata; etag?: string } | null> {
+  const read = await readDataWithEtag<StoredCollectionMetadata>(context, {
+    path: collectionMeta(options.spaceId, options.collectionId),
+    capability: options.capability
+  })
+  if (read === null) {
+    return null
+  }
+  return {
+    metadata: read.data,
+    ...(read.etag !== undefined && { etag: read.etag })
+  }
 }

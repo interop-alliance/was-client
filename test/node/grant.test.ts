@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import { WasClient } from '../../src/index.js'
+import { ValidationError, WasClient } from '../../src/index.js'
 import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 interface DelegateArgs {
@@ -188,5 +188,50 @@ describe('grant rooting (revocability)', () => {
     expect(captured?.invocationTarget).toBe(
       'https://host.example/was/space/s/c/'
     )
+  })
+})
+
+/**
+ * Two hygiene properties of the entry point itself: a grant that names nothing
+ * to delegate is refused as a `ValidationError` (ezcap would answer a raw
+ * `TypeError`, which a consumer catching `WasError` never sees), and
+ * delegating never touches the invocation signer -- so a client built for
+ * delegation alone can still hand out capabilities.
+ */
+describe('was.grant input validation', () => {
+  it('throws ValidationError when neither target nor capability is given', async () => {
+    const { client, lastDelegate } = clientWithDelegateSpy()
+    await expect(
+      client.grant({ to: 'did:example:bob', actions: ['GET'] })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(lastDelegate()).toBeUndefined()
+  })
+
+  it('a delegation-only client can grant and build handles', async () => {
+    let captured: DelegateArgs | undefined
+    const zcapClient = {
+      // No `invocationSigner`: this client delegates but never invokes.
+      delegationSigner: { id: 'did:example:alice#key-1' },
+      async delegate(args: DelegateArgs) {
+        captured = args
+        return args
+      }
+    } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient']
+    const client = new WasClient({
+      serverUrl: 'https://was.example',
+      serviceDescription: serviceDescriptionFor(),
+      zcapClient
+    })
+
+    expect(() => client.space('s')).not.toThrow()
+    await client.grant({
+      to: 'did:example:bob',
+      actions: ['GET'],
+      target: 'https://was.example/space/s/c/r'
+    })
+    expect(captured?.controller).toBe('did:example:bob')
+
+    await client.space('s').grant({ to: 'did:example:bob', actions: ['GET'] })
+    expect(captured?.invocationTarget).toBe('https://was.example/space/s/')
   })
 })

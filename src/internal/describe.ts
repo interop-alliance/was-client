@@ -2,32 +2,31 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Reads a Collection Metadata object with a single GET of the Collection's
- * `meta` sub-resource, in the wire form the server serves it: `custom` is
- * whatever is stored there (an opaque envelope on an encrypted Collection),
- * left undecoded, because the codec that would decode it is itself resolved
- * from this object's `encryption` member. Shared by `Collection`'s read and
- * write paths and by the codec resolver's descriptor discovery, so the request
- * shape (path, capability, null-unwrap, validator) lives in one place.
+ * The Collection Metadata object helpers: pure shape checks, projections, and
+ * the compose rules every write shares. Nothing here performs a request, so a
+ * reader that only parses a descriptor does not pull the transport layer in
+ * with it. The read itself lives beside the rest of the `meta` I/O, in
+ * `internal/meta.ts`.
  *
- * Also owns the masked-404 fail-closed policy: WAS returns 404 for both
- * not-found and unauthorized, so a `null` read is ambiguous and an operation
- * that must know the current state fails closed via
- * `unreadableDescriptionError` rather than guessing. `collectionWritableFields`
- * lives here too: it is the one inclusion rule for the writable configuration
- * members a caller supplies, beside `carriedForward`, the rule for the stored
- * members a full-replacement write re-sends unchanged.
+ * `asCollectionMetadata` and `storedEncryption` narrow the stored wire form --
+ * `custom` is whatever the server serves there, an opaque envelope on an
+ * encrypted Collection, because the codec that would decode it is itself
+ * resolved from this object's `encryption` member. `collectionWritableFields`
+ * is the one inclusion rule for the writable configuration members a caller
+ * supplies, beside `carriedForward`, the rule for the stored members a
+ * full-replacement write re-sends unchanged.
+ *
+ * This module also owns the masked-404 fail-closed policy: WAS returns 404 for
+ * both not-found and unauthorized, so a `null` read is ambiguous and an
+ * operation that must know the current state fails closed via
+ * `unreadableDescriptionError` rather than guessing.
  */
-import type { ClientContext } from './request.js'
-import { readDataWithEtag } from './request.js'
-import { collectionMeta } from './paths.js'
 import { ValidationError } from '../errors.js'
 import type { WasError } from '../errors.js'
 import type {
   CollectionEncryption,
   CollectionMetadata,
-  CollectionWritableFields,
-  IZcap
+  CollectionWritableFields
 } from '../types.js'
 
 /**
@@ -226,36 +225,6 @@ export function carriedForward(
     delete carried.encryption
   }
   return carried
-}
-
-/**
- * Reads the Collection Metadata object with its `metaVersion` validator, in the
- * stored wire form. Returns `null` if the collection is missing or not visible
- * to you (WAS returns 404 for both not-found and unauthorized); `etag` is
- * absent against a backend that does not version the object.
- *
- * @param context {ClientContext}
- * @param options {object}
- * @param options.spaceId {string}
- * @param options.collectionId {string}
- * @param [options.capability] {IZcap}   capability attached to the request
- * @returns {Promise<{ metadata: StoredCollectionMetadata; etag?: string } | null>}
- */
-export async function readCollectionMetadata(
-  context: ClientContext,
-  options: { spaceId: string; collectionId: string; capability?: IZcap }
-): Promise<{ metadata: StoredCollectionMetadata; etag?: string } | null> {
-  const read = await readDataWithEtag<StoredCollectionMetadata>(context, {
-    path: collectionMeta(options.spaceId, options.collectionId),
-    capability: options.capability
-  })
-  if (read === null) {
-    return null
-  }
-  return {
-    metadata: read.data,
-    ...(read.etag !== undefined && { etag: read.etag })
-  }
 }
 
 /**

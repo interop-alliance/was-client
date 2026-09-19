@@ -22,6 +22,27 @@
  * `./identity` is a second non-core entry, alongside `./edv`: it pulls
  * `@interop/capability-agent` and `@interop/x25519-key-agreement-key` for its
  * did:key derivation, and like `./edv` it is not walked by this test.
+ *
+ * A second rule, one level further in, splits the encrypted surface itself:
+ * `./edv/core` is the transport-free entry (`edv/core.ts`), and `./edv` is
+ * that barrel plus the modules that talk to a server. The offline entry must
+ * reach no transport module and none of the HTTP packages, so a consumer that
+ * only decrypts bytes it already holds -- `@interop/wallet-backup` opening an
+ * archive, say -- never evaluates one. That rule is walked over runtime edges
+ * only: a type-only import is erased at build time, and `edv/EdvCodec.ts`
+ * legitimately names `WasTransport` as a type. The core-entry rule above
+ * deliberately counts type imports instead, since a type reach into `edv/` is
+ * the first step of a runtime one.
+ *
+ * That second rule reports static and dynamic edges apart. The static closure
+ * is what an offline consumer evaluates when it imports the entry, and it must
+ * hold no transport module. One dynamic edge is allowed, and pinned by name:
+ * `createEdvDocCipher` loads `edv/transportFactory.ts` through `import()` when
+ * a caller passes a `spaceId`, which only a caller with a server does. Any
+ * other `import()` in the closure would be a hole in the static assertions, so
+ * the set of dynamic edges is asserted exactly. The core-entry rule makes no
+ * such distinction, since a reach into `edv/` is a reach whenever it happens:
+ * it walks dynamic edges as if they were static ones.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -54,9 +75,85 @@ const SPECIFIER =
   /(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|import\s*['"]([^'"]+)['"]/g
 
 /**
- * Walks the static-import graph from one `src/`-relative entry module and
- * returns every reachable `src/` module (relative paths) and every external
- * package specifier encountered.
+ * Matches the specifier of every dynamic `import('...')` call. The parenthesis
+ * must be followed by a quote, so a method named `import` and a bare
+ * `import()` inside a comment are both skipped.
+ */
+const DYNAMIC_SPECIFIER = /(?<!\.)\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+
+/**
+ * Resolves one specifier against the module that imports it. A relative
+ * specifier becomes a `src/`-relative `.ts` path; a bare package specifier is
+ * returned unchanged.
+ *
+ * @param importer {string}     the importing module, `src/`-relative
+ * @param specifier {string}
+ * @returns {string}
+ */
+function resolveSpecifier(importer: string, specifier: string): string {
+  if (!specifier.startsWith('.')) {
+    return specifier
+  }
+  return path.join(path.dirname(importer), specifier).replace(/\.js$/, '.ts')
+}
+
+/**
+ * Reads one module and returns its outgoing edges, split by kind: the `src/`
+ * modules and the external packages it names in a static import, and the same
+ * two for the targets of its dynamic `import()` calls.
+ *
+ * @param relative {string}    a `src/`-relative module path
+ * @param options {object}
+ * @param options.specifier {RegExp}   the static-import matcher to apply
+ * @returns {{ modules: string[]; packages: string[];
+ *   dynamicModules: string[]; dynamicPackages: string[] }}
+ */
+function edgesOf(
+  relative: string,
+  { specifier }: { specifier: RegExp }
+): {
+  modules: string[]
+  packages: string[]
+  dynamicModules: string[]
+  dynamicPackages: string[]
+} {
+  const source = fs.readFileSync(path.join(SRC, relative), 'utf8')
+  const modules: string[] = []
+  const packages: string[] = []
+  const dynamicModules: string[] = []
+  const dynamicPackages: string[] = []
+  for (const match of source.matchAll(specifier)) {
+    const found = match[1] ?? match[2]
+    if (found === undefined) {
+      continue
+    }
+    const target = resolveSpecifier(relative, found)
+    if (found.startsWith('.')) {
+      modules.push(target)
+    } else {
+      packages.push(target)
+    }
+  }
+  for (const match of source.matchAll(DYNAMIC_SPECIFIER)) {
+    const found = match[1]
+    if (found === undefined) {
+      continue
+    }
+    const target = resolveSpecifier(relative, found)
+    if (found.startsWith('.')) {
+      dynamicModules.push(target)
+    } else {
+      dynamicPackages.push(target)
+    }
+  }
+  return { modules, packages, dynamicModules, dynamicPackages }
+}
+
+/**
+ * Walks the import graph from one `src/`-relative entry module and returns
+ * every reachable `src/` module (relative paths) and every external package
+ * specifier encountered. Dynamic edges are followed alongside static ones: a
+ * reach into `edv/` counts whenever it happens.
  *
  * @param entry {string}   a `src/`-relative module path
  * @returns {{ modules: Set<string>; packages: Set<string> }}
@@ -74,23 +171,100 @@ function reachableFrom(entry: string): {
       continue
     }
     modules.add(relative)
-    const source = fs.readFileSync(path.join(SRC, relative), 'utf8')
-    for (const match of source.matchAll(SPECIFIER)) {
-      const specifier = match[1] ?? match[2]
-      if (specifier === undefined) {
-        continue
-      }
-      if (specifier.startsWith('.')) {
-        const resolved = path
-          .join(path.dirname(relative), specifier)
-          .replace(/\.js$/, '.ts')
-        queue.push(resolved)
-      } else {
-        packages.add(specifier)
-      }
+    const edges = edgesOf(relative, { specifier: SPECIFIER })
+    queue.push(...edges.modules, ...edges.dynamicModules)
+    for (const specifier of [...edges.packages, ...edges.dynamicPackages]) {
+      packages.add(specifier)
     }
   }
   return { modules, packages }
+}
+
+/**
+ * Like `SPECIFIER`, but skips `import type ... from` and `export type ... from`
+ * so only edges that survive into the build are counted. `verbatimModuleSyntax`
+ * is on, so every other form -- including an import whose specifiers are all
+ * inline `type` -- emits a module evaluation.
+ */
+const RUNTIME_SPECIFIER =
+  /(?:import|export)\s+(?!type\s)[^'"]*?from\s*['"]([^'"]+)['"]|import\s*['"]([^'"]+)['"]/g
+
+/**
+ * Modules the transport-free entry must not reach at runtime: the WAS-backed
+ * EDV transport, the signed-request wrapper, and the four handle classes.
+ */
+const TRANSPORT_MODULES = [
+  'edv/WasTransport.ts',
+  'internal/request.ts',
+  'WasClient.ts',
+  'Space.ts',
+  'Collection.ts',
+  'Resource.ts'
+]
+
+/**
+ * Packages the transport-free entry must not reach at runtime. All three load
+ * at module scope wherever they are imported.
+ */
+const HTTP_PACKAGES = [
+  '@interop/http-client',
+  '@interop/http-signature-zcap-invoke',
+  '@interop/ezcap'
+]
+
+/**
+ * Walks the runtime import graph from one `src`-relative entry module,
+ * counting only the edges that survive type erasure.
+ *
+ * `modules` and `packages` are the static closure, which is what importing the
+ * entry evaluates. `dynamicEdges` holds every `import()` found in that closure
+ * and in the graph behind those dynamic targets, as `'<from> -> <target>'`
+ * strings, so an `import()` reached only through another one is reported too.
+ *
+ * @param entry {string}   a `src/`-relative module path
+ * @returns {{ modules: Set<string>; packages: Set<string>;
+ *   dynamicEdges: Set<string> }}
+ */
+function runtimeGraphFrom(entry: string): {
+  modules: Set<string>
+  packages: Set<string>
+  dynamicEdges: Set<string>
+} {
+  const modules = new Set<string>()
+  const packages = new Set<string>()
+  const queue = [entry]
+  while (queue.length > 0) {
+    const relative = queue.pop() as string
+    if (modules.has(relative)) {
+      continue
+    }
+    modules.add(relative)
+    const edges = edgesOf(relative, { specifier: RUNTIME_SPECIFIER })
+    queue.push(...edges.modules)
+    for (const specifier of edges.packages) {
+      packages.add(specifier)
+    }
+  }
+
+  // A second walk for the dynamic edges, this one following dynamic targets so
+  // that an `import()` behind an `import()` still shows up.
+  const dynamicEdges = new Set<string>()
+  const scanned = new Set<string>()
+  const pending = [...modules]
+  while (pending.length > 0) {
+    const relative = pending.pop() as string
+    if (scanned.has(relative)) {
+      continue
+    }
+    scanned.add(relative)
+    const edges = edgesOf(relative, { specifier: RUNTIME_SPECIFIER })
+    pending.push(...edges.modules, ...edges.dynamicModules)
+    for (const target of [...edges.dynamicModules, ...edges.dynamicPackages]) {
+      dynamicEdges.add(`${relative} -> ${target}`)
+    }
+  }
+
+  return { modules, packages, dynamicEdges }
 }
 
 describe('core entry import graphs', () => {
@@ -137,5 +311,52 @@ describe('core entry import graphs', () => {
         true
       )
     }
+  })
+})
+
+describe('the transport-free edv entry', () => {
+  const { modules, packages, dynamicEdges } = runtimeGraphFrom('edv/core.ts')
+
+  it('reaches no transport module through its static imports', () => {
+    const leaked = TRANSPORT_MODULES.filter(module => modules.has(module))
+    expect(leaked).toEqual([])
+  })
+
+  it('imports none of the HTTP packages through its static imports', () => {
+    const leaked = [...packages].filter(specifier =>
+      HTTP_PACKAGES.some(
+        pkg => specifier === pkg || specifier.startsWith(`${pkg}/`)
+      )
+    )
+    expect(leaked).toEqual([])
+  })
+
+  it('makes one dynamic import, the spaceId-gated transport factory', () => {
+    // The two assertions above cover what importing the entry evaluates. A
+    // dynamic edge runs only if its call site does, and `createEdvDocCipher`
+    // reaches this one only when given a `spaceId` -- the caller that has a
+    // server. Any other `import()` out of this closure would be a transport
+    // reach those assertions cannot see, so the whole set is pinned here.
+    expect([...dynamicEdges].sort()).toEqual([
+      'edv/docCipher.ts -> edv/transportFactory.ts'
+    ])
+  })
+
+  it('does reach the cipher and the transport-free edv-client entry', () => {
+    // Guards the test itself: an emptied barrel would pass the two
+    // assertions above vacuously.
+    expect(
+      [...packages].some(specifier =>
+        specifier.startsWith('@interop/minimal-cipher')
+      )
+    ).toBe(true)
+    expect(packages.has('@interop/edv-client/core')).toBe(true)
+  })
+
+  it('the full edv entry does reach the transport', () => {
+    // The other half of the split: what `./edv/core` leaves out is exactly
+    // what `./edv` adds.
+    const reached = runtimeGraphFrom('edv/index.ts').modules
+    expect(reached.has('edv/WasTransport.ts')).toBe(true)
   })
 })

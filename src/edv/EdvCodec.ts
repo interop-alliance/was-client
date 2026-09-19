@@ -2,9 +2,10 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The EDV (Encrypted Data Vault) resource codec and its `EncryptionProvider`
- * factory -- the encrypting half of the codec seam. Bound to an
- * encrypted collection, it encrypts a caller's value into an EDV envelope
+ * The EDV (Encrypted Data Vault) resource codec -- the encrypting half of the
+ * codec seam -- and the builds that produce one from a reader's keys
+ * (`buildEdvCodec`) or from a descriptor alone (`encryptOnlyEdvCodec`). Bound
+ * to an encrypted collection, it encrypts a caller's value into an EDV envelope
  * (`{ id, sequence, indexed, jwe }`) on write and decrypts it on read, so
  * `collection.put(id, obj)` / `collection.get(id)` transparently round-trip
  * ciphertext. Keys live in the wallet and are supplied per-collection by the
@@ -39,8 +40,9 @@
  *   encoding carried in the document `meta`. A blob over `maxBlobBytes` is
  *   auto-routed by `add()` to the chunked-stream path instead: `encode` returns
  *   a multi-request plan the write path executes, storing one document plus its
- *   chunk resources over a `WasTransport` of the codec's own. Reads reassemble
- *   transparently, so `get()` returns the same `Blob` either way.
+ *   chunk resources over a `WasTransport` supplied by the injected
+ *   `CodecTransportFactory`. Reads reassemble transparently, so `get()`
+ *   returns the same `Blob` either way.
  * - **Enforced sequence (conditional writes).** The codec sets
  *   `conditionalWrites`, so the write path pre-reads the current envelope and
  *   hands it to `encode`: an update advances `sequence` from its prior value and
@@ -79,7 +81,6 @@ import type {
   CodecIndexing,
   CodecRequestContext,
   CodecWrite,
-  EncryptionProvider,
   IndexSchema,
   MetaReadSlot,
   MetaWriteSlot,
@@ -101,7 +102,7 @@ import {
 import { blobBytes } from '../internal/blob.js'
 import { readEtag, writeHeaders } from '../internal/conditional.js'
 import type { WritePrecondition } from '../internal/conditional.js'
-import { WasTransport } from './WasTransport.js'
+import type { WasTransport } from './WasTransport.js'
 import { isEncryptedEnvelope } from '../sync/envelope.js'
 import { epochWriteStandIn, resolveEpochKeys } from './epochKeys.js'
 import { didKeyResolver } from './epochCrypto.js'
@@ -140,7 +141,7 @@ import {
  * under the cap. Raise `maxBlobBytes` against a server with a larger JSON
  * body limit.
  */
-const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
+export const DEFAULT_MAX_BLOB_BYTES = 512 * 1024
 
 /**
  * The `meta.encoding` discriminator a chunked binary document carries: its
@@ -167,35 +168,6 @@ export type CodecTransportFactory = (options: {
   context: CodecRequestContext
   documentHeaders?: Record<string, string>
 }) => WasTransport
-
-/**
- * Builds the transport factory for a Collection reachable over WAS: the
- * codec's route to its own document and chunk resources on the server.
- *
- * @param options {object}
- * @param options.spaceId {string}        the Space holding the Collection
- * @param options.collectionId {string}   the Collection
- * @param options.contentType {string}    stored envelope content type
- * @returns {CodecTransportFactory}
- */
-export function wasTransportFactory({
-  spaceId,
-  collectionId,
-  contentType
-}: {
-  spaceId: string
-  collectionId: string
-  contentType: string
-}): CodecTransportFactory {
-  return ({ context, documentHeaders }) =>
-    new WasTransport({
-      was: { request: input => context.request(input) },
-      spaceId,
-      collectionId,
-      contentType,
-      ...(documentHeaders !== undefined && { documentHeaders })
-    })
-}
 
 /**
  * A shared strict UTF-8 decoder used to test whether a non-JSON payload is
@@ -1817,7 +1789,7 @@ function parseWasHeader(jwe: unknown): Record<string, unknown> | undefined {
 /**
  * The EDV scheme tag this provider handles (matches the Collection descriptor).
  */
-const EDV_SCHEME = 'edv'
+export const EDV_SCHEME = 'edv'
 
 /**
  * The per-collection key material an EDV codec is built from.
@@ -1833,112 +1805,6 @@ export interface EdvKeys {
    * declares no blinded index at all).
    */
   hmac?: BlindingKey
-}
-
-/**
- * Builds an {@link EncryptionProvider} for the `edv` scheme: a pure **keystore**
- * that turns a collection's keys into an {@link EdvCodec}. Pass the result as
- * `WasClient`'s `encryption` option.
- *
- * It does **not** decide which collections are encrypted -- that policy is the
- * Collection's `encryption` descriptor (or a per-handle override). Core calls
- * `codecFor` only for a collection already known to be encrypted; this provider
- * then supplies the keys: the override-supplied `keys` when present, else
- * `resolveKeys({ spaceId, collectionId })`. `resolveKeys` returning `null` means
- * "I hold no keys for this collection", so core fails closed (it does **not**
- * mean plaintext -- the descriptor/override already decided that). A non-`edv`
- * scheme yields `null` (this provider does not handle it).
- *
- * @param options {object}
- * @param options.resolveKeys {function}   the keystore: returns the collection's
- *   `{ keyAgreementKey, keyResolver }`, or `null` if this client holds no keys
- *   for it (fail-closed -- not a plaintext signal)
- * @param [options.contentType] {string}   stored envelope content type;
- *   defaults to `application/json`. Pass `JOSE_CONTENT_TYPE`
- *   (`application/jose+json`) against a server that registers an
- *   `application/*+json` parser.
- * @param [options.maxBlobBytes] {number}   the size in raw bytes above which a
- *   binary `add()` is routed to the chunked-stream path instead of one document
- *   (default 512 KiB, sized so a single-document envelope stays under a
- *   server's ~1 MiB JSON body cap; raise it against a server with a larger
- *   limit). A routing threshold, not a hard cap.
- * @param [options.chunkSize] {number}   the size of each encrypted chunk a
- *   routed write emits, in bytes (default 1 MiB). Each chunk is one upload, so
- *   it must stay under the backend's `maxUploadBytes` constraint (the
- *   encrypted chunk is somewhat larger than `chunkSize`, so leave headroom).
- *   This is not checked client-side: the shared backend probe reads the
- *   descriptor's affordance tokens, not its `constraints`, so a chunk over the
- *   limit is rejected by the server with a `PayloadTooLargeError` (413) and
- *   the failed write's document stub is then cleaned up.
- * @param [options.idDerivation] {string}   how `add()` mints a document id.
- *   `'random'` (default) is the classic mutable-document model: a random
- *   `generateId()` id, updated in place via `sequence`. `'content'` derives the
- *   id from the encrypted envelope's JWE ciphertext
- *   (`EdvDocumentCipher.deriveId`), making documents content-addressed and
- *   therefore immutable (an "update" is delete-old + add-new) -- the model a
- *   replicating store wants, since the id is stable across replicas with no
- *   mapping table. Both formats pass the same EDV id check; the explicit-id
- *   `put(id, ...)` path is unaffected either way.
- * @returns {EncryptionProvider}
- */
-export function createEdvEncryption({
-  resolveKeys,
-  contentType = DEFAULT_CONTENT_TYPE,
-  maxBlobBytes = DEFAULT_MAX_BLOB_BYTES,
-  chunkSize,
-  idDerivation = 'random'
-}: {
-  resolveKeys: (ref: {
-    spaceId: string
-    collectionId: string
-  }) => Promise<EdvKeys | null>
-  contentType?: string
-  maxBlobBytes?: number
-  chunkSize?: number
-  idDerivation?: 'random' | 'content'
-}): EncryptionProvider {
-  return {
-    canRoute({ scheme, encryption }) {
-      return scheme === EDV_SCHEME && descriptorDefect(encryption) === null
-    },
-
-    async codecFor({ spaceId, collectionId, scheme, encryption, keys }) {
-      if (scheme !== EDV_SCHEME) {
-        return null
-      }
-      // Guard the descriptor before consulting the keystore, so a collection
-      // whose descriptor cannot be opened reports THAT rather than the vaguer
-      // "holds no keys" the null return below would produce. `buildEdvCodec`
-      // guards again for callers that reach it directly; the guard is pure, so
-      // running it twice costs nothing.
-      guardEncryptionDescriptor({
-        label: `${spaceId}/${collectionId}`,
-        encryption
-      })
-      // Prefer override-supplied keys; otherwise consult the keystore.
-      const resolved =
-        (keys as EdvKeys | undefined) ??
-        (await resolveKeys({ spaceId, collectionId }))
-      if (!resolved) {
-        return null
-      }
-      return buildEdvCodec({
-        label: `${spaceId}/${collectionId}`,
-        transportFactory: wasTransportFactory({
-          spaceId,
-          collectionId,
-          contentType
-        }),
-        collectionId,
-        encryption,
-        keys: resolved,
-        contentType,
-        maxBlobBytes,
-        ...(chunkSize !== undefined && { chunkSize }),
-        idDerivation
-      })
-    }
-  }
 }
 
 /**
@@ -2061,7 +1927,7 @@ export async function buildEdvCodec({
  * @returns {CollectionEncryption}   the descriptor, with `epochs` narrowed
  *   non-empty and `currentEpoch` narrowed to a string
  */
-function guardEncryptionDescriptor({
+export function guardEncryptionDescriptor({
   label,
   encryption
 }: {
@@ -2092,7 +1958,9 @@ function guardEncryptionDescriptor({
  * @param [encryption] {CollectionEncryption}
  * @returns {string | null}
  */
-function descriptorDefect(encryption?: CollectionEncryption): string | null {
+export function descriptorDefect(
+  encryption?: CollectionEncryption
+): string | null {
   const descriptorVersion = encryption?.version
   if (
     typeof descriptorVersion === 'number' &&

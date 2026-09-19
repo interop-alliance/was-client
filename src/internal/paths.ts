@@ -189,8 +189,15 @@ export function spaceLinkset(spaceId: string): string {
  * Space-rooted capability. The capability's `id` (typically a `urn:uuid:`) is
  * percent-encoded into the single final segment.
  *
- * `zcaps` is not a reserved path segment: the route sits four segments deep,
- * deeper than any Collection or Resource route, so it shadows nothing.
+ * `zcaps` is not in the Reserved Path Segment Registry, and does not need to
+ * be. Depth is not the reason: this route is exactly as deep as a
+ * Resource sub-resource route (`/space/:s/:c/:r/meta`), so a Collection named
+ * `zcaps` does reach the same depth. Two other properties make the shadowing
+ * unreachable. A zcap `id` is an absolute URI, so the final segment never
+ * matches one of the reserved sub-resource segments (`meta`, `policy`,
+ * `chunks/:n`, ...) a Resource route would read there. And the two routes are
+ * method-disjoint: a revocation is submitted with `POST`, while the Resource
+ * routes at that depth answer `GET` / `PUT` / `DELETE`.
  */
 export function spaceRevocation(spaceId: string, capabilityId: string): string {
   return `${spacePrefix(spaceId)}/zcaps/revocations/${encode(capabilityId)}`

@@ -30,7 +30,8 @@ import {
 } from '../../src/index.js'
 import type {
   CollectionMetadata,
-  CollectionEncryption
+  CollectionEncryption,
+  CustomWithIndexSchema
 } from '../../src/index.js'
 import type { SingleWriteCodec } from '../helpers/codec.js'
 import { identityCodec } from '../../src/internal/codec.js'
@@ -392,6 +393,12 @@ describe('Collection.declareIndex', () => {
       'content.type'
     )
     expect((state.meta.document.custom as { jwe?: unknown }).jwe).toBeTruthy()
+
+    // A reader of the decoded `custom` object annotates it with
+    // `CustomWithIndexSchema`, which the root entry exports for exactly this.
+    const meta = await client.space('s').collection('c').meta()
+    const custom = meta?.custom as CustomWithIndexSchema
+    expect(custom.indexSchema).toEqual(schema)
   })
 
   it('is idempotent: re-declaring the same index writes nothing', async () => {
