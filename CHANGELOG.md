@@ -1,5 +1,19 @@
 # @interop/was-client Changelog
 
+## 0.71.0 - TBD
+
+### Added
+
+- `@interop/was-client/edv/cipher`, a third encrypted-collection entry point
+  carrying the log-free part of the offline half: `EdvCodec`, the doc ciphers,
+  the key-epoch and recipient primitives, the epoch roster helpers, the blinding
+  keys, `resourceDescriptorStore`, and the constants. It leaves out the
+  log-governed descriptor stores, so a consumer that only decrypts bytes it
+  already holds evaluates no `@interop/vh-resource-log` or
+  `@interop/did-method-webvh` module, on top of no transport module.
+  `@interop/was-client/edv/core` re-exports all of it and adds the log-governed
+  descriptor stores; `@interop/was-client/edv` is unchanged.
+
 ## 0.70.0 - 2026-09-18
 
 ### Added

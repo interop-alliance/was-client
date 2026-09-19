@@ -956,9 +956,18 @@ const cipher = await createEdvDocCipher({
 const data = await cipher.decrypt({ id, envelope })
 ```
 
+A consumer that also wants no resource-log dependency --
+`@interop/wallet-backup` opening an archive with no log to verify, say --
+imports `@interop/was-client/edv/cipher` instead: the same codec, doc ciphers,
+key epochs, recipient operations, blinding keys, and `resourceDescriptorStore`,
+without `./edv/core`'s log-governed descriptor stores. Importing it evaluates no
+`@interop/vh-resource-log` or `@interop/did-method-webvh` module, on top of no
+transport module.
+
 Online consumers keep importing `@interop/was-client/edv` and nothing changes
-for them: it re-exports everything `./edv/core` does and adds the transport
-(`WasTransport`, `createEdvEncryption`, descriptor acquisition and refresh).
+for them: it re-exports everything `./edv/core` does (which in turn re-exports
+everything `./edv/cipher` does) and adds the transport (`WasTransport`,
+`createEdvEncryption`, descriptor acquisition and refresh).
 
 #### Searching an encrypted collection
 

@@ -48,11 +48,14 @@ src/edv/*.ts        Encryption subpath (sibling, opt-in)
   names a Space. index.ts also re-exports the class, for callers driving an
   EdvClient directly, so importing ./edv evaluates the transport module and
   importing ./edv/core does not.
-  Two barrels over those modules: core.ts is the ./edv/core entry and names
-  only the offline exports (resourceDescriptorStore, not
-  collectionDescriptorStore, which reads through a live handle); index.ts is
-  ./edv, which re-exports core.ts and adds encryption, transportFactory,
-  WasTransport, collectionDescriptorStore, acquire and refresh on top.
+  Three barrels over those modules: cipher.ts is the ./edv/cipher entry and
+  names the log-free offline exports (resourceDescriptorStore, not
+  collectionDescriptorStore, which reads through a live handle, and not the
+  log-governed stores); core.ts is the ./edv/core entry, which re-exports
+  cipher.ts and adds logGovernedDescriptorStore and
+  logGovernedCollectionDescriptorStore on top; index.ts is ./edv, which
+  re-exports core.ts and adds encryption, transportFactory, WasTransport,
+  collectionDescriptorStore, acquire and refresh on top.
 
 src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
   port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState,
@@ -74,16 +77,19 @@ src/log/*.ts        Resource-log subpath (sibling, opt-in)
 
 The load-bearing rule: **core does not import `src/edv/`, and neither do
 `src/sync/` or `src/log/`** (the one exception is `src/edv/constants.ts`, which
-itself reaches only core). The package ships seven entry points in the
+itself reaches only core). The package ships eight entry points in the
 package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
-client. `./edv/core`, `./edv`, and `./identity` are the three that leave core.
-`./edv/core` is the transport-free half of the encrypted surface: the codec, the
-doc ciphers, the key epochs, the recipient operations, `resourceDescriptorStore`
-and the log-governed descriptor stores, and the blinding keys, none of which
-need a server. `./edv` is that barrel plus the modules that do talk to one
-(`WasTransport`, `createEdvEncryption`, `collectionDescriptorStore`, descriptor
-acquisition and refresh). Between them, the two entries pull the
-encrypted-collection graph (`@interop/edv-client/core`,
+client. `./edv/cipher`, `./edv/core`, `./edv`, and `./identity` are the four
+that leave core. `./edv/cipher` is the log-free part of the offline half: the
+codec, the doc ciphers, the key epochs, the recipient operations,
+`resourceDescriptorStore`, and the blinding keys, none of which need a server or
+a resource log. `./edv/core` is that entry plus the log-governed descriptor
+stores, which read through a resource log verified by
+`@interop/vh-resource-log`; still no server in the graph, but that verifier (and
+thereby `@interop/did-method-webvh`) is. `./edv` is `./edv/core` plus the
+modules that do talk to a server (`WasTransport`, `createEdvEncryption`,
+`collectionDescriptorStore`, descriptor acquisition and refresh). Between them,
+these entries pull the encrypted-collection graph (`@interop/edv-client/core`,
 `@interop/minimal-cipher`, `@interop/x25519-key-agreement-key`), and
 `./identity` pulls `@interop/capability-agent` and
 `@interop/x25519-key-agreement-key` for its did:key derivation. `./log` is the
@@ -105,6 +111,15 @@ reaches no transport module and none of the HTTP packages
 erased at build time, and `edv/EdvCodec.ts` legitimately names `WasTransport` as
 a type. The core-entry rule above counts type imports on purpose, since a type
 reach into `edv/` is the first step of a runtime one.
+
+A third rule, one level further in still, walks `./edv/cipher` and asserts the
+same as the second rule plus one more thing: no reach into
+`edv/logGovernedDescriptorStore.ts`, `edv/acquire.ts`, any `src/log/` module, or
+`@interop/vh-resource-log` / `@interop/did-method-webvh`. `edv/EdvCodec.ts` does
+still reach `@interop/storage-core` through `errors.ts`'s `ProblemTypes` table
+(for `mapError`'s problem-kind lookup), independent of the log-governed split;
+that edge is not part of this rule, since removing it would mean moving
+`mapError` off `errors.ts` and updating its callers across the package.
 
 `./edv` reaches `@interop/edv-client` through that package's transport-free
 `./core` entry (`EdvClientCore`, `EdvDocumentCipher`, `assertDocId` and the
@@ -162,6 +177,13 @@ promoting `src/edv/`'s internals to public API, and a subpath entry gave it
 exactly that. That consumer does not meet either revisit criterion above: it
 still wants the crypto packages installed, and only wants them out of its
 runtime graph.
+
+`./edv/cipher` is the same idea one level further in: a consumer with no
+resource log to verify either wanted `@interop/vh-resource-log` and
+`@interop/did-method-webvh` out of its import graph too, without a second
+package and without losing `./edv/core`'s log-governed descriptor stores for
+everyone else. `./edv/core` re-exports `./edv/cipher` rather than duplicating
+its export list, so the two entries cannot drift.
 
 ## The handle model
 
@@ -788,19 +810,22 @@ create.
    crypto-free: its dependency, `@interop/vh-resource-log`, pulls
    `@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof
    kernel only, with no DID resolution.
-10. **The transport-free edv entry stays off the transport graph.** Importing
-    `./edv/core` evaluates no transport module and none of the HTTP packages.
-    That holds for static edges. `createEdvDocCipher` loads
+10. **The transport-free edv entries stay off the transport graph.** Importing
+    `./edv/core` or `./edv/cipher` evaluates no transport module and none of the
+    HTTP packages. That holds for static edges. `createEdvDocCipher` loads
     `transportFactory.ts` through `import()` when the caller passes a `spaceId`,
     so a caller that names a Space does reach the transport, and a bundler that
     follows dynamic imports (Metro among them) still bundles it. A caller that
     only decrypts bytes it already holds passes no `spaceId` and evaluates none
-    of it. `test/node/import-graph.test.ts` enforces the static closure, and
-    pins that gated `import()` as the only dynamic edge out of it. Both are
+    of it. `./edv/cipher` additionally evaluates no `@interop/vh-resource-log`
+    or `@interop/did-method-webvh` module, unlike `./edv/core`, which reaches
+    both through `logGovernedDescriptorStore.ts`.
+    `test/node/import-graph.test.ts` enforces both entries' static closures, and
+    pins that gated `import()` as the only dynamic edge out of either. Both are
     walked over runtime edges only, since a type-only import is erased at build
     time. A new module under `src/edv/` that needs a server belongs behind
-    `./edv`, in the modules `edv/index.ts` adds on top, not in the `core.ts`
-    barrel.
+    `./edv`, in the modules `edv/index.ts` adds on top; one that needs the
+    resource log belongs in `core.ts`'s own export list, not in `cipher.ts`.
 11. **A server's `next` link is untrusted.** Following it sends the caller's
     signed invocation, and with no bound capability ezcap synthesizes a root
     zcap for whatever URL it is given. `walkPages` follows a `next` only within
@@ -880,14 +905,18 @@ it, and otherwise cover the client-side concepts this file names.
 - **Blinded index** -- the `indexed` entries written beside a JWE, and the
   blinded terms `Collection.find()` posts to the collection `/query` endpoint
   under the `blinded-index` profile. See The codec seam.
+- **edv cipher entry** -- the `@interop/was-client/edv/cipher` subpath
+  (`src/edv/cipher.ts`), the log-free part of the encrypted surface's offline
+  half: the codec, the doc ciphers, the key epochs, the recipient operations,
+  `resourceDescriptorStore`, and the blinding keys, with no server and no
+  resource log in the graph. `@interop/was-client/edv/core` re-exports it and
+  adds the log-governed descriptor stores. See The EDV layer and Layering.
 - **edv core entry** -- the `@interop/was-client/edv/core` subpath
-  (`src/edv/core.ts`), the transport-free half of the encrypted surface: the
-  codec, the doc ciphers, the key epochs, the recipient operations,
-  `resourceDescriptorStore` and the log-governed descriptor stores, and the
-  blinding keys, with no server in the graph. `@interop/was-client/edv`
-  re-exports it and adds the modules that talk to a server,
-  `collectionDescriptorStore` among them. Avoid: core entry (that term names the
-  four subpaths that never reach `src/edv/`; this is a different,
+  (`src/edv/core.ts`), the transport-free half of the encrypted surface: the edv
+  cipher entry plus the log-governed descriptor stores, with no server in the
+  graph. `@interop/was-client/edv` re-exports it and adds the modules that talk
+  to a server, `collectionDescriptorStore` among them. Avoid: core entry (that
+  term names the four subpaths that never reach `src/edv/`; this is a different,
   encrypted-surface entry point). See The EDV layer and Layering.
 - **`EdvCodec`** -- the encrypting `ResourceCodec` implementation
   (`src/edv/EdvCodec.ts`), reached through the `createEdvEncryption` factory

@@ -3139,5 +3139,6 @@ sub-resource segment; and the routes are method-disjoint). `GrantOptions` was
 left as-is rather than split into a union: `Space.grant` and `Collection.grant`
 legitimately take options with neither member, since `delegateGrantAt` fills
 `target`. Node suite green (1049 tests, up from 1042), browser suite green, lint
-and typecheck clean. The same faulty depth argument in was-teaching-server's own
-comment is unfixed and needs an item in that repo.
+and typecheck clean. The same faulty depth argument appears twice in
+was-teaching-server (`src/lib/paths.ts` and `src/routes.ts`) and is filed there
+as WAS-148.

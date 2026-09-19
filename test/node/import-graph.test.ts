@@ -43,6 +43,16 @@
  * the set of dynamic edges is asserted exactly. The core-entry rule makes no
  * such distinction, since a reach into `edv/` is a reach whenever it happens:
  * it walks dynamic edges as if they were static ones.
+ *
+ * A third rule splits `./edv/core` itself: `./edv/cipher` (`edv/cipher.ts`) is
+ * the part of it that also stays off the resource-log graph
+ * (`@interop/vh-resource-log`, `@interop/did-method-webvh`,
+ * `@interop/storage-core`, and every `src/log/` module), which `./edv/core`
+ * reaches only through `edv/logGovernedDescriptorStore.ts`. The assertions
+ * mirror the second rule's shape: static and dynamic edges apart, the same
+ * gated `transportFactory.ts` import allowed, and a vacuous-pass guard that
+ * checks `./edv/core` still reaches the resource-log graph the cipher entry
+ * leaves out.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -213,6 +223,37 @@ const HTTP_PACKAGES = [
 ]
 
 /**
+ * Modules the log-free cipher entry must not reach at runtime, on top of the
+ * transport modules above: the log-governed descriptor store and the
+ * descriptor-acquisition module that pulls it in. Every `log/*` module counts
+ * too, checked separately by its path prefix.
+ */
+const RESOURCE_LOG_MODULES = [
+  'edv/logGovernedDescriptorStore.ts',
+  'edv/acquire.ts'
+]
+
+/**
+ * Packages the log-free cipher entry must not reach through the resource-log
+ * modules above: the resource-log verifier and the did:webvh method it
+ * resolves through.
+ *
+ * `@interop/storage-core` is deliberately not asserted here even though
+ * `logGovernedDescriptorStore.ts` imports it directly (for
+ * `RESOURCE_LOG_METHOD`). It already reaches `edv/cipher.ts` by a second,
+ * unrelated path this split does not touch: `edv/EdvCodec.ts` imports the
+ * error classes from `errors.ts`, and `errors.ts` imports `ProblemTypes` from
+ * `@interop/storage-core` to build `mapError`'s problem-kind table. Removing
+ * that edge means moving `mapError` off `errors.ts`, which is used by
+ * `internal/request.ts`, `internal/service.ts`, `sync/port.ts`, and
+ * re-exported from the package root -- out of scope for this split.
+ */
+const RESOURCE_LOG_PACKAGES = [
+  '@interop/vh-resource-log',
+  '@interop/did-method-webvh'
+]
+
+/**
  * Walks the runtime import graph from one `src`-relative entry module,
  * counting only the edges that survive type erasure.
  *
@@ -358,5 +399,61 @@ describe('the transport-free edv entry', () => {
     // what `./edv` adds.
     const reached = runtimeGraphFrom('edv/index.ts').modules
     expect(reached.has('edv/WasTransport.ts')).toBe(true)
+  })
+})
+
+describe('the log-free edv cipher entry', () => {
+  const { modules, packages, dynamicEdges } = runtimeGraphFrom('edv/cipher.ts')
+
+  it('reaches no transport module through its static imports', () => {
+    const leaked = TRANSPORT_MODULES.filter(module => modules.has(module))
+    expect(leaked).toEqual([])
+  })
+
+  it('imports none of the HTTP packages through its static imports', () => {
+    const leaked = [...packages].filter(specifier =>
+      HTTP_PACKAGES.some(
+        pkg => specifier === pkg || specifier.startsWith(`${pkg}/`)
+      )
+    )
+    expect(leaked).toEqual([])
+  })
+
+  it('reaches no resource-log module through its static imports', () => {
+    const leaked = [...modules].filter(
+      module =>
+        module.startsWith('log/') || RESOURCE_LOG_MODULES.includes(module)
+    )
+    expect(leaked).toEqual([])
+  })
+
+  it('imports none of the resource-log packages through its static imports', () => {
+    const leaked = [...packages].filter(specifier =>
+      RESOURCE_LOG_PACKAGES.some(
+        pkg => specifier === pkg || specifier.startsWith(`${pkg}/`)
+      )
+    )
+    expect(leaked).toEqual([])
+  })
+
+  it('makes one dynamic import, the spaceId-gated transport factory', () => {
+    // Same gated edge as `./edv/core`: `createEdvDocCipher` reaches
+    // `transportFactory.ts` only when given a `spaceId`.
+    expect([...dynamicEdges].sort()).toEqual([
+      'edv/docCipher.ts -> edv/transportFactory.ts'
+    ])
+  })
+
+  it('the core entry does reach the resource-log graph', () => {
+    // Guards the test itself: an emptied cipher entry, or a core.ts that
+    // stopped naming the log-governed exports, would pass the assertions
+    // above vacuously.
+    const reached = runtimeGraphFrom('edv/core.ts')
+    expect(reached.modules.has('edv/logGovernedDescriptorStore.ts')).toBe(true)
+    expect(
+      [...reached.packages].some(specifier =>
+        specifier.startsWith('@interop/vh-resource-log')
+      )
+    ).toBe(true)
   })
 })

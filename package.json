@@ -43,6 +43,12 @@
       "import": "./dist/edv/core.js",
       "default": "./dist/edv/core.js"
     },
+    "./edv/cipher": {
+      "types": "./dist/edv/cipher.d.ts",
+      "react-native": "./dist/edv/cipher.js",
+      "import": "./dist/edv/cipher.js",
+      "default": "./dist/edv/cipher.js"
+    },
     "./paths": {
       "types": "./dist/paths.d.ts",
       "react-native": "./dist/paths.js",
