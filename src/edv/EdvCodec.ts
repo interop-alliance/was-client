@@ -65,7 +65,7 @@
  *   served into a resource's.
  */
 import { base64, base64urlnopad } from '@scure/base'
-import { EdvClientCore, assertDocId } from '@interop/edv-client'
+import { EdvClientCore, assertDocId } from '@interop/edv-client/core'
 import type {
   IEDVDocument,
   IEncryptedDocument,

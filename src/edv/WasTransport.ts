@@ -45,7 +45,7 @@
  * `insert` is an atomic `If-None-Match: *` create, and the EDV `sequence` is
  * enforced by the server's conditional writes.
  */
-import { Transport } from '@interop/edv-client'
+import { Transport } from '@interop/edv-client/core'
 import type { HttpResponse } from '@interop/http-client'
 import type {
   IEDVChunk,

@@ -38,7 +38,8 @@ src/edv/*.ts        Encryption subpath (sibling, opt-in)
   EdvCodec, WasTransport, docCipher, epochCrypto/epochKeys/epochRoster,
   recipients, descriptorStore, logGovernedDescriptorStore
   Implements the interfaces in src/codec.ts; imports internal/* and the
-  crypto deps (@interop/edv-client, @interop/minimal-cipher, @scure/base).
+  crypto deps (@interop/edv-client/core, @interop/minimal-cipher,
+  @scure/base).
   logGovernedDescriptorStore is the one edv module that imports src/log/
   (the resourceLogStore adapter) and @interop/vh-resource-log (the verifier).
 
@@ -65,20 +66,28 @@ The load-bearing rule: **core does not import `src/edv/`, and neither do
 itself reaches only core). The package ships six entry points in the
 package.json exports map: `.`, `./paths`, `./log`, and `./sync` are the core
 client. `./edv` and `./identity` are the two that leave core: `./edv` pulls the
-encrypted-collection graph (`@interop/edv-client`, `@interop/minimal-cipher`,
-`@interop/x25519-key-agreement-key`), and `./identity` pulls
-`@interop/capability-agent` and `@interop/x25519-key-agreement-key` for its
-did:key derivation. `./log` is the one core entry with a crypto dependency of
-its own: it is the WAS binding of `@interop/vh-resource-log`'s store port, and
-that library's graph includes `@interop/did-method-webvh` and `@noble/curves` --
-the hashing and proof kernel only, with no DID resolution. `src/codec.ts` and
-`src/sync/types.ts` define their seams as pure interfaces, so plaintext
-consumers never load the crypto dependency graph. The dependency between the
-`edv` and `sync` opt-in subpaths points one way: `src/edv/docCipher.ts`
-implements the `DocCipher` interface that `src/sync/types.ts` declares.
-`test/node/import-graph.test.ts` walks the static imports of each core entry and
-fails on any reach past this rule; `./identity`, like `./edv`, is not walked,
-since neither is a core entry.
+encrypted-collection graph (`@interop/edv-client/core`,
+`@interop/minimal-cipher`, `@interop/x25519-key-agreement-key`), and
+`./identity` pulls `@interop/capability-agent` and
+`@interop/x25519-key-agreement-key` for its did:key derivation. `./log` is the
+one core entry with a crypto dependency of its own: it is the WAS binding of
+`@interop/vh-resource-log`'s store port, and that library's graph includes
+`@interop/did-method-webvh` and `@noble/curves` -- the hashing and proof kernel
+only, with no DID resolution. `src/codec.ts` and `src/sync/types.ts` define
+their seams as pure interfaces, so plaintext consumers never load the crypto
+dependency graph. The dependency between the `edv` and `sync` opt-in subpaths
+points one way: `src/edv/docCipher.ts` implements the `DocCipher` interface that
+`src/sync/types.ts` declares. `test/node/import-graph.test.ts` walks the static
+imports of each core entry and fails on any reach past this rule; `./identity`,
+like `./edv`, is not walked, since neither is a core entry.
+
+`./edv` reaches `@interop/edv-client` through that package's transport-free
+`./core` entry (`EdvClientCore`, `EdvDocumentCipher`, `assertDocId` and the
+abstract `Transport`), not through its root. The root also carries `EdvClient`
+and `HttpsTransport`, which load `@interop/http-client` and
+`@interop/http-signature-zcap-invoke` at module scope. This package brings its
+own transport, `WasTransport`, and uses neither class, so importing the core
+entry keeps both HTTP packages out of the graph.
 
 Every `ZcapClient` this package builds -- for invocations and delegations alike
 -- comes from one construction site, `zcapClientForSigner` in

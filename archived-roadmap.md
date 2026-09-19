@@ -2729,3 +2729,76 @@ claim as the predicate's own doc. All three now say the refusal's two forms and
 where each is raised, and say plainly that this subpath raises it on neither a
 push nor a pull, so the export reads as a convenience for `/log` and `/edv`
 consumers rather than as a path a driver must handle.
+
+### WCL-111: Import the EDV kernel from a transport-free `@interop/edv-client` entry
+
+- status: done (2026-09-18)
+- priority: low
+- labels: encryption, packaging, import-graph, cross-repo
+- touches:
+  - edv-client: LANDED (2026-09-18), pending publish. `src/core.ts` is the new
+    barrel and `./core` the export-map entry, carrying `EdvClientCore`,
+    `EdvDocumentCipher`, `assertDocId` and the `Transport` base class. The root
+    entry re-exports all four and adds `EdvClient`, `EdvDocument` and
+    `HttpsTransport` on top, so its export list is unchanged.
+    `test/node/55-CoreEntryImportGraph.test.ts` pins the graph upstream. The
+    CHANGELOG entry is 17.9.0, dated TBD; the version has to be published before
+    this repo's `^17.9.0` range resolves
+  - edv-client: SHIPPED. README.md gained an "Entry points" section naming both
+    entries and what `./core` leaves out; ARCHITECTURE.md's module map lists
+    `core.ts`; CHANGELOG.md carries the 17.9.0 entry
+  - was-client (this repo): SHIPPED. ARCHITECTURE.md's layering section names
+    `@interop/edv-client/core` in the `src/edv/*.ts` block and in the
+    entry-point paragraph, and a new paragraph after the import-graph rule says
+    why the core entry rather than the root
+- acceptance:
+  - [x] `@interop/edv-client` publishes an entry whose static import graph
+        reaches neither `@interop/http-client` nor
+        `@interop/http-signature-zcap-invoke`
+  - [x] `src/edv/EdvCodec.ts` and `src/edv/WasTransport.ts` import from that
+        entry, and no file under `src/` imports the `@interop/edv-client` root
+  - [x] The core-entry rule in `test/node/import-graph.test.ts` still refuses
+        the new specifier. Its `ENCRYPTION_PACKAGES` match already covers a
+        subpath specifier of a listed package, so this is a check and needs no
+        code change
+  - [x] The minimum `@interop/edv-client` version in package.json is the one
+        that ships the entry
+  - [x] A CHANGELOG.md entry, under a new version, dated TBD
+
+Context: `@interop/edv-client` publishes one entry. Its `src/index.ts` is a
+single barrel that exports `EdvClient` and `HttpsTransport` beside the pieces
+was-client uses. `HttpsTransport.ts` imports `@interop/http-client` and
+`@interop/http-signature-zcap-invoke` at module scope, and `EdvClient.ts`
+imports `HttpsTransport`. So any import from the package evaluates the HTTP
+client and the zcap signing code. was-client brings its own transport
+(`WasTransport`) and uses neither class. Of the three reaches into transport
+code in `src/edv/`, this is the only one that loads external HTTP packages, so
+it is the one that matters most to an offline consumer.
+
+Mechanics. was-client has two runtime imports of the package:
+`src/edv/EdvCodec.ts:68` takes `EdvClientCore` and `assertDocId`, and
+`src/edv/WasTransport.ts:48` takes the `Transport` base class that
+`WasTransport` extends. The barrel is `edv-client/src/index.ts:4-10`, and the
+package's export map (`edv-client/package.json`) has the single `.` entry. The
+HTTP imports sit at `edv-client/src/HttpsTransport.ts:5-6` and
+`edv-client/src/EdvClient.ts:5,18`. `EdvClientCore.ts` itself imports only
+`@interop/minimal-cipher`, `@interop/data-integrity-core` and local modules, so
+the new entry needs no code moved inside edv-client. It is a second barrel and
+an export-map entry with the four keys the other `@interop/*` packages use
+(`types`, `react-native`, `import`, `default`).
+
+edv-client has no ROADMAP.md, so the upstream half is tracked here through the
+`touches:` entries.
+
+Resolved: the entry is named `./core`, after the `EdvClientCore` it carries and
+the domain-noun subpath convention the other `@interop` packages use. Rather
+than write a second barrel with its own copy of the four exports, `src/index.ts`
+now re-exports them from `./core.js` and adds the three server-side classes, so
+there is one list and the root cannot drift from it. The upstream test walks
+`core.ts` the way this repo's `import-graph.test.ts` walks a core entry, and
+refuses both HTTP packages plus the three modules that pull them; it also
+asserts the root entry does reach them, so an emptied barrel cannot pass.
+
+was-client's own `test/node/import-graph.test.ts` needed no change, as the item
+predicted. Its core rule matches `specifier === pkg` or a `pkg/` prefix, and its
+guard case matches on prefix, so `@interop/edv-client/core` is covered by both.

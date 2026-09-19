@@ -70,7 +70,7 @@
     "@interop/capability-agent": "^0.2.0",
     "@interop/data-integrity-core": "^8.7.1",
     "@interop/ed25519-signature": "^7.2.2",
-    "@interop/edv-client": "^17.8.4",
+    "@interop/edv-client": "^17.9.0",
     "@interop/ezcap": "^7.4.9",
     "@interop/http-client": "^1.0.5",
     "@interop/minimal-cipher": "^7.10.2",

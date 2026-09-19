@@ -1,5 +1,17 @@
 # @interop/was-client Changelog
 
+## 0.70.0 - TBD
+
+### Changed
+
+- `src/edv/` imports `@interop/edv-client` through that package's new
+  transport-free `./core` entry rather than its root, and the minimum version is
+  now 17.9.0. The root entry also carries `EdvClient` and `HttpsTransport`,
+  which load `@interop/http-client` and `@interop/http-signature-zcap-invoke` at
+  module scope. This package brings its own `WasTransport` and uses neither
+  class, so `@interop/was-client/edv` no longer evaluates the two HTTP packages
+  through the EDV client. No export changes.
+
 ## 0.69.0 - 2026-09-17
 
 ### Added
