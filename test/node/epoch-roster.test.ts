@@ -3,7 +3,7 @@
  */
 /**
  * Unit tests for the crypto-free descriptor predicates (`hasKeyEpochs`,
- * `epochRostersEqual`). They pin the two definitions consumers key their
+ * `epochRostersEqual`) and the write-epoch resolver (`currentEpochOf`). They pin the two definitions consumers key their
  * open/refuse and cipher-rebuild decisions off: what counts as a usable epoch
  * roster, and what counts as the same epoch configuration -- in particular that
  * recipient churn inside an existing epoch and the `hmac` member are NOT part
@@ -14,7 +14,8 @@ import { describe, it, expect } from 'vitest'
 import {
   EDV_SCHEME_VERSION,
   hasKeyEpochs,
-  epochRostersEqual
+  epochRostersEqual,
+  currentEpochOf
 } from '../../src/edv/index.js'
 import type {
   CollectionEncryption,
@@ -225,5 +226,30 @@ describe('epochRostersEqual', () => {
         descriptor({ currentEpoch, epochIds })
       )
     ).toBe(true)
+  })
+})
+
+describe('currentEpochOf', () => {
+  const epochs = descriptor({ epochIds: ['epoch-1', 'epoch-2'] }).epochs ?? []
+
+  it('returns the entry currentEpoch names, not the last one listed', () => {
+    const entry = currentEpochOf({
+      epochs,
+      currentEpoch: 'epoch-1',
+      label: 'test'
+    })
+    expect(entry.id).toBe('epoch-1')
+  })
+
+  it('refuses a descriptor with no currentEpoch', () => {
+    expect(() => currentEpochOf({ epochs, label: 'test' })).toThrow(
+      expect.objectContaining({ name: 'EncryptionError' })
+    )
+  })
+
+  it('refuses a currentEpoch the roster does not list', () => {
+    expect(() =>
+      currentEpochOf({ epochs, currentEpoch: 'epoch-3', label: 'test' })
+    ).toThrow(/epoch-3/)
   })
 })

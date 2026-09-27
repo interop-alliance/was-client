@@ -37,6 +37,7 @@ export {
   wrapEpochSecret,
   hasKeyEpochs,
   epochRostersEqual,
+  currentEpochOf,
   resolveEpochKeys,
   HMAC_KEY_TYPE,
   mintHmacKey,

@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.72.0 - TBD
+
+### Added
+
+- Export `currentEpochOf` from `@interop/was-client/edv` (and from `./edv/core`
+  and `./edv/cipher`). It returns the roster entry a descriptor's `currentEpoch`
+  names, and throws `EncryptionError` when that entry is absent or unlisted.
+
 ## 0.71.0 - 2026-09-18
 
 ### Added

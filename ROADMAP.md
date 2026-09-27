@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 115
+nextAvailableId: 116
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -2055,3 +2055,41 @@ read the old probe paid for. That is the argument for doing this at all, and
 ECS-9 landed on 2026-09-16.
 
 discovered-from: WCL-106.
+
+### WCL-115: `AbortSignal` on `Space.exportStream()` and the request path beneath it
+
+- status: todo
+- priority: medium
+- labels: export, streaming, transport
+- touches:
+  - `@interop/http-client`: its request init must accept and forward `signal` to
+    `fetch`
+  - `@interop/ezcap`: `ZcapClient.request({ signal })` must pass it through to
+    http-client
+  - was-client: `send()` / `rawRequest()` carry `signal` in `SendInput`;
+    `#exportResponse()` and `exportStream({ signal })` thread it
+  - freewallet: `WASRemoteStore.exportSpace` drops its
+    `pipeThrough(..., { signal })` wrap once the request itself is cancellable
+
+Context: `Space.exportStream()` takes no options, and nothing below it (`send`,
+ezcap's `request`, http-client) accepts an `AbortSignal`. A host that wants to
+cancel an export can only cancel the response stream's reader, which reaches the
+connection once the response has started but cannot cancel the request during
+the window before the first byte arrives, and every host writes that reader-side
+wrap itself (freewallet's backup export does, over `pipeThrough` with a
+`signal`). `discovered-from: freewallet FW-530`.
+
+The seam is one optional `signal` on `SendInput`, forwarded unchanged to
+`fetch`, so a cancel aborts the request wherever it is: pending, headers
+received, or mid-body. The abort surfaces as the signal's own reason (an
+`AbortError` by default), not as a `WasError`, so a host tells a cancel from a
+failure without unwrapping.
+
+- acceptance:
+  - [ ] `exportStream({ signal })` aborts a pending request, and the returned
+        stream errors with the signal's reason when aborted mid-body
+  - [ ] The abort reason is not wrapped in a `WasError`
+  - [ ] http-client and ezcap releases carry the pass-through, and was-client's
+        dependency ranges name them
+  - [ ] freewallet's `exportSpace` passes the signal down and drops its
+        stream-side wrap

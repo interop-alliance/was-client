@@ -39,7 +39,8 @@
  * descriptor: whether it carries a usable roster, and whether two descriptors
  * carry the same epoch configuration (`scheme`, `version`, `currentEpoch`, and
  * the ordered epoch ids; recipients and the `hmac` member deliberately
- * excluded).
+ * excluded). `currentEpochOf` resolves the epoch a descriptor seals new writes
+ * under, failing closed on a stale or tampered roster.
  *
  * `x25519RecipientFromDidKey` is the one rule for turning a grantee named only
  * by its Ed25519 `did:key` controller into a `RecipientPublicKey`, so a
@@ -84,7 +85,11 @@ export {
   unwrapEpochSecret,
   wrapEpochSecret
 } from './epochCrypto.js'
-export { hasKeyEpochs, epochRostersEqual } from './epochRoster.js'
+export {
+  hasKeyEpochs,
+  epochRostersEqual,
+  currentEpochOf
+} from './epochRoster.js'
 export { resolveEpochKeys } from './epochKeys.js'
 export type { ResolvedEpochKeys } from './epochKeys.js'
 export {

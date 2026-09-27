@@ -4,7 +4,8 @@
 /**
  * Crypto-free predicates over a Collection's `encryption` descriptor: whether it
  * carries a usable key-epoch roster, and whether two descriptors carry the same
- * epoch configuration. Neither touches key material, so a caller deciding what
+ * epoch configuration; and which roster entry a descriptor seals new writes
+ * under. None touches key material, so a caller deciding what
  * to do with a descriptor -- open it, refuse it fail-closed, rebuild a cipher
  * for it -- does not have to pull in the epoch crypto to ask.
  *
@@ -115,7 +116,8 @@ export function epochRostersEqual(
  * @param options.epochs {CollectionEncryptionEpoch[]}   the non-empty roster
  * @param [options.currentEpoch] {string}   the descriptor's declared write epoch
  * @param options.label {string}   names the collection in the error message
- * @returns {CollectionEncryptionEpoch}
+ * @returns {CollectionEncryptionEpoch}   the roster entry `currentEpoch` names
+ * @throws {EncryptionError}   when `currentEpoch` is absent or unlisted
  */
 export function currentEpochOf({
   epochs,
