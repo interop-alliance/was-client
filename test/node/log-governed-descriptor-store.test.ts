@@ -159,8 +159,7 @@ function fakeGovernedCollection(
       description: {
         type: ['Collection'],
         name: 'Vault',
-        generator: 'did:key:zApp',
-        generatorOrigin: 'https://app.example',
+        generator: { id: 'did:key:zApp', origin: 'https://app.example' },
         encryption: served()
       },
       etag: etag()
@@ -275,15 +274,14 @@ describe('logGovernedCollectionDescriptorStore over a plain descriptor', () => {
     expect(fake._state.logReads).toBe(0)
 
     await store.replace({ ...initial, currentEpoch: 'e1' }, { ifMatch: '"v0"' })
-    // The sibling fields ride along: the server's replace semantics would
-    // otherwise drop the app attribution on a key rotation.
+    // The sibling fields ride along, the app attribution included: the
+    // server's replace semantics would otherwise drop them on a key rotation.
     expect(fake._state.descriptionPuts).toEqual([
       {
         description: {
           name: 'Vault',
           backend: undefined,
-          generator: 'did:key:zApp',
-          generatorOrigin: 'https://app.example',
+          generator: { id: 'did:key:zApp', origin: 'https://app.example' },
           encryption: { ...initial, currentEpoch: 'e1' }
         },
         ifMatch: '"v0"'

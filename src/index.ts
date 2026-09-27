@@ -89,6 +89,7 @@ export type {
   ResourceMetadataCustom,
   ResourceMetadataCustomInput,
   CollectionMetadata,
+  CollectionGenerator,
   AddResult,
   FindPage,
   ImportStats,

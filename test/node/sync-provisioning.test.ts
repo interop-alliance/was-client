@@ -13,7 +13,7 @@
  * labelled-error + `cause` wrapping on failure, without a live server.
  */
 import { describe, it, expect } from 'vitest'
-import type { WasClient } from '../../src/index.js'
+import type { CollectionGenerator, WasClient } from '../../src/index.js'
 import {
   ConflictError,
   PreconditionFailedError,
@@ -31,8 +31,7 @@ interface CollectionDesc {
     epochs?: { id: string }[]
     history?: { method: string; resource: string }
   }
-  generator?: string
-  generatorOrigin?: string
+  generator?: CollectionGenerator
 }
 
 class FakeCollection {
@@ -776,18 +775,20 @@ describe('ensureSpaceAndCollection', () => {
 })
 
 describe('ensureSpaceAndCollection app attribution', () => {
-  const APP = 'did:key:zApp'
-  const ORIGIN = 'https://app.example'
+  const APP: CollectionGenerator = {
+    id: 'did:key:zApp',
+    origin: 'https://app.example',
+    url: 'https://app.example/notes'
+  }
 
-  it('stamps the generator pair on the guarded create', async () => {
+  it('stamps the generator on the guarded create', async () => {
     const space = new FakeSpace()
     await ensureSpaceAndCollection({
       was: new FakeWas(space).asClient(),
       spaceId: SPACE,
       controllerDid: DID,
       collectionId: COLL,
-      generator: APP,
-      generatorOrigin: ORIGIN
+      generator: APP
     })
 
     expect(space.collectionObj.replaceCalls).toEqual([
@@ -795,15 +796,14 @@ describe('ensureSpaceAndCollection app attribution', () => {
         fields: {
           name: COLL,
           encryption: EDV,
-          generator: APP,
-          generatorOrigin: ORIGIN
+          generator: APP
         },
         ifNoneMatch: true
       }
     ])
   })
 
-  it('stamps the generator pair on a descriptor-less create', async () => {
+  it('stamps the generator on a descriptor-less create', async () => {
     const space = new FakeSpace()
     await ensureSpaceAndCollection({
       was: new FakeWas(space).asClient(),
@@ -811,42 +811,23 @@ describe('ensureSpaceAndCollection app attribution', () => {
       controllerDid: DID,
       collectionId: COLL,
       encryption: 'governed',
-      generator: APP,
-      generatorOrigin: ORIGIN
+      generator: APP
     })
 
     expect(space.collectionObj.replaceCalls).toEqual([
       {
-        fields: { name: COLL, generator: APP, generatorOrigin: ORIGIN },
+        fields: { name: COLL, generator: APP },
         ifNoneMatch: true
       }
     ])
   })
 
-  it('does not send generatorOrigin without a generator', async () => {
-    const space = new FakeSpace()
-    await ensureSpaceAndCollection({
-      was: new FakeWas(space).asClient(),
-      spaceId: SPACE,
-      controllerDid: DID,
-      collectionId: COLL,
-      generatorOrigin: ORIGIN
-    })
-
-    // The origin says which origin the DID was bound to, so it carries no
-    // meaning alone: the create body is the unattributed one.
-    expect(space.collectionObj.replaceCalls).toEqual([
-      { fields: { name: COLL, encryption: EDV }, ifNoneMatch: true }
-    ])
-  })
-
-  it('writes nothing when the standing collection already carries the pair', async () => {
+  it('writes nothing when the standing collection already carries a generator', async () => {
     const collection = new FakeCollection({
       current: {
         name: COLL,
         encryption: EDV,
-        generator: APP,
-        generatorOrigin: ORIGIN
+        generator: APP
       }
     })
     const space = new FakeSpace({
@@ -858,23 +839,21 @@ describe('ensureSpaceAndCollection app attribution', () => {
       spaceId: SPACE,
       controllerDid: DID,
       collectionId: COLL,
-      generator: APP,
-      generatorOrigin: ORIGIN
+      generator: APP
     })
 
     expect(collection.replaceCalls).toEqual([])
     expect(collection.describeCalls).toBe(1)
   })
 
-  it("leaves a standing attributed collection's pair unchanged when a different generator is supplied", async () => {
+  it("leaves a standing attributed collection's generator unchanged when a different generator is supplied", async () => {
     // Attribution is stamped on the create only: the creator of a standing
     // collection is never renamed by a later ensure.
     const collection = new FakeCollection({
       current: {
         name: COLL,
         encryption: EDV,
-        generator: APP,
-        generatorOrigin: ORIGIN
+        generator: APP
       }
     })
     const space = new FakeSpace({
@@ -886,18 +865,19 @@ describe('ensureSpaceAndCollection app attribution', () => {
       spaceId: SPACE,
       controllerDid: DID,
       collectionId: COLL,
-      generator: 'did:key:zOtherApp',
-      generatorOrigin: 'https://other.example'
+      generator: {
+        id: 'did:key:zOtherApp',
+        origin: 'https://other.example'
+      }
     })
 
     expect(collection.replaceCalls).toEqual([])
     expect(collection.current()).toMatchObject({
-      generator: APP,
-      generatorOrigin: ORIGIN
+      generator: APP
     })
   })
 
-  it('does not backfill the pair onto a standing unattributed collection', async () => {
+  it('does not backfill a generator onto a standing unattributed collection', async () => {
     const collection = new FakeCollection({
       current: { name: COLL, encryption: EDV }
     })
@@ -910,17 +890,16 @@ describe('ensureSpaceAndCollection app attribution', () => {
       spaceId: SPACE,
       controllerDid: DID,
       collectionId: COLL,
-      generator: APP,
-      generatorOrigin: ORIGIN
+      generator: APP
     })
 
     expect(collection.replaceCalls).toEqual([])
   })
 
-  it('carries a stored pair through the late encryption declaration', async () => {
+  it('carries a stored generator through the late encryption declaration', async () => {
     // Replace semantics: a body that omitted the attribution would drop it.
     const collection = new FakeCollection({
-      current: { name: COLL, generator: APP, generatorOrigin: ORIGIN }
+      current: { name: COLL, generator: APP }
     })
     const space = new FakeSpace({
       current: { name: 'Wallet Space' },
@@ -938,8 +917,7 @@ describe('ensureSpaceAndCollection app attribution', () => {
       name: COLL,
       backend: undefined,
       encryption: EDV,
-      generator: APP,
-      generatorOrigin: ORIGIN
+      generator: APP
     })
   })
 })

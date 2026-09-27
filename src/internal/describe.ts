@@ -118,9 +118,6 @@ export function collectionWritableFields(
     ...(fields.backend !== undefined && { backend: fields.backend }),
     ...(fields.encryption !== undefined && { encryption: fields.encryption }),
     ...(fields.generator !== undefined && { generator: fields.generator }),
-    ...(fields.generatorOrigin !== undefined && {
-      generatorOrigin: fields.generatorOrigin
-    }),
     ...(fields.plaintext !== undefined && { plaintext: fields.plaintext })
   }
 }
@@ -160,8 +157,7 @@ export const CONFIGURATION_MEMBERS: readonly string[] = [
   'name',
   'backend',
   'encryption',
-  'generator',
-  'generatorOrigin'
+  'generator'
 ]
 
 /**

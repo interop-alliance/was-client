@@ -57,12 +57,12 @@ import type {
   BackendReference,
   BackendRegistration,
   CollectionEncryption,
+  CollectionGenerator,
   CollectionMetadata,
   CollectionsList,
   EncryptionOverride,
   GrantOptions,
   HandleOptions,
-  IDID,
   IDelegatedZcap,
   IZcap,
   ImportStats,
@@ -483,13 +483,13 @@ export class Space {
    *   pre-seeded (the handle uses descriptor discovery instead); reads and
    *   writes are refused fail-closed until `ensureFirstEpoch` installs the
    *   epoch roster.
-   * @param [desc.generator] {IDID}   DID of the application the collection is
-   *   being provisioned for. Controller-asserted attribution: the server
-   *   persists it without verifying it, and it stays writable afterwards
+   * @param [desc.generator] {CollectionGenerator}   the application the
+   *   collection is being provisioned for: its DID (`id`), the Web origin that
+   *   DID was bound to at provisioning time (`origin`), and its canonical URL
+   *   (`url`). Controller-asserted attribution: the server persists it without
+   *   verifying it, and it stays writable afterwards
    *   (`configure`/`replaceDescription`), so an existing collection can be
    *   backfilled.
-   * @param [desc.generatorOrigin] {string}   the Web origin the `generator`
-   *   DID was bound to at provisioning time, on the same footing.
    * @param [desc.plaintext] {object}   declare a plaintext collection's
    *   server-side `indexes` (the `equality` query profile) at create. Cannot
    *   be combined with `encryption`; the server rejects both on one object.
@@ -501,8 +501,7 @@ export class Space {
       name?: string
       backend?: BackendReference
       encryption?: CollectionEncryption
-      generator?: IDID
-      generatorOrigin?: string
+      generator?: CollectionGenerator
       plaintext?: CollectionMetadata['plaintext']
     } = {}
   ): Promise<Collection> {

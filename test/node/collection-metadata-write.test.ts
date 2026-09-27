@@ -92,7 +92,7 @@ describe('the merge runs against the version the write pins to', () => {
                 id: 'c',
                 type: ['Collection'],
                 name: 'Old',
-                generator: 'did:example:app'
+                generator: { id: 'did:example:app' }
               },
               '"2"'
             )
@@ -114,7 +114,7 @@ describe('the merge runs against the version the write pins to', () => {
     // The rebased write carries the rival's member forward.
     expect(writes[1]?.json).toMatchObject({
       name: 'Renamed',
-      generator: 'did:example:app'
+      generator: { id: 'did:example:app' }
     })
     expect(writes[1]?.headers?.['if-match']).toBe('"2"')
   })

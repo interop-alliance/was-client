@@ -373,22 +373,28 @@ and tags on the same object's [`custom`](#collection-metadata) member instead,
 where they are encrypted.
 
 An application that provisions a collection can record who it was provisioned
-for, with the optional `generator` (the application's DID) and `generatorOrigin`
-(the Web origin that DID was bound to) fields. Both are accepted at create time
-and stay writable afterwards, so an existing collection can be backfilled; they
-are controller assertions the server persists but does not verify.
+for, with the optional `generator` object: the application's DID (`id`,
+required), the Web origin that DID was bound to (`origin`), and the
+application's canonical URL (`url`, which needs `origin` and must share it), and
+its display label (`name`). It is accepted at create time and stays writable
+afterwards, so an existing collection can be backfilled. A write carrying
+`generator` replaces the stored object whole. It is a controller assertion the
+server persists but does not verify.
 
 ```ts
 await space.createCollection({
   name: 'App Notes',
-  generator: 'did:key:z6Mk...',
-  generatorOrigin: 'https://app.example'
+  generator: {
+    id: 'did:key:z6Mk...',
+    origin: 'https://app.example',
+    url: 'https://app.example/notes',
+    name: 'Notes'
+  }
 })
 
 // Backfill an existing collection (other fields merge forward unchanged).
 await space.collection('notes').configure({
-  generator: 'did:key:z6Mk...',
-  generatorOrigin: 'https://app.example'
+  generator: { id: 'did:key:z6Mk...', origin: 'https://app.example' }
 })
 ```
 

@@ -134,8 +134,7 @@ import type {
  * the mirror of the full-replacement `PUT`: a member the caller leaves out
  * keeps its stored value instead of being cleared. `configure({ name })` on an
  * EDV collection would otherwise wipe its `backend` or trip
- * `encryption-immutable` by clearing the descriptor, and erase a stored
- * `generator`.
+ * `encryption-immutable` by clearing the descriptor.
  *
  * A log-governed `encryption` descriptor is the exception: it is the server's
  * projection of the history log's head, and a write carrying it is refused
@@ -157,16 +156,16 @@ function mergedConfiguration(
     backend: desc.backend ?? current?.backend,
     ...(declared !== undefined &&
       !isGovernedDescriptor(declared) && { encryption: declared }),
-    // The app-attribution members merge forward on the same terms, so a
-    // `configure({ name })` does not erase a stored `generator`. They are
-    // deliberately NOT part of `configure`'s unreadable-object guard: unlike
-    // `backend` and `encryption`, they are freely re-writable attribution
-    // (dropping one is cosmetic, not a data-placement change or an
-    // `encryption-immutable` trip), and admitting them there would let a
-    // `configure({ generator })` sail past the guard and blindly drop the two
-    // members it exists to protect.
+    // The app-attribution member merges forward on the same terms, so a
+    // `configure({ name })` does not erase a stored `generator`. A stated
+    // `generator` replaces the stored object whole: its members are never
+    // merged one by one. It is deliberately NOT part of `configure`'s
+    // unreadable-object guard: unlike `backend` and `encryption`, it is freely
+    // re-writable attribution (dropping it is cosmetic, not a data-placement
+    // change or an `encryption-immutable` trip), and admitting it there would
+    // let a `configure({ generator })` sail past the guard and blindly drop the
+    // two members it exists to protect.
     generator: desc.generator ?? current?.generator,
-    generatorOrigin: desc.generatorOrigin ?? current?.generatorOrigin,
     // Replaced whole when stated, kept when not: the server's own rule for
     // this member, mirrored here so the echoed return reports what is stored.
     plaintext: desc.plaintext ?? current?.plaintext

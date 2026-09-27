@@ -23,8 +23,8 @@
  * by the caller's guarded create of the log.
  */
 import type {
+  CollectionGenerator,
   CollectionMetadata,
-  IDID,
   IZcap,
   SpaceMetadata
 } from '../types.js'
@@ -205,16 +205,14 @@ async function readOrCreate<T>({
  *   request rides (a delegated Space-subtree zcap, say); the root capability
  *   is invoked otherwise. A capability scoped below the bare Space URL cannot
  *   reach the Space half, so a caller holding one supplies `spaceDescription`
- * @param [options.generator] {IDID}   the DID of the application the
- *   collection is provisioned for -- controller-asserted attribution the
- *   server persists but never verifies. It is stamped on the guarded create
+ * @param [options.generator] {CollectionGenerator}   the application the
+ *   collection is provisioned for (its DID, and optionally the Web origin that
+ *   DID was bound to and its canonical URL) -- controller-asserted attribution
+ *   the server persists but never verifies. It is stamped on the guarded create
  *   only: a collection that already stands keeps whatever attribution it
  *   carries (or none), so a later ensure naming a different application
  *   cannot rename the creator. A caller that wants to re-attribute a standing
  *   collection writes its Description itself
- * @param [options.generatorOrigin] {string}   the Web origin the `generator`
- *   DID was bound to at provisioning time (e.g. `https://app.example`).
- *   Meaningless on its own, so it is dropped when `generator` is absent
  * @returns {Promise<void>}
  */
 export async function ensureSpaceAndCollection({
@@ -228,8 +226,7 @@ export async function ensureSpaceAndCollection({
   collectionName = collectionId,
   spaceDescription,
   capability,
-  generator,
-  generatorOrigin
+  generator
 }: {
   was: WasClient
   spaceId: string
@@ -241,8 +238,7 @@ export async function ensureSpaceAndCollection({
   collectionName?: string
   spaceDescription?: SpaceMetadata
   capability?: IZcap
-  generator?: IDID
-  generatorOrigin?: string
+  generator?: CollectionGenerator
 }): Promise<void> {
   const space = was.space(spaceId, { capability })
 
@@ -262,19 +258,9 @@ export async function ensureSpaceAndCollection({
 
   try {
     const collection = space.collection(collectionId)
-    // The app-attribution pair as it goes on the wire. `generatorOrigin` says
-    // which origin the `generator` DID was bound to, so it carries no meaning
-    // without one and is left off when the caller supplied only the origin.
-    // Nothing verifies the pair once it is stored -- the server persists it
-    // as written -- so `generator` is typed as a DID here, the same shape
-    // every other write path takes.
-    const attribution =
-      generator === undefined
-        ? {}
-        : {
-            generator,
-            ...(generatorOrigin !== undefined && { generatorOrigin })
-          }
+    // The app attribution as it goes on the wire. Nothing verifies it once
+    // it is stored -- the server persists it as written.
+    const attribution = generator === undefined ? {} : { generator }
     // A `'governed'` or `'plaintext'` collection takes the descriptor-less
     // create: a governed `encryption` member is the server's to derive.
     const { value: read, created } = await readOrCreate({
@@ -330,8 +316,7 @@ export async function ensureSpaceAndCollection({
             return { value: latest.description, etag: latest.etag }
           },
           // Replace semantics: every writable field is carried forward,
-          // the app attribution included -- a body omitting it would drop a
-          // stored `generator` on the server's replace. The description just
+          // the app attribution included. The description just
           // read is handed over whole, and `replaceDescription` picks the
           // writable fields out of it, so this site cannot drift as fields
           // are added.

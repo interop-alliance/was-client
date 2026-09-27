@@ -413,7 +413,7 @@ describe('collection.setMeta()', () => {
         type: ['Collection'],
         name: 'Configured',
         backend: { id: 'custom' },
-        generator: 'did:example:app',
+        generator: { id: 'did:example:app' },
         createdAt: '2026-01-01T00:00:00Z'
       }
     })
@@ -429,7 +429,7 @@ describe('collection.setMeta()', () => {
       id: 'c',
       name: 'Configured',
       backend: { id: 'custom' },
-      generator: 'did:example:app',
+      generator: { id: 'did:example:app' },
       custom: { name: 'Notes', tags: { project: 'demo' } }
     })
     // The identity codec surfaces no key epoch, so the body carries no `epoch`
@@ -816,14 +816,13 @@ describe('Collection reserved-id guard', () => {
   })
 
   it('merges the stored generator attribution forward on a rename', async () => {
-    // `generator` / `generatorOrigin` are controller-asserted app attribution;
-    // a rename must not erase them on a replace-semantics server.
+    // `generator` is controller-asserted app attribution;
+    // a rename must not erase it on a replace-semantics server.
     const current = {
       id: 'notes',
       type: ['Collection'],
       name: 'Notes',
-      generator: 'did:key:zApp',
-      generatorOrigin: 'https://app.example'
+      generator: { id: 'did:key:zApp', origin: 'https://app.example' }
     }
     const { client, calls } = clientWithRequestSpy({ data: current })
     const result = await client
@@ -834,11 +833,36 @@ describe('Collection reserved-id guard', () => {
     expect(put?.json).toEqual({
       id: 'notes',
       name: 'Renamed',
-      generator: 'did:key:zApp',
-      generatorOrigin: 'https://app.example'
+      generator: { id: 'did:key:zApp', origin: 'https://app.example' }
     })
-    expect(result.description.generator).toBe('did:key:zApp')
-    expect(result.description.generatorOrigin).toBe('https://app.example')
+    expect(result.description.generator).toEqual({
+      id: 'did:key:zApp',
+      origin: 'https://app.example'
+    })
+  })
+
+  it('replaces a stored generator whole when one is stated', async () => {
+    const current = {
+      id: 'notes',
+      type: ['Collection'],
+      name: 'Notes',
+      generator: {
+        id: 'did:key:zApp',
+        origin: 'https://app.example',
+        url: 'https://app.example/notes'
+      }
+    }
+    const { client, calls } = clientWithRequestSpy({ data: current })
+    await client
+      .space('s')
+      .collection('notes')
+      .configure({ generator: { id: 'did:key:zOther' } })
+    const put = calls.find(call => call.method === 'PUT')
+    expect(put?.json).toEqual({
+      id: 'notes',
+      name: 'Notes',
+      generator: { id: 'did:key:zOther' }
+    })
   })
 })
 
@@ -848,16 +872,14 @@ describe('space.createCollection() request body', () => {
     const collection = await client.space('s').createCollection({
       id: 'notes',
       name: 'Notes',
-      generator: 'did:key:zApp',
-      generatorOrigin: 'https://app.example'
+      generator: { id: 'did:key:zApp', origin: 'https://app.example' }
     })
     expect(calls[0]?.method).toBe('POST')
     expect(calls[0]?.url).toBe('https://was.example/space/s/')
     expect(calls[0]?.json).toEqual({
       id: 'notes',
       name: 'Notes',
-      generator: 'did:key:zApp',
-      generatorOrigin: 'https://app.example'
+      generator: { id: 'did:key:zApp', origin: 'https://app.example' }
     })
     expect(collection.id).toBe('notes')
   })

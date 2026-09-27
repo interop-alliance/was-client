@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.73.0 - TBD
+
+### Changed
+
+- **BREAKING**: a Collection's `generator` is now the `CollectionGenerator`
+  object `{ id, origin?, url?, name? }` from `@interop/storage-core`, replacing
+  the DID string. `generatorOrigin` is removed from `CollectionWritableFields`,
+  `Space.createCollection`, and `ensureSpaceAndCollection`; the origin is now
+  `generator.origin`. A write carrying `generator` replaces the stored object
+  whole. `CollectionGenerator` is re-exported from the root entry.
+
 ## 0.72.0 - 2026-09-27
 
 ### Added

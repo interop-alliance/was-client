@@ -19,7 +19,11 @@ import type {
 } from '@interop/data-integrity-core/zcap'
 import type { IDID, ISigner } from '@interop/data-integrity-core'
 
-import type { ActionInput, CollectionMetadata } from '@interop/storage-core'
+import type {
+  ActionInput,
+  CollectionGenerator,
+  CollectionMetadata
+} from '@interop/storage-core'
 
 export type { IZcap, IDelegatedZcap, IRootZcap, IDID, ISigner }
 
@@ -54,6 +58,7 @@ export type {
   ResourceMetadata,
   ResourceMetadataCustom,
   CollectionMetadata,
+  CollectionGenerator,
   ImportStats,
   BackendReference,
   BackendDescriptor,
@@ -137,19 +142,20 @@ export interface CollectionWritableFields {
   backend?: BackendReference
   encryption?: CollectionEncryption
   /**
-   * DID of the application the Collection was provisioned for, and the Web
-   * origin that DID was bound to at provisioning time. Both are
-   * controller-asserted attribution (the server persists them but does not
-   * verify them) and both are writable at create AND update, so a wallet can
-   * backfill an existing Collection on reconnect.
+   * The application the Collection was provisioned for: its DID (`id`), the
+   * Web origin that DID was bound to at provisioning time (`origin`), and its
+   * canonical URL (`url`). Controller-asserted attribution (the server
+   * persists it but does not verify it), writable at create AND update, so a
+   * wallet can backfill an existing Collection on reconnect. A write carrying
+   * it replaces the stored object whole, and a write that leaves it out keeps
+   * the stored one.
    */
-  generator?: IDID
-  generatorOrigin?: string
+  generator?: CollectionGenerator
   /**
    * The server-side processing declared for a plaintext Collection (its
    * `indexes` for the `equality` query profile); the served member's own type.
-   * The one configuration member with keep-if-omitted wire semantics: a
-   * supplied object replaces the stored one whole, and a write that leaves it
+   * Like `generator`, a configuration member with keep-if-omitted wire
+   * semantics: a supplied object replaces the stored one whole, and a write that leaves it
    * out carries the stored one forward rather than clearing it. Mutually
    * exclusive with `encryption` by presence, which the server enforces.
    */

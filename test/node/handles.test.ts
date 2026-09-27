@@ -299,7 +299,7 @@ describe('space() encryption default', () => {
 })
 
 /**
- * `createCollection`'s `generator` is typed `IDID`, which the root entry
+ * `createCollection`'s `generator.id` is typed `IDID`, which the root entry
  * exports: a caller holding a plain `string` needs the annotation to narrow
  * to it, and the handle a create returns reflects the collection's own
  * declaration rather than the Space handle's encryption default.
@@ -323,7 +323,7 @@ describe('createCollection', () => {
     const appDid = 'did:key:zApp' as IDID
     const collection = await client
       .space('s')
-      .createCollection({ id: 'c', generator: appDid })
+      .createCollection({ id: 'c', generator: { id: appDid } })
     expect(collection.id).toBe('c')
     expect(urls).toEqual(['https://was.example/space/s/'])
   })
