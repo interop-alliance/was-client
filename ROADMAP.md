@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 116
+nextAvailableId: 118
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -354,6 +354,30 @@ Filed 2026-09-16 from WASS-44. The client already constructs exactly what the
 profile describes (an Ed25519 `did:key` capability invocation with the `Digest`
 header); this item only makes it check that the server says it accepts that, in
 the place the spec now says to look.
+
+### WCL-117: Chunked upload of a large Resource in a plaintext Collection
+
+- status: draft
+- priority: low
+- labels: streams, chunks, spec
+- touches:
+  - "wallet-attached-storage-spec" -- the core spec reserves the `chunks`
+    sub-path but defines chunk endpoints only by reference to the Encrypted
+    Collections spec; a plaintext chunked Resource needs its own definition
+  - "was-teaching-server" -- chunk endpoints would need to serve a plaintext
+    Collection's reassembled Resource on a plain `GET`
+- acceptance: none yet -- spec-blocked (see below)
+
+discovered-from: WCL-116. Chunking is the better answer for very large files:
+each chunk is its own signed request with its own `Digest`, so memory stays
+constant, a failure costs one chunk rather than the whole file, and an upload
+can resume. was-client routes an oversize write to chunks only on the
+encrypted-Collection path (`EdvCodec`, see WCL-12 and WCL-13). A plaintext
+Collection has no defined chunked representation: nothing says how a plain `GET`
+of the Resource returns the reassembled bytes, how the chunk count and order are
+recorded, or how a partial upload is told apart from a finished one. Those are
+new wire conventions and need a spec decision before this item gains acceptance
+criteria.
 
 ## Whole-codebase review findings (2026-09-11)
 

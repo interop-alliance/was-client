@@ -3142,3 +3142,52 @@ legitimately take options with neither member, since `delegateGrantAt` fills
 and typecheck clean. The same faulty depth argument appears twice in
 was-teaching-server (`src/lib/paths.ts` and `src/routes.ts`) and is filed there
 as WAS-148.
+
+### WCL-116: Hash a large binary body incrementally before a signed write
+
+- status: done
+- done: 2026-09-27
+- priority: medium
+- labels: streams, digest, ergonomics
+- touches:
+  - "@interop/http-digest-header" -- needs an incremental SHA-256 digest over a
+    `Blob` or `ReadableStream` (from `@noble/hashes`), producing the same `mh=`
+    multihash header value `createHeaderValue` does today. IMPLEMENTED
+    (2026-09-27, published as 3.2.0): `createHeaderValue` streams a `Blob` or
+    `ReadableStream`; no API change for callers
+  - "@interop/ezcap" -- `ZcapClient.request` must pass a caller-supplied
+    `Digest` through to the signer, and hand a `Blob` body to `fetch` without
+    reading it. NO SOURCE CHANGE NEEDED (2026-09-27): it already does both;
+    pinned by `test/node/ZcapClient.digest.test.ts`
+  - "@interop/http-signature-zcap-invoke" -- already skips its own digest when a
+    `Digest` header is supplied; confirm and pin that with a test. CONFIRMED
+    (2026-09-27): pinned in `tests/10-sign.spec.js`, including a capitalized
+    `Digest` key. With the streaming digest upstream, the caller-supplied path
+    is not needed; the signer's own `createHeaderValue` call streams
+- acceptance:
+  - [x] A binary `Resource.put()` / `Collection.add()` of a `Blob` computes its
+        `Digest` by streaming the Blob through an incremental hash, so peak
+        memory does not grow with the file size
+  - [x] The same `Blob` is sent as the request body, so the browser streams it
+        from disk rather than from a buffer
+  - [x] The header value is byte-identical to the one the in-memory path
+        produces for the same bytes (test against a fixture)
+  - [x] A test uploads a body well past the in-memory threshold and the server
+        accepts its `Digest`
+
+The HTTP signature covers the `digest` header, and headers go out before the
+body, so the digest must exist before the request starts. Today
+`http-digest-header` reads a `Blob` in full (`arrayBuffer()` / `bytes()`) and
+hashes it with `crypto.subtle.digest`, which has no incremental form. A 1 GB
+upload therefore becomes a 1 GB buffer in the tab before any byte is sent. The
+fix reads the file twice, once to hash and once to send, at constant memory. No
+wire change: the `Digest` header format and what the server checks are
+unchanged. The server already verifies a streamed body incrementally and commits
+it only after the digest matches.
+
+Resolution: `@interop/http-digest-header` 3.2.0 streams a `Blob` or
+`ReadableStream` through an incremental SHA-256, and was-client's lockfile now
+resolves it transitively (the zcap-invoke range `^3.1.0` admits it).
+`test/integration/large-binary-upload.test.ts` puts and adds a 40 MiB Blob and
+the server accepts its `Digest`. With a spy on full Blob reads, 3.1.0 read the
+whole Blob in `_normalizeData` and 3.2.0 read none of it.

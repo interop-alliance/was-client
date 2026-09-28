@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.74.0 - TBD
+
+### Changed
+
+- A binary `Blob` write hashes its body incrementally for the `Digest` header,
+  so memory use no longer grows with the upload size (via
+  `@interop/http-digest-header` 3.2.0, now in the lockfile).
+
 ## 0.73.0 - 2026-09-27
 
 ### Changed
