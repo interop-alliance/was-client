@@ -683,7 +683,10 @@ the collection's history log, and the caller declares the governance afterwards
 through the log's guarded create. An existing collection whose descriptor is
 client-written (no `history` member) can never become governed, so that mode
 refuses it with `ValidationError` instead of leaving the caller's log create to
-fail at the server.
+fail at the server. It resolves `{ created }`, taken from the guarded create
+itself: `true` only when this call's create made the collection. A lost race
+that adopts the rival's collection resolves `false`, so a caller deciding
+whether the collection is its own reads this rather than an earlier describe.
 
 ## Concurrency
 

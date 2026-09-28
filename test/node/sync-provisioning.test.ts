@@ -774,6 +774,64 @@ describe('ensureSpaceAndCollection', () => {
   })
 })
 
+describe('ensureSpaceAndCollection created result', () => {
+  it('resolves created true when its own guarded create made the collection', async () => {
+    const space = new FakeSpace({ current: { name: 'Wallet Space' } })
+    const result = await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      encryption: 'plaintext'
+    })
+    expect(result).toEqual({ created: true })
+  })
+
+  it('resolves created false when the collection already stands', async () => {
+    const collection = new FakeCollection({ current: { name: COLL } })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    const result = await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      encryption: 'plaintext'
+    })
+    expect(result).toEqual({ created: false })
+    expect(collection.replaceCalls).toHaveLength(0)
+  })
+
+  it('resolves created false when it loses the create race and adopts the rival', async () => {
+    const collection = new FakeCollection({
+      collideOnce: state => {
+        state.current = { name: 'Rival' }
+      }
+    })
+    const space = new FakeSpace({
+      current: { name: 'Wallet Space' },
+      collection
+    })
+    const result = await ensureSpaceAndCollection({
+      was: new FakeWas(space).asClient(),
+      spaceId: SPACE,
+      controllerDid: DID,
+      collectionId: COLL,
+      encryption: 'plaintext',
+      isPublic: true
+    })
+    expect(result).toEqual({ created: false })
+    // The guarded create was attempted and refused; the rival is kept.
+    expect(collection.replaceCalls).toHaveLength(1)
+    expect(collection.current()).toEqual({ name: 'Rival' })
+    // A lost race reads the policy before granting world read.
+    expect(collection.isPublicCalls).toBe(1)
+    expect(collection.setPublicCalls).toBe(1)
+  })
+})
+
 describe('ensureSpaceAndCollection app attribution', () => {
   const APP: CollectionGenerator = {
     id: 'did:key:zApp',

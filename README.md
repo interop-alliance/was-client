@@ -1124,7 +1124,9 @@ plugs into:
   created with no `encryption` member, the caller declaring governance
   afterwards through the history log's guarded create. An optional `capability`
   is the invocation capability every request rides, for a client holding a
-  delegated zcap rather than the Space's root authority.
+  delegated zcap rather than the Space's root authority. It resolves
+  `{ created }`: `true` when its own guarded create made the collection, and
+  `false` when the collection already stood or a rival won the create race.
 
 ```ts
 import {

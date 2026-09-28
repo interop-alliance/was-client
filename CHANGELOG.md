@@ -1,5 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.77.0 - TBD
+
+### Added
+
+- `isGovernedDescriptor` is exported from the root entry. It tells a
+  log-governed collection's served `encryption` member (it carries `history`)
+  from a client-written descriptor.
+
+### Changed
+
+- `ensureSpaceAndCollection` resolves `{ created: boolean }` in place of `void`.
+  `created` comes from the guarded create itself. It is `true` only when this
+  call's create made the collection, and `false` when the collection already
+  stood or this call lost a create race and adopted the rival's. Callers that
+  ignore the result are unaffected.
+
 ## 0.76.0 - 2026-09-28
 
 ### Changed

@@ -15,6 +15,7 @@ export { discoverService } from './internal/service.js'
 export { parseSpaceTarget } from './internal/paths.js'
 export type { ParsedSpacePath } from './internal/paths.js'
 export { readEtag, writeHeaders } from './internal/conditional.js'
+export { isGovernedDescriptor } from './internal/describe.js'
 export type { WritePrecondition } from './internal/conditional.js'
 
 export {

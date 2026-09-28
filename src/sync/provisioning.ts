@@ -213,7 +213,12 @@ async function readOrCreate<T>({
  *   carries (or none), so a later ensure naming a different application
  *   cannot rename the creator. A caller that wants to re-attribute a standing
  *   collection writes its Description itself
- * @returns {Promise<void>}
+ * @returns {Promise<{ created: boolean }>}   whether this call's guarded
+ *   create made the collection. It is `false` when the collection already
+ *   stood, and also when this call lost a create race and adopted the rival's
+ *   collection. A caller that must know whether the collection is its own
+ *   reads this rather than an earlier description, which a rival can
+ *   outrun
  */
 export async function ensureSpaceAndCollection({
   was,
@@ -239,7 +244,7 @@ export async function ensureSpaceAndCollection({
   spaceDescription?: SpaceMetadata
   capability?: IZcap
   generator?: CollectionGenerator
-}): Promise<void> {
+}): Promise<{ created: boolean }> {
   const space = was.space(spaceId, { capability })
 
   if (spaceDescription === undefined) {
@@ -340,6 +345,7 @@ export async function ensureSpaceAndCollection({
     if (isPublic && (created || !(await collection.isPublic()))) {
       await collection.setPublic()
     }
+    return { created }
   } catch (err) {
     rethrowProvisioningFailure(
       err,
