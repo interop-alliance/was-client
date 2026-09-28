@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.78.0 - TBD
+
+### Added
+
+- `edvIdFromBytes` (`./edv/cipher`) formats 16 caller-supplied bytes as a
+  deterministic EDV document id, for a caller minting one from a digest it
+  already holds instead of `EdvDocumentCipher.deriveId`'s own hashing.
+
 ## 0.77.0 - 2026-09-28
 
 ### Added

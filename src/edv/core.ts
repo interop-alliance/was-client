@@ -51,7 +51,8 @@ export {
   KeyUnwrapError,
   UnknownEpochError,
   isEncryptedEnvelope,
-  isKeyUnwrapError
+  isKeyUnwrapError,
+  edvIdFromBytes
 } from './cipher.js'
 export type {
   CodecTransportFactory,

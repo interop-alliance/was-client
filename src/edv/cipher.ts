@@ -35,6 +35,10 @@
  * epoch key (see `hmacKey.ts`). It is installed at provisioning or never, and
  * never rotates.
  *
+ * `edvIdFromBytes` formats 16 caller-supplied bytes as an EDV document id, for
+ * a caller that already holds a truncated digest and wants the matching id
+ * without going through `EdvDocumentCipher.deriveId`'s own hashing.
+ *
  * `hasKeyEpochs` and `epochRostersEqual` are the crypto-free predicates over a
  * descriptor: whether it carries a usable roster, and whether two descriptors
  * carry the same epoch configuration (`scheme`, `version`, `currentEpoch`, and
@@ -111,3 +115,4 @@ export {
 } from './docCipher.js'
 export type { DocCipher, EdvDocCipher } from './docCipher.js'
 export { isKeyUnwrapError } from '../sync/predicates.js'
+export { edvIdFromBytes } from './edvId.js'

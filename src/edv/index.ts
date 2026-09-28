@@ -98,7 +98,8 @@ export {
   KeyUnwrapError,
   UnknownEpochError,
   isEncryptedEnvelope,
-  isKeyUnwrapError
+  isKeyUnwrapError,
+  edvIdFromBytes
 } from './core.js'
 export type {
   CodecTransportFactory,
