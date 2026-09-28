@@ -728,13 +728,15 @@ export async function addRecipient({
  *   the default zcap revocation. Runs only after the rotation is durable, and
  *   should tolerate being re-run (removeRecipient is retried to convergence).
  *   Mutually exclusive with `space` / `revoke`.
- * @param [options.resolveRecipientKey] {function}   resolves a remaining
- *   recipient's `kid` to its public key-agreement key, so the fresh epoch key
- *   can be wrapped to it. Defaults to a `did:key` resolver (the `kid` fragment
- *   is the X25519 public key); override for recipients whose `kid` is not a
- *   self-describing `did:key`. May resolve `null` to signal drop-this-kid:
- *   the rotation then excludes that entry from the fresh epoch instead of
- *   throwing (subject to the no-recipients-remaining guard).
+ * @param options.resolveRecipientKey {function}   resolves a remaining
+ *   recipient's `kid` to a caller-vouched public key-agreement key, so the
+ *   fresh epoch key can be wrapped to it. The roster is read from the server,
+ *   so a kid it names is not evidence of a legitimate reader: resolve only
+ *   keys the caller already trusts (an allowlist, or a verified controller
+ *   document), and resolve `null` for any other kid. The rotation then
+ *   excludes that entry from the fresh epoch instead of throwing (subject to
+ *   the no-recipients-remaining guard). {@link trustRosterDidKeys} is the
+ *   explicit opt-in to trusting every well-formed `did:key` kid in the roster.
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function removeRecipient({
@@ -744,7 +746,7 @@ export async function removeRecipient({
   recipientId,
   revoke,
   pull,
-  resolveRecipientKey = defaultResolveRecipientKey
+  resolveRecipientKey
 }: {
   collection?: Collection
   store?: EncryptionDescriptorStore
@@ -752,7 +754,7 @@ export async function removeRecipient({
   recipientId: string | string[]
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
-  resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
+  resolveRecipientKey: (kid: string) => Promise<RecipientPublicKey | null>
 }): Promise<CollectionEncryption> {
   const descriptorStore = descriptorStoreFor({ collection, store })
   // Resolve the pull axis up front, before any rotation, so a malformed call
@@ -826,6 +828,15 @@ async function rotateOffRecipients({
   resolveRecipientKey: (kid: string) => Promise<RecipientPublicKey | null>
   pullAxis: () => Promise<void>
 }): Promise<CollectionEncryption> {
+  // The type requires a resolver; a JS caller omitting it gets this refusal
+  // rather than a silent fallback to trusting the server-read roster.
+  if (typeof resolveRecipientKey !== 'function') {
+    throw new ValidationError(
+      `${operation} needs a resolveRecipientKey that resolves only ` +
+        'caller-vouched recipient keys (pass trustRosterDidKeys to opt in ' +
+        'to trusting every did:key in the roster).'
+    )
+  }
   const incoming = escrow?.incoming ?? []
   // 1. Read axis: mint a fresh epoch, wrap it to every remaining recipient,
   // append it, and repoint `currentEpoch` (compare-and-swap, retried on race).
@@ -1005,10 +1016,10 @@ async function rotateOffRecipients({
  *   pull axis, with `space`
  * @param [options.pull] {function}   a caller-supplied pull action; mutually
  *   exclusive with `space` / `revoke`
- * @param [options.resolveRecipientKey] {function}   resolves a remaining
- *   recipient's kid for the fresh epoch, `null` to drop it -- the
- *   {@link removeRecipient} contract (the incoming recipients never route
- *   through it)
+ * @param options.resolveRecipientKey {function}   resolves a remaining
+ *   recipient's kid to a caller-vouched key for the fresh epoch, `null` to
+ *   drop it -- the {@link removeRecipient} contract (the incoming recipients
+ *   never route through it)
  * @returns {Promise<CollectionEncryption>}   the new descriptor
  */
 export async function replaceRecipient({
@@ -1020,7 +1031,7 @@ export async function replaceRecipient({
   owner,
   revoke,
   pull,
-  resolveRecipientKey = defaultResolveRecipientKey
+  resolveRecipientKey
 }: {
   collection?: Collection
   store?: EncryptionDescriptorStore
@@ -1030,7 +1041,7 @@ export async function replaceRecipient({
   owner: { keyAgreementKey: IKeyAgreementKey }
   revoke?: IDelegatedZcap | IDelegatedZcap[]
   pull?: () => Promise<void>
-  resolveRecipientKey?: (kid: string) => Promise<RecipientPublicKey | null>
+  resolveRecipientKey: (kid: string) => Promise<RecipientPublicKey | null>
 }): Promise<CollectionEncryption> {
   const descriptorStore = descriptorStoreFor({ collection, store })
   const pullAxis = resolvePullAxis({ space, revoke, pull })
@@ -1126,14 +1137,21 @@ function resolvePullAxis({
 }
 
 /**
- * The default recipient-key resolver: treats a `kid` as a self-describing
- * `did:key` X25519 key-agreement key (`did:key:z...#z...`), so the public key is
- * the fragment.
+ * A `resolveRecipientKey` that trusts the roster itself: it treats any
+ * well-formed `kid` as a self-describing `did:key` X25519 key-agreement key
+ * (`did:key:z...#z...`) and wraps the fresh epoch to the key in its fragment.
+ *
+ * Unsafe on an unauthenticated roster. The descriptor is read from the server,
+ * so whoever can write it can append an entry naming their own key, and a
+ * rotation through this resolver hands them the fresh epoch secret. Checking
+ * the fragment against the DID part does not help, since an injected
+ * `did:key:z6LS...#z6LS...` is self-consistent. Pass it only when the roster
+ * is authenticated some other way (e.g. a log-governed descriptor store).
  *
  * @param kid {string}
  * @returns {Promise<RecipientPublicKey>}
  */
-async function defaultResolveRecipientKey(
+export async function trustRosterDidKeys(
   kid: string
 ): Promise<RecipientPublicKey> {
   const resolved = await didKeyResolver({ id: kid })

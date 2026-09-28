@@ -27,6 +27,7 @@ export {
   addRecipient,
   removeRecipient,
   replaceRecipient,
+  trustRosterDidKeys,
   isEd25519DidKey,
   x25519RecipientFromDidKey,
   resourceDescriptorStore,

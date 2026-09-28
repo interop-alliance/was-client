@@ -41,7 +41,8 @@ import {
   addRecipient,
   ensureFirstEpoch,
   initRecipients,
-  removeRecipient
+  removeRecipient,
+  trustRosterDidKeys
 } from '../../src/edv/recipients.js'
 
 /**
@@ -583,6 +584,7 @@ describe('rotation preserves the blinded-index hmac key', () => {
 
     const fakeSpace = { revoke: async () => undefined }
     const afterRemove = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: bob.kak.id,
@@ -1069,6 +1071,7 @@ describe('removeRecipient security', () => {
 
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         collection: fake as unknown as Collection,
         space: { revoke: async () => undefined } as unknown as Space,
         recipientId: mallory.kak.id,
@@ -1096,6 +1099,7 @@ describe('removeRecipient security', () => {
 
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         collection: fake as unknown as Collection,
         space: { revoke: async () => undefined } as unknown as Space,
         recipientId: mallory.kak.id,
@@ -1118,12 +1122,14 @@ describe('removeRecipient security', () => {
     const fakeSpace = { revoke: async () => undefined }
 
     await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: xavier.kak.id,
       revoke: []
     })
     const afterY = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: yolanda.kak.id,
@@ -1149,6 +1155,7 @@ describe('removeRecipient security', () => {
     const fakeSpace = { revoke: async () => undefined }
 
     const after = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: [xavier.kak.id, yolanda.kak.id],
@@ -1169,6 +1176,7 @@ describe('removeRecipient security', () => {
     const fake = mutableCollection(await seedDescriptor([alice]))
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         collection: fake as unknown as Collection,
         space: { revoke: async () => undefined } as unknown as Space,
         recipientId: [],
@@ -1196,6 +1204,7 @@ describe('removeRecipient security', () => {
     const revokedZcap = { id: 'urn:zcap:x' }
 
     const rotated = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: bob.kak.id,
@@ -1221,6 +1230,7 @@ describe('removeRecipient security', () => {
     }
 
     const rotated = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: bob.kak.id,
@@ -1251,6 +1261,7 @@ describe('removeRecipient security', () => {
     }
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         collection: fake as unknown as Collection,
         space: fakeSpace as unknown as Space,
         recipientId: bob.kak.id,
@@ -1282,7 +1293,8 @@ describe('removeRecipient security', () => {
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: bob.kak.id,
-      revoke: { id: 'urn:zcap:x' } as never
+      revoke: { id: 'urn:zcap:x' } as never,
+      resolveRecipientKey: trustRosterDidKeys
     }
 
     await expect(removeRecipient(removal)).rejects.toThrow(/transient/)

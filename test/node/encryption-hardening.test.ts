@@ -41,7 +41,8 @@ import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
   initRecipients,
-  removeRecipient
+  removeRecipient,
+  trustRosterDidKeys
 } from '../../src/edv/recipients.js'
 
 /**
@@ -768,6 +769,7 @@ describe('epoch configuration lifecycle', () => {
     })
     const fakeSpace = { revoke: async () => undefined }
     const afterRemove = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: fake as unknown as Collection,
       space: fakeSpace as unknown as Space,
       recipientId: bob.kak.id,

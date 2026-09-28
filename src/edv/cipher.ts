@@ -69,7 +69,8 @@ export {
   initRecipients,
   addRecipient,
   removeRecipient,
-  replaceRecipient
+  replaceRecipient,
+  trustRosterDidKeys
 } from './recipients.js'
 export type { RecipientPublicKey } from './recipients.js'
 export {

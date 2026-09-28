@@ -45,7 +45,8 @@ import {
   createEdvEncryption,
   initRecipients,
   addRecipient,
-  removeRecipient
+  removeRecipient,
+  trustRosterDidKeys
 } from '../../src/edv/index.js'
 import { didKeyResolver } from '../../src/edv/epochCrypto.js'
 
@@ -288,6 +289,7 @@ describeLive('multi-recipient key epochs (live server)', () => {
 
     // The full, indivisible removal: revoke readerB's pull AND rotate the epoch.
     const rotated = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       collection: ownerVault(),
       space: owner.was.space(spaceId),
       recipientId: readerB.recipient.id,

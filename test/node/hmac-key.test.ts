@@ -31,7 +31,8 @@ import {
   addRecipient,
   ensureFirstEpoch,
   removeRecipient,
-  replaceRecipient
+  replaceRecipient,
+  trustRosterDidKeys
 } from '../../src/edv/recipients.js'
 import { createEdvEncryption, EdvCodec } from '../../src/edv/index.js'
 
@@ -342,6 +343,7 @@ describe('roster operations carry the blinded-index key', () => {
     const store = memoryStore(encryption)
 
     const removed = (await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       recipientId: bob.kak.id,
       pull: async () => {}
@@ -369,6 +371,7 @@ describe('roster operations carry the blinded-index key', () => {
     )
     const store = memoryStore(encryption)
     const removed = (await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       recipientId: bob.kak.id,
       pull: async () => {}
@@ -384,6 +387,7 @@ describe('roster operations carry the blinded-index key', () => {
     const store = memoryStore(encryption)
 
     const replaced = (await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: bob.kak.id,
       recipient: {
@@ -414,6 +418,7 @@ describe('roster operations carry the blinded-index key', () => {
     const store = memoryStore(encryption)
 
     const replaced = (await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: bob.kak.id,
       recipient: [

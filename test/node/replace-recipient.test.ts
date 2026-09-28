@@ -22,7 +22,10 @@ import {
   epochKeyIdFor,
   reconstructEpochKeyPair
 } from '../../src/edv/epochCrypto.js'
-import { replaceRecipient } from '../../src/edv/recipients.js'
+import {
+  replaceRecipient,
+  trustRosterDidKeys
+} from '../../src/edv/recipients.js'
 
 /**
  * Generates a self-describing did:key X25519 reader (the default recipient
@@ -141,6 +144,7 @@ describe('replaceRecipient', () => {
     const historicEpochId = store.state.descriptor.currentEpoch!
 
     const result = await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: oldUserKey.kid,
       recipient: {
@@ -205,6 +209,7 @@ describe('replaceRecipient', () => {
     const historicEpochId = store.state.descriptor.currentEpoch!
 
     const result = await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: spentKey.kid,
       recipient: [
@@ -269,6 +274,7 @@ describe('replaceRecipient', () => {
       }
     ]
     const first = await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: spentKey.kid,
       recipient: recipients,
@@ -276,6 +282,7 @@ describe('replaceRecipient', () => {
       pull: async () => {}
     })
     const second = await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: spentKey.kid,
       recipient: recipients,
@@ -299,6 +306,7 @@ describe('replaceRecipient', () => {
     )
     await expect(
       replaceRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         retire: spentKey.kid,
         recipient: [],
@@ -308,6 +316,7 @@ describe('replaceRecipient', () => {
     ).rejects.toThrow(ValidationError)
     await expect(
       replaceRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         retire: [spentKey.kid, incoming.kak.id],
         recipient: [
@@ -342,7 +351,8 @@ describe('replaceRecipient', () => {
         publicKeyMultibase: newUserKey.publicKeyMultibase
       },
       owner: { keyAgreementKey: oldUserKey.kak },
-      pull: async () => {}
+      pull: async () => {},
+      resolveRecipientKey: trustRosterDidKeys
     }
     const first = await replaceRecipient(args)
     const second = await replaceRecipient({
@@ -400,6 +410,7 @@ describe('replaceRecipient', () => {
     const store = memoryStore(descriptor)
 
     const result = await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: oldUserKey.kid,
       recipient: {
@@ -432,6 +443,7 @@ describe('replaceRecipient', () => {
       ])
     )
     const result = await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: [gen1.kid, gen2.kid],
       recipient: { id: gen3.kid, publicKeyMultibase: gen3.publicKeyMultibase },
@@ -495,6 +507,7 @@ describe('replaceRecipient', () => {
     )
     const epochsAtPull: string[] = []
     await replaceRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       retire: oldUserKey.kid,
       recipient: {
@@ -515,6 +528,7 @@ describe('replaceRecipient', () => {
     const store = memoryStore({ scheme: 'edv' })
     await expect(
       replaceRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         retire: userKey.kid,
         recipient: {
@@ -527,6 +541,7 @@ describe('replaceRecipient', () => {
     ).rejects.toThrow(ValidationError)
     await expect(
       replaceRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         retire: [],
         recipient: {
@@ -540,6 +555,7 @@ describe('replaceRecipient', () => {
     const other = await makeUserKeyLike()
     await expect(
       replaceRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         retire: other.kid,
         recipient: {
@@ -566,6 +582,7 @@ describe('replaceRecipient', () => {
     )
     await expect(
       replaceRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         retire: oldUserKey.kid,
         recipient: {

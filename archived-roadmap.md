@@ -3191,3 +3191,57 @@ resolves it transitively (the zcap-invoke range `^3.1.0` admits it).
 `test/integration/large-binary-upload.test.ts` puts and adds a 40 MiB Blob and
 the server accepts its `Digest`. With a spy on full Blob reads, 3.1.0 read the
 whole Blob in `_normalizeData` and 3.2.0 read none of it.
+
+### WCL-46: Rotation re-wraps the fresh epoch secret to every `kid` in the served roster
+
+- status: done (2026-09-27)
+- priority: high
+- labels: encryption, key-epochs, security, api
+- touches:
+  - freewallet, wallet-core, dcw: a `removeRecipient` / `replaceRecipient`
+    signature change reaches every rotating call site. FILED: wallet-core WC-253
+    (userKeyCascade's `replaceRecipient`), freewallet FW-572 (storageManager's
+    `removeRecipient` and its tests), dcw DCW-82 (no direct callers; picks up
+    WC-253)
+  - encrypted-collections spec: the rotation-side counterpart of its
+    recipient-key-derivation MUST NOT may want stating explicitly. FILED: ECS-23
+- acceptance:
+  - [x] A rotation wraps the fresh epoch secret only to caller-vouched
+        recipients, the way `addRecipient` already takes them
+  - [x] `defaultResolveRecipientKey` -- resolving any well-formed `did:key` from
+        the roster itself -- is reachable only behind an explicit opt-in
+  - [x] A junk roster entry injected into the current epoch receives no wrap of
+        the fresh epoch, and a test proves it
+
+Executed. Appending one entry to the current epoch --
+`{ header: { kid: '<alice did:key>#<attacker X25519 fingerprint>' }, encrypted_key: '<garbage>' }`
+-- and running `removeRecipient` produced a fresh epoch carrying that kid, which
+the attacker's key-agreement key unwrapped to the same secret Alice unwrapped.
+Nothing upstream authenticates the roster on the point-state path: the plain
+descriptor store reads the Description with no signature over it,
+`acquireDescriptor` applies no continuity check, and `epochRostersEqual`
+deliberately ignores recipients inside an epoch, so even a pinning consumer
+cannot see the injected entry. Only the log-governed store authenticates it.
+
+Two corrections the verifier made to the original proposal, both of which belong
+in the fix. First, checking the kid's fragment against its DID part does NOT
+close this: an attacker can inject a fully self-consistent
+`did:key:z6LSattacker#z6LSattacker` and pass any such check. Only sourcing
+survivors from caller-vouched keys does. Second, a mitigation already ships:
+`resolveRecipientKey` is an injectable option and may resolve `null` to drop a
+kid, so a caller can allowlist today. So this is an unsafe default that is
+documented nowhere, rather than a hole with no remedy. The spec already
+prescribes the shape for its one document-backed case (resolve from the verified
+controller document, drop any entry whose kid matches no verification method),
+which makes the bare did:key default the outlier. The roster layout is
+untouched, so no byte-level sign-off is needed; the API shape is the
+maintainer's call.
+
+discovered-from: whole-codebase review, 2026-09-11.
+
+Shipped in 0.74.0. `resolveRecipientKey` is required on both rotations, and a JS
+caller that omits it gets a `ValidationError`. The old default is exported as
+`trustRosterDidKeys`, documented as unsafe on an unauthenticated roster.
+`test/node/descriptor-store.test.ts` injects a self-consistent attacker did:key
+into the current epoch. An allowlist resolver leaves it with no wrap, and
+`trustRosterDidKeys` hands it the same secret Alice unwraps.

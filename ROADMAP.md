@@ -424,50 +424,6 @@ one; that choice needs the maintainer's byte-level sign-off before it is coded.
 
 discovered-from: whole-codebase review, 2026-09-11.
 
-### WCL-46: Rotation re-wraps the fresh epoch secret to every `kid` in the served roster
-
-- status: todo
-- priority: high
-- labels: encryption, key-epochs, security, api
-- touches:
-  - freewallet, wallet-core, dcw: a `removeRecipient` / `replaceRecipient`
-    signature change reaches every rotating call site
-  - encrypted-collections spec: the rotation-side counterpart of its
-    recipient-key-derivation MUST NOT may want stating explicitly
-- acceptance:
-  - [ ] A rotation wraps the fresh epoch secret only to caller-vouched
-        recipients, the way `addRecipient` already takes them
-  - [ ] `defaultResolveRecipientKey` -- resolving any well-formed `did:key` from
-        the roster itself -- is reachable only behind an explicit opt-in
-  - [ ] A junk roster entry injected into the current epoch receives no wrap of
-        the fresh epoch, and a test proves it
-
-Executed. Appending one entry to the current epoch --
-`{ header: { kid: '<alice did:key>#<attacker X25519 fingerprint>' }, encrypted_key: '<garbage>' }`
--- and running `removeRecipient` produced a fresh epoch carrying that kid, which
-the attacker's key-agreement key unwrapped to the same secret Alice unwrapped.
-Nothing upstream authenticates the roster on the point-state path: the plain
-descriptor store reads the Description with no signature over it,
-`acquireDescriptor` applies no continuity check, and `epochRostersEqual`
-deliberately ignores recipients inside an epoch, so even a pinning consumer
-cannot see the injected entry. Only the log-governed store authenticates it.
-
-Two corrections the verifier made to the original proposal, both of which belong
-in the fix. First, checking the kid's fragment against its DID part does NOT
-close this: an attacker can inject a fully self-consistent
-`did:key:z6LSattacker#z6LSattacker` and pass any such check. Only sourcing
-survivors from caller-vouched keys does. Second, a mitigation already ships:
-`resolveRecipientKey` is an injectable option and may resolve `null` to drop a
-kid, so a caller can allowlist today. So this is an unsafe default that is
-documented nowhere, rather than a hole with no remedy. The spec already
-prescribes the shape for its one document-backed case (resolve from the verified
-controller document, drop any entry whose kid matches no verification method),
-which makes the bare did:key default the outlier. The roster layout is
-untouched, so no byte-level sign-off is needed; the API shape is the
-maintainer's call.
-
-discovered-from: whole-codebase review, 2026-09-11.
-
 ### WCL-47: A governed descriptor read through `wasDescriptorSource` is trusted with no log verification
 
 - status: todo

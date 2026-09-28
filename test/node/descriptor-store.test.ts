@@ -8,8 +8,9 @@
  * the CAS write path, the absent-descriptor and malformed-content refusals),
  * the parameterized pull axis of `removeRecipient` (a caller-supplied action in
  * place of the zcap revocation, still fused rotate-first/pull-second), the
- * drop-this-kid skip contract on `resolveRecipientKey`, and the `collection` /
- * `store` argument validation.
+ * drop-this-kid skip contract on `resolveRecipientKey`, the rotation's
+ * refusal to wrap an injected roster entry the resolver does not vouch for,
+ * and the `collection` / `store` argument validation.
  */
 import { describe, it, expect } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
@@ -28,7 +29,8 @@ import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
 import {
   addRecipient,
   initRecipients,
-  removeRecipient
+  removeRecipient,
+  trustRosterDidKeys
 } from '../../src/edv/recipients.js'
 import type { RecipientPublicKey } from '../../src/edv/recipients.js'
 import { resourceDescriptorStore } from '../../src/edv/descriptorStore.js'
@@ -291,6 +293,7 @@ describe('resourceDescriptorStore', () => {
     ).rejects.toThrow(/Call initRecipients first/)
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         recipientId: bob.kak.id,
         pull: async () => undefined
@@ -409,6 +412,7 @@ describe('removeRecipient pull axis', () => {
     )
     const epochsAtPull: Array<string | undefined> = []
     const rotated = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store: resourceDescriptorStore({
         resource: roster as unknown as Resource
       }),
@@ -446,6 +450,7 @@ describe('removeRecipient pull axis', () => {
     let pulled = false
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store: resourceDescriptorStore({
           resource: staleRoster as unknown as Resource
         }),
@@ -465,6 +470,7 @@ describe('removeRecipient pull axis', () => {
     })
     await expect(
       removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
         store,
         recipientId: bob.kak.id,
         revoke: [],
@@ -479,7 +485,11 @@ describe('removeRecipient pull axis', () => {
       resource: fakeRosterResource() as unknown as Resource
     })
     await expect(
-      removeRecipient({ store, recipientId: bob.kak.id })
+      removeRecipient({
+        resolveRecipientKey: trustRosterDidKeys,
+        store,
+        recipientId: bob.kak.id
+      })
     ).rejects.toThrow(/pull axis/)
   })
 })
@@ -534,6 +544,92 @@ describe('resolveRecipientKey drop-this-kid contract', () => {
     expect(
       (roster._state.content as unknown as CollectionEncryption).epochs
     ).toHaveLength(1)
+  })
+})
+
+describe('rotation wraps only caller-vouched recipients', () => {
+  /**
+   * Seeds {alice, bob}, then appends a junk entry to the current epoch naming
+   * a self-consistent attacker did:key (the kid's DID part matches its
+   * fragment, so no kid well-formedness check can reject it).
+   *
+   * @returns {Promise<object>}
+   */
+  async function injectedRoster() {
+    const alice = await makeReader()
+    const bob = await makeReader()
+    const attacker = await makeReader()
+    const descriptor = await seedDescriptor([alice, bob])
+    descriptor.epochs![0]!.recipients.push({
+      header: { kid: attacker.kak.id, alg: 'ECDH-ES+A256KW' },
+      encrypted_key: 'garbage'
+    } as never)
+    const roster = fakeRosterResource(descriptor as unknown as JsonObject)
+    const store = resourceDescriptorStore({
+      resource: roster as unknown as Resource
+    })
+    return { alice, bob, attacker, store }
+  }
+
+  it('an injected roster entry receives no wrap of the fresh epoch', async () => {
+    const { alice, bob, attacker, store } = await injectedRoster()
+    const vouched = [recipientOf(alice)]
+    const rotated = await removeRecipient({
+      store,
+      recipientId: bob.kak.id,
+      pull: async () => undefined,
+      resolveRecipientKey: async kid =>
+        vouched.find(recipient => recipient.id === kid) ?? null
+    })
+    const currentEpoch = rotated.epochs!.find(
+      epoch => epoch.id === rotated.currentEpoch
+    )!
+    expect(currentEpoch.recipients.map(entry => entry.header.kid)).toEqual([
+      alice.kak.id
+    ])
+    for (const entry of currentEpoch.recipients) {
+      expect(
+        await unwrapEpochSecret({ entry, keyAgreementKey: attacker.kak })
+      ).toBeNull()
+    }
+  })
+
+  it('trustRosterDidKeys (the explicit opt-in) wraps to the injected kid', async () => {
+    // Pins why the roster-trusting resolver is opt-in only: on an
+    // unauthenticated roster it hands the attacker the fresh epoch secret.
+    const { alice, bob, attacker, store } = await injectedRoster()
+    const rotated = await removeRecipient({
+      store,
+      recipientId: bob.kak.id,
+      pull: async () => undefined,
+      resolveRecipientKey: trustRosterDidKeys
+    })
+    const currentEpoch = rotated.epochs!.find(
+      epoch => epoch.id === rotated.currentEpoch
+    )!
+    const entryFor = (kid: string) =>
+      currentEpoch.recipients.find(entry => entry.header.kid === kid)!
+    const aliceSecret = await unwrapEpochSecret({
+      entry: entryFor(alice.kak.id),
+      keyAgreementKey: alice.kak
+    })
+    const attackerSecret = await unwrapEpochSecret({
+      entry: entryFor(attacker.kak.id),
+      keyAgreementKey: attacker.kak
+    })
+    expect(attackerSecret).not.toBeNull()
+    expect(attackerSecret).toEqual(aliceSecret)
+  })
+
+  it('refuses a rotation with no resolveRecipientKey', async () => {
+    const { bob, store } = await injectedRoster()
+    await expect(
+      removeRecipient({
+        store,
+        recipientId: bob.kak.id,
+        pull: async () => undefined
+      } as never)
+    ).rejects.toThrow(/resolveRecipientKey/)
   })
 })
 

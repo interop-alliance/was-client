@@ -433,7 +433,11 @@ orthogonal axes: _pull_ (zcap, server-enforced, immediate) and _read_ (epoch-key
 possession, client-side, prospective -- rotation never claws back already-held
 keys or fetched ciphertext). `removeRecipient` does both halves because doing
 only one is a footgun (the pull half is the default zcap revocation, or a
-caller-supplied `pull` action for descriptors whose access lives elsewhere). Two
+caller-supplied `pull` action for descriptors whose access lives elsewhere). A
+rotation (`removeRecipient` / `replaceRecipient`) takes a required
+`resolveRecipientKey` and wraps the fresh epoch only to keys it vouches for. The
+roster is server-read, so a kid it names is not evidence of a reader.
+`trustRosterDidKeys` opts in to trusting every `did:key` kid in it. Two
 crypto-free predicates over a descriptor ship beside that machinery
 (`epochRoster.ts`), so a consumer holding descriptors can ask about them without
 pulling in the epoch crypto: `hasKeyEpochs` is the usable-roster test (a

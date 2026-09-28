@@ -28,7 +28,8 @@ import {
   initRecipients,
   addRecipient,
   removeRecipient,
-  resourceDescriptorStore
+  resourceDescriptorStore,
+  trustRosterDidKeys
 } from '../../src/edv/index.js'
 import type { EncryptionDescriptorStore } from '../../src/edv/index.js'
 import { resolveEpochKeys } from '../../src/edv/epochKeys.js'
@@ -162,6 +163,7 @@ describeLive('resource-hosted descriptor store (live server)', () => {
   it('removeRecipient rotates and runs the custom pull after rotation', async () => {
     const epochsAtPull: Array<string | undefined> = []
     const rotated = await removeRecipient({
+      resolveRecipientKey: trustRosterDidKeys,
       store,
       recipientId: bob.kak.id,
       pull: async () => {

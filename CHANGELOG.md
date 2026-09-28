@@ -4,6 +4,13 @@
 
 ### Changed
 
+- **BREAKING**: `removeRecipient` and `replaceRecipient` require
+  `resolveRecipientKey`. A rotation wraps the fresh epoch secret only to the
+  keys the resolver vouches for. The old default trusted every `did:key` kid in
+  the server-read roster, so an injected roster entry received the fresh epoch.
+  That resolver is now exported as `trustRosterDidKeys`, an explicit opt-in for
+  an otherwise authenticated roster.
+
 - A binary `Blob` write hashes its body incrementally for the `Digest` header,
   so memory use no longer grows with the upload size (via
   `@interop/http-digest-header` 3.2.0, now in the lockfile).

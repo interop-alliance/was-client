@@ -37,7 +37,8 @@ import {
   UnknownEpochError,
   type EncryptionDescriptorCache,
   type EncryptionDescriptorSource,
-  type EncryptionDescriptorStore
+  type EncryptionDescriptorStore,
+  trustRosterDidKeys
 } from '../../src/edv/index.js'
 
 const COLLECTION_ID = 'private-credentials'
@@ -185,6 +186,7 @@ async function mintRotatedDescriptors(owner: {
     ]
   })
   const descriptor2 = await removeRecipient({
+    resolveRecipientKey: trustRosterDidKeys,
     store,
     recipientId: other.keyAgreementKey.id as string,
     pull: async () => {}
