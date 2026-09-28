@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 118
+nextAvailableId: 120
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -424,46 +424,128 @@ one; that choice needs the maintainer's byte-level sign-off before it is coded.
 
 discovered-from: whole-codebase review, 2026-09-11.
 
-### WCL-47: A governed descriptor read through `wasDescriptorSource` is trusted with no log verification
+### WCL-118: A host can downgrade a governed collection by omitting `history`
 
 - status: todo
 - priority: high
 - labels: encryption, log, integrity, security, fail-closed
 - touches:
-  - encrypted-collections spec: ECS-7 settled that the projection is a bound,
-    non-authoritative copy; whether an unverifying reader MUST refuse is the
-    text this would add
-  - wallet-core: `logSource.ts` / `rosterLogStore.ts` supply the
-    governance-aware source and would opt in past the new refusal
-  - freewallet, was-react: the affected readers
+  - encrypted-collections spec: a security consideration that a reader without a
+    require-governed policy is open to the `history`-stripping downgrade;
+    point-state descriptors stay a conforming mode
+  - wallet-core, freewallet, was-react: the wallet stack turns `requireGoverned`
+    on for every `edv` collection it reads
 - acceptance:
-  - [ ] `acquireDescriptor` refuses a fetched descriptor that declares `history`
-        when the source did not declare itself governance-aware, pointing the
-        caller at a log-governed source
-  - [ ] The refusal is typed and covers every source, not only
-        `wasDescriptorSource`
-  - [ ] A governance-aware source still resolves the same descriptor unchanged
+  - [ ] `acquireDescriptor` (and `createRefreshingEdvDocCipher`) take a
+        `requireGoverned` option; when set, an `edv` descriptor that lacks
+        `history` is refused, typed, and not cached
+  - [ ] With `requireGoverned` set, a plain source cannot satisfy acquisition at
+        all (WCL-47's `verifiesHistory` refusal still applies)
+  - [ ] A test shows a hostile host that strips `history` and mints its own
+        epoch is refused
+  - [ ] Point-state descriptors keep working when `requireGoverned` is unset
 
-`grep -rn isGovernedDescriptor src/` returns three call sites: the definition,
-the log-governed store, and sync provisioning. Neither `wasDescriptorSource` nor
-`acquireDescriptor` is among them, so a served `encryption` member carrying
-`history` is returned verbatim and written into the cache, and
-`createRefreshingEdvDocCipher` hands it straight to `createEdvDocCipher`. The
-exploit mechanics hold: the epoch id IS the X25519 public key, so a server that
-mints an epoch it holds the secret for, and wraps a copy to the victim's public
-key, gets every subsequent write sealed to itself. The `was.epoch` and
-`was.resource` AEAD binding binds the epoch and the resource id, not the roster.
+WCL-47's refusal only catches a host that honestly includes `history` in the
+served projection. A hostile host can drop `history` and serve an epoch it
+minted. The descriptor then looks client-written, so a plain source resolves it
+and acquisition adopts it. The attack is the same one WCL-47 describes: the
+epoch id is the X25519 public key, so every later write is sealed to the host.
 
-Archived WCL-17 is partial coverage. It named this exact audience -- "every
-reader that holds a descriptor but not the convention: a was-react app on a
-shared collection, the storage browser, an agent" -- and landed
-`logGovernedCollectionDescriptorStore`, the write-side seam. The acquire seam
-that same audience actually uses was never wired to it and was never made to
-refuse, so the plain reader fails open on a descriptor it is not equipped to
-verify. That contradicts the repo's fail-closed policy everywhere else.
-Maintainer decision required before coding: the shape of the marker by which a
-source declares itself governance-aware. discovered-from: whole-codebase review,
-2026-09-11.
+A verifying source already resists the strip. `logGovernedDescriptorSource`
+reads `meta/log` directly and never the Description, so the host would have to
+hide or forge the log itself. A held pin turns a missing log into a `rollback`,
+a forged log fails verification, and first contact with no log fails closed. The
+exposure is a reader on a plain source: was-react's `remoteDescriptorSource`
+(WR-52), freewallet's no-logs fallback in `#readGovernedDescriptor` (FW-511),
+and any app or agent that does not know a collection is governed. A plain reader
+cannot tell a stripped descriptor from an honest point-state one, because ECS
+makes `history` OPTIONAL and point-state is a conforming mode.
+
+Decision (2026-09-27): a client-side `requireGoverned` policy, not a spec
+mandate. Options considered:
+
+- Verifying-source discipline only (close FW-511 and WR-52). Cheapest, but a
+  reader that does not know a collection is governed stays exposed.
+- Pin-aware acquisition (refuse when a `meta/log` pin is held but `history` is
+  absent). Uses existing state, but does not cover first contact.
+- A governed marker in the descriptor cache. Changes a stored record and does
+  not cover first contact.
+- The expectation carried in the share or connect payload. Covers first contact
+  for a grantee, but adds a permanent wire field.
+- Every `edv` collection log-governed, in the spec. Closes the attack outright,
+  but makes `governed-history-logs` mandatory for every WAS server that hosts
+  encrypted collections and removes the point-state mode for general WAS
+  implementers.
+
+`requireGoverned` gives the wallet stack the same guarantee as the spec mandate,
+since it always sets the policy, while general WAS clients and servers keep
+point-state descriptors. The residual risk is a generic reader that leaves the
+policy off, and the ECS security consideration records it. Mandatory governance
+makes descriptor reads cost in proportion to each log's length; see WCL-119.
+discovered-from: WCL-47.
+
+### WCL-119: Governed descriptor reads re-verify the whole log on every acquisition
+
+- status: todo
+- priority: medium
+- labels: encryption, log, performance
+- touches:
+  - vh-resource-log: incremental verification from a held pin lives in the
+    verifier
+  - wallet-attached-storage-spec, was-teaching-server: a tail read of `meta/log`
+    is a new wire contract; WAS-102 already covers the server re-parsing the log
+    on every Collection Metadata read
+- acceptance:
+  - [ ] A repeat acquisition verifies only the entries after the held pin, plus
+        the chain link to it
+  - [ ] Verification cost is measured (entries x roster size, desktop and a
+        low-end phone) before and after
+  - [ ] Every bounding option below is either done or filed where it lives
+
+With WCL-118's `requireGoverned` on, every encrypted collection in the wallet
+stack reads its descriptor from its governing log. Current costs:
+
+- Reads. `ResourceLogStore.read()` fetches the full JSONL body, and
+  `verifyResourceLog` re-runs every check on every entry on every call. The pin
+  is only a rollback check afterwards and never skips already-verified entries.
+  Per entry, that is JCS canonicalization plus SHA-256 for the chain, the same
+  again per proof, and one Ed25519 verify per proof. The only cache is a
+  hash-value memo in did-method-webvh.
+- Growth. Each rotation and each recipient add or remove appends a full
+  descriptor snapshot, wrapped keys for every recipient included, and a seal
+  appends one more entry. There is no compaction or checkpoint, so a log grows
+  roughly as changes x roster size.
+- Frequency. Acquisition runs at cipher build and at most once more per cipher
+  on `UnknownEpochError`, never per document read or write. freewallet acquires
+  5 collections concurrently at session start. The controller log is memoized
+  per session (freewallet's `verifiedAccountLog`), and a did:key controller
+  costs nothing.
+- Writes. A governed append is 2 log GETs and 1 PUT (read and re-verify, sign,
+  pre-verify, CAS, then read back and re-verify), with up to 3 attempts on
+  conflict. A point-state write is 1 PUT. Writes happen only on rotations and
+  recipient changes.
+- Server. The teaching server re-parses the whole log on every Collection
+  Metadata read to derive the projection (WAS-102).
+
+No benchmark exists yet. A rough estimate: tens of entries verify in single- to
+double-digit milliseconds, and the body fetch dominates. A long-lived shared
+collection with hundreds of rotations and a large roster could mean megabytes
+per acquisition, for each collection at every session start.
+
+Bounding options, from most to least effective:
+
+1. Incremental verification from the pin. Remember the verified head, verify
+   only new entries and their link to it. No wire change. This alone makes
+   repeat reads proportional to the entries added since the last session.
+2. Read only the tail. Fetch entries after a known `versionId` via a range or
+   query on `meta/log`. A new WAS wire contract, so it needs a maintainer
+   decision first.
+3. Keep a local snapshot of the verified log beside the cached descriptor, so a
+   warm start fetches only the delta. Pairs with 1.
+4. Close WAS-102 on the server: cache the derived projection, or read only the
+   head line.
+
+discovered-from: WCL-118.
 
 ### WCL-49: `declareIndex`'s first write is unconditional, so a concurrent first declaration is lost
 

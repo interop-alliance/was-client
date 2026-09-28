@@ -3245,3 +3245,52 @@ caller that omits it gets a `ValidationError`. The old default is exported as
 `test/node/descriptor-store.test.ts` injects a self-consistent attacker did:key
 into the current epoch. An allowlist resolver leaves it with no wrap, and
 `trustRosterDidKeys` hands it the same secret Alice unwraps.
+
+### WCL-47: A governed descriptor read through `wasDescriptorSource` is trusted with no log verification
+
+- status: done (2026-09-27)
+- priority: high
+- labels: encryption, log, integrity, security, fail-closed
+- touches:
+  - encrypted-collections spec: ECS-7 settled that the projection is a bound,
+    non-authoritative copy; whether an unverifying reader MUST refuse is the
+    text this would add: filed as ECS-24
+  - wallet-core: `logSource.ts` / `rosterLogStore.ts` supply the
+    governance-aware source and would opt in past the new refusal: filed as
+    WC-254 (`logGovernedDescriptorSource` sets `verifiesHistory`)
+  - freewallet, was-react: the affected readers: filed as FW-574 (`primedSource`
+    drops the flag) and WR-52 (`remoteDescriptorSource` feeds
+    `createRefreshingEdvDocCipher` unverified)
+- acceptance:
+  - [x] `acquireDescriptor` refuses a fetched descriptor that declares `history`
+        when the source did not declare itself governance-aware, pointing the
+        caller at a log-governed source
+  - [x] The refusal is typed and covers every source, not only
+        `wasDescriptorSource`
+  - [x] A governance-aware source still resolves the same descriptor unchanged
+
+`grep -rn isGovernedDescriptor src/` returns three call sites: the definition,
+the log-governed store, and sync provisioning. Neither `wasDescriptorSource` nor
+`acquireDescriptor` is among them, so a served `encryption` member carrying
+`history` is returned verbatim and written into the cache, and
+`createRefreshingEdvDocCipher` hands it straight to `createEdvDocCipher`. The
+exploit mechanics hold: the epoch id IS the X25519 public key, so a server that
+mints an epoch it holds the secret for, and wraps a copy to the victim's public
+key, gets every subsequent write sealed to itself. The `was.epoch` and
+`was.resource` AEAD binding binds the epoch and the resource id, not the roster.
+
+Archived WCL-17 is partial coverage. It named this exact audience -- "every
+reader that holds a descriptor but not the convention: a was-react app on a
+shared collection, the storage browser, an agent" -- and landed
+`logGovernedCollectionDescriptorStore`, the write-side seam. The acquire seam
+that same audience actually uses was never wired to it and was never made to
+refuse, so the plain reader fails open on a descriptor it is not equipped to
+verify. That contradicts the repo's fail-closed policy everywhere else.
+Maintainer decision required before coding: the shape of the marker by which a
+source declares itself governance-aware. discovered-from: whole-codebase review,
+2026-09-11.
+
+Resolved with a `readonly verifiesHistory?: true` flag on
+`EncryptionDescriptorSource` and a new `UnverifiedDescriptorError` (a subclass
+of `EncryptionError`), shipped in 0.75.0. The hostile-host case, where a host
+omits `history` altogether, is filed as WCL-118.

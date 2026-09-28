@@ -466,19 +466,22 @@ anywhere describes the collection's encryption, and a caller that declared it
 encrypted refuses fail-closed. A resource-log refusal from a governed source is
 a security signal, not an outage: `@interop/vh-resource-log`'s
 `isResourceLogRefusal` rethrows it past a warm cache, with the continuity
-`rollback` as the one carve-out. An epoch rotation emits no change-feed entry,
-so a cipher built from a cached descriptor can meet envelopes under an unseen
-epoch; the remedy is one re-read plus a cipher rebuild plus one retry, guarded
-to once per collection per session so a genuinely foreign envelope cannot drive
-a refetch loop. `DescriptorRefreshPolicy` is that guard for a host that scans
-rows, and `createRefreshingEdvDocCipher` binds `createEdvDocCipher` to both for
-a host whose decrypt seam is the cipher itself. The two no-key signals are what
-the policy dispatches on: only `UnknownEpochError` drives a refresh, and
-`KeyUnwrapError` propagates untouched, since re-reading the same descriptor
-cannot produce a key the reader was never given. Their `err.name` matchers,
-`isUnknownEpochError` and `isKeyUnwrapError`, live in `sync/predicates.ts`
-beside the other injected-seam signals, as does `isIntegrityError` for a body
-that fails verification against its resource id.
+`rollback` as the one carve-out. A served descriptor that carries `history` is a
+non-authoritative projection of its governing log, so acquisition adopts one
+only from a source that declares `verifiesHistory: true` and refuses it
+otherwise with `UnverifiedDescriptorError`, before the cache. An epoch rotation
+emits no change-feed entry, so a cipher built from a cached descriptor can meet
+envelopes under an unseen epoch; the remedy is one re-read plus a cipher rebuild
+plus one retry, guarded to once per collection per session so a genuinely
+foreign envelope cannot drive a refetch loop. `DescriptorRefreshPolicy` is that
+guard for a host that scans rows, and `createRefreshingEdvDocCipher` binds
+`createEdvDocCipher` to both for a host whose decrypt seam is the cipher itself.
+The two no-key signals are what the policy dispatches on: only
+`UnknownEpochError` drives a refresh, and `KeyUnwrapError` propagates untouched,
+since re-reading the same descriptor cannot produce a key the reader was never
+given. Their `err.name` matchers, `isUnknownEpochError` and `isKeyUnwrapError`,
+live in `sync/predicates.ts` beside the other injected-seam signals, as does
+`isIntegrityError` for a body that fails verification against its resource id.
 
 A write that declares or changes the `encryption` descriptor re-seals the
 Collection `/meta` envelope in the same body: the server validates `custom`

@@ -34,6 +34,7 @@ export {
   QuotaExceededError,
   EncryptionError,
   EncryptOnlyCipherError,
+  UnverifiedDescriptorError,
   KeyUnwrapError,
   IntegrityError,
   WasSyncAuthError,

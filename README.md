@@ -1103,11 +1103,14 @@ plugs into:
   (`wasDescriptorSource` is the source over a `WasClient`; the cache is a
   client-local get/put your app scopes to one Space), refuses fail-closed to
   build without one, and on an `UnknownEpochError` decrypt re-reads the
-  descriptor, swaps itself, and retries exactly once per instance. An epoch
-  rotation emits no change-feed entry, so this is how a replica meets an
-  envelope sealed under an epoch it has never seen without a refetch per
-  resource. `acquireDescriptor` / `acquireDescriptors` are the acquisition alone
-  (fetch, cache the success, fall back to the cache whenever the fetch yields no
+  descriptor, swaps itself, and retries exactly once per instance. A descriptor
+  that carries `history` (a log-governed collection) is refused with
+  `UnverifiedDescriptorError` unless its source declares
+  `verifiesHistory: true`; `wasDescriptorSource` does not. An epoch rotation
+  emits no change-feed entry, so this is how a replica meets an envelope sealed
+  under an epoch it has never seen without a refetch per resource.
+  `acquireDescriptor` / `acquireDescriptors` are the acquisition alone (fetch,
+  cache the success, fall back to the cache whenever the fetch yields no
   descriptor), and `DescriptorRefreshPolicy` is the
   once-per-collection-per-session guard for a host whose reads scan rows instead
   of going through a cipher.

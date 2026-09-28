@@ -14,6 +14,7 @@
  * stale one.
  */
 import { describe, expect, it } from 'vitest'
+import { RESOURCE_LOG_METHOD } from '@interop/storage-core'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import type {
   IKeyAgreementKey,
@@ -23,8 +24,12 @@ import {
   ResourceLogContinuityError,
   ResourceLogIntegrityError
 } from '@interop/vh-resource-log'
-import { IntegrityError, PreconditionFailedError } from '../../src/index.js'
-import type { CollectionEncryption } from '../../src/index.js'
+import {
+  EncryptionError,
+  IntegrityError,
+  PreconditionFailedError
+} from '../../src/index.js'
+import type { CollectionEncryption, WasClient } from '../../src/index.js'
 import {
   acquireDescriptor,
   acquireDescriptors,
@@ -35,6 +40,8 @@ import {
   ownerRecipient,
   removeRecipient,
   UnknownEpochError,
+  UnverifiedDescriptorError,
+  wasDescriptorSource,
   type EncryptionDescriptorCache,
   type EncryptionDescriptorSource,
   type EncryptionDescriptorStore,
@@ -201,6 +208,18 @@ const sampleDescriptor = (): CollectionEncryption => ({
   epochs: [{ id: 'did:key:z6LSepoch', recipients: [] }]
 })
 
+/**
+ * The server-derived projection of a log-governed descriptor: the point state
+ * plus the `history` pointer at its governing log.
+ */
+const governedDescriptor = (): CollectionEncryption => ({
+  ...sampleDescriptor(),
+  history: {
+    method: RESOURCE_LOG_METHOD,
+    resource: `https://example.com/space/s1/${COLLECTION_ID}/meta/log`
+  }
+})
+
 describe('acquireDescriptor', () => {
   it('caches and returns a fetched descriptor', async () => {
     const source = memorySource()
@@ -337,6 +356,68 @@ describe('acquireDescriptor', () => {
     expect(acquired).toEqual(descriptor)
     expect(observed).toHaveLength(1)
   })
+
+  it('refuses a governed descriptor from a source that does not verify history, past a warm cache', async () => {
+    const source = memorySource()
+    const cache = memoryCache()
+    const cached = sampleDescriptor()
+    cache._set(COLLECTION_ID, cached)
+    source._set(COLLECTION_ID, governedDescriptor())
+    const observed: unknown[] = []
+
+    const acquiring = acquireDescriptor({
+      source,
+      cache,
+      collectionId: COLLECTION_ID,
+      onFetchError: err => {
+        observed.push(err)
+      }
+    })
+    await expect(acquiring).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+    await expect(acquiring).rejects.toBeInstanceOf(EncryptionError)
+    // Neither adopted nor papered over: the cache is untouched and the
+    // refusal is not reported as a swallowed fetch failure.
+    expect(cache.writes).toBe(0)
+    expect(cache._get(COLLECTION_ID)).toEqual(cached)
+    expect(observed).toHaveLength(0)
+  })
+
+  it('refuses a governed descriptor read through wasDescriptorSource', async () => {
+    const was = {
+      space: () => ({
+        collection: () => ({
+          describe: async () => ({ encryption: governedDescriptor() })
+        })
+      })
+    } as unknown as WasClient
+    const cache = memoryCache()
+
+    await expect(
+      acquireDescriptor({
+        source: wasDescriptorSource({ was, spaceId: 's1' }),
+        cache,
+        collectionId: COLLECTION_ID
+      })
+    ).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+    expect(cache.writes).toBe(0)
+  })
+
+  it('resolves a governed descriptor unchanged from a source that declares verifiesHistory', async () => {
+    const cache = memoryCache()
+    const descriptor = governedDescriptor()
+    const source: EncryptionDescriptorSource = {
+      verifiesHistory: true,
+      collectionEncryption: async () => structuredClone(descriptor)
+    }
+
+    const acquired = await acquireDescriptor({
+      source,
+      cache,
+      collectionId: COLLECTION_ID
+    })
+    expect(acquired).toEqual(descriptor)
+    expect(cache._get(COLLECTION_ID)).toEqual(descriptor)
+  })
 })
 
 describe('acquireDescriptors', () => {
@@ -435,6 +516,21 @@ describe('DescriptorRefreshPolicy', () => {
 })
 
 describe('createRefreshingEdvDocCipher', () => {
+  it('refuses to build from a governed descriptor its source does not verify', async () => {
+    const reader = await makeReader()
+    const source = memorySource()
+    source._set(COLLECTION_ID, governedDescriptor())
+
+    await expect(
+      createRefreshingEdvDocCipher({
+        ...reader,
+        collectionId: COLLECTION_ID,
+        source,
+        cache: memoryCache()
+      })
+    ).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+  })
+
   it('refuses to build fail-closed when no descriptor resolves anywhere', async () => {
     // Every encrypted collection's descriptor carries an epoch roster from
     // provisioning; a cipher for a collection whose descriptor resolves

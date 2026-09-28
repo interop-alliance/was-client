@@ -120,6 +120,7 @@ export {
   acquireDescriptors,
   wasDescriptorSource
 } from './acquire.js'
+export { UnverifiedDescriptorError } from '../errors.js'
 export type {
   EncryptionDescriptorCache,
   EncryptionDescriptorSource

@@ -27,8 +27,16 @@
  * rethrows them past a warm cache, matched by `@interop/vh-resource-log`'s
  * `isResourceLogRefusal` (a continuity `rollback` is the one carve-out, and
  * falls back to the cache like a transport failure).
+ *
+ * A served descriptor that carries `history` is the server's projection of a
+ * log-governed descriptor, and only a source that verifies that log may hand
+ * it out. A source declares this with `verifiesHistory: true`; acquisition
+ * refuses a `history`-bearing descriptor from any other source with
+ * `UnverifiedDescriptorError`, before it reaches the cache.
  */
 import { isResourceLogRefusal } from '@interop/vh-resource-log'
+import { UnverifiedDescriptorError } from '../errors.js'
+import { isGovernedDescriptor } from '../internal/describe.js'
 import type { CollectionEncryption } from '../types.js'
 import type { WasClient } from '../WasClient.js'
 
@@ -39,8 +47,15 @@ import type { WasClient } from '../WasClient.js'
  * authorized to make, so the absence is ambiguous and callers fall back to a
  * cached copy just as they do for a thrown fetch. Network errors throw through
  * (callers treat the fetch as best-effort).
+ *
+ * `verifiesHistory: true` declares that the source verifies a log-governed
+ * descriptor against its governing log before resolving it (wallet-core's
+ * `logGovernedDescriptorSource` does). Without it, acquisition refuses any
+ * descriptor that carries `history`. A wrapper around a verifying source must
+ * forward the flag.
  */
 export interface EncryptionDescriptorSource {
+  readonly verifiesHistory?: true
   collectionEncryption(options: {
     collectionId: string
   }): Promise<CollectionEncryption | undefined>
@@ -64,7 +79,8 @@ export interface EncryptionDescriptorCache {
 /**
  * The {@link EncryptionDescriptorSource} over a was-client handle: reads the
  * collection's Description in the given Space and returns its `encryption`
- * descriptor.
+ * descriptor. It does not verify a governing log, so a log-governed
+ * collection's descriptor read through it is refused by acquisition.
  *
  * @param options {object}
  * @param options.was {WasClient}   a client whose signer can read the Space
@@ -97,6 +113,9 @@ export function wasDescriptorSource({
  * source at all (a purely local code path) reads the cache alone. Any cached
  * copy is deliberately left in place, never cleared by an empty fetch.
  * `undefined` means no descriptor exists anywhere for this collection.
+ * A fetched descriptor that carries `history` from a source that does not
+ * declare `verifiesHistory` is refused with `UnverifiedDescriptorError`, and
+ * is not cached.
  *
  * @param options {object}
  * @param [options.source] {EncryptionDescriptorSource}   omit for cache-only
@@ -125,15 +144,9 @@ export async function acquireDescriptor({
   if (!source) {
     return cache.readDescriptor({ collectionId })
   }
+  let fetched: CollectionEncryption | undefined
   try {
-    const fetched = await source.collectionEncryption({ collectionId })
-    if (fetched) {
-      await cache.writeDescriptor({ collectionId, descriptor: fetched })
-      return fetched
-    }
-    // Empty description: not authoritative (an unauthorized read is masked as
-    // an absent one), so a warm cache still serves the collection.
-    return cache.readDescriptor({ collectionId })
+    fetched = await source.collectionEncryption({ collectionId })
   } catch (err) {
     // A resource-log refusal the cache must not paper over -- a fabricated
     // log, or one that is not the continuation of the pinned history. A
@@ -145,6 +158,21 @@ export async function acquireDescriptor({
     onFetchError?.(err, { collectionId })
     return cache.readDescriptor({ collectionId })
   }
+  if (!fetched) {
+    // Empty description: not authoritative (an unauthorized read is masked as
+    // an absent one), so a warm cache still serves the collection.
+    return cache.readDescriptor({ collectionId })
+  }
+  if (isGovernedDescriptor(fetched) && source.verifiesHistory !== true) {
+    throw new UnverifiedDescriptorError(
+      `Collection "${collectionId}" has a log-governed encryption ` +
+        'descriptor, but its source does not verify the governing log. ' +
+        'Refusing to adopt the unverified descriptor; acquire it through a ' +
+        'log-governed descriptor source.'
+    )
+  }
+  await cache.writeDescriptor({ collectionId, descriptor: fetched })
+  return fetched
 }
 
 /**

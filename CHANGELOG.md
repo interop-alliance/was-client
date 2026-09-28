@@ -1,5 +1,17 @@
 # @interop/was-client Changelog
 
+## 0.75.0 - TBD
+
+### Changed
+
+- **BREAKING**: `acquireDescriptor` (and so `createRefreshingEdvDocCipher`)
+  refuses a fetched descriptor that carries `history` unless its source declares
+  `verifiesHistory: true`. It throws the new `UnverifiedDescriptorError`, a
+  subclass of `EncryptionError`, and does not cache the descriptor.
+  `wasDescriptorSource` does not verify a governing log, so a log-governed
+  collection must be read through a log-governed source. A wrapper around a
+  verifying source must forward the flag.
+
 ## 0.74.0 - 2026-09-27
 
 ### Changed
