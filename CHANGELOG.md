@@ -1,5 +1,12 @@
 # @interop/was-client Changelog
 
+## 0.76.0 - TBD
+
+### Changed
+
+- The read path takes `isJsonContentType` from `@interop/storage-core` (0.21.0),
+  the rule the WAS server shares, in place of a local copy.
+
 ## 0.75.1 - 2026-09-28
 
 ### Changed

@@ -30,8 +30,8 @@ importers:
         specifier: ^7.10.3
         version: 7.10.3
       '@interop/storage-core':
-        specifier: ^0.20.0
-        version: 0.20.0
+        specifier: ^0.21.0
+        version: 0.21.0
       '@interop/vh-resource-log':
         specifier: ^0.5.4
         version: 0.5.4
@@ -207,8 +207,8 @@ packages:
     resolution: {integrity: sha512-vteTivZmS9NYjX3nByHZPd164YgzgCmTnj55Y+IQMOfqbvDb14fWhXryPBXRoF9m/qcknAXae/y6r/M7qy9EIg==}
     engines: {node: '>=24.0'}
 
-  '@interop/did-method-webvh@5.11.0':
-    resolution: {integrity: sha512-N6Sx7v2dO/H4r6VW/A3QLyfZPGkoz+lufU0zuXIWuUbhG/jMD3G7edCaiAVY2zhYrbyhvkcbSmez1Oz1Z7fs7Q==}
+  '@interop/did-method-webvh@5.11.1':
+    resolution: {integrity: sha512-Po3GoJLy2TqMc+nYtlNu/uFp7AnZFcMzaWOA+HklsCreFM9zZqegjcMgia+Mfgai37Vtr701OfrGkOBQszwjDQ==}
     engines: {node: '>=22'}
 
   '@interop/ecdsa-multikey@2.4.1':
@@ -272,10 +272,6 @@ packages:
     resolution: {integrity: sha512-fe9waxlrnOOSxlpUeQUAHAf1bT0zTQkLF74m1i6/ok8OgMN8IkY07dsPHK6xPEQjSNASerq03spf60VHUVu9+Q==}
     engines: {node: '>=14'}
 
-  '@interop/http-signature-zcap-invoke@6.2.6':
-    resolution: {integrity: sha512-GE4+yi+uvBN+6XDNASOavZfauZGUDF9GupmNtzZc2Lv/Wr2kdeqoIrw4Jkl/iVnuwkt37AccVqKI7K9EOER/tw==}
-    engines: {node: '>=20'}
-
   '@interop/http-signature-zcap-invoke@6.3.0':
     resolution: {integrity: sha512-cIUdjyfz0EPXAk9b37XVwqDg1yGocTHEVZg/pfq5cm7ZhAmMQkcj1A1uea8x+Y1VHCJ0GmtTQYqf6Nx2gMplEg==}
     engines: {node: '>=20'}
@@ -298,6 +294,10 @@ packages:
 
   '@interop/storage-core@0.20.0':
     resolution: {integrity: sha512-hMUl57Y5plOlvvgXOSvYIt7VdB3HP5JjUEJ12aJ/0xjWQGTF0RqbKk1BAjnOmRqlp/bi//vtBhe55YcpNx5TDw==}
+    engines: {node: '>=22.0'}
+
+  '@interop/storage-core@0.21.0':
+    resolution: {integrity: sha512-ssXoISqM2IcN+nrcSZLo+lYb4/bqdtr41236+rYP1Zkhekevl7wN1IC7oOogA7/I7qXitDAk76f15eGseEdu0A==}
     engines: {node: '>=22.0'}
 
   '@interop/vh-resource-log@0.5.4':
@@ -1359,7 +1359,7 @@ snapshots:
       '@noble/hashes': 2.4.0
       '@scure/base': 2.4.0
 
-  '@interop/did-method-webvh@5.11.0':
+  '@interop/did-method-webvh@5.11.1':
     dependencies:
       '@interop/data-integrity-core': 8.8.0
       '@noble/curves': 2.4.0
@@ -1406,7 +1406,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.8.0
       '@interop/http-client': 1.0.5
-      '@interop/http-signature-zcap-invoke': 6.2.6
+      '@interop/http-signature-zcap-invoke': 6.3.0
       '@interop/lru-memoize': 4.0.3
       '@interop/minimal-cipher': 7.10.3
       '@noble/hashes': 2.4.0
@@ -1438,15 +1438,6 @@ snapshots:
       '@noble/hashes': 2.4.0
 
   '@interop/http-signature-header@5.0.3': {}
-
-  '@interop/http-signature-zcap-invoke@6.2.6':
-    dependencies:
-      '@interop/data-integrity-core': 8.8.0
-      '@interop/http-digest-header': 3.2.0
-      '@interop/http-signature-header': 5.0.3
-      pako: 2.2.0
-    transitivePeerDependencies:
-      - expo-crypto
 
   '@interop/http-signature-zcap-invoke@6.3.0':
     dependencies:
@@ -1491,9 +1482,13 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
+  '@interop/storage-core@0.21.0':
+    dependencies:
+      '@interop/data-integrity-core': 8.8.0
+
   '@interop/vh-resource-log@0.5.4':
     dependencies:
-      '@interop/did-method-webvh': 5.11.0
+      '@interop/did-method-webvh': 5.11.1
       '@interop/storage-core': 0.20.0
 
   '@interop/x25519-key-agreement-key@5.4.1':

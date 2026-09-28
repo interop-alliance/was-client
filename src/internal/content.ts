@@ -10,6 +10,7 @@
  * `application/octet-stream`.
  */
 import type { HttpResponse } from '@interop/http-client'
+import { isJsonContentType } from '@interop/storage-core'
 import type { ResponseLike } from '../codec.js'
 import { blobText } from './blob.js'
 import { ValidationError, WasServerError } from '../errors.js'
@@ -41,23 +42,6 @@ export const ENCODER = new TextEncoder()
  * path, protected-header bytes on the read path.
  */
 export const DECODER = new TextDecoder()
-
-/**
- * Whether a content-type denotes JSON -- `application/json` or any
- * `application/<prefix>+json` structured-suffix variant (e.g.
- * `application/ld+json`, `application/jose+json`), each optionally followed by
- * parameters (`; charset=utf-8`). The `json` token is anchored to the end of the
- * media type, so a non-JSON type that merely contains the substring `json` --
- * `application/jsonl`, `application/json-seq`, `application/json5` -- is NOT
- * treated as JSON and is read back as binary (a `Blob`) instead of being
- * JSON-parsed.
- *
- * @param contentType {string}
- * @returns {boolean}
- */
-function isJsonContentType(contentType: string): boolean {
-  return /^application\/([^+\s;]+\+)?json\s*(;.*)?$/i.test(contentType)
-}
 
 /**
  * Whether a content type denotes UTF-8-safe text that should be stored inline as
