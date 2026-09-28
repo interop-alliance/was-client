@@ -1,5 +1,11 @@
 # @interop/was-client Changelog
 
+## 0.75.1 - TBD
+
+### Changed
+
+- Update to latest vh-resource-log dep.
+
 ## 0.75.0 - 2026-09-27
 
 ### Changed

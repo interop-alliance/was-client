@@ -33,8 +33,8 @@ importers:
         specifier: ^0.20.0
         version: 0.20.0
       '@interop/vh-resource-log':
-        specifier: ^0.5.3
-        version: 0.5.3
+        specifier: ^0.5.4
+        version: 0.5.4
       '@interop/x25519-key-agreement-key':
         specifier: ^5.4.1
         version: 5.4.1
@@ -296,16 +296,12 @@ packages:
     resolution: {integrity: sha512-Fp3c4eQapY59mSD/H1Yl4uMKY5U/F5D6qGNpVLeegNBYdTszjvTtkyJjQh2AFELdOQ8iph67teF6xDCfFrqUsQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.19.1':
-    resolution: {integrity: sha512-DVyQ4biz9RprwO/XSjm+Iz+RbFkJvaOVCziEeueA/F7TrhDkBSs9YgwfJJp2QWcT/5puu95Jq7e7itq//KbQuw==}
-    engines: {node: '>=22.0'}
-
   '@interop/storage-core@0.20.0':
     resolution: {integrity: sha512-hMUl57Y5plOlvvgXOSvYIt7VdB3HP5JjUEJ12aJ/0xjWQGTF0RqbKk1BAjnOmRqlp/bi//vtBhe55YcpNx5TDw==}
     engines: {node: '>=22.0'}
 
-  '@interop/vh-resource-log@0.5.3':
-    resolution: {integrity: sha512-AvQNNqv52X71TZrBjDP15rNJKRnwirTZgSg9BY2Gux7daKHtk0E7Uxvq73PesuksYQNevxAUoYMsQakg+8yTYQ==}
+  '@interop/vh-resource-log@0.5.4':
+    resolution: {integrity: sha512-pqkvBU6NoPYWrxkpXgX4MX2ynYOXTNpgIL6EeUg3i8eLjEWTXBEzZe9gjSrQ2DqJHT9vNY2IXv7pQiIjvTvSyw==}
     engines: {node: '>=24.0'}
 
   '@interop/x25519-key-agreement-key@5.4.1':
@@ -1491,18 +1487,14 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/storage-core@0.19.1':
-    dependencies:
-      '@interop/data-integrity-core': 8.8.0
-
   '@interop/storage-core@0.20.0':
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
-  '@interop/vh-resource-log@0.5.3':
+  '@interop/vh-resource-log@0.5.4':
     dependencies:
       '@interop/did-method-webvh': 5.11.0
-      '@interop/storage-core': 0.19.1
+      '@interop/storage-core': 0.20.0
 
   '@interop/x25519-key-agreement-key@5.4.1':
     dependencies:
