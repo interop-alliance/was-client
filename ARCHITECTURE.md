@@ -602,7 +602,10 @@ The wire model is shared, not local: `SyncCheckpoint`, `WireDoc`, and the feed
 page re-export `@interop/storage-core`'s `ChangesCheckpoint` / `ChangeDocument`
 / `ChangesPage`. A checkpoint is the keyset position `{ id, updatedAt }` of the
 last document returned -- server time only, an opaque resume token, never
-compared against a device clock.
+compared against a device clock. `WireDoc` and `MasterState` both carry an
+optional `writerId`, the writer-attribution label from the Resource Metadata
+(present when the writer declared one, and on a tombstone the deleting request's
+own label).
 
 Conditional writes ride the server's opaque `ETag` uniformly for plaintext and
 encrypted resources, so there is no plaintext-vs-encrypted fork. The validator
@@ -617,9 +620,15 @@ re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete or on a `/meta`
 write, a subtype of `NotFoundError`) marks an already-gone target: a settled
 outcome for a delete, a delete race for a metadata write. A third,
 `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
-`mapAuthErrors` and reports revoked access. The port's `putContent` also stamps
-the `Key-Epoch` header so the server records which key epoch a body was
-encrypted under.
+`mapAuthErrors` and reports revoked access. The port's `putContent` and
+`deleteContent` also stamp the `Key-Epoch` and `Writer-Id` headers, so the
+server records which key epoch a body was encrypted under and which writing
+agent produced the revision; `putMeta` carries `writerId` the same way as a
+top-level body member beside `custom`. Both are declare-or-clear: an omitted
+value clears whatever was stored, so a caller that wants to keep a prior
+`writerId` must resend it on every write. `writerId` is advisory attribution
+only -- a replica uses it to recognize its own writes echoed back and to break
+same-`updatedAt` ties, and it is never an input to an authorization decision.
 
 Bypassing the codec is not bypassing the error mapper. Every failure the port
 catches goes through `mapError` first, so its signals carry the server's

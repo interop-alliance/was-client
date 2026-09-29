@@ -24,6 +24,14 @@ import {
 export const KEY_EPOCH_HEADER = 'Key-Epoch'
 
 /**
+ * The request header a content write or delete declares its writer-attribution
+ * label under (spec "Writer attribution"), stamping it onto the Resource
+ * Metadata `writerId` property (an absent header clears any prior label). HTTP
+ * header names are case-insensitive; the wire form is `Writer-Id`.
+ */
+export const WRITER_ID_HEADER = 'Writer-Id'
+
+/**
  * A conditional-write precondition: `ifMatch` is the quoted ETag an
  * update-if-unchanged write must match; `ifNoneMatch` requests a create-if-absent
  * (`If-None-Match: *`). At most one may be set; {@link assertSinglePrecondition}
@@ -91,11 +99,30 @@ export function assertSinglePrecondition(
 }
 
 /**
+ * Throws `ValidationError` when a writer-attribution label is present but
+ * empty. Per the spec, `writerId` is an opaque non-empty string; a present but
+ * empty value is a caller bug, refused locally rather than sent as an
+ * `invalid-request-body` the server would otherwise have to reject.
+ *
+ * @param [writerId] {string}
+ * @returns {void}
+ */
+export function assertWriterId(writerId?: string): void {
+  if (writerId !== undefined && writerId.length === 0) {
+    throw new ValidationError(
+      'A `writerId` must be a non-empty string: pass a label to declare it, ' +
+        'or omit the option to send no `Writer-Id` header.'
+    )
+  }
+}
+
+/**
  * Builds the headers for a write request: the content-type (when present) and
  * the conditional-write precondition headers (`If-Match` / `If-None-Match: *`).
  * Returns `undefined` when no header is needed, matching the request layer's
  * optional `headers`. Throws `ValidationError` when the precondition names both
- * `ifMatch` and `ifNoneMatch`, a pair no server state can satisfy.
+ * `ifMatch` and `ifNoneMatch`, a pair no server state can satisfy, or when
+ * `writerId` is present but empty.
  *
  * @param options {object}
  * @param [options.contentType] {string}          the body content-type, if any
@@ -105,18 +132,25 @@ export function assertSinglePrecondition(
  *   encrypted this write under; emitted as the `Key-Epoch` header so the
  *   server stamps the Resource's epoch. Omitted when absent (which clears any
  *   prior stamp on the server).
+ * @param [options.writerId] {string}   the writer-attribution label this
+ *   write declares; emitted as the `Writer-Id` header. Omitted when absent
+ *   (which clears any prior label on the server, per the spec's
+ *   declare-or-clear rule).
  * @returns {Record<string, string> | undefined}
  */
 export function writeHeaders({
   contentType,
   precondition = {},
-  epoch
+  epoch,
+  writerId
 }: {
   contentType?: string
   precondition?: WritePrecondition
   epoch?: string
+  writerId?: string
 }): Record<string, string> | undefined {
   assertSinglePrecondition(precondition)
+  assertWriterId(writerId)
   const headers: Record<string, string> = {}
   if (contentType) {
     headers['content-type'] = contentType
@@ -130,6 +164,9 @@ export function writeHeaders({
   if (epoch !== undefined) {
     // This record keys every header in lower case; the name is case-insensitive.
     headers[KEY_EPOCH_HEADER.toLowerCase()] = epoch
+  }
+  if (writerId !== undefined) {
+    headers[WRITER_ID_HEADER.toLowerCase()] = writerId
   }
   return Object.keys(headers).length > 0 ? headers : undefined
 }

@@ -45,7 +45,12 @@ export type SyncCheckpoint = ChangesCheckpoint
  * `Json`, the parsed JSON they always are on the wire (the shared type leaves
  * them `unknown`); on an encrypted collection `data`/`custom` are the opaque
  * stored envelope, moved verbatim (decrypt is a projection-time concern the
- * engine's `DocCipher` handles, never the port).
+ * engine's `DocCipher` handles, never the port). `writerId` (optional) rides
+ * along on `ChangeDocument` unchanged: the writing agent's attribution label,
+ * present when the writer declared one, and carried on a tombstone too as the
+ * deleting request's own label, if any. Advisory and never server-verified; a
+ * puller uses it to recognize its own writes echoed back and to break
+ * same-`updatedAt` ties on a shared `(updatedAt, writerId)` key.
  */
 export interface WireDoc extends Omit<ChangeDocument, 'data' | 'custom'> {
   data?: Json
@@ -66,10 +71,10 @@ export interface SyncPage extends Omit<ChangesPage, 'documents'> {
  * The current master state of a single resource, read back for the 412-conflict
  * path ({@link WasSyncPort.get}). An absent or tombstoned resource surfaces as
  * `get` resolving `null`, never as a `MasterState`. `updatedAt`, `metaVersion`,
- * `metaEtag`, `custom`, `createdBy`, and `epoch` are populated from the
- * resource's `/meta` document when it exists; a resource with no metadata yet
- * reports an epoch-zero `updatedAt` placeholder (a valid, sortable timestamp --
- * the change feed remains the authority on ordering).
+ * `metaEtag`, `custom`, `createdBy`, `epoch`, and `writerId` are populated from
+ * the resource's `/meta` document when it exists; a resource with no metadata
+ * yet reports an epoch-zero `updatedAt` placeholder (a valid, sortable
+ * timestamp -- the change feed remains the authority on ordering).
  *
  * `etag` and `metaEtag` are the raw, opaque `ETag` validators the content and
  * `/meta` reads returned (absent only where the header did not reach the
@@ -87,6 +92,7 @@ export interface MasterState {
   custom?: Json
   createdBy?: string
   epoch?: string
+  writerId?: string
 }
 
 /**
@@ -126,8 +132,12 @@ export interface WasSyncPort {
    * `ifNoneMatch: true` for create-if-absent, or `ifMatch` (the opaque `ETag`
    * from a prior read/write, echoed back verbatim) for update-if-unchanged.
    * `epoch` stamps the opaque key-epoch id the body was encrypted under
-   * (absent clears any prior stamp). Returns the new {@link WriteAck}. Throws
-   * {@link WasSyncConflictError} on `412`.
+   * (absent clears any prior stamp). `writerId` declares the writing agent's
+   * attribution label (sent as the `Writer-Id` header); per the spec's
+   * declare-or-clear rule, omitting it clears any label already stored for
+   * this resource, so a caller that wants to keep a prior label must resend
+   * it. Returns the new {@link WriteAck}. Throws {@link WasSyncConflictError}
+   * on `412`.
    */
   putContent(options: {
     id: string
@@ -135,12 +145,16 @@ export interface WasSyncPort {
     ifMatch?: string
     ifNoneMatch?: boolean
     epoch?: string
+    writerId?: string
   }): Promise<WriteAck>
 
   /**
    * Conditionally deletes a resource (writes a tombstone; `DELETE /:id`). Pass
    * `ifMatch` (the opaque `ETag` from a prior read/write, echoed back
-   * verbatim) to delete only if unchanged. Returns the tombstone's new
+   * verbatim) to delete only if unchanged. `writerId` declares the deleting
+   * agent's attribution label (sent as the `Writer-Id` header), attributing
+   * the tombstone; per the spec's declare-or-clear rule, omitting it clears
+   * any label already stored for this resource. Returns the tombstone's new
    * {@link WriteAck}. Throws {@link WasSyncConflictError} on `412`,
    * {@link WasSyncNotFoundError} on `404` (already gone -- a settled outcome
    * for a delete).
@@ -152,6 +166,7 @@ export interface WasSyncPort {
   deleteContent(options: {
     id: string
     ifMatch?: string
+    writerId?: string
   }): Promise<WriteAck | undefined>
 
   /**
@@ -159,10 +174,16 @@ export interface WasSyncPort {
    * The write fully
    * replaces `custom`, so omitting it writes the CLEARED state (the server
    * clears every property the body leaves out) -- that is how a metadata clear
-   * replicates. Returns the new metadata {@link WriteAck}, or `undefined` when
-   * the response carried no `ETag`. Throws {@link WasSyncConflictError} on
-   * `412`, and {@link WasSyncNotFoundError} on `404` (the resource is gone: a
-   * delete race the caller corroborates). A port built with
+   * replicates. `writerId` declares the writing agent's attribution label as
+   * the request body's top-level `writerId` member; per the spec's
+   * declare-or-clear rule for a metadata write, omitting it clears any label
+   * already stored for this resource -- a metadata write is itself a
+   * revision, and on an encrypted collection it replaces the `custom`
+   * envelope wholesale, so keeping a previous writer's label would
+   * misattribute it. Returns the new metadata {@link WriteAck}, or `undefined`
+   * when the response carried no `ETag`. Throws {@link WasSyncConflictError}
+   * on `412`, and {@link WasSyncNotFoundError} on `404` (the resource is gone:
+   * a delete race the caller corroborates). A port built with
    * `mapAuthErrors: true` raises {@link WasSyncAuthError} with `status: 404`
    * there instead, since the masked `404` is ambiguous.
    */
@@ -171,6 +192,7 @@ export interface WasSyncPort {
     custom?: Json
     ifMatch?: string
     ifNoneMatch?: boolean
+    writerId?: string
   }): Promise<WriteAck | undefined>
 
   /**

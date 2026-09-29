@@ -40,9 +40,11 @@
 import type { WasClient } from '../WasClient.js'
 import type { HttpResponse } from '@interop/http-client'
 import {
+  assertWriterId,
   KEY_EPOCH_HEADER,
   readEtag,
-  writeHeaders
+  writeHeaders,
+  WRITER_ID_HEADER
 } from '../internal/conditional.js'
 import { resourceMeta, resourcePath } from '../internal/paths.js'
 import {
@@ -71,6 +73,14 @@ import type {
  * of the sync subpath's public surface.
  */
 export { KEY_EPOCH_HEADER }
+
+/**
+ * The request header a content write or delete declares its writer-attribution
+ * label under, stamping it onto the Resource Metadata `writerId` property.
+ * Defined next to the header assembly it drives (`internal/conditional.ts`)
+ * and re-exported here as part of the sync subpath's public surface.
+ */
+export { WRITER_ID_HEADER }
 
 /**
  * The placeholder `updatedAt` for a 412-conflict re-read whose resource has no
@@ -371,7 +381,7 @@ export function createWasSyncPort({
       }
     },
 
-    async putContent({ id, data, ifMatch, ifNoneMatch, epoch }) {
+    async putContent({ id, data, ifMatch, ifNoneMatch, epoch, writerId }) {
       try {
         const response = await was.request({
           capability,
@@ -380,7 +390,8 @@ export function createWasSyncPort({
           json: data as object,
           headers: writeHeaders({
             precondition: { ifMatch, ifNoneMatch },
-            epoch
+            epoch,
+            writerId
           })
         })
         return writeAck(response)
@@ -389,13 +400,13 @@ export function createWasSyncPort({
       }
     },
 
-    async deleteContent({ id, ifMatch }) {
+    async deleteContent({ id, ifMatch, writerId }) {
       try {
         const response = await was.request({
           capability,
           path: contentPath(id),
           method: 'DELETE',
-          headers: writeHeaders({ precondition: { ifMatch } })
+          headers: writeHeaders({ precondition: { ifMatch }, writerId })
         })
         return writeAck(response)
       } catch (err) {
@@ -413,7 +424,8 @@ export function createWasSyncPort({
       }
     },
 
-    async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
+    async putMeta({ id, custom, ifMatch, ifNoneMatch, writerId }) {
+      assertWriterId(writerId)
       try {
         const response = await was.request({
           capability,
@@ -421,10 +433,15 @@ export function createWasSyncPort({
           method: 'PUT',
           // The `/meta` PUT fully replaces `custom`: a body omitting it writes
           // the CLEARED state (the server clears every property the body
-          // leaves out), which is how a metadata clear replicates. Byte-
-          // identical on the wire to the `{ custom: undefined }` this used to
-          // send, since `JSON.stringify` drops an `undefined` member.
-          json: custom === undefined ? {} : { custom },
+          // leaves out), which is how a metadata clear replicates. `writerId`
+          // rides as a top-level member beside `custom`, on the same
+          // declare-or-clear terms: an omitted value clears the stored label.
+          // Byte-identical on the wire to the `{ custom: undefined }` this
+          // used to send, since `JSON.stringify` drops an `undefined` member.
+          json: {
+            ...(custom !== undefined ? { custom } : {}),
+            ...(writerId !== undefined ? { writerId } : {})
+          },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
         const { etag, version } = versionedEtag(response)
@@ -457,9 +474,10 @@ export function createWasSyncPort({
       }
 
       // Metadata (best-effort): the `/meta` body carries the server-managed
-      // `updatedAt`, the creator DID, the key-epoch id, and the user-writable
-      // `custom`, plus its own `metaVersion`/`metaEtag` ETag. A resource with
-      // no metadata yet 404s here; only a hard error propagates.
+      // `updatedAt`, the creator DID, the key-epoch id, the writer-attribution
+      // label, and the user-writable `custom`, plus its own
+      // `metaVersion`/`metaEtag` ETag. A resource with no metadata yet 404s
+      // here; only a hard error propagates.
       const meta = await metaRead
       if (!meta.ok) {
         const mapped = mapError(meta.err)
@@ -480,6 +498,7 @@ export function createWasSyncPort({
             updatedAt?: string
             createdBy?: string
             epoch?: string
+            writerId?: string
             custom?: Json
           }
         | undefined
@@ -491,6 +510,9 @@ export function createWasSyncPort({
       }
       if (metaBody?.epoch !== undefined) {
         master.epoch = metaBody.epoch
+      }
+      if (metaBody?.writerId !== undefined) {
+        master.writerId = metaBody.writerId
       }
       if (metaBody?.custom !== undefined) {
         master.custom = metaBody.custom

@@ -26,6 +26,7 @@ import {
   PreconditionFailedError,
   NotFoundError,
   QuotaExceededError,
+  ValidationError,
   WasError,
   WasServerError
 } from '../../src/index.js'
@@ -145,6 +146,26 @@ describe('createWasSyncPort.query', () => {
     expect(changes).toHaveBeenCalledWith({ checkpoint, limit: 50 })
     expect(result).toEqual(page)
   })
+
+  it('surfaces writerId on a WireDoc from the changes feed', async () => {
+    const page = {
+      documents: [
+        {
+          id: 'a',
+          _deleted: false,
+          updatedAt: 't1',
+          version: 1,
+          writerId: 'writer-a'
+        }
+      ],
+      checkpoint: { id: 'a', updatedAt: 't1' }
+    }
+    const { was } = makeWas({ changesResult: page })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const result = await port.query({ limit: 50 })
+    expect(result.documents[0]!.writerId).toBe('writer-a')
+  })
 })
 
 describe('createWasSyncPort.putContent', () => {
@@ -193,6 +214,48 @@ describe('createWasSyncPort.putContent', () => {
       'if-match': '"4"',
       'key-epoch': 'epoch-7'
     })
+  })
+
+  it('sends the Writer-Id header when given', async () => {
+    const calls: RequestOptions[] = []
+    const { was } = makeWas({
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null, { etag: '"g.5"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await port.putContent({ id: 'res-1', data: { a: 1 }, writerId: 'writer-a' })
+
+    expect(calls[0]!.headers).toMatchObject({ 'writer-id': 'writer-a' })
+  })
+
+  it('sends no Writer-Id header when writerId is omitted', async () => {
+    const calls: RequestOptions[] = []
+    const { was } = makeWas({
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null, { etag: '"g.5"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await port.putContent({ id: 'res-1', data: { a: 1 } })
+
+    expect(calls[0]!.headers?.['writer-id']).toBeUndefined()
+  })
+
+  it('refuses an empty writerId before sending the request', async () => {
+    const { was, request } = makeWas({
+      onRequest: () => response(null, { etag: '"g.1"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await expect(
+      port.putContent({ id: 'res-1', data: { a: 1 }, writerId: '' })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('acks version 0 with no etag, and does not re-read, when the write response carries no ETag', async () => {
@@ -258,6 +321,35 @@ describe('createWasSyncPort.deleteContent', () => {
     expect(calls[0]!.headers).toMatchObject({ 'if-match': '"1"' })
   })
 
+  it('sends the Writer-Id header when given, and none when omitted', async () => {
+    const calls: RequestOptions[] = []
+    const { was } = makeWas({
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null, { etag: '"g2.2"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await port.deleteContent({ id: 'res-1', writerId: 'writer-a' })
+    expect(calls[0]!.headers).toMatchObject({ 'writer-id': 'writer-a' })
+
+    await port.deleteContent({ id: 'res-1' })
+    expect(calls[1]!.headers?.['writer-id']).toBeUndefined()
+  })
+
+  it('refuses an empty writerId before sending the request', async () => {
+    const { was, request } = makeWas({
+      onRequest: () => response(null, { etag: '"g.1"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await expect(
+      port.deleteContent({ id: 'res-1', writerId: '' })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it('maps a 404 to WasSyncNotFoundError (a NotFoundError)', async () => {
     const { was } = makeWas({
       onRequest: () => {
@@ -300,6 +392,42 @@ describe('createWasSyncPort.putMeta', () => {
     expect(calls[0]!.method).toBe('PUT')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1/meta`)
     expect(calls[0]!.json).toEqual({ custom: { name: 'Alice' } })
+  })
+
+  it('sends writerId as a top-level member beside custom, and omits it when absent', async () => {
+    const calls: RequestOptions[] = []
+    const { was } = makeWas({
+      onRequest: opts => {
+        calls.push(opts)
+        return response(null)
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await port.putMeta({
+      id: 'res-1',
+      custom: { name: 'Alice' },
+      writerId: 'writer-a'
+    })
+    expect(calls[0]!.json).toEqual({
+      custom: { name: 'Alice' },
+      writerId: 'writer-a'
+    })
+
+    await port.putMeta({ id: 'res-1', custom: { name: 'Alice' } })
+    expect(calls[1]!.json).toEqual({ custom: { name: 'Alice' } })
+  })
+
+  it('refuses an empty writerId before sending the request', async () => {
+    const { was, request } = makeWas({
+      onRequest: () => response(null)
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await expect(
+      port.putMeta({ id: 'res-1', writerId: '' })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(request).not.toHaveBeenCalled()
   })
 })
 
@@ -357,6 +485,7 @@ describe('createWasSyncPort.get', () => {
               updatedAt: '2026-01-01T00:00:00.000Z',
               createdBy: 'did:key:zCreator',
               epoch: 'epoch-3',
+              writerId: 'writer-a',
               custom: { name: 'Alice' }
             },
             { etag: '"gMeta.7"' }
@@ -375,6 +504,7 @@ describe('createWasSyncPort.get', () => {
       data: { a: 1 },
       createdBy: 'did:key:zCreator',
       epoch: 'epoch-3',
+      writerId: 'writer-a',
       custom: { name: 'Alice' },
       metaVersion: 7,
       metaEtag: '"gMeta.7"'

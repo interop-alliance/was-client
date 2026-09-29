@@ -1,5 +1,18 @@
 # @interop/was-client Changelog
 
+## 0.79.0 - TBD
+
+### Added
+
+- Client support for writer attribution (`writerId`): an optional `writerId` on
+  `WasSyncPort.putContent`, `deleteContent`, and `putMeta`, sent as the
+  `Writer-Id` header (or, for `putMeta`, a top-level body member) on the same
+  declare-or-clear terms as `epoch`. `WireDoc` and `MasterState` surface the
+  stored label. An empty `writerId` is refused locally with `ValidationError`.
+  Depends on `@interop/storage-core`'s unpublished `writerId` support on
+  `ResourceMetadata`, `ResourceSummary`, and `ChangeDocument` (currently
+  consumed via a `link:` dependency pending publish).
+
 ## 0.78.0 - 2026-09-28
 
 ### Added
