@@ -930,12 +930,18 @@ scope for now):
   `add()` to the chunked-stream path: one document plus its chunk resources,
   read back transparently by `get()`. Serving the chunk endpoints is a
   conformance requirement of a server that offers encrypted collections, so
-  there is no client-side gate -- one that does not answers `501`. Two limits
-  apply. Auto-routing is an `add()` affordance -- `put(id, bigBlob)` is refused,
-  since replacing an existing document's chunks is not automated. And a
-  content-addressed collection (`idDerivation: 'content'`) is refused too: a
-  chunked write stores the document twice, so no single ciphertext derives its
-  id. Tune the threshold and the chunk size with
+  there is no client-side gate -- one that does not answers `501`.
+  `put(id, bigBlob)` takes the same route where no document is stored at `id`
+  yet, so a large binary can be created at an id of your choosing (pass
+  `ifNoneMatch: true` to get a `412` when the id is taken). Two limits apply.
+  `put()` over an existing document is refused, since replacing its chunks is
+  not automated. And a content-addressed collection (`idDerivation: 'content'`)
+  is refused too: a chunked write stores the document twice, so no single
+  ciphertext derives its id. A chunked write that fails partway deletes what it
+  wrote, and a `507` surfaces as `QuotaExceededError`. One that could not clean
+  up leaves a pending stub, which every read refuses; the EDV doc cipher's
+  `isPendingStub` recognizes it, and `delete()` removes it with its chunks. Tune
+  the threshold and the chunk size with
   `createEdvEncryption({ maxBlobBytes, chunkSize })`.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
   do not (they return the stored representation).
@@ -948,7 +954,12 @@ same codec, doc ciphers, key epochs, recipient operations, blinding keys,
 transport module left out of the import graph. `collectionDescriptorStore` stays
 on `./edv`, since it reads through a live `Collection` handle. The example below
 leaves `spaceId` unset. A cipher told which Space its collection lives in loads
-the transport factory for the chunked paths.
+the transport factory for the chunked paths. A cipher with no Space still reads
+a chunked envelope when `decrypt` is given a `chunkSource`, a function that
+serves each chunk (`{ docId, chunkIndex }` to the parsed chunk, or `undefined`)
+from bytes you already hold. A missing chunk throws `NotFoundError`, and
+`blobBytes` (also on this entry) reads the resulting `Blob` on every platform,
+React Native included.
 
 ```ts
 import { createEdvDocCipher } from '@interop/was-client/edv/core'
@@ -1089,10 +1100,11 @@ plugs into:
   encrypting one, built from the collection's key-epoch descriptor (every
   encrypted collection carries one from birth; install epoch[0] at provision
   time with `ensureFirstEpoch`). Build it with the collection's `spaceId` to let
-  `decrypt` fetch a chunked blob's chunks. On a searchable collection, also hand
-  it the stored Collection `/meta` value (the `meta` input, or `applyMeta` when
-  the replica's copy changes) so pushed documents carry blinded index entries
-  and stay visible to `find()`. `createEdvEncryptOnlyDocCipher(...)` is the
+  `decrypt` fetch a chunked blob's chunks, or pass `decrypt` a `chunkSource` to
+  serve them from bytes you hold. On a searchable collection, also hand it the
+  stored Collection `/meta` value (the `meta` input, or `applyMeta` when the
+  replica's copy changes) so pushed documents carry blinded index entries and
+  stay visible to `find()`. `createEdvEncryptOnlyDocCipher(...)` is the
   write-only counterpart, built from the descriptor alone with no key-agreement
   secret (writes seal to the current epoch's public key, reconstructed from the
   epoch id); `decrypt` on it refuses with the typed `EncryptOnlyCipherError`.

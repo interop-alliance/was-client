@@ -139,8 +139,10 @@ export interface CodecRequestContext {
  * `chunked` is the discriminant, and `id` is the resource id the plan will
  * write to (known before `execute` runs, so a caller can report it without
  * waiting). `execute` performs the whole write over the supplied context and
- * resolves what the caller needs to shape its result. Only the insert path
- * (`Collection.add`) drives a plan; the write-by-id path refuses one.
+ * resolves what the caller needs to shape its result. The insert path
+ * (`Collection.add`) drives a plan. The write-by-id path (`Resource.put`)
+ * drives one only to create a resource at an id that holds no document, and
+ * refuses it over an existing document.
  */
 export interface ChunkedWrite {
   chunked: true
@@ -152,8 +154,8 @@ export interface ChunkedWrite {
   resourceContentType?: string
   /**
    * Scheme-specific guidance the core write path appends to the generic error
-   * it throws when it refuses the plan (a write by id, where auto-routing does
-   * not apply). Only the codec knows why its payload needs several requests and
+   * it throws when it refuses the plan (a write by id over an existing
+   * document, which a plan cannot replace). Only the codec knows why its payload needs several requests and
    * which low-level API drives that write directly, so the wording is supplied
    * here rather than hardcoded in the scheme-agnostic core.
    */
@@ -335,8 +337,8 @@ export interface ResourceCodec {
    *   collection whose codec computes its own preconditions.
    * @returns {Promise<CodecWrite>}   the single-request encoding, or -- for a
    *   payload the codec cannot store in one request -- a {@link ChunkedWrite}
-   *   plan the insert path executes. Only `add()` drives a plan; a write by id
-   *   refuses one.
+   *   plan. `add()` drives a plan; a write by id drives one only where no
+   *   document is stored yet.
    */
   encode(input: {
     id?: string

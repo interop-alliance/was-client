@@ -67,8 +67,9 @@
  *   served into a resource's.
  */
 import { base64, base64urlnopad } from '@scure/base'
-import { EdvClientCore, assertDocId } from '@interop/edv-client/core'
+import { EdvClientCore, Transport, assertDocId } from '@interop/edv-client/core'
 import type {
+  IEDVChunk,
   IEDVDocument,
   IEncryptedDocument,
   IKeyAgreementKey,
@@ -92,10 +93,14 @@ import {
   assertQueryAttributes
 } from '../internal/indexSchema.js'
 import {
+  ConflictError,
   EncryptionError,
   IntegrityError,
   KeyUnwrapError,
+  NotFoundError,
   NotSupportedError,
+  PreconditionFailedError,
+  QuotaExceededError,
   UnknownEpochError,
   ValidationError
 } from '../errors.js'
@@ -156,7 +161,8 @@ const CHUNKED_ENCODING = 'chunked'
  * Builds the `WasTransport` a codec's chunked-stream paths drive, over the
  * signed requester core of one request. Injected into {@link EdvCodec} by the
  * build that knows where the Collection lives (a Space on a server); a codec
- * built without one has no server behind it and refuses the chunked path.
+ * built without one has no server behind it. It refuses the chunked write, and
+ * reads a chunked document only from a caller's {@link ChunkSource}.
  *
  * @param options {object}
  * @param options.context {CodecRequestContext}   the signed-request context
@@ -168,6 +174,25 @@ export type CodecTransportFactory = (options: {
   context: CodecRequestContext
   documentHeaders?: Record<string, string>
 }) => WasTransport
+
+/**
+ * Serves the chunks of a chunked encrypted document from bytes the caller
+ * already holds, in place of a request context: an archive's chunk files, say.
+ * The reader asks for each chunk by the document's AEAD-bound resource id and
+ * its 0-based index, and the source resolves the parsed chunk or `undefined`
+ * when it holds none at that index (the read then fails with
+ * `NotFoundError`). Every check the network read applies still applies: the
+ * sealed chunk count, the bound id, and each chunk's `was` binding.
+ *
+ * @param options {object}
+ * @param options.docId {string}   the document's AEAD-bound resource id
+ * @param options.chunkIndex {number}   the chunk's 0-based index
+ * @returns {Promise<IEDVChunk | undefined>}
+ */
+export type ChunkSource = (options: {
+  docId: string
+  chunkIndex: number
+}) => Promise<IEDVChunk | undefined>
 
 /**
  * A shared strict UTF-8 decoder used to test whether a non-JSON payload is
@@ -394,7 +419,8 @@ export class EdvCodec implements ResourceCodec {
    *   into each envelope's `was.v` (defaults to {@link EDV_SCHEME_VERSION})
    * @param [options.transportFactory] {CodecTransportFactory}   builds the
    *   transport the chunked-stream path drives; omitted by a build with no
-   *   server behind it, which then refuses that path
+   *   server behind it, which then refuses the chunked write and reads a
+   *   chunked document only from a `chunkSource`
    * @param options.collectionId {string}   the Collection this codec reads and
    *   writes: bound into the Collection metadata envelope's `was.collection`
    *   (and checked on read), and it labels decrypt-routing errors
@@ -717,8 +743,10 @@ export class EdvCodec implements ResourceCodec {
         `Collection "${this.#collectionId}" has no server behind it: this ` +
           'codec was built for a local replica and holds no route to address ' +
           'a document and its chunk resources with. Chunked encrypted blobs ' +
-          'can only be read and written through a Collection handle bound to ' +
-          'a Space, or read through a DocCipher built with its `spaceId`.'
+          'can only be written through a Collection handle bound to a Space. ' +
+          'Read one through such a handle, through a DocCipher built with ' +
+          'its `spaceId`, or by passing a `chunkSource` to the DocCipher ' +
+          '`decrypt` in place of a request context.'
       )
     }
     return this.#transportFactory({ context, documentHeaders })
@@ -740,15 +768,21 @@ export class EdvCodec implements ResourceCodec {
    * payload, so that discriminator is what the read side routes on: a server
    * cannot mint it, and cannot suppress it to hide the chunks either.
    *
+   * The write is a create-if-absent: the first document write carries
+   * `If-None-Match: *`, so the plan also serves a write by id (`put()`) at an
+   * id that holds no document yet. A 412 there surfaces as the
+   * `PreconditionFailedError` the request path raised.
+   *
    * The write is two-phase (`EdvClientCore.insert` writes the document, then
-   * streams the chunks), so a failure partway leaves a document stub whose
-   * sealed stream state is still `{ pending: true }` -- undecryptable, listed,
-   * and never re-used, since a retry mints a fresh id. The plan therefore
-   * compensates: if the document was written and the write then failed, it
-   * best-effort deletes the stub before rethrowing.
+   * streams the chunks), so a failure partway leaves a pending stub: a
+   * document whose sealed stream state is still `{ pending: true }`,
+   * undecryptable and listed. The plan therefore compensates: if the document
+   * was written and the write then failed, it best-effort deletes the stub
+   * before rethrowing. A stub that survives (the process died, or the cleanup
+   * failed) is recognized with {@link isPendingStub}.
    *
    * @param options {object}
-   * @param options.id {string}                        the minted document id
+   * @param options.id {string}   the document id (minted, or the caller's)
    * @param options.stream {ReadableStream<Uint8Array>}   the payload, as the
    *   stream the EDV core re-chunks (never buffered whole by this codec)
    * @param options.meta {Record<string, unknown>}     the document meta to seal
@@ -768,8 +802,9 @@ export class EdvCodec implements ResourceCodec {
       id,
       resourceContentType: meta.contentType as string,
       // What the scheme-agnostic write path appends when it refuses this plan
-      // for a write by id: only this codec knows why the payload needs several
-      // requests, and which low-level API writes one directly.
+      // for a write by id over an existing document: only this codec knows
+      // why the payload needs several requests, and which low-level API
+      // writes one directly.
       guidance:
         'This payload is too large for a single encrypted document, so it is ' +
         'stored as a document plus chunk resources. Drive the write yourself ' +
@@ -808,18 +843,31 @@ export class EdvCodec implements ResourceCodec {
 
   /**
    * Compensates a failed chunked write and builds the error to rethrow. The
-   * document stub is deleted only when the transport reports it actually wrote
-   * one: a write that failed before that (the id is freshly minted, so this is
-   * a server or network failure, not a collision) must not delete a resource
-   * this write never created. The delete is best effort -- it is a cleanup, and
-   * its own failure must not mask the failure that caused it -- so its outcome
-   * only shapes the message.
+   * pending stub is deleted only when the transport reports it actually wrote
+   * one: a write that failed before that (an id already taken, or a server or
+   * network failure) must not delete a resource this write never created. The
+   * delete is conditional on the stub's `ETag`, so it never removes a document
+   * another writer stored at the id since. It is best effort -- it is a
+   * cleanup, and its own failure must not mask the failure that caused it --
+   * so its outcome only shapes the message. Deleting the document deletes the
+   * chunks already stored under it.
+   *
+   * Three failures keep their own type, so a caller can dispatch on them as it
+   * does for a single-request write. A 412 on the first document write (the
+   * id is taken) or on the final document update (another writer replaced the
+   * stub in between) is rethrown as a `PreconditionFailedError`; the latter
+   * deletes nothing, since the stored document is no longer this write's. A
+   * 409 (a `unique: true` blinded attribute already held by another document)
+   * is rethrown as a `ConflictError`, and a 507 as a `QuotaExceededError`,
+   * after the cleanup. Every other failure after the document write becomes
+   * an {@link EncryptionError}.
    *
    * @param options {object}
    * @param options.err {unknown}   the failure from the chunked write
-   * @param options.id {string}     the document id the write minted
+   * @param options.id {string}     the document id the write targeted
    * @param options.transport {WasTransport}   the transport the write ran on
    * @returns {Promise<Error>}   the error to throw, carrying `err` as its cause
+   *   when it wraps it
    */
   async #chunkedWriteFailed({
     err,
@@ -830,23 +878,65 @@ export class EdvCodec implements ResourceCodec {
     id: string
     transport: WasTransport
   }): Promise<Error> {
-    if (transport.lastDocumentWrite === undefined) {
-      return err instanceof Error ? err : new Error(String(err))
+    // The transport rethrows a 412 or 409 as the named error the EDV core
+    // dispatches on, with the typed HTTP error as its cause.
+    const httpError =
+      err instanceof Error &&
+      (err.cause instanceof PreconditionFailedError ||
+        err.cause instanceof ConflictError)
+        ? err.cause
+        : err
+    const written = transport.lastDocumentWrite
+    if (written === undefined) {
+      return httpError instanceof Error ? httpError : new Error(String(err))
     }
+    if (httpError instanceof PreconditionFailedError) {
+      const { status, type, title, details, requestUrl } = httpError
+      return new PreconditionFailedError(
+        `The chunked encrypted write of resource "${id}" lost a race: ` +
+          'another writer replaced its document before the final update, ' +
+          'so that document was left in place. Re-read it before writing ' +
+          'again.',
+        { status, type, title, details, requestUrl, cause: err }
+      )
+    }
+    let outcome =
+      'The incomplete document and any chunks stored under it were deleted.'
     let removed = true
     try {
-      await transport.deleteDocument({ id })
-    } catch {
+      await transport.deleteDocument({ id, ifMatch: written.etag })
+    } catch (deleteErr) {
       removed = false
+      outcome =
+        deleteErr instanceof PreconditionFailedError
+          ? 'Another writer has since replaced the document, so it was left ' +
+            'in place.'
+          : 'The incomplete document could NOT be deleted and is still ' +
+            'stored; delete it before writing again.'
+    }
+    if (
+      httpError instanceof QuotaExceededError ||
+      httpError instanceof ConflictError
+    ) {
+      const { status, type, title, details, requestUrl } = httpError
+      const reason =
+        httpError instanceof QuotaExceededError
+          ? 'ran out of storage quota partway'
+          : 'collided with another document on a unique indexed attribute'
+      const ErrorClass =
+        httpError instanceof QuotaExceededError
+          ? QuotaExceededError
+          : ConflictError
+      return new ErrorClass(
+        `The chunked encrypted write of resource "${id}" ${reason}. ${outcome}`,
+        { status, type, title, details, requestUrl, cause: err }
+      )
     }
     return new EncryptionError(
       `The chunked encrypted write of resource "${id}" failed partway: its ` +
-        'document was written but its chunks were not, so the stored ' +
-        'document cannot be read. ' +
-        (removed
-          ? 'The incomplete document was deleted; retry the write.'
-          : 'The incomplete document could NOT be deleted and is still ' +
-            'stored; delete it and retry the write.'),
+        'document was written, but a chunk or the final document update ' +
+        'was not, so the stored document cannot be read. ' +
+        (removed ? `${outcome} Retry the write.` : outcome),
       { cause: err }
     )
   }
@@ -910,12 +1000,33 @@ export class EdvCodec implements ResourceCodec {
 
   /**
    * @inheritdoc
+   *
+   * A chunked document's chunks are read either through `context` (from the
+   * server) or from `chunkSource` (from bytes the caller holds). Passing both
+   * is ambiguous and refused with {@link ValidationError} before anything is
+   * decrypted.
+   *
+   * @param response {ResponseLike}   the stored envelope
+   * @param [expectedId] {string}   the resource id the read targeted
+   * @param [context] {CodecRequestContext}   the signed-request context a
+   *   chunked document's chunks are fetched through
+   * @param [chunkSource] {ChunkSource}   serves a chunked document's chunks in
+   *   place of `context`
+   * @returns {Promise<Json | Blob>}
    */
   async decode(
     response: ResponseLike,
     expectedId?: string,
-    context?: CodecRequestContext
+    context?: CodecRequestContext,
+    chunkSource?: ChunkSource
   ): Promise<Json | Blob> {
+    if (context !== undefined && chunkSource !== undefined) {
+      throw new ValidationError(
+        'Cannot decode this resource: both a request context and a ' +
+          '`chunkSource` were supplied, so it is ambiguous where a chunked ' +
+          "document's chunks come from. Pass one or the other."
+      )
+    }
     const stored = await readJsonData(response)
     const decrypted = await this.#openEnvelope({ doc: stored, expectedId })
     // A chunked document's bytes live in its chunk resources. Both routing
@@ -940,22 +1051,60 @@ export class EdvCodec implements ResourceCodec {
         chunks: (decrypted.stream as { chunks?: unknown } | undefined)?.chunks,
         meta: decrypted.meta,
         keyId: decrypted.keyId,
-        context
+        binding: decrypted.binding,
+        context,
+        chunkSource
       })
     }
     return this.#fromDocument(decrypted.content, decrypted.meta)
   }
 
   /**
+   * Whether a stored envelope is a pending stub: the document a chunked write
+   * leaves behind when it stops between its first document write and its final
+   * update (the process died, or the cleanup delete failed). Its sealed
+   * `meta.encoding` names the chunked encoding, and its sealed stream state is
+   * still `{ pending: true }` with no chunk count, so no read can open it.
+   *
+   * The answer rests only on AEAD-authenticated state: the envelope is opened
+   * and its binding verified against `expectedId` exactly as {@link decode}
+   * does, and a failure there propagates. A caller that finds a pending stub
+   * may delete the resource (which deletes any chunks stored under it) and
+   * write it again.
+   *
+   * @param response {ResponseLike}   the stored envelope
+   * @param expectedId {string}   the resource id the envelope was read under
+   * @returns {Promise<boolean>}
+   */
+  async isPendingStub(
+    response: ResponseLike,
+    expectedId: string
+  ): Promise<boolean> {
+    const stored = await readJsonData(response)
+    const decrypted = await this.#openEnvelope({ doc: stored, expectedId })
+    const stream = decrypted.stream as
+      { pending?: unknown; chunks?: unknown } | undefined
+    return (
+      decrypted.meta?.encoding === CHUNKED_ENCODING &&
+      stream?.pending === true &&
+      typeof stream.chunks !== 'number'
+    )
+  }
+
+  /**
    * Reassembles a chunked binary document: drives `EdvClientCore.getStream`
-   * over a transport built from the read context, buffers the decrypt stream,
-   * and returns the same `Blob` a small binary read returns.
+   * over a chunk-reading transport, buffers the decrypt stream, and returns the
+   * same `Blob` a small binary read returns. The chunks come from the server
+   * through a transport built from the read context, or from the caller's
+   * `chunkSource`.
    *
    * Only AEAD-authenticated inputs are trusted -- the sealed chunk count and
    * the `was.resource` id the envelope is bound to, never the envelope's
    * cleartext `id` -- and the decrypt uses the very key that opened the
-   * document envelope, so a chunk sealed to some other epoch fails to
-   * authenticate rather than being accepted.
+   * document envelope. Each chunk must also carry the envelope's own `was`
+   * binding in its protected header (the writer seals it into every chunk),
+   * so a genuine chunk of another resource, or one sealed under another
+   * epoch, is refused with {@link EncryptionError} before it is decrypted.
    *
    * @param options {object}
    * @param [options.id] {string}   the AEAD-bound resource id (= WAS resource
@@ -964,7 +1113,11 @@ export class EdvCodec implements ResourceCodec {
    * @param [options.meta] {Record<string, unknown>}   the decrypted meta
    * @param options.keyId {string}   the id of the key that decrypted the
    *   document envelope
+   * @param options.binding {Record<string, unknown>}   the envelope's verified
+   *   `was` binding, which every chunk must carry
    * @param [options.context] {CodecRequestContext}   the signed-request context
+   * @param [options.chunkSource] {ChunkSource}   serves the chunks in place of
+   *   `context`
    * @returns {Promise<Blob>}
    */
   async #readChunked({
@@ -972,13 +1125,17 @@ export class EdvCodec implements ResourceCodec {
     chunks,
     meta,
     keyId,
-    context
+    binding,
+    context,
+    chunkSource
   }: {
     id?: string
     chunks: unknown
     meta?: Record<string, unknown>
     keyId: string
+    binding: Record<string, unknown>
     context?: CodecRequestContext
+    chunkSource?: ChunkSource
   }): Promise<Blob> {
     if (typeof chunks !== 'number') {
       throw new EncryptionError(
@@ -987,13 +1144,14 @@ export class EdvCodec implements ResourceCodec {
           'created it never completed. Re-upload the blob.'
       )
     }
-    if (context === undefined) {
+    if (context === undefined && chunkSource === undefined) {
       throw new EncryptionError(
         'Cannot read this resource: it is a chunked encrypted blob, whose ' +
-          'bytes live in separate chunk resources, and this caller supplied no ' +
-          'request context to fetch them with. Read it through a Resource or ' +
-          'Collection handle (`resource.get()`), which supplies one, or pass ' +
-          "`collection.codecContext()` to the sync DocCipher's `decrypt`."
+          'bytes live in separate chunk resources, and this caller supplied ' +
+          'neither a request context to fetch them with nor a `chunkSource` ' +
+          'to serve them. Read it through a Resource or Collection handle ' +
+          "(`resource.get()`), which supplies one, or pass the sync DocCipher's " +
+          '`decrypt` either `collection.codecContext()` or a `chunkSource`.'
       )
     }
     if (id === undefined) {
@@ -1006,10 +1164,29 @@ export class EdvCodec implements ResourceCodec {
       )
     }
     const keyAgreementKey = this.#readKeys.find(key => key.id === keyId)
+    let fetchChunk: (options: {
+      docId: string
+      chunkIndex: number
+    }) => Promise<IEDVChunk>
+    if (chunkSource !== undefined) {
+      fetchChunk = async ({ docId, chunkIndex }) => {
+        const chunk = await chunkSource({ docId, chunkIndex })
+        if (chunk === undefined) {
+          throw new NotFoundError(
+            `Cannot read this resource: chunk ${chunkIndex} of resource ` +
+              `"${docId}" is not in the chunk source.`
+          )
+        }
+        return chunk
+      }
+    } else {
+      const network = this.#transportFor(context!)
+      fetchChunk = options => network.getChunk(options)
+    }
     const stream = (await this.#edv.getStream({
       doc: { id, stream: { chunks } } as IEDVDocument,
       keyAgreementKey,
-      transport: this.#transportFor(context)
+      transport: new ChunkReadTransport({ fetchChunk, binding })
     })) as ReadableStream<Uint8Array>
     const contentType =
       typeof meta?.contentType === 'string' ? meta.contentType : undefined
@@ -1035,8 +1212,9 @@ export class EdvCodec implements ResourceCodec {
    *   is required (see {@link _verifyBinding}). Set only by a
    *   {@link decodeMeta} whose caller states the Collection slot
    * @returns {Promise<object>}   the decrypted document (`content`, `meta`, the
-   *   AEAD-authenticated `stream` state where one was sealed, `keyId`, and the
-   *   AEAD-bound `resourceId` the envelope declares, where it binds one)
+   *   AEAD-authenticated `stream` state where one was sealed, `keyId`, the
+   *   verified `was` `binding`, and the AEAD-bound `resourceId` the envelope
+   *   declares, where it binds one)
    */
   async #openEnvelope({
     doc,
@@ -1051,17 +1229,28 @@ export class EdvCodec implements ResourceCodec {
     meta?: Record<string, unknown>
     stream?: unknown
     keyId: string
+    binding: Record<string, unknown>
     resourceId?: string
   }> {
     this.#assertEnvelope(doc, 'read')
     const decrypted = await this.#decrypt(doc)
-    const resourceId = await this.#verifyBinding({
+    const binding = await this.#verifyBinding({
       jwe: doc.jwe,
       expectedId,
       collectionSlot,
       keyId: decrypted.keyId
     })
-    return { ...decrypted, ...(resourceId !== undefined && { resourceId }) }
+    // The only trustworthy resource id on a stored document -- the envelope's
+    // top-level `id` is cleartext and server-controlled -- so a read that
+    // addresses anything under the document's path (the chunked-stream path)
+    // must use this one.
+    const resourceId =
+      typeof binding.resource === 'string' ? binding.resource : undefined
+    return {
+      ...decrypted,
+      binding,
+      ...(resourceId !== undefined && { resourceId })
+    }
   }
 
   /**
@@ -1202,13 +1391,10 @@ export class EdvCodec implements ResourceCodec {
    *   Collection metadata slot
    * @param options.keyId {string}   the id of the key that decrypted, for the
    *   epoch check
-   * @returns {Promise<string | undefined>}   the verified `was.resource` id the
-   *   envelope binds, or `undefined` where it binds none (a content-derived
-   *   content envelope, or the Collection metadata slot). It is the only
-   *   trustworthy resource id on a stored document -- the envelope's top-level
-   *   `id` is cleartext and server-controlled -- so a read that addresses
-   *   anything under the document's path (the chunked-stream path) must use
-   *   this one.
+   * @returns {Promise<Record<string, unknown>>}   the verified `was` binding.
+   *   Its `resource` member, where present, is the bound resource id; it is
+   *   absent for a content-derived content envelope and for the Collection
+   *   metadata slot.
    */
   async #verifyBinding({
     jwe,
@@ -1220,7 +1406,7 @@ export class EdvCodec implements ResourceCodec {
     expectedId?: string
     collectionSlot?: boolean
     keyId: string
-  }): Promise<string | undefined> {
+  }): Promise<Record<string, unknown>> {
     const was = parseWasHeader(jwe)
     if (was === undefined) {
       throw new EncryptionError(
@@ -1267,7 +1453,7 @@ export class EdvCodec implements ResourceCodec {
           'epoch.'
       )
     }
-    return typeof was.resource === 'string' ? was.resource : undefined
+    return was
   }
 
   /**
@@ -1735,6 +1921,103 @@ async function streamToBlob({
     }
   }
   return new Blob(parts, type !== undefined ? { type } : undefined)
+}
+
+/**
+ * The edv-client `Transport` a chunked read runs on. It serves only
+ * `getChunk`, the one method `EdvClientCore.getStream` calls, from the fetch
+ * the codec hands it: the server's chunk resources through a `WasTransport`,
+ * or a caller's {@link ChunkSource}. Every other `Transport` method keeps the
+ * base class's not-implemented refusal.
+ *
+ * Before a chunk reaches the decrypt stream, its protected-header `was`
+ * binding must equal the envelope's. The writer seals the same binding into
+ * the envelope and into every chunk, but the decrypt stream accepts each
+ * chunk under its own header and its own wrapped key, so without this check a
+ * genuine chunk of another resource would decrypt as part of this one. The
+ * header is parsed before the chunk is authenticated, which is safe: a forged
+ * header that matches still fails the chunk's AEAD, since the header is part
+ * of its additional data.
+ */
+class ChunkReadTransport extends Transport {
+  readonly #fetchChunk: (options: {
+    docId: string
+    chunkIndex: number
+  }) => Promise<IEDVChunk>
+  readonly #binding: Record<string, unknown>
+
+  /**
+   * @param options {object}
+   * @param options.fetchChunk {function}   resolves one chunk by document id
+   *   and index, or throws `NotFoundError`
+   * @param options.binding {Record<string, unknown>}   the envelope's verified
+   *   `was` binding
+   */
+  constructor({
+    fetchChunk,
+    binding
+  }: {
+    fetchChunk: (options: {
+      docId: string
+      chunkIndex: number
+    }) => Promise<IEDVChunk>
+    binding: Record<string, unknown>
+  }) {
+    super()
+    this.#fetchChunk = fetchChunk
+    this.#binding = binding
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * @param options {object}
+   * @param options.docId {string}   the owning document id
+   * @param options.chunkIndex {number}   the chunk's 0-based index
+   * @returns {Promise<IEDVChunk>}
+   */
+  override async getChunk({
+    docId,
+    chunkIndex
+  }: { docId?: string; chunkIndex?: number } = {}): Promise<IEDVChunk> {
+    if (docId === undefined || chunkIndex === undefined) {
+      throw new TypeError('"docId" and "chunkIndex" are required.')
+    }
+    const chunk = await this.#fetchChunk({ docId, chunkIndex })
+    const was = parseWasHeader((chunk as { jwe?: unknown } | null)?.jwe)
+    if (was === undefined || !sameBinding(was, this.#binding)) {
+      throw new EncryptionError(
+        `Cannot read this resource: chunk ${chunkIndex} of resource ` +
+          `"${docId}" is not bound to it. The \`was\` binding in the chunk's ` +
+          "protected header differs from the document envelope's, so the " +
+          'chunk belongs to another resource or was sealed under another ' +
+          'key epoch.'
+      )
+    }
+    return chunk
+  }
+}
+
+/**
+ * Whether two `was` bindings carry the same members with the same values. The
+ * binding is a flat record of strings and numbers, so a member-by-member
+ * comparison is exact, and a nested value never compares equal.
+ *
+ * @param left {Record<string, unknown>}
+ * @param right {Record<string, unknown>}
+ * @returns {boolean}
+ */
+function sameBinding(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>
+): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) {
+    return false
+  }
+  return leftKeys.every(
+    key => Object.hasOwn(right, key) && Object.is(left[key], right[key])
+  )
 }
 
 /**

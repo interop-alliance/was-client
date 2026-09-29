@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 120
+nextAvailableId: 121
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -82,6 +82,10 @@ reconcile an existing document's chunks with the new stream
 (`EdvClientCore.update({ doc, stream })`) and deal with orphaned chunk resources
 when the new stream is shorter, so it is a real feature rather than a follow-up
 detail.
+
+Since WCL-120, `put(id, bigBlob)` at an id where no document is stored already
+takes the chunked write (a create-if-absent), so this item is the replace case
+only: a `put()` over an existing document.
 
 Raised to medium by the 2026-09-11 review, which proved the orphan half is not
 gated on the auto-routing feature. An ordinary small `put()` over a chunked

@@ -232,10 +232,13 @@ export interface WasSyncPort {
  *   server controls.
  * - `decrypt` also takes an optional `context`, the signed-request surface a
  *   codec reads a multi-resource document through. With it, an EDV cipher
- *   reassembles a chunked envelope from its chunk resources. Without it, such
- *   an envelope throws `EncryptionError`. A cipher built without a `spaceId`
- *   throws `NotSupportedError`. A replica gets one from its Collection handle
- *   (`collection.codecContext()`). A binary document decrypts to a `Blob`, and
+ *   built with a `spaceId` reassembles a chunked envelope from its chunk
+ *   resources (one built without a `spaceId` throws `NotSupportedError`). A
+ *   replica gets one from its Collection handle (`collection.codecContext()`).
+ *   A context is not the only way to read a chunked envelope: the EDV cipher
+ *   (`EdvDocCipher`) also takes a `chunkSource` in its place, which serves the
+ *   chunks from bytes the caller holds. With neither, a chunked envelope
+ *   throws `EncryptionError`. A binary document decrypts to a `Blob`, and
  *   everything else to `Json`.
  */
 export interface DocCipher {

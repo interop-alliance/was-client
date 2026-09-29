@@ -31,6 +31,8 @@ import {
   isChunkedWrite,
   KeyUnwrapError,
   NotSupportedError,
+  PreconditionFailedError,
+  QuotaExceededError,
   ValidationError
 } from '../../src/index.js'
 import type {
@@ -877,6 +879,136 @@ describe('EdvCodec: chunked blob auto-routing', () => {
     await expect(
       codec.encode({ data: blob, contentType: 'application/octet-stream' })
     ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('surfaces a 507 on a chunk write as QuotaExceededError after the cleanup', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const quota = new QuotaExceededError('Quota exceeded', { status: 507 })
+    const context = failingBackend({
+      context: backend.context,
+      failOn: input =>
+        input.method === 'PUT' && input.path!.endsWith('/chunks/1'),
+      failure: quota
+    })
+    const err = await plan.execute(context).catch(caught => caught)
+    expect(err).toBeInstanceOf(QuotaExceededError)
+    expect((err as QuotaExceededError).name).toBe('QuotaExceededError')
+    expect((err as QuotaExceededError).status).toBe(507)
+    expect((err as Error).cause).toBe(quota)
+    // The stub was deleted, and the delete takes the stored chunk with it.
+    expect(backend.deletes).toEqual([`/space/s/c/${plan.id}`])
+    expect((err as Error).message).toContain('were deleted')
+  })
+
+  it('surfaces a 507 on the final document update as QuotaExceededError', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const documentPath = `/space/s/c/${plan.id}`
+    let documentWrites = 0
+    const context: CodecRequestContext = {
+      async request(input) {
+        if (input.method === 'PUT' && input.path === documentPath) {
+          documentWrites++
+          if (documentWrites === 2) {
+            throw new QuotaExceededError('Quota exceeded', { status: 507 })
+          }
+        }
+        return backend.context.request(input)
+      }
+    }
+    const err = await plan.execute(context).catch(caught => caught)
+    expect(err).toBeInstanceOf(QuotaExceededError)
+    expect((err as Error).message).not.toContain('chunks were not')
+    expect(backend.store.has(documentPath)).toBe(false)
+  })
+
+  it('names the failed step neutrally after the document write', async () => {
+    const codec = await chunkingCodec()
+    const backend = memoryBackend()
+    const plan = (await codec.encode({
+      data: blob,
+      contentType: 'application/octet-stream'
+    })) as ChunkedWrite
+    const documentPath = `/space/s/c/${plan.id}`
+    let documentWrites = 0
+    const context: CodecRequestContext = {
+      async request(input) {
+        if (input.method === 'PUT' && input.path === documentPath) {
+          documentWrites++
+          if (documentWrites === 2) {
+            throw Object.assign(new Error('HTTP 500'), { status: 500 })
+          }
+        }
+        return backend.context.request(input)
+      }
+    }
+    const err = await plan.execute(context).catch(caught => caught)
+    expect(err).toBeInstanceOf(EncryptionError)
+    expect((err as Error).message).toContain(
+      'a chunk or the final document update'
+    )
+  })
+})
+
+describe('EdvCodec: chunked write by id', () => {
+  const blob = new Uint8Array(64).map((_value, index) => (index * 5) % 251)
+
+  it('writes a chunked document at a caller-chosen id and reads it back', async () => {
+    const codec = await makeCodec({ maxBlobBytes: 16, chunkSize: 24 })
+    const backend = memoryBackend()
+    const id = (await EdvClientCore.generateId()) as string
+    const write = await (codec as ResourceCodec).encode({
+      id,
+      data: blob,
+      contentType: 'image/png',
+      current: null
+    })
+    expect(isChunkedWrite(write)).toBe(true)
+    const plan = write as ChunkedWrite
+    expect(plan.id).toBe(id)
+    const result = await plan.execute(backend.context)
+    expect(result.id).toBe(id)
+    const decoded = await codec.decode(
+      responseFrom(backend.store.get(`/space/s/c/${id}`)),
+      id,
+      backend.context
+    )
+    expect((decoded as Blob).type).toBe('image/png')
+    expect(new Uint8Array(await (decoded as Blob).arrayBuffer())).toEqual(blob)
+  })
+
+  it('surfaces a 412 on the first document write as PreconditionFailedError', async () => {
+    const codec = await makeCodec({ maxBlobBytes: 16, chunkSize: 24 })
+    const backend = memoryBackend()
+    const id = (await EdvClientCore.generateId()) as string
+    const taken = new PreconditionFailedError('Precondition Failed', {
+      status: 412
+    })
+    const context: CodecRequestContext = {
+      async request(input) {
+        if (input.method === 'PUT' && input.headers?.['if-none-match']) {
+          throw taken
+        }
+        return backend.context.request(input)
+      }
+    }
+    const plan = (await (codec as ResourceCodec).encode({
+      id,
+      data: blob,
+      current: null
+    })) as ChunkedWrite
+    await expect(plan.execute(context)).rejects.toBe(taken)
+    // Nothing was written, so nothing was deleted.
+    expect(backend.deletes).toEqual([])
   })
 })
 

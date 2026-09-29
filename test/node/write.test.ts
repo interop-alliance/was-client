@@ -260,11 +260,11 @@ describe('upsertResource: masked-404 conditional-write policy', () => {
   })
 })
 
-describe('upsertResource: chunked plans are insert-only', () => {
-  it('refuses a codec that answers a write by id with a chunked plan', async () => {
-    // Auto-routing a large blob is an `add()` affordance: reconciling an
-    // existing document's chunks with a fresh stream is not this path's job, so
-    // the plan is refused before anything is written.
+describe('upsertResource: chunked plans create only', () => {
+  it('refuses a chunked plan over an existing document', async () => {
+    // A plan writes a fresh document: reconciling an existing document's
+    // chunks with a fresh stream is not this path's job, so the plan is
+    // refused before anything is written.
     const chunkedCodec: ResourceCodec = {
       ...conditionalCodec,
       async encode() {
@@ -315,6 +315,74 @@ describe('upsertResource: chunked plans are insert-only', () => {
     }).catch((err: unknown) => err)
     expect((failure as Error).message).toContain(
       'Drive it with the low-level API instead.'
+    )
+  })
+
+  /**
+   * A conditional codec whose every encode answers with a plan that issues
+   * one create-if-absent `PUT` through the request context it is handed.
+   */
+  const createPlanCodec: ResourceCodec = {
+    ...conditionalCodec,
+    async encode({ id }) {
+      return {
+        chunked: true,
+        id: id!,
+        async execute(codecContext) {
+          const response = await codecContext.request({
+            path: `/space/s/c/${id}`,
+            method: 'PUT',
+            body: new Uint8Array([1, 2, 3]),
+            headers: { 'if-none-match': '*' }
+          })
+          return { id: id!, etag: response.headers.get('etag') ?? undefined }
+        }
+      }
+    }
+  }
+
+  it('runs the plan to create the resource when the pre-read finds none', async () => {
+    const { context, calls } = contextWithStatuses({ getStatus: 404 })
+    const result = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: createPlanCodec,
+      id: 'r',
+      data: new Uint8Array([1, 2, 3]),
+      precondition: { ifNoneMatch: true }
+    })
+    expect(result).toEqual({ etag: '"v2"' })
+    expect(calls.map(call => call.method)).toEqual(['GET', 'PUT'])
+  })
+
+  it('refuses locally with a 412 when create-if-absent meets a stored document', async () => {
+    // What a caller importing at a known id sees when the id is taken: the
+    // same 412 as for any by-id create, so it can read the held copy.
+    const { context, calls } = contextWithStatuses()
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: createPlanCodec,
+      id: 'r',
+      data: new Uint8Array([1, 2, 3]),
+      precondition: { ifNoneMatch: true }
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect(calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it('maps a 412 from the plan after an unreadable pre-read to the masked-404 error', async () => {
+    const { context } = contextWithStatuses({ getStatus: 404, putStatus: 412 })
+    const failure = await upsertResource(context, {
+      path: '/space/s/c/r',
+      codec: createPlanCodec,
+      id: 'r',
+      data: new Uint8Array([1, 2, 3])
+    }).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(PreconditionFailedError)
+    expect((failure as Error).message).toMatch(
+      /not readable with this capability/
+    )
+    expect((failure as PreconditionFailedError).cause).toBeInstanceOf(
+      PreconditionFailedError
     )
   })
 })

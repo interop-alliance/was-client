@@ -3294,3 +3294,63 @@ Resolved with a `readonly verifiesHistory?: true` flag on
 `EncryptionDescriptorSource` and a new `UnverifiedDescriptorError` (a subclass
 of `EncryptionError`), shipped in 0.75.0. The hostile-host case, where a host
 omits `history` altogether, is filed as WCL-118.
+
+### WCL-120: Chunk reassembly from a caller-held chunk source, and a chunked write by id
+
+- status: done (2026-09-28)
+- priority: high
+- labels: encryption, streams, integrity, migration
+- touches:
+  - wallet-backup: its migration walk supplies the `chunkSource` from an
+    archive's chunk files and reads the `Blob` through `blobBytes`; its
+    was-client devDependency and peer range move to 0.80.0. Tracked there as
+    WBU-6 (the driving item), which carries the walk and the probe changes
+  - freewallet: its app collection import sink writes an encrypted bytes
+    Resource at its archived id through `Resource.put()` on a random-id
+    encrypted handle, reads the held copy on a 412, reaps a pending stub found
+    with `EdvDocCipher.isPendingStub`, and rethrows `QuotaExceededError`: not
+    yet filed in freewallet's roadmap; WBU-6's walk of its parties table files
+    the was-client bump and the sink changes there
+- acceptance:
+  - [x] `EdvDocCipher.decrypt` takes an optional `chunkSource` beside `context`,
+        forwarded through `EdvCodec#decode` to `#readChunked`, which runs
+        `EdvClientCore.getStream` over a local `Transport` subclass; a missing
+        index throws `NotFoundError`, both options together throw
+        `ValidationError`, neither keeps the existing refusal; the shared
+        `DocCipher` and `ResourceCodec.decode` keep their shape
+  - [x] The sealed-count and bound-id checks hold on the `chunkSource` path
+  - [x] A chunk whose protected `was` binding differs from the envelope's is
+        refused with `EncryptionError`, on the network path too
+  - [x] `blobBytes` is exported from `./edv/core` (and `./edv/cipher`, `./edv`);
+        the import-graph test stays green
+  - [x] A 507 during a chunked write surfaces as `QuotaExceededError` after the
+        cleanup, and the partway-failure message no longer claims the chunks
+        were not written
+  - [x] `Resource.put()` creates a chunked Resource at a caller-chosen id when
+        none is stored there; a 412 surfaces as `PreconditionFailedError`; a
+        pending stub is recognizable (`isPendingStub`) and removable
+        (`resource.delete()`)
+  - [x] ARCHITECTURE.md, README.md and CHANGELOG.md describe the new shape
+
+Context: the backup migration walk in wallet-backup could not open a chunked
+Resource from an archive. was-client's reader fetched chunks only over a request
+context, and the walk must issue no request and load no transport module. Driven
+by wallet-backup WBU-6 (design `designs/WBU-6-chunked-resources.md`, approved
+2026-09-28, and its decision record 0003, "chunk reassembly lives in
+was-client"). The same design needs the freewallet import sink to write a large
+encrypted binary at its archived id, which `upsertResource` refused, and to tell
+a quota failure and a torn write apart from other failures.
+
+The design review also found that the reader did not bind a chunk to its
+envelope: `getStream` and minimal-cipher's decrypt stream accept each chunk
+under its own header and wrapped key, so a genuine chunk of another resource
+decrypted as part of this one. The writer already seals the envelope's `was`
+binding into every chunk, so the read-side check needed no wire change.
+
+No new wire artifact. `chunkSource`, `ChunkSource` and `isPendingStub` are
+TypeScript API names. The errors reused are `NotFoundError`, `EncryptionError`,
+`ValidationError`, `PreconditionFailedError` and `QuotaExceededError`, and the
+pending stub is the existing `{ pending: true }` sealed stream state.
+
+Shipped in 0.80.0 (unpublished at filing). The replace case (`put()` over an
+existing document) stays WCL-12.

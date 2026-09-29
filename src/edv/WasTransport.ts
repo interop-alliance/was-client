@@ -263,10 +263,23 @@ export class WasTransport extends Transport {
    *
    * @param options {object}
    * @param options.id {string}   the document id (= WAS resource id)
+   * @param [options.ifMatch] {string}   the `ETag` the stored document must
+   *   still carry, so a driver deletes only the version it wrote (a 412 means
+   *   another writer replaced it)
    * @returns {Promise<void>}
    */
-  async deleteDocument({ id }: { id: string }): Promise<void> {
-    await this.#was.request({ path: this.#resourcePath(id), method: 'DELETE' })
+  async deleteDocument({
+    id,
+    ifMatch
+  }: {
+    id: string
+    ifMatch?: string
+  }): Promise<void> {
+    await this.#was.request({
+      path: this.#resourcePath(id),
+      method: 'DELETE',
+      headers: writeHeaders({ precondition: { ifMatch } })
+    })
   }
 
   /**
@@ -321,6 +334,12 @@ export class WasTransport extends Transport {
    * `unique: true` blinded attribute already held by another document), which
    * is NOT recoverable by re-fetch-and-retry; it surfaces as `DuplicateError`.
    *
+   * When this transport's last document write was to the same id and the
+   * server acked it with an `ETag`, the update is sent with `If-Match` on that
+   * validator. A multi-request write (a document, its chunks, then the final
+   * document update) thereby fails with 412 instead of silently replacing a
+   * document another writer stored at that id in between.
+   *
    * @param options {object}
    * @param options.encrypted {IEncryptedDocument}   the document to update
    * @returns {Promise<void>}
@@ -331,8 +350,14 @@ export class WasTransport extends Transport {
     if (!encrypted) {
       throw new TypeError('"encrypted" is required.')
     }
+    const prior = this.#lastDocumentWrite
+    const ifMatch = prior?.id === encrypted.id ? prior.etag : undefined
     try {
-      await this.#put(encrypted.id, encrypted)
+      await this.#put(
+        encrypted.id,
+        encrypted,
+        writeHeaders({ precondition: { ifMatch } })
+      )
     } catch (err) {
       mapTransportError(err, {
         412: {

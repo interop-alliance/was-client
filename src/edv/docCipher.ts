@@ -32,9 +32,13 @@
  * rewrite existing resources, and because resource ids are content-derived they
  * stay stable across a rotation.
  *
- * Given the Space the collection lives in (`spaceId`), the cipher can also
- * read a chunked envelope: `decrypt` fetches its chunk resources through the
- * request context the caller passes (`collection.codecContext()`).
+ * The cipher also reads a chunked envelope, in one of two ways. Given the
+ * Space the collection lives in (`spaceId`), `decrypt` fetches its chunk
+ * resources through the request context the caller passes
+ * (`collection.codecContext()`). Given a `chunkSource` instead, `decrypt`
+ * reads the chunks from bytes the caller already holds, such as an archive's
+ * chunk files, with no Space and no request. `isPendingStub` recognizes the
+ * pending stub an interrupted chunked write leaves behind.
  *
  * On a collection whose descriptor also declares a blinded-index key, the
  * cipher can install the collection's persisted index schema (`applyMeta`, or
@@ -50,12 +54,7 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type {
-  CodecRequestContext,
-  CodecWrite,
-  IndexSchema,
-  ResourceCodec
-} from '../codec.js'
+import type { CodecRequestContext, CodecWrite, IndexSchema } from '../codec.js'
 import { isChunkedWrite } from '../codec.js'
 import { DECODER, storedResponse } from '../internal/content.js'
 import { EMPTY_INDEX_SCHEMA, readIndexSchema } from '../internal/indexSchema.js'
@@ -69,7 +68,11 @@ import type { CollectionEncryption } from '../types.js'
 import type { DocCipher, Json } from '../sync/types.js'
 import { DEFAULT_CONTENT_TYPE } from './constants.js'
 import { buildEdvCodec, encryptOnlyEdvCodec } from './EdvCodec.js'
-import type { CodecTransportFactory, EdvCodec } from './EdvCodec.js'
+import type {
+  ChunkSource,
+  CodecTransportFactory,
+  EdvCodec
+} from './EdvCodec.js'
 import type { RecipientPublicKey } from './recipients.js'
 
 // `isEncryptedEnvelope` and the `DocCipher` interface live in the crypto-free
@@ -121,9 +124,51 @@ export function ownerRecipient({
 
 /**
  * A {@link DocCipher} for an encrypted collection, plus the blinded-index
- * schema install the sync path needs.
+ * schema install the sync path needs, the `chunkSource` read of a chunked
+ * envelope, and the pending-stub check.
  */
 export interface EdvDocCipher extends DocCipher {
+  /**
+   * {@link DocCipher.decrypt}, widened with `chunkSource`: a chunked envelope's
+   * chunks come from `context` (fetched from the server, on a cipher built
+   * with a `spaceId`) or from `chunkSource` (bytes the caller holds, on any
+   * cipher). Passing both throws `ValidationError`. Passing neither throws
+   * `EncryptionError` for a chunked envelope. A chunk the source does not hold
+   * throws `NotFoundError`, and a chunk whose `was` binding differs from the
+   * envelope's throws `EncryptionError`.
+   *
+   * @param options {object}
+   * @param options.id {string}   the resource id the envelope was stored under
+   * @param options.envelope {Json}   the stored envelope
+   * @param [options.context] {CodecRequestContext}   the signed-request
+   *   context chunk resources are fetched through
+   * @param [options.chunkSource] {ChunkSource}   serves the chunks in place of
+   *   `context`
+   * @returns {Promise<Json | Blob>}
+   */
+  decrypt(options: {
+    id: string
+    envelope: Json
+    context?: CodecRequestContext
+    chunkSource?: ChunkSource
+  }): Promise<Json | Blob>
+
+  /**
+   * Whether a stored envelope is a pending stub: what a chunked write leaves
+   * when it stops after its first document write and before its final update.
+   * Its sealed state marks it chunked with no chunk count, so every read of it
+   * fails with `EncryptionError`. The answer rests on the decrypted, sealed
+   * state and on the envelope's binding to `id`; an envelope this reader
+   * cannot open throws as `decrypt` does. Deleting the resource deletes the
+   * stub and any chunks stored under it.
+   *
+   * @param options {object}
+   * @param options.id {string}   the resource id the envelope was stored under
+   * @param options.envelope {Json}   the stored envelope
+   * @returns {Promise<boolean>}
+   */
+  isPendingStub(options: { id: string; envelope: Json }): Promise<boolean>
+
   /**
    * Installs the collection's persisted index schema, read out of the stored
    * `/meta` value, onto this cipher -- so subsequent writes emit blinded
@@ -182,7 +227,8 @@ export interface EdvDocCipher extends DocCipher {
  * @param [options.spaceId] {string}   the WAS Space holding the collection.
  *   It gives the codec a route to a chunked document's chunk resources, so a
  *   `decrypt` that also passes a request context reassembles a chunked
- *   envelope. Without it such a `decrypt` throws `NotSupportedError`.
+ *   envelope. Without it such a `decrypt` throws `NotSupportedError`; a
+ *   `decrypt` given a `chunkSource` needs no Space.
  * @param [options.idDerivation] {'content' | 'random'}   defaults to `'content'`
  * @param options.encryption {CollectionEncryption}   the collection's
  *   encryption descriptor; must carry the key-epoch roster (every encrypted
@@ -288,24 +334,26 @@ export async function createEdvDocCipher({
 }
 
 /**
- * The {@link DocCipher} surface over a resolved EDV codec: parse the codec's
- * `EncodedWrite` to the stored `{ id, envelope, epoch? }` shape and route
- * encrypt/decrypt through it. Shared by the multi-recipient build and the
- * encrypt-only build (whose returned cipher overrides `decrypt` with a typed
- * refusal, since its codec holds no read keys).
+ * The {@link EdvDocCipher} surface over a resolved EDV codec (all of it but
+ * `applyMeta`): parse the codec's `EncodedWrite` to the stored
+ * `{ id, envelope, epoch? }` shape and route encrypt/decrypt through it. Shared
+ * by the multi-recipient build and the encrypt-only build (whose returned
+ * cipher overrides `decrypt` with a typed refusal, since its codec holds no
+ * read keys). The codec is held as an `EdvCodec`, not as a `ResourceCodec`,
+ * so `decrypt` can forward `chunkSource`.
  *
  * @param options {object}
- * @param options.codec {ResourceCodec}   the resolved EDV codec
+ * @param options.codec {EdvCodec}   the resolved EDV codec
  * @param options.collectionId {string}   labels errors
- * @returns {DocCipher}
+ * @returns {Omit<EdvDocCipher, 'applyMeta'>}
  */
 function docCipherOverCodec({
   codec,
   collectionId
 }: {
-  codec: ResourceCodec
+  codec: EdvCodec
   collectionId: string
-}): DocCipher {
+}): Omit<EdvDocCipher, 'applyMeta'> {
   // Parses the codec's `EncodedWrite` (id + envelope body bytes) to the stored
   // `{ id, envelope, epoch? }` shape. Shared by the create and update paths.
   const readEncoded = (
@@ -382,11 +430,13 @@ function docCipherOverCodec({
     async decrypt({
       id,
       envelope,
-      context
+      context,
+      chunkSource
     }: {
       id: string
       envelope: Json
       context?: CodecRequestContext
+      chunkSource?: ChunkSource
     }) {
       // Routing by the envelope's JWE recipient kids -- including the
       // stale-descriptor `UnknownEpochError` (epoch not on the descriptor)
@@ -397,7 +447,12 @@ function docCipherOverCodec({
       // one resource's authentic envelope under another's id. The codec skips
       // the binding checks when it has no id, so refuse a missing one here.
       requireResourceId({ id, collectionId })
-      return codec.decode(storedResponse(envelope), id, context)
+      return codec.decode(storedResponse(envelope), id, context, chunkSource)
+    },
+
+    async isPendingStub({ id, envelope }: { id: string; envelope: Json }) {
+      requireResourceId({ id, collectionId })
+      return codec.isPendingStub(storedResponse(envelope), id)
     }
   }
 }

@@ -39,6 +39,10 @@
  * a caller that already holds a truncated digest and wants the matching id
  * without going through `EdvDocumentCipher.deriveId`'s own hashing.
  *
+ * `blobBytes` reads a `Blob` to bytes on every platform the codec runs on,
+ * React Native included, whose `Blob` has no `arrayBuffer()`. A binary
+ * decrypt resolves a `Blob`, so a caller that needs its bytes reads it here.
+ *
  * `hasKeyEpochs` and `epochRostersEqual` are the crypto-free predicates over a
  * descriptor: whether it carries a usable roster, and whether two descriptors
  * carry the same epoch configuration (`scheme`, `version`, `currentEpoch`, and
@@ -66,7 +70,7 @@
  * matchers.
  */
 export { EdvCodec } from './EdvCodec.js'
-export type { CodecTransportFactory, EdvKeys } from './EdvCodec.js'
+export type { ChunkSource, CodecTransportFactory, EdvKeys } from './EdvCodec.js'
 export { EDV_SCHEME_VERSION, JOSE_CONTENT_TYPE } from './constants.js'
 export {
   ensureFirstEpoch,
@@ -116,3 +120,4 @@ export {
 export type { DocCipher, EdvDocCipher } from './docCipher.js'
 export { isKeyUnwrapError } from '../sync/predicates.js'
 export { edvIdFromBytes } from './edvId.js'
+export { blobBytes } from '../internal/blob.js'

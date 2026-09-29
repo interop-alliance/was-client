@@ -19,6 +19,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { EdvClientCore } from '@interop/edv-client'
 import type {
+  IEDVChunk,
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
@@ -26,19 +27,24 @@ import type {
 import {
   EncryptionError,
   IntegrityError,
+  NotFoundError,
   NotSupportedError,
   ValidationError
 } from '../../src/index.js'
 import type {
   ChunkedWrite,
+  CodecRequestContext,
   EncodedWrite,
   ResourceCodec
 } from '../../src/index.js'
+import { blobBytes } from '../../src/edv/core.js'
+import type { ChunkSource, EdvDocCipher } from '../../src/edv/core.js'
 import { EdvCodec } from '../../src/edv/EdvCodec.js'
 import {
   createEdvDocCipher,
   createEdvEncryptOnlyDocCipher,
   createEdvEncryption,
+  createRefreshingEdvDocCipher,
   ownerRecipient,
   EncryptOnlyCipherError,
   KeyUnwrapError,
@@ -364,6 +370,303 @@ describe('createEdvDocCipher (chunked envelopes)', () => {
       })
     ).rejects.toBeInstanceOf(IntegrityError)
     expect(backend.reads).toEqual([])
+  })
+})
+
+describe('createEdvDocCipher (chunkSource)', () => {
+  const blob = new Uint8Array(64).map((_value, index) => (index * 7) % 251)
+  const otherBlob = new Uint8Array(64).map(
+    (_value, index) => (index * 11) % 251
+  )
+
+  /**
+   * Writes chunked documents to one in-memory backend through a handle-style
+   * codec, and builds a cipher over the same reader and descriptor that has
+   * no Space, so it can read chunks only from a `chunkSource`.
+   *
+   * @param [options] {object}
+   * @param [options.wrap] {function}   wraps the backend context for the
+   *   writes, to make a chosen request fail
+   * @returns {Promise<object>}   the backend, the cipher, and a writer
+   */
+  async function setup({
+    wrap
+  }: {
+    wrap?: (context: CodecRequestContext) => CodecRequestContext
+  } = {}): Promise<{
+    backend: ReturnType<typeof memoryBackend>
+    cipher: EdvDocCipher
+    write: (data: Uint8Array) => Promise<{ id: string; envelope: Json }>
+  }> {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const codec = (await createEdvEncryption({
+      resolveKeys: async () => keys,
+      maxBlobBytes: 16,
+      chunkSize: 24
+    }).codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'edv',
+      encryption
+    })) as ResourceCodec
+    const backend = memoryBackend()
+    const context = wrap ? wrap(backend.context) : backend.context
+    const write = async (
+      data: Uint8Array
+    ): Promise<{ id: string; envelope: Json }> => {
+      const plan = (await codec.encode({
+        data,
+        contentType: 'image/png'
+      })) as ChunkedWrite
+      await plan.execute(context).catch(() => undefined)
+      const envelope = JSON.parse(
+        new TextDecoder().decode(backend.store.get(`/space/s/c/${plan.id}`))
+      ) as Json
+      return { id: plan.id, envelope }
+    }
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption
+    })
+    return { backend, cipher, write }
+  }
+
+  /**
+   * A chunk source over the backend's stored chunk files, recording each
+   * request it serves.
+   *
+   * @param backend {object}   the in-memory backend
+   * @param [redirect] {function}   maps a requested chunk path to the path to
+   *   serve instead
+   * @returns {object}   the source and its request log
+   */
+  function sourceOver(
+    backend: ReturnType<typeof memoryBackend>,
+    redirect: (path: string) => string = path => path
+  ): {
+    chunkSource: ChunkSource
+    requests: Array<{ docId: string; chunkIndex: number }>
+  } {
+    const requests: Array<{ docId: string; chunkIndex: number }> = []
+    const chunkSource: ChunkSource = async ({ docId, chunkIndex }) => {
+      requests.push({ docId, chunkIndex })
+      const bytes = backend.store.get(
+        redirect(`/space/s/c/${docId}/chunks/${chunkIndex}`)
+      )
+      return bytes === undefined
+        ? undefined
+        : (JSON.parse(new TextDecoder().decode(bytes)) as IEDVChunk)
+    }
+    return { chunkSource, requests }
+  }
+
+  it('reassembles a chunked envelope from the source, with no Space and no request', async () => {
+    const { backend, cipher, write } = await setup()
+    const { id, envelope } = await write(blob)
+    const readsBefore = backend.reads.length
+    const { chunkSource, requests } = sourceOver(backend)
+    const decrypted = await cipher.decrypt({ id, envelope, chunkSource })
+    expect(decrypted).toBeInstanceOf(Blob)
+    expect((decrypted as Blob).type).toBe('image/png')
+    expect(await blobBytes(decrypted as Blob)).toEqual(blob)
+    // Asked by the bound id, in index order, up to the sealed count.
+    expect(requests.map(request => request.chunkIndex)).toEqual([0, 1, 2])
+    expect(requests.every(request => request.docId === id)).toBe(true)
+    expect(backend.reads.length).toBe(readsBefore)
+  })
+
+  it('keeps the bound-id refusal: no chunk is asked for', async () => {
+    const { backend, cipher, write } = await setup()
+    const { envelope } = await write(blob)
+    const { chunkSource, requests } = sourceOver(backend)
+    await expect(
+      cipher.decrypt({ id: 'zOtherResource', envelope, chunkSource })
+    ).rejects.toBeInstanceOf(IntegrityError)
+    expect(requests).toEqual([])
+  })
+
+  it('keeps the sealed-count refusal for a pending stub: no chunk is asked for', async () => {
+    // The chunk writes fail and so does the cleanup delete, so the stub
+    // stays stored with its sealed stream state still `{ pending: true }`.
+    const { backend, cipher, write } = await setup({
+      wrap: context => ({
+        async request(input) {
+          const path = input.path as string
+          if (
+            (input.method === 'PUT' && path.includes('/chunks/')) ||
+            input.method === 'DELETE'
+          ) {
+            throw Object.assign(new Error('HTTP 500'), { status: 500 })
+          }
+          return context.request(input)
+        }
+      })
+    })
+    const { id, envelope } = await write(blob)
+    const { chunkSource, requests } = sourceOver(backend)
+    await expect(
+      cipher.decrypt({ id, envelope, chunkSource })
+    ).rejects.toBeInstanceOf(EncryptionError)
+    expect(requests).toEqual([])
+  })
+
+  it('refuses a chunk whose binding differs from the envelope binding', async () => {
+    // A genuine chunk of resource B, served as chunk 1 of resource A. It is
+    // sealed under the same epoch key, so it would decrypt cleanly: only the
+    // chunk's own `was` binding tells it apart.
+    const { backend, cipher, write } = await setup()
+    const a = await write(blob)
+    const b = await write(otherBlob)
+    const { chunkSource } = sourceOver(backend, path =>
+      path.endsWith('/chunks/1') ? path.replace(a.id, b.id) : path
+    )
+    const failure = await cipher
+      .decrypt({ id: a.id, envelope: a.envelope, chunkSource })
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(EncryptionError)
+    expect((failure as Error).message).toMatch(/chunk 1 .* is not bound/)
+  })
+
+  it('applies the chunk-binding check on the network path too', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const codec = (await createEdvEncryption({
+      resolveKeys: async () => keys,
+      maxBlobBytes: 16,
+      chunkSize: 24
+    }).codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'edv',
+      encryption
+    })) as ResourceCodec
+    const backend = memoryBackend()
+    const plans: ChunkedWrite[] = []
+    for (const data of [blob, otherBlob]) {
+      const plan = (await codec.encode({ data })) as ChunkedWrite
+      await plan.execute(backend.context)
+      plans.push(plan)
+    }
+    const [a, b] = plans as [ChunkedWrite, ChunkedWrite]
+    // The server swaps B's chunk into A's chunk directory.
+    backend.store.set(
+      `/space/s/c/${a.id}/chunks/0`,
+      backend.store.get(`/space/s/c/${b.id}/chunks/0`)!
+    )
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      spaceId: 's',
+      encryption
+    })
+    const envelope = JSON.parse(
+      new TextDecoder().decode(backend.store.get(`/space/s/c/${a.id}`))
+    ) as Json
+    const failure = await cipher
+      .decrypt({ id: a.id, envelope, context: backend.context })
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(EncryptionError)
+    expect((failure as Error).message).toMatch(/chunk 0 .* is not bound/)
+  })
+
+  it("raises was-client's NotFoundError for an index the source does not hold", async () => {
+    const { backend, cipher, write } = await setup()
+    const { id, envelope } = await write(blob)
+    const { chunkSource } = sourceOver(backend, path =>
+      path.endsWith('/chunks/2') ? `${path}-missing` : path
+    )
+    const failure = await cipher
+      .decrypt({ id, envelope, chunkSource })
+      .catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(NotFoundError)
+    expect((failure as Error).name).toBe('NotFoundError')
+  })
+
+  it('refuses a chunkSource passed together with a request context', async () => {
+    const { backend, cipher, write } = await setup()
+    const { id, envelope } = await write(blob)
+    const { chunkSource, requests } = sourceOver(backend)
+    await expect(
+      cipher.decrypt({ id, envelope, chunkSource, context: backend.context })
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(requests).toEqual([])
+  })
+
+  it('reads a small document without consulting the source', async () => {
+    const { backend, cipher } = await setup()
+    const { chunkSource, requests } = sourceOver(backend)
+    const { id, envelope } = await cipher.encrypt({ data: DOC })
+    await expect(
+      cipher.decrypt({ id, envelope, chunkSource })
+    ).resolves.toEqual(DOC)
+    expect(requests).toEqual([])
+  })
+})
+
+describe('createEdvDocCipher (isPendingStub)', () => {
+  const blob = new Uint8Array(64).map((_value, index) => (index * 7) % 251)
+
+  it('recognizes the stub a torn chunked write leaves, and nothing else', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const codec = (await createEdvEncryption({
+      resolveKeys: async () => keys,
+      maxBlobBytes: 16,
+      chunkSize: 24
+    }).codecFor({
+      spaceId: 's',
+      collectionId: 'c',
+      scheme: 'edv',
+      encryption
+    })) as ResourceCodec
+    const backend = memoryBackend()
+    // The process stops after the first document write: every later request
+    // fails, the cleanup delete included.
+    let documentWrites = 0
+    const torn: CodecRequestContext = {
+      async request(input) {
+        if (input.method === 'PUT' && documentWrites === 0) {
+          documentWrites++
+          return backend.context.request(input)
+        }
+        throw Object.assign(new Error('HTTP 503'), { status: 503 })
+      }
+    }
+    const stubPlan = (await codec.encode({ data: blob })) as ChunkedWrite
+    await expect(stubPlan.execute(torn)).rejects.toBeInstanceOf(EncryptionError)
+    const completePlan = (await codec.encode({ data: blob })) as ChunkedWrite
+    await completePlan.execute(backend.context)
+    const envelopeOf = (id: string): Json =>
+      JSON.parse(
+        new TextDecoder().decode(backend.store.get(`/space/s/c/${id}`))
+      ) as Json
+
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption
+    })
+    await expect(
+      cipher.isPendingStub({
+        id: stubPlan.id,
+        envelope: envelopeOf(stubPlan.id)
+      })
+    ).resolves.toBe(true)
+    await expect(
+      cipher.isPendingStub({
+        id: completePlan.id,
+        envelope: envelopeOf(completePlan.id)
+      })
+    ).resolves.toBe(false)
+    const small = await cipher.encrypt({ data: DOC })
+    await expect(cipher.isPendingStub(small)).resolves.toBe(false)
+    // The answer rests on the envelope's binding: a stub read under another
+    // id is refused, not reported.
+    await expect(
+      cipher.isPendingStub({
+        id: completePlan.id,
+        envelope: envelopeOf(stubPlan.id)
+      })
+    ).rejects.toBeInstanceOf(IntegrityError)
   })
 })
 
@@ -755,6 +1058,61 @@ describe('createEdvDocCipher (blinded index schema)', () => {
     expect(schema.revision).toBe(1)
     expect(schema.indexes).toHaveLength(1)
     const after = await cipher.encrypt({ data: { type: 'note' } })
+    expect(indexedOf(after.envelope)).toHaveLength(1)
+  })
+
+  it('re-applies the last applyMeta after a descriptor refresh', async () => {
+    const { encryption, ...keys } = await makeIndexableReader()
+    const direct = await directCodecFor({ collectionId: 'c', encryption, keys })
+    const { custom } = await direct.encodeMeta({
+      custom: { indexSchema: SCHEMA },
+      slot: { kind: 'collection' }
+    })
+    // A rotation: a second epoch, wrapped to the same reader, becomes current.
+    const { epochId, secret } = await mintEpoch()
+    const rotated: CollectionEncryption = {
+      ...encryption,
+      epochs: [
+        ...encryption.epochs!,
+        {
+          id: epochId,
+          recipients: [
+            await wrapEpochSecret({
+              epochSecret: secret,
+              recipient: ownerRecipient({
+                keyAgreementKey: keys.keyAgreementKey
+              })
+            })
+          ]
+        }
+      ],
+      currentEpoch: epochId
+    }
+    let served = encryption
+    const cipher = await createRefreshingEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      source: { collectionEncryption: async () => served },
+      cache: {
+        readDescriptor: async () => undefined,
+        writeDescriptor: async () => {}
+      }
+    })
+    await cipher.applyMeta({ custom })
+
+    // A document under the new epoch drives the refresh and rebuild...
+    served = rotated
+    const writer = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'c',
+      encryption: rotated
+    })
+    const written = await writer.encrypt({ data: { type: 'note' } })
+    await expect(cipher.decrypt(written)).resolves.toEqual({ type: 'note' })
+
+    // ...and the rebuilt cipher still indexes with the installed schema.
+    const after = await cipher.encrypt({ data: { type: 'note' } })
+    expect(after.epoch).toBe(epochId)
     expect(indexedOf(after.envelope)).toHaveLength(1)
   })
 

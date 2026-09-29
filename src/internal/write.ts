@@ -15,11 +15,13 @@
  *
  * A codec may also answer `encode` with a multi-request `ChunkedWrite` plan
  * rather than an `EncodedWrite`. `insertResource` runs the plan over the
- * signed-request context built here (`codecRequestContext`); `upsertResource`
- * refuses one, since auto-routing is an insert-path affordance.
+ * signed-request context built here (`codecRequestContext`). `upsertResource`
+ * runs one only to create a resource at an id that holds none, and refuses it
+ * over an existing document, since a plan cannot replace one.
  */
 import type { HttpResponse } from '@interop/http-client'
 import type {
+  ChunkedWrite,
   CodecRequestContext,
   EncodedWrite,
   ResourceCodec
@@ -33,6 +35,7 @@ import {
   assertPreconditionAgainstPreRead,
   assertSinglePrecondition,
   encodedPrecondition,
+  readEtag,
   writeHeaders,
   namedPrecondition
 } from './conditional.js'
@@ -232,6 +235,13 @@ export async function insertResource(
  *   re-thrown here with a message naming the real cause, instead of surfacing
  *   as an inexplicable failed create. Conditional codecs therefore need read
  *   access to update an existing document.
+ * - A codec may answer with a multi-request `ChunkedWrite` plan (the EDV
+ *   codec's large binary write). When the pre-read found no document, the
+ *   plan runs over the handle's signed-request context and creates the
+ *   resource at this id, guarded like any fresh insert: a 412 surfaces as
+ *   `PreconditionFailedError`, under the same masked-404 message. Over an
+ *   existing document the plan is refused with `ValidationError`, since a
+ *   plan cannot replace a document.
  *
  * @param context {ClientContext}
  * @param options {object}
@@ -243,7 +253,7 @@ export async function insertResource(
  * @param [options.capability] {IZcap}
  * @param [options.precondition] {WritePrecondition}   the caller's explicit
  *   precondition (used only for a non-conditional codec)
- * @returns {Promise<HttpResponse>}
+ * @returns {Promise<{ etag?: string }>}   the stored resource's new ETag
  */
 export async function upsertResource(
   context: ClientContext,
@@ -264,7 +274,7 @@ export async function upsertResource(
     capability?: IZcap
     precondition?: WritePrecondition
   }
-): Promise<HttpResponse> {
+): Promise<{ etag?: string }> {
   // An empty precondition object (the handle's default) names no baseline.
   const precondition = namedPrecondition(callerPrecondition)
   // Checked before the pre-read, whose comparison would otherwise answer the
@@ -296,17 +306,12 @@ export async function upsertResource(
       })
   })
   if (isChunkedWrite(write)) {
-    // Auto-routing is an insert-path affordance: a write by id would have to
-    // reconcile the existing stored parts (and the codec's sequence) with the
-    // new payload, which this path does not do. Refuse instead of
-    // half-performing the update. The codec supplies the scheme-specific
-    // recovery advice; this layer knows nothing about how it stores things.
-    throw new ValidationError(
-      `Cannot write this payload to "${path}": the collection's codec ` +
-        'answered with a multi-request write plan, which is only auto-routed ' +
-        'on the insert path (add()). Add it as a new resource' +
-        (write.guidance === undefined ? '.' : `. ${write.guidance}`)
-    )
+    return await runChunkedCreate(context, {
+      path,
+      write,
+      capability,
+      current
+    })
   }
   const encoded = write
   // A conditional codec computes the precondition itself (from the sequence /
@@ -316,30 +321,113 @@ export async function upsertResource(
     ? encodedPrecondition(encoded)
     : precondition
   try {
-    return await sendEncodedWrite(context, {
+    const response = await sendEncodedWrite(context, {
       path,
       method: 'PUT',
       capability,
       encoded,
       precondition: chosen
     })
+    return { etag: readEtag(response) }
   } catch (err) {
     if (
       err instanceof PreconditionFailedError &&
       codec.conditionalWrites &&
       current === null
     ) {
-      const { status, type, title, details, requestUrl } = err
-      throw new PreconditionFailedError(
-        `Cannot update the document at "${path}": it exists, but its current ` +
-          'version is not readable with this capability (WAS masks ' +
-          'unauthorized reads as 404), so the write was encoded as a fresh ' +
-          'insert and the server rejected it. A conditional codec ' +
-          '(e.g. the EDV codec) needs read access to update an existing ' +
-          'document.',
-        { status, type, title, details, requestUrl, cause: err }
-      )
+      throw maskedInsertRejected({ err, path })
     }
     throw err
   }
+}
+
+/**
+ * Runs a codec's multi-request plan for a write by id, which creates the
+ * resource at that id. Only a pre-read that found no document (`current`
+ * is `null`) lets it run: over an existing document, and after no pre-read at
+ * all, the plan is refused, since a plan writes a fresh document and cannot
+ * reconcile an existing one's stored parts with the new payload. The codec
+ * supplies the scheme-specific recovery advice; this layer knows nothing
+ * about how it stores things.
+ *
+ * The plan guards its own first write as create-if-absent, so a 412 means
+ * the id was taken after the pre-read, or is held by a document the
+ * capability cannot read. It surfaces as `PreconditionFailedError` with the
+ * masked-404 message of any other fresh insert by id.
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.path {string}   the resource path the plan writes
+ * @param options.write {ChunkedWrite}   the codec's plan
+ * @param [options.capability] {IZcap}
+ * @param options.current {HttpResponse | null | undefined}   the pre-read's
+ *   result, `undefined` when the codec asked for none
+ * @returns {Promise<{ etag?: string }>}   the stored resource's new ETag
+ */
+async function runChunkedCreate(
+  context: ClientContext,
+  {
+    path,
+    write,
+    capability,
+    current
+  }: {
+    path: string
+    write: ChunkedWrite
+    capability?: IZcap
+    current: HttpResponse | null | undefined
+  }
+): Promise<{ etag?: string }> {
+  if (current !== null) {
+    throw new ValidationError(
+      `Cannot write this payload to "${path}": the collection's codec ` +
+        'answered with a multi-request write plan, which can only create a ' +
+        'resource at an id that holds none, and a document is stored here. ' +
+        'Delete the resource first, or add the payload as a new resource ' +
+        '(add())' +
+        (write.guidance === undefined ? '.' : `. ${write.guidance}`)
+    )
+  }
+  try {
+    const { etag } = await write.execute(
+      codecRequestContext(context, { capability })
+    )
+    return { etag }
+  } catch (err) {
+    // `current` is `null`, so a conditional codec pre-read and found nothing.
+    if (err instanceof PreconditionFailedError) {
+      throw maskedInsertRejected({ err, path })
+    }
+    throw err
+  }
+}
+
+/**
+ * The error for a fresh insert by id the server rejected with 412 after the
+ * pre-read found nothing: the document exists, but its current version is not
+ * readable with this capability (a masked 404), or it appeared since the
+ * pre-read. The server's error is kept as the cause.
+ *
+ * @param options {object}
+ * @param options.err {PreconditionFailedError}   the server's 412
+ * @param options.path {string}   the resource path written
+ * @returns {PreconditionFailedError}
+ */
+function maskedInsertRejected({
+  err,
+  path
+}: {
+  err: PreconditionFailedError
+  path: string
+}): PreconditionFailedError {
+  const { status, type, title, details, requestUrl } = err
+  return new PreconditionFailedError(
+    `Cannot update the document at "${path}": it exists, but its current ` +
+      'version is not readable with this capability (WAS masks ' +
+      'unauthorized reads as 404), so the write was encoded as a fresh ' +
+      'insert and the server rejected it. A conditional codec ' +
+      '(e.g. the EDV codec) needs read access to update an existing ' +
+      'document.',
+    { status, type, title, details, requestUrl, cause: err }
+  )
 }

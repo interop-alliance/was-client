@@ -36,7 +36,7 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 import { UnknownEpochError } from '../errors.js'
-import { createEdvDocCipher, type DocCipher } from './docCipher.js'
+import { createEdvDocCipher, type EdvDocCipher } from './docCipher.js'
 import {
   acquireDescriptor,
   type EncryptionDescriptorCache,
@@ -44,9 +44,10 @@ import {
 } from './acquire.js'
 
 /**
- * Builds a {@link DocCipher} whose descriptor is acquired through the
+ * Builds an {@link EdvDocCipher} whose descriptor is acquired through the
  * source/cache seams and refreshed (once per instance) on an unknown-epoch
- * decrypt.
+ * decrypt or `isPendingStub`. The metadata last installed with `applyMeta` is
+ * re-applied to the rebuilt cipher, so a refresh keeps the index schema.
  *
  * With no `source` the descriptor is served from the cache alone and the
  * refresh path is inert (an unknown-epoch decrypt propagates immediately) --
@@ -65,7 +66,7 @@ import {
  * @param options.cache {EncryptionDescriptorCache}
  * @param [options.onFetchError] {function}   observes swallowed
  *   descriptor-fetch failures
- * @returns {Promise<DocCipher>}
+ * @returns {Promise<EdvDocCipher>}
  */
 export async function createRefreshingEdvDocCipher({
   keyAgreementKey,
@@ -85,8 +86,12 @@ export async function createRefreshingEdvDocCipher({
   source?: EncryptionDescriptorSource
   cache: EncryptionDescriptorCache
   onFetchError?: (err: unknown, info: { collectionId: string }) => void
-}): Promise<DocCipher> {
-  const build = async (): Promise<DocCipher> => {
+}): Promise<EdvDocCipher> {
+  // The `/meta` value last installed with `applyMeta`, replayed onto a rebuilt
+  // cipher so a refresh does not drop the collection's index schema.
+  let appliedMeta: { custom?: unknown } | undefined
+
+  const build = async (): Promise<EdvDocCipher> => {
     const encryption = await acquireDescriptor({
       source,
       cache,
@@ -100,7 +105,7 @@ export async function createRefreshingEdvDocCipher({
           'epochs from provisioning; refusing to build a cipher without them.'
       )
     }
-    return createEdvDocCipher({
+    const cipher = await createEdvDocCipher({
       keyAgreementKey,
       keyResolver,
       collectionId,
@@ -108,6 +113,10 @@ export async function createRefreshingEdvDocCipher({
       idDerivation,
       encryption
     })
+    if (appliedMeta !== undefined) {
+      await cipher.applyMeta(appliedMeta)
+    }
+    return cipher
   }
 
   let inner = await build()
@@ -115,6 +124,62 @@ export async function createRefreshingEdvDocCipher({
   // session) may spend, shared so concurrent unknown-epoch decrypts ride a
   // single re-read instead of each spending one.
   let refreshed: Promise<void> | null = null
+
+  /**
+   * Runs a read on the current inner cipher, refreshing the descriptor and
+   * retrying once when it throws `UnknownEpochError`.
+   *
+   * @param read {function}   the read to run against a cipher
+   * @returns {Promise<T>}
+   */
+  async function withRefresh<T>(
+    read: (cipher: EdvDocCipher) => Promise<T>
+  ): Promise<T> {
+    try {
+      return await read(inner)
+    } catch (err) {
+      // `instanceof` is safe here and only here: `inner` is built in this
+      // package by `createEdvDocCipher`, which raises this package's own
+      // class, so no injected seam is crossed. A caller classifying what
+      // THIS cipher throws is crossing one, and uses `isUnknownEpochError` /
+      // `isKeyUnwrapError` instead.
+      if (!(err instanceof UnknownEpochError) || !source) {
+        throw err
+      }
+      if (!refreshed) {
+        const attempt = build().then(cipher => {
+          inner = cipher
+        })
+        refreshed = attempt
+        // Only a COMPLETED refresh is spent. A rejected one (the description
+        // could not be read and no cached copy answered either) un-arms the
+        // guard so a later unknown-epoch decrypt may try again; a successful
+        // refresh that still cannot route the envelope stays spent for the
+        // session, which is what keeps a genuinely foreign envelope from
+        // driving a refetch loop.
+        attempt.catch(() => {
+          if (refreshed === attempt) {
+            refreshed = null
+          }
+        })
+      }
+      try {
+        await refreshed
+      } catch {
+        // The refresh failed, so nothing was learned about this envelope's
+        // epoch: surface the original UnknownEpochError rather than the
+        // build failure, so callers classifying on it (the create-loss
+        // re-mint) still see the row they exist to repair.
+        throw err
+      }
+      // One retry under the swapped cipher. If the refresh was already
+      // spent before this decrypt began, this re-attempt is a local
+      // no-network decrypt that fails the same way -- so a genuinely
+      // foreign envelope still surfaces UnknownEpochError, and never a
+      // second description read.
+      return read(inner)
+    }
+  }
 
   return {
     encrypt: options => inner.encrypt(options),
@@ -128,51 +193,14 @@ export async function createRefreshingEdvDocCipher({
       return inner.encryptUpdate(options)
     },
 
-    async decrypt(options) {
-      try {
-        return await inner.decrypt(options)
-      } catch (err) {
-        // `instanceof` is safe here and only here: `inner` is built in this
-        // package by `createEdvDocCipher`, which raises this package's own
-        // class, so no injected seam is crossed. A caller classifying what
-        // THIS cipher throws is crossing one, and uses `isUnknownEpochError` /
-        // `isKeyUnwrapError` instead.
-        if (!(err instanceof UnknownEpochError) || !source) {
-          throw err
-        }
-        if (!refreshed) {
-          const attempt = build().then(cipher => {
-            inner = cipher
-          })
-          refreshed = attempt
-          // Only a COMPLETED refresh is spent. A rejected one (the description
-          // could not be read and no cached copy answered either) un-arms the
-          // guard so a later unknown-epoch decrypt may try again; a successful
-          // refresh that still cannot route the envelope stays spent for the
-          // session, which is what keeps a genuinely foreign envelope from
-          // driving a refetch loop.
-          attempt.catch(() => {
-            if (refreshed === attempt) {
-              refreshed = null
-            }
-          })
-        }
-        try {
-          await refreshed
-        } catch {
-          // The refresh failed, so nothing was learned about this envelope's
-          // epoch: surface the original UnknownEpochError rather than the
-          // build failure, so callers classifying on it (the create-loss
-          // re-mint) still see the row they exist to repair.
-          throw err
-        }
-        // One retry under the swapped cipher. If the refresh was already
-        // spent before this decrypt began, this re-attempt is a local
-        // no-network decrypt that fails the same way -- so a genuinely
-        // foreign envelope still surfaces UnknownEpochError, and never a
-        // second description read.
-        return inner.decrypt(options)
-      }
+    decrypt: options => withRefresh(cipher => cipher.decrypt(options)),
+
+    isPendingStub: options =>
+      withRefresh(cipher => cipher.isPendingStub(options)),
+
+    async applyMeta(options) {
+      appliedMeta = options
+      return inner.applyMeta(options)
     }
   }
 }

@@ -1,5 +1,55 @@
 # @interop/was-client Changelog
 
+## 0.80.0 - TBD
+
+### Added
+
+- `EdvDocCipher.decrypt` takes an optional `chunkSource`
+  (`({ docId, chunkIndex }) => Promise<IEDVChunk | undefined>`, exported as the
+  `ChunkSource` type) in place of `context`. It reassembles a chunked envelope
+  from chunks the caller already holds, with no `spaceId` and no request. The
+  sealed chunk count and bound-id checks apply as on the network path. A chunk
+  the source does not hold throws `NotFoundError`. Passing both `context` and
+  `chunkSource` throws `ValidationError`. The shared `DocCipher` interface and
+  `ResourceCodec.decode` are unchanged.
+- `EdvDocCipher.isPendingStub({ id, envelope })` (and `EdvCodec#isPendingStub`)
+  tells whether a stored envelope is the pending stub a torn chunked write
+  leaves. It reads only sealed state, after the usual binding check. Deleting
+  the resource removes the stub and its chunks.
+- `blobBytes` is exported from `./edv/cipher`, `./edv/core` and `./edv`.
+- `Resource.put()` on an encrypted collection stores a binary payload over
+  `maxBlobBytes` as a chunked document when no document is stored at that id
+  yet, as `add()` does. The first write is create-if-absent, so a taken id
+  surfaces as `PreconditionFailedError` (412). `put()` over an existing document
+  still refuses the payload with `ValidationError`.
+
+### Changed
+
+- A chunked read refuses with `EncryptionError` a chunk whose protected-header
+  `was` binding differs from the envelope's (a chunk of another resource or
+  another epoch), on the network path and the `chunkSource` path alike.
+- A chunked write that hits a 507 rethrows `QuotaExceededError` (with the
+  original as `cause`) after its cleanup, in place of an `EncryptionError`. The
+  message after any other partway failure no longer claims the chunks were not
+  written.
+- A chunked write whose first document write gets a 412 rethrows the
+  `PreconditionFailedError` in place of the EDV core's `DuplicateError`.
+- A chunked write's final document update is sent with `If-Match` on the stub's
+  `ETag`. If another writer replaced the stub in between, the write throws
+  `PreconditionFailedError` and leaves that document in place. The cleanup
+  delete after any other failure is conditional on the same `ETag`.
+- `WasTransport.update` sends `If-Match` when the transport's last document
+  write was to the same id and returned an `ETag`. `deleteDocument` takes an
+  optional `ifMatch`.
+- A chunked write that hits a 409 (a unique indexed attribute collision)
+  rethrows `ConflictError`, as a single-request write does.
+- `createRefreshingEdvDocCipher` returns an `EdvDocCipher`: it adds
+  `isPendingStub`, `applyMeta`, and the `chunkSource` option on `decrypt`. The
+  last `applyMeta` input is re-applied after a descriptor refresh.
+- A codec built without a transport factory (a doc cipher with no `spaceId`) now
+  reads chunked envelopes from a `chunkSource`. It still refuses the chunked
+  write.
+
 ## 0.79.0 - 2026-09-28
 
 ### Added

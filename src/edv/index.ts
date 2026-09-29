@@ -99,9 +99,11 @@ export {
   UnknownEpochError,
   isEncryptedEnvelope,
   isKeyUnwrapError,
-  edvIdFromBytes
+  edvIdFromBytes,
+  blobBytes
 } from './core.js'
 export type {
+  ChunkSource,
   CodecTransportFactory,
   EdvKeys,
   RecipientPublicKey,

@@ -52,9 +52,11 @@ export {
   UnknownEpochError,
   isEncryptedEnvelope,
   isKeyUnwrapError,
-  edvIdFromBytes
+  edvIdFromBytes,
+  blobBytes
 } from './cipher.js'
 export type {
+  ChunkSource,
   CodecTransportFactory,
   EdvKeys,
   RecipientPublicKey,

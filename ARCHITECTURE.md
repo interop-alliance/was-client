@@ -265,7 +265,8 @@ Taking `resource.put(data)` as the canonical path:
 2. **Encode** (`codec.encode`): identity codec is byte-exact pass-through; the
    EDV codec seals content into a JWE envelope and attaches its own write
    precondition. A codec may instead answer with a `ChunkedWrite` plan -- a
-   payload that cannot be one request -- which only the insert path runs.
+   payload that cannot be one request -- which the insert path runs, and the
+   write-by-id path runs only to create a resource at an id that holds none.
 3. **Conditional-write orchestration** (`internal/write.ts`, `upsertResource`):
    conditional codecs trigger a pre-read of the current document (to advance the
    EDV `sequence`); plaintext writes use the caller's explicit
@@ -338,15 +339,22 @@ handle's signed `request` primitive -- instead of sending one request. That
 write fails with the typed `WasError` subclasses the calling method documents
 (the raw `HttpResponse` still comes back, and the typed errors carry the HTTP
 `status`, so a status-dispatching driver such as `WasTransport` is unaffected).
-`upsertResource` refuses a plan, so auto-routing is an `add()` affordance only;
-the refusal message is scheme-agnostic and appends the plan's own `guidance`
-string, since only the codec knows which low-level API drives that write
-directly. `decode` takes the same context, so a codec whose stored form spans
-several resources can read the remainder. The sync `DocCipher` forwards a
-context when its caller passes one (`collection.codecContext()`), and reads
-chunks only when it was built with the collection's `spaceId`, which gives its
-codec a route to the chunk resources. A caller with no request layer omits the
-context, and such a document then fails loudly rather than decoding to a stub.
+`upsertResource` runs a plan only when its pre-read found no document, so a
+write by id can create a chunked resource at a caller-chosen id. The plan's
+first write is create-if-absent, and a 412 surfaces as `PreconditionFailedError`
+under the same masked-404 message as any other fresh insert by id. Over an
+existing document the plan is refused, since it cannot replace one. The refusal
+message is scheme-agnostic and appends the plan's own `guidance` string, since
+only the codec knows which low-level API drives that write directly. `decode`
+takes the same context, so a codec whose stored form spans several resources can
+read the remainder. The sync `DocCipher` forwards a context when its caller
+passes one (`collection.codecContext()`), and reads chunks through it only when
+it was built with the collection's `spaceId`, which gives its codec a route to
+the chunk resources. The EDV doc cipher also takes a `chunkSource` in place of a
+context: a function that serves each chunk from bytes the caller already holds,
+such as an archive's chunk files. It needs no `spaceId` and issues no request. A
+caller that supplies neither fails loudly on a chunked document rather than
+decoding it to a stub.
 
 An `EncodedWrite` from the EDV codec carries the envelope twice: `body`, the
 wire bytes, and `envelope`, the object form the codec already holds. `body` is a
@@ -400,23 +408,33 @@ Two integration levels share `src/edv/`:
   the codec (`random`, or `content`-derived for immutable content-addressed
   documents). A binary `add()` over `maxBlobBytes` is routed to the chunked
   path: the codec returns a plan that drives
-  `EdvClientCore.insert({ doc, stream, transport })` over a `WasTransport`. The
-  codec does not construct that transport: a `CodecTransportFactory` is injected
-  by whichever build knows where the Collection lives, and a codec built without
-  one (the local-replica doc cipher) refuses the chunked path. The factory over
-  WAS is `wasTransportFactory` in `src/edv/transportFactory.ts`, which is the
-  only module that calls `new WasTransport(...)`. Routing is decided on the
-  payload's size alone and the payload is passed on as a stream, so an
-  over-threshold blob is never buffered whole by the codec. Reads reverse it
-  through `getStream`, trusting only AEAD-authenticated inputs sealed in the JWE
-  payload: the `meta.encoding` discriminator that says the document is chunked,
-  the chunk count, and the bound resource id the chunks are addressed by (never
-  the envelope's cleartext `id`). `maxBlobBytes` is therefore a routing
-  threshold, not a cap. The write is two-phase, so a failure partway would
-  orphan an undecryptable document stub: the plan best-effort deletes it and
-  rethrows with the original failure as `cause`. Content-addressed collections
-  are the exception: a chunked write stores the document twice, so no single
-  ciphertext derives its id, and the write is refused.
+  `EdvClientCore.insert({ doc, stream, transport })` over a `WasTransport`, and
+  so is a `put()` of one at an id that holds no document. The codec does not
+  construct that transport: a `CodecTransportFactory` is injected by whichever
+  build knows where the Collection lives. A codec built without one (the
+  local-replica doc cipher) refuses the chunked write, and reads a chunked
+  document only from a caller's `chunkSource`. The factory over WAS is
+  `wasTransportFactory` in `src/edv/transportFactory.ts`, which is the only
+  module that calls `new WasTransport(...)`. Routing is decided on the payload's
+  size alone and the payload is passed on as a stream, so an over-threshold blob
+  is never buffered whole by the codec. Reads reverse it through `getStream`,
+  trusting only AEAD-authenticated inputs sealed in the JWE payload: the
+  `meta.encoding` discriminator that says the document is chunked, the chunk
+  count, and the bound resource id the chunks are addressed by (never the
+  envelope's cleartext `id`). The read runs on a local `Transport` subclass that
+  serves only `getChunk`, from the network or from a `chunkSource`, and refuses
+  with `EncryptionError` a chunk whose protected-header `was` binding differs
+  from the envelope's. The writer seals the same binding into every chunk, so a
+  genuine chunk of another resource or another epoch is caught on either path.
+  `maxBlobBytes` is therefore a routing threshold, not a cap. The write is
+  two-phase, so a failure partway would leave a pending stub: the plan
+  best-effort deletes it (the delete takes its chunks with it) and rethrows. A
+  507 stays a `QuotaExceededError`, and any other failure becomes an
+  `EncryptionError`, with the original failure as `cause` in both cases. A stub
+  that outlives its write is recognized by the EDV doc cipher's `isPendingStub`.
+  Content-addressed collections are the exception: a chunked write stores the
+  document twice, so no single ciphertext derives its id, and the write is
+  refused.
 - **`WasTransport`** (EDV-native): an `@interop/edv-client` `Transport` that
   maps EDV document operations onto WAS resource CRUD ("vault per collection",
   EDV doc id is the WAS resource id), including blinded-index `find` and chunked
@@ -571,6 +589,8 @@ plugs into:
   `decrypt` takes the resource id the replica addressed and verifies the stored
   body against it, throwing `IntegrityError` on a mismatch. It also takes an
   optional request context for chunked envelopes, and resolves `Json | Blob`.
+  The EDV doc cipher widens `decrypt` with a `chunkSource` in place of the
+  context, and adds `isPendingStub`; the shared `DocCipher` keeps its shape.
   `createPlaintextDocCipher` is the crypto-free identity implementation for a
   plaintext content-addressed collection, and its `decrypt` recomputes the
   content id and compares it; `createEdvDocCipher` (`src/edv/docCipher.ts`, on
@@ -836,15 +856,17 @@ create.
     so a caller that names a Space does reach the transport, and a bundler that
     follows dynamic imports (Metro among them) still bundles it. A caller that
     only decrypts bytes it already holds passes no `spaceId` and evaluates none
-    of it. `./edv/cipher` additionally evaluates no `@interop/vh-resource-log`
-    or `@interop/did-method-webvh` module, unlike `./edv/core`, which reaches
-    both through `logGovernedDescriptorStore.ts`.
-    `test/node/import-graph.test.ts` enforces both entries' static closures, and
-    pins that gated `import()` as the only dynamic edge out of either. Both are
-    walked over runtime edges only, since a type-only import is erased at build
-    time. A new module under `src/edv/` that needs a server belongs behind
-    `./edv`, in the modules `edv/index.ts` adds on top; one that needs the
-    resource log belongs in `core.ts`'s own export list, not in `cipher.ts`.
+    of it, and reads a chunked envelope through a `chunkSource`, whose only
+    transport is the codec's in-memory chunk reader over bytes the caller holds.
+    `./edv/cipher` additionally evaluates no `@interop/vh-resource-log` or
+    `@interop/did-method-webvh` module, unlike `./edv/core`, which reaches both
+    through `logGovernedDescriptorStore.ts`. `test/node/import-graph.test.ts`
+    enforces both entries' static closures, and pins that gated `import()` as
+    the only dynamic edge out of either. Both are walked over runtime edges
+    only, since a type-only import is erased at build time. A new module under
+    `src/edv/` that needs a server belongs behind `./edv`, in the modules
+    `edv/index.ts` adds on top; one that needs the resource log belongs in
+    `core.ts`'s own export list, not in `cipher.ts`.
 11. **A server's `next` link is untrusted.** Following it sends the caller's
     signed invocation, and with no bound capability ezcap synthesizes a root
     zcap for whatever URL it is given. `walkPages` follows a `next` only within
@@ -915,8 +937,8 @@ it, and otherwise cover the client-side concepts this file names.
   changes. See The handle model and Concurrency.
 - **`ChunkedWrite` plan** -- what `encode` answers with instead of an
   `EncodedWrite` when a payload cannot be one request: a resource id plus an
-  `execute` method the insert path runs over a `CodecRequestContext`. See The
-  codec seam.
+  `execute` method the insert path runs over a `CodecRequestContext`, and the
+  write-by-id path runs where no document is stored yet. See The codec seam.
 - **Indexing capability** -- the optional per-codec state and methods
   (`applySchema` / `schema` / `buildQuery`) that let an encrypted collection
   carry a persisted index schema and blind its query terms. Present only where
@@ -960,6 +982,16 @@ it, and otherwise cover the client-side concepts this file names.
   an envelope to the slot it belongs in, verified on decode. See The EDV layer.
 - **`maxBlobBytes`** -- the payload size above which a binary `add()` is routed
   to the chunked path. Avoid: blob size cap, size limit.
+- **Chunk source** -- a caller-supplied function (`ChunkSource`) that serves a
+  chunked document's chunks by `{ docId, chunkIndex }` from bytes the caller
+  already holds, in place of a request context. Passed to the EDV doc cipher's
+  `decrypt`. See The codec seam and The EDV layer.
+- **Pending stub** -- the document a chunked write leaves when it stops between
+  its first document write and its final update: its sealed stream state is
+  still `{ pending: true }`, with no chunk count, so no read can open it.
+  Recognized by the EDV doc cipher's `isPendingStub`, and removed with its
+  chunks by deleting the resource. Avoid: orphan, torn document. See The EDV
+  layer.
 - **`WasSyncPort`** -- the injected WAS-access seam for cross-replica
   synchronization (`src/sync/types.ts`, implemented by `createWasSyncPort`): it
   moves stored bodies verbatim and never touches keys. Avoid: sync engine (the

@@ -286,6 +286,15 @@ export class Resource {
    * contradicts fails locally with the same `PreconditionFailedError` the
    * server would return. Returns the new `etag`.
    *
+   * On an encrypted collection, a binary payload over the codec's
+   * `maxBlobBytes` is stored as a document plus chunk resources, as `add()`
+   * stores it, but only where no document is stored at this id yet: it
+   * creates the resource, and over an existing document it throws
+   * `ValidationError`. A 412 surfaces as for any other create, and a 507 as
+   * `QuotaExceededError`. A write that fails partway deletes what it wrote;
+   * one that could not leaves a pending stub, which the EDV doc cipher's
+   * `isPendingStub` recognizes and `delete()` removes with its chunks.
+   *
    * @param data {ResourceData}
    * @param options {object}
    * @param [options.contentType] {string}   content-type for binary data
@@ -302,7 +311,7 @@ export class Resource {
     } = {}
   ): Promise<{ etag?: string }> {
     const codec = await this.#codec()
-    const response = await upsertResource(this.#context, {
+    return await upsertResource(this.#context, {
       path: this.#path,
       codec,
       id: this.id,
@@ -314,7 +323,6 @@ export class Resource {
         ifNoneMatch: options.ifNoneMatch
       }
     })
-    return { etag: readEtag(response) }
   }
 
   /**
