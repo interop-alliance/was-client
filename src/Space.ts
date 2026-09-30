@@ -762,10 +762,14 @@ export class Space {
    *
    * **Not idempotent.** Revoking an already-revoked capability throws
    * `AlreadyRevokedError` (the server's 400, a `ValidationError` subclass
-   * named for the `capability-already-revoked` problem type). A tampered,
-   * expired, or foreign-rooted capability stays a plain `ValidationError`.
-   * This method swallows none of them; catch `AlreadyRevokedError` if you want
-   * revoking twice to be a no-op.
+   * named for the `capability-already-revoked` problem type). A capability
+   * whose chain no longer verifies (tampered, expired, or a delegating key
+   * gone from its controller document) leaves the revocation URL's own root
+   * with no controller, so the server denies the invocation with a masked
+   * `NotFoundError` rather than a `ValidationError`. A foreign-rooted
+   * capability, one rooted in a different space, gets the same
+   * `NotFoundError`. This method swallows none of them; catch
+   * `AlreadyRevokedError` if you want revoking twice to be a no-op.
    *
    * @param zcap {IDelegatedZcap}   the delegated capability to revoke
    * @returns {Promise<void>}

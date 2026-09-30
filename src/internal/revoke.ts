@@ -15,6 +15,10 @@
  * A single invocation therefore authorizes both legitimate callers of the
  * server's dual-root rule ("the delegator revokes" and "a delegee revokes its
  * own capability"), with no need to know which one this client is.
+ *
+ * A chain that no longer verifies (tampered, expired, or a delegating key
+ * gone from its controller document) synthesizes an empty controller set, so
+ * the invocation is denied.
  */
 import { spaceRevocation, toUrl, parseSpaceTarget } from './paths.js'
 import type { ClientContext } from './request.js'

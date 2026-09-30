@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.81.0 - TBD
+
+### Changed
+
+- Doc-only: `Space.revoke` and `removeRecipient`'s default pull-axis comment now
+  say a capability chain that no longer verifies answers `NotFoundError` (the
+  server's masked denial), not `ValidationError`, and that the default pull axis
+  does not swallow it.
+
 ## 0.80.0 - 2026-09-28
 
 ### Added

@@ -1113,9 +1113,11 @@ function resolvePullAxis({
   // already-revoked capability so a retry (after a transient revoke failure)
   // converges rather than throwing in the loop: `space.revoke` is not
   // idempotent and reports an already-revoked capability as ValidationError.
-  // That same status also covers tampered/expired/foreign capabilities, which
-  // the client cannot distinguish here, so this swallows only ValidationError
-  // and re-throws anything else.
+  // A capability whose chain no longer verifies (tampered, expired, or
+  // foreign-rooted) answers NotFoundError instead, the server's masked
+  // denial, and this does NOT swallow it: with no account document in hand
+  // here, this pull axis cannot tell that refusal apart from an ordinary
+  // not-found. A caller that can classify it supplies its own `pull`.
   //
   // Each revocation is an independent signed request against a different
   // capability id, so they run concurrently.
