@@ -90,7 +90,12 @@ function spacesPage(
 ): SpaceListing {
   const listing: SpaceListing = {
     url: '/spaces/',
-    items: ids.map(id => ({ id, url: `/space/${id}`, name: id }))
+    items: ids.map(id => ({
+      id,
+      url: `/space/${id}`,
+      name: id,
+      type: ['Space']
+    }))
   }
   if (totalItems !== undefined) {
     listing.totalItems = totalItems

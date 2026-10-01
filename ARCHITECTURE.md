@@ -683,7 +683,9 @@ content-addressed collection (`idDerivation: 'content'`, or plaintext) is
 insert-only -- a changed document is a different id, so `encryptUpdate` is
 omitted or throws; a mutable head-document collection uses `'random'` ids and
 `encryptUpdate`, which re-encrypts in place under the existing id while
-advancing the envelope `sequence`. Decrypt routing is owned by the EDV codec
+advancing the envelope `sequence`. The EDV cipher's `encrypt` also takes an
+`id`, which seals a new document at a resource id the caller derived (a keyed
+id, say) with no prior envelope. Decrypt routing is owned by the EDV codec
 itself (one codec per collection, for the handle and sync paths alike): it
 matches the envelope's JWE recipient `kid`s against the reader's candidate keys
 -- the per-epoch keys resolved from the descriptor, or the key-agreement key on

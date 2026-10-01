@@ -1,5 +1,15 @@
 # @interop/was-client Changelog
 
+## 0.82.0 - TBD
+
+### Added
+
+- `EdvDocCipher.encrypt` takes an optional `id`: it seals a new document at that
+  resource id rather than one the cipher mints or derives, through the same
+  codec path a Collection handle's `put` of a new document uses. The envelope
+  binds the id, so a `decrypt` under another id is refused. A human-readable id
+  throws `ValidationError`. The shared `DocCipher` interface is unchanged.
+
 ## 0.81.0 - 2026-10-01
 
 ### Changed

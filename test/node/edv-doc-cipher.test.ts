@@ -38,6 +38,7 @@ import type {
   ResourceCodec
 } from '../../src/index.js'
 import { blobBytes } from '../../src/edv/core.js'
+import { edvIdFromBytes } from '../../src/edv/cipher.js'
 import type { ChunkSource, EdvDocCipher } from '../../src/edv/core.js'
 import { EdvCodec } from '../../src/edv/EdvCodec.js'
 import {
@@ -816,6 +817,89 @@ describe('createEdvEncryptOnlyDocCipher', () => {
         encryption: unmarked
       })
     ).rejects.toBeInstanceOf(EncryptionError)
+  })
+})
+
+describe('createEdvDocCipher (encrypt at a caller-supplied id)', () => {
+  for (const idDerivation of ['content', 'random'] as const) {
+    it(`seals a new document at the given id and opens it there (${idDerivation})`, async () => {
+      const { encryption, ...keys } = await makeReaderWithDescriptor()
+      const cipher = await createEdvDocCipher({
+        ...keys,
+        collectionId: 'connections',
+        idDerivation,
+        encryption
+      })
+      const id = edvIdFromBytes(new Uint8Array(16).fill(7))
+      const sealed = await cipher.encrypt({ id, data: DOC })
+
+      expect(sealed.id).toBe(id)
+      expect(sealed.epoch).toBe(encryption.currentEpoch)
+      expect(isEncryptedEnvelope(sealed.envelope)).toBe(true)
+      expect((sealed.envelope as { id?: string }).id).toBe(id)
+      expect((sealed.envelope as { sequence?: number }).sequence ?? 0).toBe(0)
+      expect(await cipher.decrypt({ id, envelope: sealed.envelope })).toEqual(
+        DOC
+      )
+
+      const elsewhere = edvIdFromBytes(new Uint8Array(16).fill(9))
+      const refusal = await cipher
+        .decrypt({ id: elsewhere, envelope: sealed.envelope })
+        .then(() => null)
+        .catch((err: unknown) => err)
+      expect(refusal).toBeInstanceOf(IntegrityError)
+    })
+  }
+
+  it('re-seals the document in place through encryptUpdate', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'connections',
+      idDerivation: 'random',
+      encryption
+    })
+    const id = edvIdFromBytes(new Uint8Array(16).fill(3))
+    const first = await cipher.encrypt({ id, data: { v: 1 } })
+    const updated = await cipher.encryptUpdate!({
+      id,
+      data: { v: 2 },
+      current: first.envelope
+    })
+    expect(updated.id).toBe(id)
+    expect(await cipher.decrypt({ id, envelope: updated.envelope })).toEqual({
+      v: 2
+    })
+  })
+
+  it('refuses a human-readable id, which would leak onto the URL', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createEdvDocCipher({
+      ...keys,
+      collectionId: 'connections',
+      idDerivation: 'random',
+      encryption
+    })
+    await expect(
+      cipher.encrypt({ id: 'alice-at-example', data: DOC })
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('forwards the id through the self-refreshing cipher', async () => {
+    const { encryption, ...keys } = await makeReaderWithDescriptor()
+    const cipher = await createRefreshingEdvDocCipher({
+      ...keys,
+      collectionId: 'connections',
+      idDerivation: 'random',
+      cache: {
+        readDescriptor: async () => encryption,
+        writeDescriptor: async () => {}
+      }
+    })
+    const id = edvIdFromBytes(new Uint8Array(16).fill(5))
+    const sealed = await cipher.encrypt({ id, data: DOC })
+    expect(sealed.id).toBe(id)
+    expect(await cipher.decrypt({ id, envelope: sealed.envelope })).toEqual(DOC)
   })
 })
 

@@ -123,11 +123,32 @@ export function ownerRecipient({
 }
 
 /**
- * A {@link DocCipher} for an encrypted collection, plus the blinded-index
- * schema install the sync path needs, the `chunkSource` read of a chunked
- * envelope, and the pending-stub check.
+ * A {@link DocCipher} for an encrypted collection, plus the seal of a new
+ * document at a caller-supplied id, the blinded-index schema install the sync
+ * path needs, the `chunkSource` read of a chunked envelope, and the
+ * pending-stub check.
  */
 export interface EdvDocCipher extends DocCipher {
+  /**
+   * {@link DocCipher.encrypt}, widened with `id`: seals a new document at a
+   * resource id the caller chose, rather than one the cipher mints or
+   * derives. The envelope binds that id (`was.resource`) and starts at
+   * `sequence: 0`, as a Collection handle's `put` of a new document does, so
+   * a `decrypt` under any other id is refused. The id must be an EDV
+   * document id; a human-readable one throws `ValidationError`, since it
+   * would leak onto the URL. To re-seal a document already stored at that
+   * id, use `encryptUpdate` with the stored envelope.
+   *
+   * @param options {object}
+   * @param options.data {Json}   the document to seal
+   * @param [options.id] {string}   the resource id to seal it at
+   * @returns {Promise<{ id: string; envelope: Json; epoch?: string }>}
+   */
+  encrypt(options: {
+    data: Json
+    id?: string
+  }): Promise<{ id: string; envelope: Json; epoch?: string }>
+
   /**
    * {@link DocCipher.decrypt}, widened with `chunkSource`: a chunked envelope's
    * chunks come from `context` (fetched from the server, on a cipher built
@@ -201,7 +222,7 @@ export interface EdvDocCipher extends DocCipher {
  * hash of the JWE ciphertext -- the stable, replica-independent primary key an
  * immutable content-addressed collection needs; `'random'` mints a stable random
  * id updated in place via `sequence` (the mutable head-document model, driven by
- * `encryptUpdate`).
+ * `encryptUpdate`). An `encrypt` given an `id` uses that id under either model.
  *
  * The `encryption` descriptor must carry key epochs (a descriptor without them
  * is refused fail-closed by the codec): the cipher encrypts every write under
@@ -397,11 +418,13 @@ function docCipherOverCodec({
   }
 
   return {
-    async encrypt({ data }: { data: Json }) {
+    async encrypt({ data, id }: { data: Json; id?: string }) {
       // `encode` with no caller id is the add() path: encrypt, then either
       // derive and stamp the content-hash id (`'content'`) or use the minted
-      // random id.
+      // random id. With a caller id and no `current` it is the put() of a new
+      // document: the codec checks the id is an EDV document id and binds it.
       const encoded = await codec.encode({
+        ...(id !== undefined && { id }),
         data: data as Extract<Json, object>
       })
       return readEncoded(encoded)
