@@ -313,13 +313,17 @@ const { outcome } = await space.deleteWithOutcome()
 
 List the spaces in the repository visible to your signer with
 `was.listSpaces()`. It returns a `{ url, totalItems, items }` listing holding
-only the spaces whose controller your invocation is authorized for; an
-unauthorized caller gets an empty list rather than an error. To enumerate what
-is _inside_ a space, use `space.collections()` (below).
+every space whose controller your invocation is authorized for, auxiliary spaces
+included; an unauthorized caller gets an empty list rather than an error. Each
+item carries the space's `type` array, the same value as its Space Metadata
+object's `type`, so an auxiliary space (one whose `type` names `AuxiliarySpace`)
+can be told apart without reading it. To enumerate what is _inside_ a space, use
+`space.collections()` (below).
 
 ```ts
 const { totalItems, items } = await was.listSpaces()
-// items: [{ id, url, name? }, ...]
+// items: [{ id, type, url, name? }, ...]
+const userSpaces = items.filter(item => !item.type.includes('AuxiliarySpace'))
 ```
 
 ### Collections

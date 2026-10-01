@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 121
+nextAvailableId: 122
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -1969,6 +1969,29 @@ unknown-epoch row. Correct the class docstring, or add a short cooldown on
 repeated refresh failures.
 
 discovered-from: whole-codebase review, 2026-09-11.
+
+### WCL-121: Consume the storage-core `SpaceSummary.type` and test that `listSpaces()` surfaces it
+
+- status: todo
+- priority: low
+- labels: list-spaces, auxiliary-spaces, dependencies
+- touches:
+  - was-teaching-server: shipped 2026-10-01 (every List Spaces item carries the
+    Space's `type`; auxiliary Spaces are listed instead of hidden)
+  - storage-core: `SpaceSummary` gains a required `type: string[]`
+- acceptance:
+  - [ ] The `@interop/storage-core` dependency is bumped to the version whose
+        `SpaceSummary` carries `type`
+  - [ ] A test asserts that each `listSpaces()` item carries a `type` array,
+        including an item for an auxiliary Space
+
+The server's List Spaces now lists every Space the signer is authorized for,
+auxiliary ones included, and puts each Space's `type` array on its item. There
+is no opt-in parameter. `listSpaces()` returns storage-core's `SpaceListing` and
+passes items through unchanged, so it needs no code change. It does need the
+storage-core release that types the new member, and a test so a regression in
+the pass-through is caught. The JSDoc and README already describe the new
+behavior.
 
 ## Recorded decisions (kept so they are not re-litigated)
 

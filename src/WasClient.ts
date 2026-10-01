@@ -284,8 +284,12 @@ export class WasClient {
   /**
    * Lists the spaces in the repository visible to the wrapped signer, as a
    * `{ url, totalItems, items }` listing. Visibility is per-controller: the
-   * result holds only the spaces whose controller the signed invocation is
-   * authorized for. An unauthorized caller is not an error -- the server
+   * result holds every space whose controller the signed invocation is
+   * authorized for, auxiliary spaces included. Each item carries the space's
+   * `type` array, the same value as its Space Metadata object's `type`, so a
+   * caller can tell an auxiliary space (one whose `type` names
+   * `AuxiliarySpace`) from a user-data one without reading each space.
+   * An unauthorized caller is not an error -- the server
    * returns an empty `items` list (the spec's explicit exception to 404
    * masking), so nothing is revealed about which spaces exist.
    *
