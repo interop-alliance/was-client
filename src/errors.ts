@@ -3,11 +3,11 @@
  */
 /**
  * Typed error hierarchy for the WAS client. A `WasError` base carries the
- * server's `application/problem+json` fields (`status` / `title` / `details` /
- * `requestUrl`); `mapError()` translates a thrown ky/ezcap error into the
+ * server's `application/problem+json` fields (`status` / `title` / `problems` /
+ * `details` / `requestUrl`); `mapError()` translates a thrown ky/ezcap error into the
  * appropriate subclass.
  */
-import { ProblemTypes } from '@interop/storage-core'
+import { ProblemTypes, type Problem } from '@interop/storage-core'
 
 /**
  * Structured fields attached to a `WasError`, sourced from the server's
@@ -21,6 +21,15 @@ export interface WasErrorOptions {
    */
   type?: string
   title?: string
+  /**
+   * The body's `errors` entries as sent: each occurrence's `detail` with its
+   * optional JSON `pointer` into the request body (e.g. `#/checkpoint`).
+   */
+  problems?: Problem[]
+  /**
+   * The `detail` strings of `problems`, in order, for callers that only need
+   * the prose.
+   */
   details?: string[]
   requestUrl?: string
   cause?: unknown
@@ -33,16 +42,19 @@ export class WasError extends Error {
   status?: number
   type?: string
   title?: string
+  problems?: Problem[]
   details?: string[]
   requestUrl?: string
 
   constructor(message: string, options: WasErrorOptions = {}) {
-    const { status, type, title, details, requestUrl, cause } = options
+    const { status, type, title, problems, details, requestUrl, cause } =
+      options
     super(message, cause !== undefined ? { cause } : undefined)
     this.name = 'WasError'
     this.status = status
     this.type = type
     this.title = title
+    this.problems = problems
     this.details = details
     this.requestUrl = requestUrl
   }
@@ -503,15 +515,35 @@ export function mapError(err: unknown): WasError {
   // `problem+json` body with `errors` as a non-array (e.g. `"boom"`) is truthy,
   // so `?.map` would throw a `TypeError` and mask the real `WasError`. Each
   // entry is likewise unvalidated server JSON (may be `null` or a primitive),
-  // so read `detail` defensively; the string filter drops the misses.
-  const details = Array.isArray(data?.errors)
-    ? data.errors
-        .map(entry => (entry as { detail?: string } | null)?.detail)
-        .filter((detail): detail is string => typeof detail === 'string')
+  // so read it defensively; an entry without a string `detail` is dropped, and
+  // a non-string `pointer` is dropped from its entry.
+  const problems = Array.isArray(data?.errors)
+    ? data.errors.flatMap((entry): Problem[] => {
+        if (entry === null || typeof entry !== 'object') {
+          return []
+        }
+        const { detail, pointer } = entry as {
+          detail?: unknown
+          pointer?: unknown
+        }
+        if (typeof detail !== 'string') {
+          return []
+        }
+        return [{ detail, ...(typeof pointer === 'string' && { pointer }) }]
+      })
     : undefined
+  const details = problems?.map(problem => problem.detail)
   const requestUrl = httpError.requestUrl
   const message = title ?? httpError.message ?? 'WAS request failed'
-  const options = { status, type, title, details, requestUrl, cause: err }
+  const options = {
+    status,
+    type,
+    title,
+    problems,
+    details,
+    requestUrl,
+    cause: err
+  }
 
   // Dispatch on the problem-kind anchor when the server sent one, falling
   // through to the status-based switch for an unrecognized or absent kind.

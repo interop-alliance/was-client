@@ -228,6 +228,41 @@ describe('mapError', () => {
     expect(mapped.status).toBe(400)
     expect(mapped.requestUrl).toBe('https://was.example/spaces/')
     expect(mapped.details).toEqual(['name is required', 'bad controller'])
+    expect(mapped.problems).toEqual([
+      { detail: 'name is required' },
+      { detail: 'bad controller' }
+    ])
+  })
+
+  it('carries each problem entry with its JSON pointer', () => {
+    const mapped = mapError({
+      status: 400,
+      data: {
+        type: 'https://w3id.org/pws#invalid-request-body',
+        title: 'Invalid query body',
+        errors: [
+          {
+            detail: 'The checkpoint was not issued here.',
+            pointer: '#/checkpoint'
+          },
+          { detail: 'no pointer' },
+          { detail: 'bad pointer', pointer: 42 }
+        ]
+      }
+    })
+    expect(mapped.problems).toEqual([
+      {
+        detail: 'The checkpoint was not issued here.',
+        pointer: '#/checkpoint'
+      },
+      { detail: 'no pointer' },
+      { detail: 'bad pointer' }
+    ])
+    expect(mapped.details).toEqual([
+      'The checkpoint was not issued here.',
+      'no pointer',
+      'bad pointer'
+    ])
   })
 
   it('tolerates a non-array `errors` field without masking the real error', () => {
@@ -240,6 +275,7 @@ describe('mapError', () => {
     expect(mapped).toBeInstanceOf(ValidationError)
     expect(mapped.message).toBe('Bad request')
     expect(mapped.details).toBeUndefined()
+    expect(mapped.problems).toBeUndefined()
   })
 
   it('tolerates malformed `errors` entries without masking the real error', () => {
@@ -254,6 +290,7 @@ describe('mapError', () => {
     })
     expect(mapped).toBeInstanceOf(ConflictError)
     expect(mapped.details).toEqual(['id already exists'])
+    expect(mapped.problems).toEqual([{ detail: 'id already exists' }])
   })
 
   it('preserves the original error as the cause', () => {

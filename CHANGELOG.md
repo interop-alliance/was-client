@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.84.0 - TBD
+
+### Added
+
+- `WasError.problems`: the `problem+json` body's `errors` entries as sent, each
+  `{ detail, pointer? }`, so a caller can tell which request member a 400
+  refused (e.g. `#/checkpoint`). `details` stays as the `detail` strings.
+
 ## 0.83.0 - 2026-10-01
 
 ### Changed
