@@ -631,26 +631,31 @@ declared one, and on a tombstone the deleting request's own label).
 
 Conditional writes ride the server's opaque `ETag` uniformly for plaintext and
 encrypted resources, so there is no plaintext-vs-encrypted fork. The validator
-is a quoted string the client echoes verbatim as `ifMatch`; the monotonic
-`version` it embeds is for ordering and display only and is not reassembled into
-a validator. Each write returns a `WriteAck` with both the acked `version` and
-the new `etag`, and every feed document carries its current `etag` and
-`metaEtag`, so a push loop pins its writes from feed state alone. Two typed
-signals in `src/errors.ts` let a push loop catch exactly what it can handle:
-`WasSyncConflictError` (412, a subtype of `PreconditionFailedError`) triggers
-re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete or on a `/meta`
-write, a subtype of `NotFoundError`) marks an already-gone target: a settled
-outcome for a delete, a delete race for a metadata write. A third,
-`WasSyncCheckpointError` (400 at `#/checkpoint`, a subtype of
-`ValidationError`), is raised by `query` when the server did not issue the
-presented checkpoint, and tells a pull loop to restart from the beginning. A
-fourth, `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
-`mapAuthErrors` and reports revoked access. The port's `putContent` and
-`deleteContent` also stamp the `Key-Epoch` and `Writer-Id` headers, so the
-server records which key epoch a body was encrypted under and which writing
-agent produced the revision; `putMeta` carries `writerId` the same way as a
-top-level body member beside `custom`. Both are declare-or-clear: an omitted
-value clears whatever was stored, so a caller that wants to keep a prior
+is a quoted string the client echoes verbatim as `ifMatch`. Each write returns a
+`WriteAck` carrying the new `etag`. `WriteAck.version` and `MasterState.version`
+are present only when the validator has the reference server's
+`"<generation>.<version>"` form, which `parseEtag` reads. That parse is a
+convenience for ordering and display, not the wire contract. A conformant opaque
+validator such as `"a1b2c3"` acks its `etag` with no `version`, and a response
+whose `ETag` did not reach the client acks neither. The port never substitutes
+`0` for an absent revision, since a consumer would read that as a real
+acknowledgement. The parsed number is not reassembled into a validator. Every
+feed document carries its current `etag` and `metaEtag`, so a push loop pins its
+writes from feed state alone. Two typed signals in `src/errors.ts` let a push
+loop catch exactly what it can handle: `WasSyncConflictError` (412, a subtype of
+`PreconditionFailedError`) triggers re-read-and-reconcile, and
+`WasSyncNotFoundError` (404 on delete or on a `/meta` write, a subtype of
+`NotFoundError`) marks an already-gone target: a settled outcome for a delete, a
+delete race for a metadata write. A third, `WasSyncCheckpointError` (400 at
+`#/checkpoint`, a subtype of `ValidationError`), is raised by `query` when the
+server did not issue the presented checkpoint, and tells a pull loop to restart
+from the beginning. A fourth, `WasSyncAuthError` (401, 403, or the masked 404),
+is opt-in under `mapAuthErrors` and reports revoked access. The port's
+`putContent` and `deleteContent` also stamp the `Key-Epoch` and `Writer-Id`
+headers, so the server records which key epoch a body was encrypted under and
+which writing agent produced the revision; `putMeta` carries `writerId` the same
+way as a top-level body member beside `custom`. Both are declare-or-clear: an
+omitted value clears whatever was stored, so a caller that wants to keep a prior
 `writerId` must resend it on every write. `writerId` is advisory attribution
 only -- a replica uses it to recognize its own writes echoed back and to break
 same-`updatedAt` ties, and it is never an input to an authorization decision.

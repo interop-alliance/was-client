@@ -1,5 +1,16 @@
 # @interop/was-client Changelog
 
+## 0.86.0 - TBD
+
+### Changed
+
+- **BREAKING**: `WriteAck.version` and `MasterState.version` are optional. The
+  sync port sets them only when the `ETag` has the reference server's
+  `"<generation>.<version>"` form. An opaque validator such as `"a1b2c3"` or
+  `"3"` acks its `etag` with no `version`, and a hidden or missing `ETag` acks
+  neither. The port no longer substitutes `version: 0`. Echo `etag` as
+  `ifMatch`; `parseEtag` is a convenience for that one form. (WCL-75)
+
 ## 0.85.0 - 2026-10-01
 
 ### Added

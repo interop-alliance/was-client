@@ -19,15 +19,13 @@
  * `POST /space/:s/:c/query` (profile `changes`) as a root invocation and, like
  * the raw writes, ships the stored bodies verbatim without decrypting.
  *
- * Conditional writes ride the server's `ETag`: an opaque quoted string
- * (`"<generation>.<version>"`, a per-record generation marker ahead of the
- * monotonic content `version` so a hard-deleted-and-recreated id can never
- * collide with its predecessor's validators), enforced uniformly for
- * plaintext and encrypted resources, so there is no plaintext-vs-encrypted
- * fork. `putContent`/`deleteContent` return the server-acked {@link
- * WriteAck} -- the write's raw `etag` (re-read only if the backend sent
- * none) plus its `version` parsed out of it -- so a caller can record acked
- * revisions immediately and echo `etag` back verbatim as a later write's
+ * Conditional writes ride the server's `ETag`, an opaque quoted strong
+ * validator, enforced uniformly for plaintext and encrypted resources, so
+ * there is no plaintext-vs-encrypted fork. `putContent`/`deleteContent`
+ * return the server-acked {@link WriteAck}: the write's raw `etag`, plus a
+ * `version` only when the validator has the reference server's
+ * `"<generation>.<version>"` form (see {@link parseEtag}). A caller records
+ * the acked `etag` immediately and echoes it back verbatim as a later write's
  * `ifMatch`. Conditional writes are a baseline server requirement, so a write
  * carrying `ifMatch` or `ifNoneMatch` goes out as given and the server answers
  * a lost race with a `412`.
@@ -206,17 +204,23 @@ function mapWriteError(
 }
 
 /**
- * Parses a quoted strong `ETag` into its numeric revision: the decimal
- * integer after the LAST `.` inside the quotes (`"3mJr7AoUXx2.3"` to `3`).
- * Returns `undefined` when the header is absent, has no `.`, or the trailing
- * segment is anything other than a run of digits.
+ * Parses a quoted strong `ETag` of the `"<generation>.<version>"` form into
+ * its numeric revision: the decimal integer after the LAST `.` inside the
+ * quotes (`"3mJr7AoUXx2.3"` to `3`). Returns `undefined` when the header is
+ * absent, has no `.`, or the trailing segment is anything other than a run of
+ * digits.
  *
- * The quoted string as a whole is opaque -- it also carries a per-record
- * generation marker ahead of the version, minted once and kept for the
- * record's life, so this is one-way: there is no `formatEtag` to build a
- * validator back out of a bare revision number. Always echo the `etag` a read
- * or write returned back verbatim for `ifMatch`/`ifNoneMatch`; this helper
- * only reads the revision out of it for comparison or display.
+ * That form is the reference server's. The WAS spec makes an `ETag` an opaque
+ * strong validator, and a conformant server may send `"a1b2c3"` or `"3"`,
+ * which yield `undefined` here. The parse is a convenience for servers that
+ * use the form. It is not the wire contract, so an absent revision stays
+ * absent and is never read as `0`.
+ *
+ * The quoted string as a whole is opaque, so this is one-way: there is no
+ * `formatEtag` to build a validator back out of a bare revision number.
+ * Always echo the `etag` a read or write returned back verbatim for
+ * `ifMatch`; this helper only reads the revision out of it for comparison or
+ * display.
  *
  * @param etag {string | null | undefined}
  * @returns {number | undefined}
@@ -356,8 +360,8 @@ export function createWasSyncPort({
       )
     }
     return {
-      version: version ?? 0,
-      etag,
+      ...(version !== undefined && { version }),
+      ...(etag !== undefined && { etag }),
       updatedAt: UNKNOWN_UPDATED_AT,
       data: response.data as Json
     }
@@ -366,14 +370,11 @@ export function createWasSyncPort({
   /**
    * The acked {@link WriteAck} of a write response. Taken from the response's
    * own `ETag` only: a re-read after the fact could return a concurrent
-   * writer's validator as this write's ack. A response with no `ETag` acks
-   * `version: 0` and no `etag`, the shape of a backend that does not version
-   * resources.
+   * writer's validator as this write's ack. A response with no `ETag`, or
+   * with one the client cannot see, acks neither `etag` nor `version`. An
+   * opaque validator acks its `etag` with no `version`.
    */
-  const writeAck = (response: HttpResponse): WriteAck => {
-    const { etag, version } = versionedEtag(response)
-    return { version: version ?? 0, etag }
-  }
+  const writeAck = (response: HttpResponse): WriteAck => versionedEtag(response)
 
   // The signals `deleteContent` and `putMeta` ask `mapWriteError` for: the
   // not-found mapping on the default port, the auth mapping under
@@ -470,8 +471,8 @@ export function createWasSyncPort({
           },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
-        const { etag, version } = versionedEtag(response)
-        return etag !== undefined ? { version: version ?? 0, etag } : undefined
+        const ack = versionedEtag(response)
+        return ack.etag !== undefined ? ack : undefined
       } catch (err) {
         // A `/meta` write against a nonexistent resource legitimately `404`s
         // (the resource was deleted by another replica after this one read

@@ -1245,20 +1245,34 @@ review, 2026-09-11.
 
 ### WCL-75: `parseEtag` hard-codes the reference server's ETag format, so spec-conformant tags acknowledge version 0
 
-- status: todo
+- status: in-progress
 - priority: medium
 - labels: sync, spec-conformance, conditional-writes
 - touches:
   - "@interop/was-sync": `src/pushWrites.ts` treats `ack.version !== undefined`
     as "acknowledged" and `src/conflictHandler.ts` compares versions for
-    equality, so both need the absent case
-  - wallet-core: the sync engine reads `WriteAck` / `MasterState` version
+    equality, so both need the absent case. WS-7 guards the ack write-back
+    against an absent or `0` version. The rest is filed as WS-18:
+    `src/pushWrites.ts:192` copies `primary.version` (now optional) into the
+    required `SyncedDoc.version` (a type error against 0.86.0);
+    `src/pushWrites.ts:373` drops a delete ack that carries an `etag` but no
+    `version`; `src/types.ts:236` and `src/syncedDocSchema.ts:31,76` keep
+    `version` required on the local row.
+  - wallet-core: the sync engine reads `WriteAck` / `MasterState` version. It
+    compiles against 0.86.0 (`markPushed` / `markDeletedPushed` already take an
+    optional `version`). Follow-up item not yet filed: `src/sync/push.ts:85` and
+    `:207` use `replica.version > 0` as "ever acked", so a resource replica
+    acked under an opaque validator keeps `version: 0` and its next push goes
+    out as `If-None-Match: *`; `src/sync/remint.ts:132` reads `version === 0` as
+    "never acked"; `adoptLatest` hands a `MasterState` with no `version` to a
+    store whose `SyncedResourceReplica.version` (`src/sync/types.ts:76`) is
+    required.
 - acceptance:
-  - [ ] `WriteAck.version` and `MasterState.version` are left absent when no
+  - [x] `WriteAck.version` and `MasterState.version` are left absent when no
         revision parses, instead of being coerced to `0`
-  - [ ] An opaque validator such as `"a1b2c3"` or `"3"` round-trips as a
+  - [x] An opaque validator such as `"a1b2c3"` or `"3"` round-trips as a
         precondition without producing a fabricated version
-  - [ ] The `gen.version` parse is documented as a convenience for servers using
+  - [x] The `gen.version` parse is documented as a convenience for servers using
         that form, not as the wire contract
 
 `parseEtag` (`src/sync/port.ts:192-203`) returns `undefined` for any validator

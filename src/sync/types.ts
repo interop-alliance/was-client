@@ -79,11 +79,14 @@ export interface SyncPage extends Omit<ChangesPage, 'documents'> {
  * `etag` and `metaEtag` are the raw, opaque `ETag` validators the content and
  * `/meta` reads returned (absent only where the header did not reach the
  * client) -- pass one back verbatim as a later write's `ifMatch`. `version`
- * and `metaVersion` are the revision numbers parsed out of them, for
- * comparison or display only.
+ * and `metaVersion` are present only when the validator carries a parseable
+ * `generation.version` revision (see `parseEtag`). That is the reference
+ * server's form and a convenience for comparison or display. It is not the
+ * wire contract: a spec-conformant validator such as `"a1b2c3"` leaves them
+ * absent.
  */
 export interface MasterState {
-  version: number
+  version?: number
   etag?: string
   updatedAt: string
   metaVersion?: number
@@ -96,16 +99,18 @@ export interface MasterState {
 }
 
 /**
- * The acknowledgment a conditional write returns: the new `version` plus the
- * opaque `etag` validator it lives behind, exactly as the server sent it.
- * Pass `etag` back verbatim as a later write's `ifMatch` -- it can no longer
- * be synthesized from `version` alone, since the server's `ETag` also embeds a
- * per-record generation marker ahead of the version. `etag` is absent only
- * where the header did not reach the client; read `version` only to compare
- * or display a revision number.
+ * The acknowledgment a conditional write returns. `etag` is the opaque
+ * validator to echo, exactly as the server sent it: pass it back verbatim as
+ * a later write's `ifMatch`. It is absent only where the header did not reach
+ * the client (for example a cross-origin response without
+ * `Access-Control-Expose-Headers: ETag`). `version` is present only when the
+ * `ETag` carries a parseable `generation.version` revision (see `parseEtag`).
+ * That is the reference server's form and a convenience for comparison or
+ * display. It is not the wire contract, and it cannot be turned back into a
+ * validator.
  */
 export interface WriteAck {
-  version: number
+  version?: number
   etag?: string
 }
 

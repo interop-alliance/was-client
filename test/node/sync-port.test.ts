@@ -106,6 +106,7 @@ function makeWas(options: {
 describe('createWasSyncPort helpers', () => {
   it('parseEtag rejects a validator with no generation segment', () => {
     expect(parseEtag('"3"')).toBeUndefined()
+    expect(parseEtag('"a1b2c3"')).toBeUndefined()
     expect(parseEtag(null)).toBeUndefined()
     expect(parseEtag('not-a-number')).toBeUndefined()
   })
@@ -325,7 +326,7 @@ describe('createWasSyncPort.putContent', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('acks version 0 with no etag, and does not re-read, when the write response carries no ETag', async () => {
+  it('acks neither etag nor version, and does not re-read, when the write response carries no ETag', async () => {
     const methods: Array<string | undefined> = []
     const { was } = makeWas({
       onRequest: opts => {
@@ -337,8 +338,35 @@ describe('createWasSyncPort.putContent', () => {
 
     const ack = await port.putContent({ id: 'res-1', data: { a: 1 } })
     expect(methods).toEqual(['PUT'])
-    expect(ack).toEqual({ version: 0, etag: undefined })
+    expect(ack).toStrictEqual({})
   })
+
+  for (const opaque of ['"a1b2c3"', '"3"']) {
+    it(`round-trips the opaque validator ${opaque} with no fabricated version`, async () => {
+      const calls: RequestOptions[] = []
+      const { was } = makeWas({
+        onRequest: opts => {
+          calls.push(opts)
+          return response(null, { etag: opaque })
+        }
+      })
+      const port = createWasSyncPort({
+        was,
+        spaceId: SPACE,
+        collectionId: COLL
+      })
+
+      const ack = await port.putContent({
+        id: 'res-1',
+        data: { a: 1 },
+        ifNoneMatch: true
+      })
+      expect(ack).toStrictEqual({ etag: opaque })
+
+      await port.putContent({ id: 'res-1', data: { a: 2 }, ifMatch: ack.etag })
+      expect(calls[1]!.headers).toMatchObject({ 'if-match': opaque })
+    })
+  }
 
   it('maps a 412 to WasSyncConflictError (a PreconditionFailedError)', async () => {
     const { was } = makeWas({
@@ -596,6 +624,39 @@ describe('createWasSyncPort.get', () => {
     expect(new Date(master!.updatedAt).getTime()).toBe(0)
   })
 
+  it('reports an opaque validator as the etag with no version', async () => {
+    const { was } = makeWas({
+      onRequest: opts => {
+        if (opts.path?.endsWith('/meta')) {
+          throw httpError(404)
+        }
+        return response({ a: 1 }, { etag: '"a1b2c3"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const master = await port.get({ id: 'res-1' })
+    expect(master?.etag).toBe('"a1b2c3"')
+    expect(master).not.toHaveProperty('version')
+  })
+
+  it('reports neither etag nor version when the read carries no ETag', async () => {
+    const { was } = makeWas({
+      onRequest: opts => {
+        if (opts.path?.endsWith('/meta')) {
+          throw httpError(404)
+        }
+        return response({ a: 1 })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const master = await port.get({ id: 'res-1' })
+    expect(master).not.toHaveProperty('etag')
+    expect(master).not.toHaveProperty('version')
+    expect(master?.data).toEqual({ a: 1 })
+  })
+
   it('refuses a stored body the port cannot carry as JSON', async () => {
     // `@interop/http-client` populates `.data` only for a JSON media type, so
     // a resource stored as `text/jsonl` (or any opaque bytes) arrives with a
@@ -718,6 +779,17 @@ describe('createWasSyncPort.putMeta clear + write ack', () => {
       version: 3,
       etag: '"g3.3"'
     })
+  })
+
+  it('acks an opaque validator with no version', async () => {
+    const { was } = makeWas({
+      onRequest: () => response(null, { etag: '"a1b2c3"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    expect(await port.putMeta({ id: 'res-1', custom: { a: 1 } })).toStrictEqual(
+      { etag: '"a1b2c3"' }
+    )
   })
 
   it('returns undefined when the response carries no ETag', async () => {
