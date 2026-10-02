@@ -20,6 +20,7 @@ import { parseEtag, errorStatus } from '../../src/sync/index.js'
 import { errorMessage } from '../../src/sync/index.js'
 import {
   WasSyncAuthError,
+  WasSyncCheckpointError,
   WasSyncConflictError,
   WasSyncNotFoundError,
   AuthRequiredError,
@@ -174,6 +175,63 @@ describe('createWasSyncPort.query', () => {
 
     const result = await port.query({ limit: 50 })
     expect(result.documents[0]!.writerId).toBe('writer-a')
+  })
+
+  it('maps a refused checkpoint to WasSyncCheckpointError, carrying the problems', async () => {
+    const refusal = Object.assign(new Error('HTTP 400'), {
+      status: 400,
+      data: {
+        type: 'https://w3id.org/pws#invalid-request-body',
+        title: 'The request body was invalid.',
+        errors: [
+          {
+            detail: 'The checkpoint was not issued by this server.',
+            pointer: '#/checkpoint'
+          }
+        ]
+      }
+    })
+    const { was } = makeWas({
+      onChanges: () => {
+        throw refusal
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const err = await port
+      .query({ checkpoint: 'issued-elsewhere', limit: 50 })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasSyncCheckpointError)
+    expect(err).toBeInstanceOf(ValidationError)
+    expect((err as WasSyncCheckpointError).name).toBe('WasSyncCheckpointError')
+    expect((err as WasSyncCheckpointError).status).toBe(400)
+    expect((err as WasSyncCheckpointError).problems).toEqual([
+      {
+        detail: 'The checkpoint was not issued by this server.',
+        pointer: '#/checkpoint'
+      }
+    ])
+  })
+
+  it('leaves an invalid-request-body 400 that points elsewhere a plain ValidationError', async () => {
+    const { was } = makeWas({
+      onChanges: () => {
+        throw Object.assign(new Error('HTTP 400'), {
+          status: 400,
+          data: {
+            type: 'https://w3id.org/pws#invalid-request-body',
+            errors: [{ detail: 'Unknown profile.', pointer: '#/profile' }]
+          }
+        })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const err = await port
+      .query({ checkpoint: 'c0', limit: 50 })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(ValidationError)
+    expect(err).not.toBeInstanceOf(WasSyncCheckpointError)
   })
 })
 

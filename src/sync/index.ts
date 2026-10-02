@@ -76,6 +76,7 @@ export { ensureSpace, ensureSpaceAndCollection } from './provisioning.js'
 export {
   isNotSupportedError,
   isSyncAuthError,
+  isSyncCheckpointError,
   isSyncConflictError,
   isSyncNotFoundError,
   isIntegrityError,
@@ -89,6 +90,7 @@ export {
   NotSupportedError,
   UnknownEpochError,
   WasSyncAuthError,
+  WasSyncCheckpointError,
   WasSyncConflictError,
   WasSyncNotFoundError
 } from '../errors.js'

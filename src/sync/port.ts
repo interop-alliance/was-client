@@ -47,11 +47,13 @@ import {
   WRITER_ID_HEADER
 } from '../internal/conditional.js'
 import { resourceMeta, resourcePath } from '../internal/paths.js'
+import { ProblemTypes } from '@interop/storage-core'
 import {
   mapError,
   NotFoundError,
   PreconditionFailedError,
   WasSyncAuthError,
+  WasSyncCheckpointError,
   WasSyncConflictError,
   WasSyncNotFoundError,
   WasServerError
@@ -118,6 +120,7 @@ function signalOptions(mapped: WasError): WasErrorOptions {
     status: mapped.status,
     type: mapped.type,
     title: mapped.title,
+    problems: mapped.problems,
     details: mapped.details,
     requestUrl: mapped.requestUrl,
     cause: mapped.cause ?? mapped
@@ -136,7 +139,24 @@ function isPortSignal(mapped: WasError): boolean {
   return (
     mapped instanceof WasSyncConflictError ||
     mapped instanceof WasSyncNotFoundError ||
+    mapped instanceof WasSyncCheckpointError ||
     mapped instanceof WasSyncAuthError
+  )
+}
+
+/**
+ * Whether a mapped `changes` failure is the server refusing the presented
+ * checkpoint: `invalid-request-body` with a problem pointing at
+ * `#/checkpoint`. The same kind pointing elsewhere (an unaccepted `profile`)
+ * is an ordinary validation failure.
+ *
+ * @param mapped {WasError}
+ * @returns {boolean}
+ */
+function isRefusedCheckpoint(mapped: WasError): boolean {
+  return (
+    mapped.type === ProblemTypes.INVALID_REQUEST_BODY &&
+    (mapped.problems ?? []).some(problem => problem.pointer === '#/checkpoint')
   )
 }
 
@@ -376,6 +396,12 @@ export function createWasSyncPort({
         const mapped = mapError(err)
         if (mapAuthErrors && isAuthStatus(mapped.status)) {
           throw new WasSyncAuthError(mapped.status, signalOptions(mapped))
+        }
+        if (isRefusedCheckpoint(mapped)) {
+          throw new WasSyncCheckpointError(
+            mapped.message,
+            signalOptions(mapped)
+          )
         }
         throw mapped
       }

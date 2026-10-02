@@ -39,6 +39,7 @@ export {
   KeyUnwrapError,
   IntegrityError,
   WasSyncAuthError,
+  WasSyncCheckpointError,
   WasSyncConflictError,
   WasSyncNotFoundError,
   WasServerError,

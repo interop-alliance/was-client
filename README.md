@@ -1075,21 +1075,23 @@ plugs into:
   itself never touches keys. A rejected precondition throws
   `WasSyncConflictError` (412); a delete of an already-gone resource or a
   `putMeta` against one throws `WasSyncNotFoundError` (404) -- both catchable
-  subtypes of the core `PreconditionFailedError` / `NotFoundError`. Every other
-  failure arrives as the typed `WasError` subclass for its status, carrying the
-  server's `problem+json` fields.
-- **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncAuthError` /
-  `isUnknownEpochError` / `isKeyUnwrapError` / `isIntegrityError`** classify
-  those signals by `err.name`. Use them rather than `instanceof`: the port and
-  the `DocCipher` are seams your app injects, and a tree that resolves two
-  copies of this package makes an `instanceof` check quietly false. Read what
-  you need off the matched value, such as `err.status` on an auth error to tell
-  a 401 from the masked 404. The last two tell a decrypt's two no-key outcomes
-  apart: an epoch the reader's descriptor does not list (a re-read may fix it)
-  and an epoch it lists but this reader holds no key for (real data, permanently
-  unreadable here, never garbage). `isIntegrityError` matches a stored body that
-  does not verify against the resource id it was read under. Do not apply that
-  row.
+  subtypes of the core `PreconditionFailedError` / `NotFoundError`; a `query`
+  whose checkpoint the server did not issue throws `WasSyncCheckpointError`
+  (400, a `ValidationError` subtype), and the pull restarts from the beginning.
+  Every other failure arrives as the typed `WasError` subclass for its status,
+  carrying the server's `problem+json` fields.
+- **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncCheckpointError` /
+  `isSyncAuthError` / `isUnknownEpochError` / `isKeyUnwrapError` /
+  `isIntegrityError`** classify those signals by `err.name`. Use them rather
+  than `instanceof`: the port and the `DocCipher` are seams your app injects,
+  and a tree that resolves two copies of this package makes an `instanceof`
+  check quietly false. Read what you need off the matched value, such as
+  `err.status` on an auth error to tell a 401 from the masked 404. The last two
+  tell a decrypt's two no-key outcomes apart: an epoch the reader's descriptor
+  does not list (a re-read may fix it) and an epoch it lists but this reader
+  holds no key for (real data, permanently unreadable here, never garbage).
+  `isIntegrityError` matches a stored body that does not verify against the
+  resource id it was read under. Do not apply that row.
 - **`SyncStatus`** (`'idle' | 'syncing' | 'synced' | 'error'`) is the closed
   vocabulary a replication driver reports one feed's state through.
 - **`DocCipher`** is the per-collection encrypt/decrypt seam sitting above the

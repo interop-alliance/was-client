@@ -3,9 +3,9 @@
  */
 /**
  * The `err.name` predicates that classify the errors a replication path can
- * meet: the port's two wire signals (`WasSyncConflictError` /
- * `WasSyncNotFoundError`), its opt-in revoked-access signal
- * (`WasSyncAuthError`), the cipher's two no-key signals (the stale-descriptor
+ * meet: the port's three wire signals (`WasSyncConflictError` /
+ * `WasSyncNotFoundError` / `WasSyncCheckpointError`), its opt-in
+ * revoked-access signal (`WasSyncAuthError`), the cipher's two no-key signals (the stale-descriptor
  * `UnknownEpochError` and the not-a-recipient `KeyUnwrapError`), and its
  * tamper signal (`IntegrityError`).
  *
@@ -84,6 +84,20 @@ export function isSyncNotFoundError(err: unknown): boolean {
  */
 export function isSyncAuthError(err: unknown): boolean {
   return nameOf(err) === 'WasSyncAuthError'
+}
+
+/**
+ * Whether an error is the replication port's refused-checkpoint signal
+ * (`WasSyncCheckpointError`, HTTP 400): the server did not issue the `changes`
+ * checkpoint the pull presented, as for one stored against another server. The
+ * pull loop's one restart branch: drop the checkpoint and pull from the
+ * beginning. Every other 400 propagates.
+ *
+ * @param err {unknown}
+ * @returns {boolean}
+ */
+export function isSyncCheckpointError(err: unknown): boolean {
+  return nameOf(err) === 'WasSyncCheckpointError'
 }
 
 /**

@@ -339,6 +339,25 @@ export class WasSyncAuthError extends AuthRequiredError {
 }
 
 /**
+ * The replication-port signal for a `changes` pull whose checkpoint the server
+ * did not issue (HTTP 400, `invalid-request-body` at `#/checkpoint`): a
+ * checkpoint stored against another server, or one from a retired layout. A
+ * `WasSyncPort` (`@interop/was-client/sync`) raises it from `query` so a pull
+ * loop can restart the feed from the beginning rather than retry a request
+ * the server will keep refusing. A 400 of the same kind that points elsewhere
+ * stays a plain {@link ValidationError}, of which this is a subtype.
+ */
+export class WasSyncCheckpointError extends ValidationError {
+  constructor(
+    message = 'WAS changes checkpoint not issued by this server.',
+    options: WasErrorOptions = {}
+  ) {
+    super(message, { status: 400, ...options })
+    this.name = 'WasSyncCheckpointError'
+  }
+}
+
+/**
  * The server encountered an internal fault (HTTP 5xx).
  */
 export class WasServerError extends WasError {

@@ -26,6 +26,7 @@ import {
   isKeyUnwrapError,
   isNotSupportedError,
   isSyncAuthError,
+  isSyncCheckpointError,
   isSyncConflictError,
   isSyncNotFoundError,
   isUnknownEpochError,
@@ -33,6 +34,7 @@ import {
   NotSupportedError,
   UnknownEpochError,
   WasSyncAuthError,
+  WasSyncCheckpointError,
   WasSyncConflictError,
   WasSyncNotFoundError
 } from '../../src/sync/index.js'
@@ -50,6 +52,7 @@ function foreignRealmError(name: string): Error {
 const PREDICATES = [
   isSyncConflictError,
   isSyncNotFoundError,
+  isSyncCheckpointError,
   isSyncAuthError,
   isUnknownEpochError,
   isNotSupportedError
@@ -60,6 +63,7 @@ describe('the sync error predicates', () => {
     expect(isSyncConflictError(new WasSyncConflictError())).toBe(true)
     expect(isSyncNotFoundError(new WasSyncNotFoundError())).toBe(true)
     expect(isSyncAuthError(new WasSyncAuthError(403))).toBe(true)
+    expect(isSyncCheckpointError(new WasSyncCheckpointError())).toBe(true)
     expect(
       isUnknownEpochError(
         new UnknownEpochError({ collectionId: 'c', kids: ['k'] })
@@ -71,16 +75,19 @@ describe('the sync error predicates', () => {
     const conflict = foreignRealmError('WasSyncConflictError')
     const notFound = foreignRealmError('WasSyncNotFoundError')
     const auth = foreignRealmError('WasSyncAuthError')
+    const checkpoint = foreignRealmError('WasSyncCheckpointError')
     const unknownEpoch = foreignRealmError('UnknownEpochError')
 
     expect(conflict instanceof WasSyncConflictError).toBe(false)
     expect(notFound instanceof WasSyncNotFoundError).toBe(false)
     expect(auth instanceof WasSyncAuthError).toBe(false)
+    expect(checkpoint instanceof WasSyncCheckpointError).toBe(false)
     expect(unknownEpoch instanceof UnknownEpochError).toBe(false)
 
     expect(isSyncConflictError(conflict)).toBe(true)
     expect(isSyncNotFoundError(notFound)).toBe(true)
     expect(isSyncAuthError(auth)).toBe(true)
+    expect(isSyncCheckpointError(checkpoint)).toBe(true)
     expect(isUnknownEpochError(unknownEpoch)).toBe(true)
   })
 
@@ -120,6 +127,11 @@ describe('the sync error predicates', () => {
     const conflict = foreignRealmError('WasSyncConflictError')
     expect(isSyncNotFoundError(conflict)).toBe(false)
     expect(isSyncAuthError(conflict)).toBe(false)
+    expect(isSyncCheckpointError(conflict)).toBe(false)
+    // A plain 400 is not the refused-checkpoint signal.
+    expect(isSyncCheckpointError(foreignRealmError('ValidationError'))).toBe(
+      false
+    )
     expect(isUnknownEpochError(conflict)).toBe(false)
     expect(isNotSupportedError(conflict)).toBe(false)
 

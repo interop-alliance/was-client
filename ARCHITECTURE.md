@@ -59,7 +59,7 @@ src/edv/*.ts        Encryption subpath (sibling, opt-in)
 
 src/sync/*.ts       Sync subpath (sibling, opt-in, crypto-free)
   port (createWasSyncPort), types (WasSyncPort, DocCipher, MasterState,
-  SyncStatus), predicates (the four err.name classifiers), cid,
+  SyncStatus), predicates (the err.name classifiers), cid,
   plaintextCipher, envelope, provisioning
   Imports core (WasClient, errors, internal/conditional) and one crypto-free
   constant module (src/edv/constants.ts, for EDV_SCHEME_VERSION), nothing
@@ -641,7 +641,10 @@ signals in `src/errors.ts` let a push loop catch exactly what it can handle:
 re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete or on a `/meta`
 write, a subtype of `NotFoundError`) marks an already-gone target: a settled
 outcome for a delete, a delete race for a metadata write. A third,
-`WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
+`WasSyncCheckpointError` (400 at `#/checkpoint`, a subtype of
+`ValidationError`), is raised by `query` when the server did not issue the
+presented checkpoint, and tells a pull loop to restart from the beginning. A
+fourth, `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
 `mapAuthErrors` and reports revoked access. The port's `putContent` and
 `deleteContent` also stamp the `Key-Epoch` and `Writer-Id` headers, so the
 server records which key epoch a body was encrypted under and which writing
@@ -658,19 +661,19 @@ catches goes through `mapError` first, so its signals carry the server's
 and a status the port has no signal of its own for -- a 500, a 507
 quota-exceeded -- still leaves this subpath as a typed `WasError`.
 
-`./sync` also exports the four predicates that CLASSIFY those signals:
-`isSyncConflictError`, `isSyncNotFoundError`, `isSyncAuthError`, and
-`isUnknownEpochError` (`predicates.ts`). They match on `err.name` and never with
-`instanceof`, because each error is raised inside a seam the consuming app
-injects, and that seam can resolve to a second copy of this package
-(`decisions/0001-cross-package-errors-match-by-name.md`). Reading a property off
-the matched value, `status` on an auth error for the masked 404, is the intended
-shape. Consumers inside one resolved copy may still catch the classes. The
-closed status vocabulary a driver reports one feed's state through, `SyncStatus`
-(`'idle' | 'syncing' | 'synced' | 'error'`), is exported here as its one owner.
-The RxDB replication driver (`@interop/was-sync`) is the downstream consumer of
-all of this, through the port seam; it lives outside this package and this
-package never depends on it.
+`./sync` also exports the predicates that CLASSIFY those signals:
+`isSyncConflictError`, `isSyncNotFoundError`, `isSyncCheckpointError`,
+`isSyncAuthError`, and `isUnknownEpochError` (`predicates.ts`). They match on
+`err.name` and never with `instanceof`, because each error is raised inside a
+seam the consuming app injects, and that seam can resolve to a second copy of
+this package (`decisions/0001-cross-package-errors-match-by-name.md`). Reading a
+property off the matched value, `status` on an auth error for the masked 404, is
+the intended shape. Consumers inside one resolved copy may still catch the
+classes. The closed status vocabulary a driver reports one feed's state through,
+`SyncStatus` (`'idle' | 'syncing' | 'synced' | 'error'`), is exported here as
+its one owner. The RxDB replication driver (`@interop/was-sync`) is the
+downstream consumer of all of this, through the port seam; it lives outside this
+package and this package never depends on it.
 
 Convergent identifiers make replicas agree without coordination (`cid.ts`): a
 content id is `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`, unpadded, so
@@ -1006,10 +1009,10 @@ it, and otherwise cover the client-side concepts this file names.
   Implementations: `createPlaintextDocCipher`, `createEdvDocCipher`,
   `createEdvEncryptOnlyDocCipher`. See The sync layer.
 - **Sync error predicate** -- one of `isSyncConflictError`,
-  `isSyncNotFoundError`, `isSyncAuthError`, `isUnknownEpochError`
-  (`src/sync/predicates.ts`): the cross-package way to recognize a sync signal,
-  matching `err.name` rather than the class. Avoid: instanceof check. See The
-  sync layer.
+  `isSyncNotFoundError`, `isSyncCheckpointError`, `isSyncAuthError`,
+  `isUnknownEpochError` (`src/sync/predicates.ts`): the cross-package way to
+  recognize a sync signal, matching `err.name` rather than the class. Avoid:
+  instanceof check. See The sync layer.
 - **`SyncStatus`** -- the closed vocabulary a replication driver reports one
   feed's state through, `'idle' | 'syncing' | 'synced' | 'error'`
   (`src/sync/types.ts`). See The sync layer.

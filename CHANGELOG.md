@@ -1,5 +1,17 @@
 # @interop/was-client Changelog
 
+## 0.85.0 - TBD
+
+### Added
+
+- `WasSyncCheckpointError` (a `ValidationError` subtype) and its `err.name`
+  predicate `isSyncCheckpointError` on `./sync`: the sync port's `query` raises
+  it when the server refuses the presented `changes` checkpoint
+  (`invalid-request-body` at `#/checkpoint`), so a pull loop restarts from the
+  beginning instead of retrying. A 400 of that kind pointing elsewhere stays a
+  plain `ValidationError`.
+- Port signals carry the mapped error's `problems`.
+
 ## 0.84.0 - 2026-10-01
 
 ### Added
