@@ -620,12 +620,14 @@ the codec.
 
 The wire model is shared, not local: `SyncCheckpoint`, `WireDoc`, and the feed
 page re-export `@interop/storage-core`'s `ChangesCheckpoint` / `ChangeDocument`
-/ `ChangesPage`. A checkpoint is the keyset position `{ id, updatedAt }` of the
-last document returned -- server time only, an opaque resume token, never
-compared against a device clock. `WireDoc` and `MasterState` both carry an
-optional `writerId`, the writer-attribution label from the Resource Metadata
-(present when the writer declared one, and on a tombstone the deleting request's
-own label).
+/ `ChangesPage`. A checkpoint is an opaque string the server issues, scoped to
+that server and Collection. The client stores it, compares it by equality only,
+and echoes it verbatim. Each feed document carries its own `checkpoint`, and the
+page's equals its last document's. A server refuses a checkpoint it did not
+issue with `invalid-request-body` (400), and the pull then restarts from the
+beginning. `WireDoc` and `MasterState` both carry an optional `writerId`, the
+writer-attribution label from the Resource Metadata (present when the writer
+declared one, and on a tombstone the deleting request's own label).
 
 Conditional writes ride the server's opaque `ETag` uniformly for plaintext and
 encrypted resources, so there is no plaintext-vs-encrypted fork. The validator
@@ -1014,9 +1016,9 @@ it, and otherwise cover the client-side concepts this file names.
 - **Content id** -- `base64url(SHA-256(utf8(JCS-canonicalized JSON)))`,
   unpadded, so the same logical document mints the same resource id on every
   replica (`src/sync/cid.ts`). See The sync layer.
-- **Sync checkpoint** -- the change feed's keyset resume position
-  `{ id, updatedAt }`, server time only and opaque to the client. See The sync
-  layer.
+- **Sync checkpoint** -- the change feed's resume position, an opaque string
+  scoped to the issuing server and Collection and compared by equality only. See
+  The sync layer.
 - **Masked 404** -- a 404 that means "missing OR not visible to you", because
   WAS returns unauthorized as not-found. It is what the fail-closed rules exist
   to handle. See The 404-vs-null convention.

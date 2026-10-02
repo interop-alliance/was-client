@@ -134,13 +134,21 @@ describe('createWasSyncPort helpers', () => {
 describe('createWasSyncPort.query', () => {
   it('rides the changes() feed and returns documents + checkpoint', async () => {
     const page = {
-      documents: [{ id: 'a', _deleted: false, updatedAt: 't1', version: 1 }],
-      checkpoint: { id: 'a', updatedAt: 't1' }
+      documents: [
+        {
+          id: 'a',
+          _deleted: false,
+          updatedAt: 't1',
+          version: 1,
+          checkpoint: 'c1'
+        }
+      ],
+      checkpoint: 'c1'
     }
     const { was, changes } = makeWas({ changesResult: page })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    const checkpoint = { id: 'x', updatedAt: 't0' }
+    const checkpoint = 'c0'
     const result = await port.query({ checkpoint, limit: 50 })
 
     expect(changes).toHaveBeenCalledWith({ checkpoint, limit: 50 })
@@ -155,10 +163,11 @@ describe('createWasSyncPort.query', () => {
           _deleted: false,
           updatedAt: 't1',
           version: 1,
+          checkpoint: 'c1',
           writerId: 'writer-a'
         }
       ],
-      checkpoint: { id: 'a', updatedAt: 't1' }
+      checkpoint: 'c1'
     }
     const { was } = makeWas({ changesResult: page })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })

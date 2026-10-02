@@ -1,5 +1,19 @@
 # @interop/was-client Changelog
 
+## 0.83.0 - TBD
+
+### Changed
+
+- **BREAKING**: the `changes` feed checkpoint (`ChangesCheckpoint`,
+  `SyncCheckpoint`) is an opaque string, replacing the `{ id, updatedAt }`
+  object. Store it, compare it by equality only, and echo it verbatim. Each
+  `ChangeDocument` carries its own `checkpoint`, which resumes right after that
+  document. A server refuses a checkpoint it did not issue, including a stored
+  object one, with `invalid-request-body` (400); restart the pull from the
+  beginning.
+- `Collection.documents()` detects a non-advancing feed by comparing the
+  checkpoint string itself.
+
 ## 0.82.0 - 2026-10-01
 
 ### Added

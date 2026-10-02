@@ -30,8 +30,8 @@ importers:
         specifier: ^7.10.3
         version: 7.10.3
       '@interop/storage-core':
-        specifier: ^0.25.0
-        version: 0.25.0
+        specifier: ^0.26.0
+        version: 0.26.0
       '@interop/vh-resource-log':
         specifier: ^0.5.4
         version: 0.5.4
@@ -296,8 +296,8 @@ packages:
     resolution: {integrity: sha512-hMUl57Y5plOlvvgXOSvYIt7VdB3HP5JjUEJ12aJ/0xjWQGTF0RqbKk1BAjnOmRqlp/bi//vtBhe55YcpNx5TDw==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.25.0':
-    resolution: {integrity: sha512-u8bXT2WAuDe7ucALFaorriOiYw2fWJ4yS6CDs8TqdKPM+F5EvC0j8KYKCdTTBUU71NYpEyBYr7hSDK4uvwB+RQ==}
+  '@interop/storage-core@0.26.0':
+    resolution: {integrity: sha512-QLsfHfQW3Hx+sEMfBBe4DiqOW8bRcgeg2IGKYCpsQ+6kUnPLoJymoprkEdqvEW4j6AYdR1vkZ0Bvs1egVkSZFQ==}
     engines: {node: '>=22.0'}
 
   '@interop/vh-resource-log@0.5.4':
@@ -638,8 +638,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  chai@6.2.2:
-    resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
+  chai@6.3.0:
+    resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
 
   convert-source-map@2.0.0:
@@ -1482,7 +1482,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
-  '@interop/storage-core@0.25.0':
+  '@interop/storage-core@0.26.0':
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
@@ -1746,7 +1746,7 @@ snapshots:
       '@types/chai': 5.2.3
       '@vitest/spy': 4.1.11
       '@vitest/utils': 4.1.11
-      chai: 6.2.2
+      chai: 6.3.0
       tinyrainbow: 3.2.0
 
   '@vitest/mocker@4.1.11(vite@8.3.1(@types/node@26.6.3))':
@@ -1820,7 +1820,7 @@ snapshots:
 
   canonicalize@3.0.0: {}
 
-  chai@6.2.2: {}
+  chai@6.3.0: {}
 
   convert-source-map@2.0.0: {}
 

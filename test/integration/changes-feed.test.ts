@@ -74,10 +74,14 @@ describeLive('collection.changes() (live server)', () => {
     expect(tombstone._deleted).toBe(true)
     expect(tombstone.data).toBeUndefined()
 
-    // The checkpoint is the last document's keyset position, and resuming from
-    // it drains the feed.
+    // The checkpoint is an opaque string equal to the last document's own
+    // checkpoint, and resuming from it drains the feed.
+    for (const doc of page.documents) {
+      expect(typeof doc.checkpoint).toBe('string')
+    }
     const last = page.documents[page.documents.length - 1]!
-    expect(page.checkpoint).toEqual({ id: last.id, updatedAt: last.updatedAt })
+    expect(typeof page.checkpoint).toBe('string')
+    expect(page.checkpoint).toBe(last.checkpoint)
     const drained = await notes.changes({ checkpoint: page.checkpoint! })
     expect(drained.documents).toEqual([])
     expect(drained.checkpoint).toBeNull()

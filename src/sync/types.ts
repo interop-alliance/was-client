@@ -23,11 +23,11 @@ import type { Json } from '../types.js'
 export type { Json }
 
 /**
- * The keyset position in the change feed: the `{ id, updatedAt }` of the last
- * document a pull returned, passed back verbatim to resume strictly after it.
- * `id` is the total-order tiebreaker within a single `updatedAt`. This is the
- * shared `ChangesCheckpoint` from `@interop/storage-core` -- server time only,
- * an opaque position token, never compared against a device clock.
+ * The resume position in the change feed: the opaque checkpoint string of the
+ * last document a pull returned, passed back verbatim to resume strictly after
+ * it. It is scoped to the server and collection that issued it and compared by
+ * equality only. This is the shared `ChangesCheckpoint` from
+ * `@interop/storage-core`.
  */
 export type SyncCheckpoint = ChangesCheckpoint
 

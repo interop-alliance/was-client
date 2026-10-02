@@ -6,6 +6,8 @@
  * `changes` feed, and for the server-fault guards in `Collection.changes()`
  * it relies on. A stub `ZcapClient` answers each `changes` POST with a canned
  * page keyed by the checkpoint it was resumed from, so no server is involved.
+ * Checkpoints here are arbitrary opaque strings, and every entry shares one
+ * `updatedAt`, since the feed's order does not depend on it.
  */
 import { describe, it, expect } from 'vitest'
 
@@ -18,12 +20,14 @@ import type {
 } from '../../src/index.js'
 import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
 
+const UPDATED_AT = '2026-01-01T00:00:00.000Z'
+
 /**
  * Builds a feed entry. A live entry with no `data` models the server's own
  * read-fault shape.
  *
  * @param id {string}
- * @param updatedAt {string}
+ * @param checkpoint {string}   the opaque checkpoint that resumes after it
  * @param [options] {object}
  * @param [options.data] {unknown}
  * @param [options.deleted] {boolean}   a tombstone
@@ -31,21 +35,22 @@ import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
  */
 function entry(
   id: string,
-  updatedAt: string,
+  checkpoint: string,
   { data, deleted = false }: { data?: unknown; deleted?: boolean } = {}
 ): ChangeDocument {
   return {
     id,
     _deleted: deleted,
-    updatedAt,
+    updatedAt: UPDATED_AT,
     version: 1,
+    checkpoint,
     ...(data !== undefined && { data })
   }
 }
 
 /**
  * A collection handle over a stub client whose `changes` POST answers with the
- * page keyed by the request's checkpoint id (`''` for the first request), or
+ * page keyed by the request's checkpoint (`''` for the first request), or
  * throws the error registered under that key. Records every request body.
  *
  * @param pages {Record<string, ChangesPage | Error | HttpResponse>}   a raw
@@ -62,7 +67,7 @@ function collectionWithFeed(
   const client = clientWithStub(({ json }) => {
     const body = json as Record<string, unknown>
     bodies.push(body)
-    const key = (body.checkpoint as { id: string } | undefined)?.id ?? ''
+    const key = (body.checkpoint as string | undefined) ?? ''
     const page = pages[key]
     if (page === undefined) {
       throw new Error(`no page registered for checkpoint "${key}"`)
@@ -85,25 +90,25 @@ describe('Collection.documents()', () => {
     const { notes, bodies } = collectionWithFeed({
       '': {
         documents: [
-          entry('a', '2026-01-01T00:00:00.000Z', { data: { n: 1 } }),
-          entry('b', '2026-01-02T00:00:00.000Z', { data: { n: 2 } })
+          entry('a', 'cp-1', { data: { n: 1 } }),
+          entry('b', 'cp-2', { data: { n: 2 } })
         ],
-        checkpoint: { id: 'b', updatedAt: '2026-01-02T00:00:00.000Z' }
+        checkpoint: 'cp-2'
       },
       // `b` rewritten mid-walk takes its later position; `a` is tombstoned.
-      b: {
+      'cp-2': {
         documents: [
-          entry('b', '2026-01-03T00:00:00.000Z', { data: { n: 3 } }),
-          entry('a', '2026-01-04T00:00:00.000Z', { deleted: true })
+          entry('b', 'cp-3', { data: { n: 3 } }),
+          entry('a', 'cp-4', { deleted: true })
         ],
-        checkpoint: { id: 'a', updatedAt: '2026-01-04T00:00:00.000Z' }
+        checkpoint: 'cp-4'
       },
       // A short page is not the end: only the null checkpoint is.
-      a: {
-        documents: [entry('c', '2026-01-05T00:00:00.000Z', { data: { n: 4 } })],
-        checkpoint: { id: 'c', updatedAt: '2026-01-05T00:00:00.000Z' }
+      'cp-4': {
+        documents: [entry('c', 'cp-5', { data: { n: 4 } })],
+        checkpoint: 'cp-5'
       },
-      c: { documents: [], checkpoint: null }
+      'cp-5': { documents: [], checkpoint: null }
     })
 
     const docs = await notes.documents({ limit: 2 })
@@ -116,17 +121,17 @@ describe('Collection.documents()', () => {
       { profile: 'changes', limit: 2 },
       {
         profile: 'changes',
-        checkpoint: { id: 'b', updatedAt: '2026-01-02T00:00:00.000Z' },
+        checkpoint: 'cp-2',
         limit: 2
       },
       {
         profile: 'changes',
-        checkpoint: { id: 'a', updatedAt: '2026-01-04T00:00:00.000Z' },
+        checkpoint: 'cp-4',
         limit: 2
       },
       {
         profile: 'changes',
-        checkpoint: { id: 'c', updatedAt: '2026-01-05T00:00:00.000Z' },
+        checkpoint: 'cp-5',
         limit: 2
       }
     ])
@@ -144,10 +149,7 @@ describe('Collection.documents()', () => {
   it('fails the walk on a live entry the server could not read', async () => {
     const { notes } = collectionWithFeed({
       '': {
-        documents: [
-          entry('a', '2026-01-01T00:00:00.000Z', { data: { n: 1 } }),
-          entry('b', '2026-01-02T00:00:00.000Z')
-        ],
+        documents: [entry('a', 'cp-1', { data: { n: 1 } }), entry('b', 'cp-2')],
         checkpoint: null
       }
     })
@@ -173,12 +175,12 @@ describe('Collection.documents()', () => {
   it('fails the walk on a server that repeats a checkpoint', async () => {
     const { notes, bodies } = collectionWithFeed({
       '': {
-        documents: [entry('a', '2026-01-01T00:00:00.000Z', { data: { n: 1 } })],
-        checkpoint: { id: 'a', updatedAt: '2026-01-01T00:00:00.000Z' }
+        documents: [entry('a', 'cp-1', { data: { n: 1 } })],
+        checkpoint: 'cp-1'
       },
-      a: {
+      'cp-1': {
         documents: [],
-        checkpoint: { id: 'a', updatedAt: '2026-01-01T00:00:00.000Z' }
+        checkpoint: 'cp-1'
       }
     })
 
@@ -197,10 +199,10 @@ describe('Collection.documents()', () => {
   it('throws a 404 met after the first page rather than dropping pages read', async () => {
     const { notes } = collectionWithFeed({
       '': {
-        documents: [entry('a', '2026-01-01T00:00:00.000Z', { data: { n: 1 } })],
-        checkpoint: { id: 'a', updatedAt: '2026-01-01T00:00:00.000Z' }
+        documents: [entry('a', 'cp-1', { data: { n: 1 } })],
+        checkpoint: 'cp-1'
       },
-      a: notFound()
+      'cp-1': notFound()
     })
 
     await expect(notes.documents()).rejects.toThrow('not found')

@@ -1648,7 +1648,12 @@ export class Collection {
    * This is deliberately a single page, not an iterator: it is shaped for an
    * RxDB `pull.handler(checkpoint, batchSize)`, which owns the iteration and
    * persists the checkpoint between batches. Resume by passing the returned
-   * `checkpoint` back. Only a `null` checkpoint (an empty page) means you have
+   * `checkpoint` back. The checkpoint is an opaque string scoped to the server
+   * and collection that issued it: store it, compare it by equality only, and
+   * echo it verbatim. Each document also carries its own `checkpoint`, which
+   * resumes right after that document. A server refuses a checkpoint it did not
+   * issue with `invalid-request-body` (400), and the caller then restarts from
+   * the beginning (no `checkpoint`). Only a `null` checkpoint (an empty page) means you have
    * caught up: a page shorter than `limit` does not, since the server reduces
    * `limit` to its own maximum, so a short page can still be a full server
    * page.
@@ -1666,7 +1671,7 @@ export class Collection {
    * no `data` (the server could not read or parse that resource's body).
    *
    * @param [options] {object}
-   * @param [options.checkpoint] {ChangesCheckpoint}   resume strictly after this
+   * @param [options.checkpoint] {ChangesCheckpoint}   opaque checkpoint from a prior page; resume strictly after it
    * @param [options.limit] {number}   max documents; the server reduces it to its own maximum
    * @returns {Promise<ChangesPage>}
    */
@@ -1732,7 +1737,7 @@ export class Collection {
    * page rather than one per resource, so a reader with no local replica
    * snapshots a collection in a handful of round trips.
    *
-   * The feed is in ascending `(updatedAt, id)` order and carries tombstones,
+   * The feed is in the server's feed-position order and carries tombstones,
    * so the pages reduce to the latest state per id: a later entry for an id
    * replaces an earlier one (a resource rewritten while the walk was in
    * flight) and a tombstone drops it. Each surviving entry is returned as the
@@ -1760,8 +1765,8 @@ export class Collection {
   ): Promise<ChangeDocument[] | null> {
     const { limit = 1000 } = options
     const latest = new Map<string, ChangeDocument>()
-    // Every checkpoint the walk has resumed from, keyed by its wire position.
-    // A server that hands one back again would otherwise loop forever.
+    // Every checkpoint the walk has resumed from. Checkpoints are opaque
+    // strings compared by equality only. A server that hands one back again would otherwise loop forever.
     const seen = new Set<string>()
     let checkpoint: ChangesCheckpoint | undefined
     for (;;) {
@@ -1786,14 +1791,13 @@ export class Collection {
       if (!page.checkpoint) {
         return [...latest.values()]
       }
-      const position = `${page.checkpoint.updatedAt}\u0000${page.checkpoint.id}`
-      if (seen.has(position)) {
+      if (seen.has(page.checkpoint)) {
         throw new WasServerError(
           `The changes feed of collection "${this.id}" repeated checkpoint ` +
             `${JSON.stringify(page.checkpoint)} instead of advancing.`
         )
       }
-      seen.add(position)
+      seen.add(page.checkpoint)
       checkpoint = page.checkpoint
     }
   }
