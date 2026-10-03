@@ -58,7 +58,6 @@
 export {
   createWasSyncPort,
   KEY_EPOCH_HEADER,
-  parseEtag,
   WRITER_ID_HEADER
 } from './port.js'
 // The sync subpath's names for the client's own error accessors, so a

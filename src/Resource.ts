@@ -361,7 +361,7 @@ export class Resource {
    * `{ name, tags }`. A resource with no user metadata reports `custom` as `{}`.
    *
    * The result also carries the metadata's current `etag` (the `/meta`
-   * `metaVersion` validator) -- pass it as `setMeta(meta, { ifMatch })` for a
+   * object's own validator) -- pass it as `setMeta(meta, { ifMatch })` for a
    * lost-update-safe metadata update.
    *
    * @returns {Promise<(ResourceMetadata & { etag?: string }) | null>}
@@ -392,7 +392,7 @@ export class Resource {
    * `meta()`) for an update-if-unchanged, or `ifNoneMatch: true` for a
    * write-only-if-no-metadata.
    * A failed precondition throws `PreconditionFailedError` (412). The `/meta`
-   * ETag (`metaVersion`) is independent of the content ETag. Returns the new
+   * ETag is independent of the content ETag. Returns the new
    * `etag`.
    *
    * @param meta {object}

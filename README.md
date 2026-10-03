@@ -610,10 +610,10 @@ A Collection's configuration (`name`, `backend`, `encryption`, `generator`, read
 by [`describe()`](#collections)) and its annotations live in one object at the
 Collection's reserved `/meta` path: server-managed properties (`createdAt` /
 `updatedAt` / `createdBy`) plus a user-writable `custom` object (`name` and
-`tags`), under one `metaVersion` validator. `meta()` is that same object with
-`custom` decoded through the codec; `describe()` does not resolve the codec at
-all, so on an encrypted collection it reports `custom` as the opaque envelope. A
-server without the endpoint surfaces its 501 as `NotImplementedError`.
+`tags`), under one `ETag` validator. `meta()` is that same object with `custom`
+decoded through the codec; `describe()` does not resolve the codec at all, so on
+an encrypted collection it reports `custom` as the opaque envelope. A server
+without the endpoint surfaces its 501 as `NotImplementedError`.
 
 ```ts
 const meta = await collection.meta() // CollectionMetadata | null (null on a miss)
@@ -632,9 +632,9 @@ await collection.setMeta({ custom: { name: 'Vault' } }, { ifNoneMatch: true })
 ```
 
 A failed precondition throws `PreconditionFailedError` (412). This `/meta` ETag
-(`metaVersion`) is independent of every Resource's versions, but not of the
-configuration members: one validator covers the whole Collection Metadata
-object, so `configure()` and `setMeta()` advance the same counter.
+is independent of every Resource's versions, but not of the configuration
+members: one validator covers the whole Collection Metadata object, so
+`configure()` and `setMeta()` advance the same validator.
 
 The write is a full replacement of that one object, so an annotation write
 re-sends the configuration members (and any member this client does not model)
@@ -923,12 +923,12 @@ scope for now):
   encrypted collection: the user-writable `custom` (`name` / `tags`) is
   encrypted into an envelope before it is sent, so the server never sees the
   plaintext, and `meta()` decrypts it back for a keyed reader. The `/meta`
-  endpoint has its own ETag (`metaVersion`), independent of the content ETag.
-  The same pair at Collection level (`collection.setName()` / `setTags()` /
-  `setMeta()` / `meta()`) is where an encrypted collection carries its own name
-  and tags, since the Collection Metadata object's plaintext `name` is left
-  unpopulated; the collection-level envelope binds no resource id, and a
-  resource-bound envelope served into that slot is refused.
+  endpoint has its own ETag, independent of the content ETag. The same pair at
+  Collection level (`collection.setName()` / `setTags()` / `setMeta()` /
+  `meta()`) is where an encrypted collection carries its own name and tags,
+  since the Collection Metadata object's plaintext `name` is left unpopulated;
+  the collection-level envelope binds no resource id, and a resource-bound
+  envelope served into that slot is refused.
 - **Binary.** A `Blob`/`Uint8Array` up to `maxBlobBytes` (512 KiB by default) is
   encrypted as a single document. A larger one is routed automatically by
   `add()` to the chunked-stream path: one document plus its chunk resources,
@@ -1186,7 +1186,7 @@ do {
   for (const doc of page.documents) {
     if (doc._deleted) continue // tombstone
     const data = await cipher.decrypt({ id: doc.id, envelope: doc.data })
-    // apply to the local replica, recording doc.version for later pushes
+    // apply to the local replica, recording doc.etag for later pushes
   }
   checkpoint = page.checkpoint // null when the page was empty (caught up)
 } while (checkpoint)

@@ -68,11 +68,18 @@ describeLive('collection.changes() (live server)', () => {
     const byId = new Map(page.documents.map(doc => [doc.id, doc]))
     expect(byId.get('first')!._deleted).toBe(false)
     expect(byId.get('first')!.data).toEqual({ message: 'one' })
-    expect(byId.get('first')!.version).toBe(1)
 
     const tombstone = byId.get('doomed')!
     expect(tombstone._deleted).toBe(true)
     expect(tombstone.data).toBeUndefined()
+
+    // Every revision carries the write stamp, a deletion included: a
+    // non-negative integer counter and the minting store's id.
+    for (const doc of [byId.get('first')!, tombstone]) {
+      expect(Number.isInteger(doc.updatedAtCounter)).toBe(true)
+      expect(doc.updatedAtCounter).toBeGreaterThanOrEqual(0)
+      expect(doc.originId).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
+    }
 
     // The checkpoint is an opaque string equal to the last document's own
     // checkpoint, and resuming from it drains the feed.

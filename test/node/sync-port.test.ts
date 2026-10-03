@@ -16,7 +16,7 @@
 import { describe, it, expect, vi } from 'vitest'
 
 import { createWasSyncPort } from '../../src/sync/index.js'
-import { parseEtag, errorStatus } from '../../src/sync/index.js'
+import { errorStatus } from '../../src/sync/index.js'
 import { errorMessage } from '../../src/sync/index.js'
 import {
   WasSyncAuthError,
@@ -104,28 +104,6 @@ function makeWas(options: {
 }
 
 describe('createWasSyncPort helpers', () => {
-  it('parseEtag rejects a validator with no generation segment', () => {
-    expect(parseEtag('"3"')).toBeUndefined()
-    expect(parseEtag('"a1b2c3"')).toBeUndefined()
-    expect(parseEtag(null)).toBeUndefined()
-    expect(parseEtag('not-a-number')).toBeUndefined()
-  })
-
-  it('parseEtag accepts only a run of decimal digits as the revision', () => {
-    expect(parseEtag('"g.1e2"')).toBeUndefined()
-    expect(parseEtag('"g.0x10"')).toBeUndefined()
-    expect(parseEtag('"g.+5"')).toBeUndefined()
-    expect(parseEtag('"g. 5"')).toBeUndefined()
-    expect(parseEtag('"g.007"')).toBe(7)
-  })
-
-  it('parseEtag reads the version after the final "." in a generation.version etag', () => {
-    expect(parseEtag('"3mJr7AoUXx2.3"')).toBe(3)
-    expect(parseEtag('"g.7.12"')).toBe(12)
-    expect(parseEtag('"3mJr7AoUXx2."')).toBeUndefined()
-    expect(parseEtag('"3mJr7AoUXx2.abc"')).toBeUndefined()
-  })
-
   it('errorStatus reads flat and nested shapes', () => {
     expect(errorStatus({ status: 412 })).toBe(412)
     expect(errorStatus({ response: { status: 404 } })).toBe(404)
@@ -141,7 +119,8 @@ describe('createWasSyncPort.query', () => {
           id: 'a',
           _deleted: false,
           updatedAt: 't1',
-          version: 1,
+          updatedAtCounter: 0,
+          originId: 'origin-a',
           checkpoint: 'c1'
         }
       ],
@@ -164,7 +143,8 @@ describe('createWasSyncPort.query', () => {
           id: 'a',
           _deleted: false,
           updatedAt: 't1',
-          version: 1,
+          updatedAtCounter: 0,
+          originId: 'origin-a',
           checkpoint: 'c1',
           writerId: 'writer-a'
         }
@@ -253,7 +233,7 @@ describe('createWasSyncPort.putContent', () => {
       ifNoneMatch: true
     })
 
-    expect(ack).toEqual({ version: 1, etag: '"g1.1"' })
+    expect(ack).toEqual({ etag: '"g1.1"' })
     expect(calls).toHaveLength(1)
     expect(calls[0]!.method).toBe('PUT')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1`)
@@ -341,8 +321,13 @@ describe('createWasSyncPort.putContent', () => {
     expect(ack).toStrictEqual({})
   })
 
-  for (const opaque of ['"a1b2c3"', '"3"']) {
-    it(`round-trips the opaque validator ${opaque} with no fabricated version`, async () => {
+  for (const opaque of [
+    '"a1b2c3"',
+    '"3"',
+    '"g.1767225600000.0.origin-a"',
+    '"g.1767225600000.0.42"'
+  ]) {
+    it(`round-trips the opaque validator ${opaque} verbatim`, async () => {
       const calls: RequestOptions[] = []
       const { was } = makeWas({
         onRequest: opts => {
@@ -410,7 +395,7 @@ describe('createWasSyncPort.deleteContent', () => {
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     const ack = await port.deleteContent({ id: 'res-1', ifMatch: '"1"' })
-    expect(ack).toEqual({ version: 2, etag: '"g2.2"' })
+    expect(ack).toEqual({ etag: '"g2.2"' })
     expect(calls[0]!.method).toBe('DELETE')
     expect(calls[0]!.path).toBe(`/space/${SPACE}/${COLL}/res-1`)
     expect(calls[0]!.headers).toMatchObject({ 'if-match': '"1"' })
@@ -543,7 +528,7 @@ describe('createWasSyncPort guarded writes', () => {
 
     expect(
       await port.putContent({ id: 'res-1', data: { a: 1 }, ifMatch: '"g.1"' })
-    ).toEqual({ version: 2, etag: '"g.2"' })
+    ).toEqual({ etag: '"g.2"' })
     await port.deleteContent({ id: 'res-1', ifMatch: '"g.1"' })
     await port.putMeta({ id: 'res-1', custom: { name: 'A' }, ifMatch: '"g.1"' })
     expect(calls.map(call => call.method)).toEqual(['PUT', 'DELETE', 'PUT'])
@@ -578,31 +563,105 @@ describe('createWasSyncPort.get', () => {
           return response(
             {
               updatedAt: '2026-01-01T00:00:00.000Z',
+              updatedAtCounter: 2,
+              originId: 'origin-a',
+              meta: {
+                updatedAt: '2026-01-01T00:00:00.007Z',
+                updatedAtCounter: 0,
+                originId: 'origin-a',
+                generation: 'gMeta'
+              },
               createdBy: 'did:key:zCreator',
               epoch: 'epoch-3',
               writerId: 'writer-a',
               custom: { name: 'Alice' }
             },
-            { etag: '"gMeta.7"' }
+            { etag: '"gMeta.1767225600007.0.origin-a"' }
           )
         }
-        return response({ a: 1 }, { etag: '"gContent.4"' })
+        return response(
+          { a: 1 },
+          { etag: '"gContent.1767225600000.2.origin-a"' }
+        )
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     const master = await port.get({ id: 'res-1' })
     expect(master).toEqual({
-      version: 4,
-      etag: '"gContent.4"',
+      etag: '"gContent.1767225600000.2.origin-a"',
       updatedAt: '2026-01-01T00:00:00.000Z',
+      updatedAtCounter: 2,
+      originId: 'origin-a',
+      meta: {
+        updatedAt: '2026-01-01T00:00:00.007Z',
+        updatedAtCounter: 0,
+        originId: 'origin-a',
+        generation: 'gMeta'
+      },
       data: { a: 1 },
       createdBy: 'did:key:zCreator',
       epoch: 'epoch-3',
       writerId: 'writer-a',
       custom: { name: 'Alice' },
-      metaVersion: 7,
-      metaEtag: '"gMeta.7"'
+      metaEtag: '"gMeta.1767225600007.0.origin-a"'
+    })
+  })
+
+  it('drops a partial write stamp instead of tearing it', async () => {
+    const { was } = makeWas({
+      onRequest: opts => {
+        if (opts.path?.endsWith('/meta')) {
+          // No `updatedAt`, so the counter and origin have no stamp to
+          // belong to; the nested `meta` lacks `originId`.
+          return response(
+            {
+              updatedAtCounter: 3,
+              originId: 'origin-a',
+              meta: {
+                updatedAt: '2026-01-01T00:00:00.007Z',
+                updatedAtCounter: 0,
+                generation: 'gMeta'
+              }
+            },
+            { etag: '"gMeta.1767225600007.0.origin-a"' }
+          )
+        }
+        return response({ a: 1 }, { etag: '"c"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const master = await port.get({ id: 'res-1' })
+    expect(master).toEqual({
+      etag: '"c"',
+      updatedAt: '1970-01-01T00:00:00.000Z',
+      data: { a: 1 },
+      metaEtag: '"gMeta.1767225600007.0.origin-a"'
+    })
+  })
+
+  it('keeps the placeholder updatedAt when /meta serves a bare updatedAt', async () => {
+    const { was } = makeWas({
+      onRequest: opts => {
+        if (opts.path?.endsWith('/meta')) {
+          return response(
+            { updatedAt: '2026-01-01T00:00:00.000Z', createdBy: 'did:key:z' },
+            { etag: '"m"' }
+          )
+        }
+        return response({ a: 1 }, { etag: '"c"' })
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const master = await port.get({ id: 'res-1' })
+    expect(master).toEqual({
+      etag: '"c"',
+      updatedAt: '1970-01-01T00:00:00.000Z',
+      data: { a: 1 },
+      createdBy: 'did:key:z',
+      metaEtag: '"m"'
     })
   })
 
@@ -618,7 +677,6 @@ describe('createWasSyncPort.get', () => {
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     const master = await port.get({ id: 'res-1' })
-    expect(master?.version).toBe(4)
     expect(master?.etag).toBe('"g.4"')
     // A valid, sortable epoch-zero timestamp (not an empty string).
     expect(new Date(master!.updatedAt).getTime()).toBe(0)
@@ -776,7 +834,6 @@ describe('createWasSyncPort.putMeta clear + write ack', () => {
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     expect(await port.putMeta({ id: 'res-1', custom: { a: 1 } })).toEqual({
-      version: 3,
       etag: '"g3.3"'
     })
   })
@@ -880,7 +937,7 @@ describe('createWasSyncPort mapAuthErrors', () => {
       collectionId: COLL,
       mapAuthErrors: true
     })
-    expect((await port.get({ id: 'res-1' }))?.version).toBe(4)
+    expect((await port.get({ id: 'res-1' }))?.etag).toBeDefined()
   })
 
   it('raises the not-found signal on a /meta 404 when off', async () => {

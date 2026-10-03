@@ -1573,7 +1573,7 @@ export class EdvCodec implements ResourceCodec {
    * Encrypts the user-writable `custom` into an EDV Document envelope
    * (`{ jwe, ... }`) with the same `documentCipher.encrypt` used for content --
    * `custom` becomes the document `content`. The envelope's own `sequence` is
-   * inert (metadata concurrency is the server's plaintext `metaVersion`, not the
+   * inert (metadata concurrency is the server's plaintext `ETag`, not the
    * envelope), so each write re-encrypts fresh with no `update`.
    */
   async encodeMeta({
@@ -1587,7 +1587,7 @@ export class EdvCodec implements ResourceCodec {
     // The document needs an EDV id (the cipher asserts one on decrypt). It is
     // opaque to the server -- carried inside the un-decryptable envelope -- and
     // minted fresh each write, since the metadata envelope is never updated in
-    // place (concurrency is the server's plaintext `metaVersion`, Decision 3).
+    // place (concurrency is the server's plaintext `ETag`, Decision 3).
     const id = (await this.#edv.generateId()) as string
     // Bind the `was` parameter to the caller's stated slot (not the metadata
     // envelope's own random EDV id): a resource slot binds the RESOURCE id, so

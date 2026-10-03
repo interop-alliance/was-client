@@ -42,7 +42,8 @@ function entry(
     id,
     _deleted: deleted,
     updatedAt: UPDATED_AT,
-    version: 1,
+    updatedAtCounter: 0,
+    originId: 'origin-a',
     checkpoint,
     ...(data !== undefined && { data })
   }

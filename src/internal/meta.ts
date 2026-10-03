@@ -185,7 +185,7 @@ export async function writeMeta(
  *
  * A lost race (`412`) re-reads and re-applies the patch, up to the shared
  * compare-and-swap attempt limit. That is not a rare event at Collection
- * level: one `metaVersion` covers the configuration members and the
+ * level: one `ETag` covers the configuration members and the
  * annotations alike, so a concurrent `configure` -- or an epoch rotation --
  * legitimately invalidates an in-flight annotation write.
  *
@@ -239,7 +239,7 @@ export async function patchCustom(
 }
 
 /**
- * Reads the Collection Metadata object with its `metaVersion` validator, in the
+ * Reads the Collection Metadata object with its `ETag` validator, in the
  * stored wire form. Returns `null` if the collection is missing or not visible
  * to you (WAS returns 404 for both not-found and unauthorized); `etag` is
  * absent against a backend that does not version the object.

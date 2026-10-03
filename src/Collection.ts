@@ -306,7 +306,7 @@ export class Collection {
 
   /**
    * {@link describe}, with the object and its `ETag` in separate members. The
-   * `ETag` is the `metaVersion` validator to pass to
+   * `ETag` is the validator to pass to
    * {@link replaceDescription}'s `ifMatch` for a lost-update-safe
    * (compare-and-swap) write. One validator covers the whole object, so it is
    * also what {@link setMeta} pins against. Returns `null` if the collection is
@@ -398,7 +398,7 @@ export class Collection {
 
   /**
    * Writes the Collection Metadata object: one `PUT` at `meta`, a full
-   * replacement under the one `metaVersion` validator. Because it replaces the
+   * replacement under the one `ETag` validator. Because it replaces the
    * whole object, `compose` is handed the stored object and returns the write
    * body, carrying forward every member this write is not about -- the
    * configuration members on an annotation write, the `custom` envelope and its
@@ -876,7 +876,7 @@ export class Collection {
    * without it.
    *
    * The result also
-   * carries the object's current `etag` (its `metaVersion` validator) -- pass it
+   * carries the object's current `etag` (its `/meta` validator) -- pass it
    * as `setMeta(meta, { ifMatch })` for a lost-update-safe update. One
    * validator covers the whole object: a configuration write and an annotation
    * write advance the same counter, so a client holds one ETag for the
@@ -1229,7 +1229,7 @@ export class Collection {
    * Declarations are collection state, not app state: they are stored inside
    * the encrypted `/meta` envelope, so every recipient discovers them (see
    * {@link indexes}). Concurrent declarations from two clients are reconciled
-   * with a compare-and-swap against the metadata's own `metaVersion` ETag and a
+   * with a compare-and-swap against the metadata's own `ETag` and a
    * bounded retry, so neither is silently erased.
    *
    * A declaration is prospective: documents already written carry no token for

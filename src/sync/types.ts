@@ -15,7 +15,8 @@
 import type {
   ChangeDocument,
   ChangesCheckpoint,
-  ChangesPage
+  ChangesPage,
+  ResourceMetaStamp
 } from '@interop/storage-core'
 import type { CodecRequestContext } from '../codec.js'
 import type { Json } from '../types.js'
@@ -33,11 +34,13 @@ export type SyncCheckpoint = ChangesCheckpoint
 
 /**
  * One document as it travels on the `changes` feed wire: `id` is the WAS
- * resource id, `version` its monotonic content revision number, and the
- * stored body is under `data`. `version` is for comparison/ordering only and
- * is not an `ifMatch` value on its own; the server's `ETag` is an opaque
- * string that embeds more than the version. The feed carries the validators
- * themselves: `etag` (content) and `metaEtag` (the `/meta` object), quoted
+ * resource id and the stored body is under `data`. `updatedAt`,
+ * `updatedAtCounter` and `originId` are the content record's write stamp, and
+ * the optional nested `meta` is the `/meta` record's. Two revisions of one
+ * resource are ordered by `(ms, updatedAtCounter, originId)`, with `ms` the
+ * epoch millisecond value of `updatedAt`. The stamp is for comparison and is
+ * not an `ifMatch` value. The feed carries the validators themselves: `etag`
+ * (content) and `metaEtag` (the `/meta` object), opaque strings quoted
  * exactly as the server emits them, so a puller passes one back verbatim as a
  * conditional write's `ifMatch` without a {@link WasSyncPort.get} first. A
  * tombstone carries `_deleted: true` with no `data`. This is the shared
@@ -49,8 +52,8 @@ export type SyncCheckpoint = ChangesCheckpoint
  * along on `ChangeDocument` unchanged: the writing agent's attribution label,
  * present when the writer declared one, and carried on a tombstone too as the
  * deleting request's own label, if any. Advisory and never server-verified; a
- * puller uses it to recognize its own writes echoed back and to break
- * same-`updatedAt` ties on a shared `(updatedAt, writerId)` key.
+ * puller uses it to recognize its own writes echoed back. It is not part of
+ * the stamp order.
  */
 export interface WireDoc extends Omit<ChangeDocument, 'data' | 'custom'> {
   data?: Json
@@ -70,26 +73,32 @@ export interface SyncPage extends Omit<ChangesPage, 'documents'> {
 /**
  * The current master state of a single resource, read back for the 412-conflict
  * path ({@link WasSyncPort.get}). An absent or tombstoned resource surfaces as
- * `get` resolving `null`, never as a `MasterState`. `updatedAt`, `metaVersion`,
- * `metaEtag`, `custom`, `createdBy`, `epoch`, and `writerId` are populated from
- * the resource's `/meta` document when it exists; a resource with no metadata
- * yet reports an epoch-zero `updatedAt` placeholder (a valid, sortable
- * timestamp -- the change feed remains the authority on ordering).
+ * `get` resolving `null`, never as a `MasterState`. `updatedAt`,
+ * `updatedAtCounter`, `originId`, `meta`, `metaEtag`, `custom`, `createdBy`,
+ * `epoch`, and `writerId` are populated from the resource's `/meta` document
+ * when it exists.
+ *
+ * `updatedAt`, `updatedAtCounter` and `originId` are the content record's
+ * write stamp, and `meta` is the `/meta` record's own stamp with its
+ * generation. Each stamp is copied whole or not at all (`isWriteStamp` /
+ * `isMetaStamp` from `@interop/storage-core`). A resource with no metadata
+ * yet, or a `/meta` object without a whole stamp, reports an epoch-zero
+ * `updatedAt` placeholder with no `updatedAtCounter` or `originId`: a valid,
+ * sortable timestamp that sorts before every real one. The change feed
+ * remains the authority on ordering; two revisions are compared by their
+ * stamps.
  *
  * `etag` and `metaEtag` are the raw, opaque `ETag` validators the content and
  * `/meta` reads returned (absent only where the header did not reach the
- * client) -- pass one back verbatim as a later write's `ifMatch`. `version`
- * and `metaVersion` are present only when the validator carries a parseable
- * `generation.version` revision (see `parseEtag`). That is the reference
- * server's form and a convenience for comparison or display. It is not the
- * wire contract: a spec-conformant validator such as `"a1b2c3"` leaves them
- * absent.
+ * client) -- pass one back verbatim as a later write's `ifMatch`. No revision
+ * number is read out of a validator.
  */
 export interface MasterState {
-  version?: number
   etag?: string
   updatedAt: string
-  metaVersion?: number
+  updatedAtCounter?: number
+  originId?: string
+  meta?: ResourceMetaStamp
   metaEtag?: string
   data?: Json
   custom?: Json
@@ -103,14 +112,11 @@ export interface MasterState {
  * validator to echo, exactly as the server sent it: pass it back verbatim as
  * a later write's `ifMatch`. It is absent only where the header did not reach
  * the client (for example a cross-origin response without
- * `Access-Control-Expose-Headers: ETag`). `version` is present only when the
- * `ETag` carries a parseable `generation.version` revision (see `parseEtag`).
- * That is the reference server's form and a convenience for comparison or
- * display. It is not the wire contract, and it cannot be turned back into a
- * validator.
+ * `Access-Control-Expose-Headers: ETag`). The validator is opaque, so the ack
+ * carries no revision number. A caller that needs the write's stamp reads it
+ * from the change feed or from {@link WasSyncPort.get}.
  */
 export interface WriteAck {
-  version?: number
   etag?: string
 }
 

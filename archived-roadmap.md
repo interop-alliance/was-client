@@ -3354,3 +3354,47 @@ pending stub is the existing `{ pending: true }` sealed stream state.
 
 Shipped in 0.80.0 (unpublished at filing). The replace case (`put()` over an
 existing document) stays WCL-12.
+
+### WCL-75: `parseEtag` hard-codes the reference server's ETag format, so spec-conformant tags acknowledge version 0
+
+- status: done (2026-10-02)
+- priority: medium
+- labels: sync, spec-conformance, conditional-writes
+- touches:
+  - "@interop/was-sync": `src/pushWrites.ts` treats `ack.version !== undefined`
+    as "acknowledged" and `src/conflictHandler.ts` compares versions for
+    equality, so both need the absent case. WS-7 guards the ack write-back
+    against an absent or `0` version. The rest is filed as WS-18:
+    `src/pushWrites.ts:192` copies `primary.version` (now optional) into the
+    required `SyncedDoc.version` (a type error against 0.86.0);
+    `src/pushWrites.ts:373` drops a delete ack that carries an `etag` but no
+    `version`; `src/types.ts:236` and `src/syncedDocSchema.ts:31,76` keep
+    `version` required on the local row.
+  - wallet-core: the sync engine reads `WriteAck` / `MasterState` version. It
+    compiles against 0.86.0 (`markPushed` / `markDeletedPushed` already take an
+    optional `version`). Filed as WC-267: `src/sync/push.ts:85` and `:207` use
+    `replica.version > 0` as "ever acked", so a resource replica acked under an
+    opaque validator keeps `version: 0` and its next push goes out as
+    `If-None-Match: *`; `src/sync/remint.ts:132` reads `version === 0` as "never
+    acked"; `adoptLatest` hands a `MasterState` with no `version` to a store
+    whose `SyncedResourceReplica.version` (`src/sync/types.ts:76`) is required.
+- acceptance:
+  - [x] `WriteAck.version` and `MasterState.version` are left absent when no
+        revision parses, instead of being coerced to `0`
+  - [x] An opaque validator such as `"a1b2c3"` or `"3"` round-trips as a
+        precondition without producing a fabricated version
+  - [x] The `gen.version` parse is documented as a convenience for servers using
+        that form, not as the wire contract
+
+`parseEtag` (`src/sync/port.ts:192-203`) returns `undefined` for any validator
+with no `.`, and the WAS spec's own examples are `"a1b2c3"`, `"3"`, `"1"` and
+`"2"`. None of them parse. `readContent` and `writeAck` then substitute
+`version ?? 0`, so a conformant server looks like it acknowledged revision zero
+on every write. Downstream that reads as a real acknowledgement and then as a
+permanent version mismatch, which is the conflict storm. The `W/` weak-validator
+half of the original finding is out of scope here: the echoed `If-Match` is the
+raw header from `readEtag`, and the spec calls for an opaque strong validator,
+so a weak one is a non-conformant server rather than a case this client must
+absorb.
+
+discovered-from: whole-codebase review, 2026-09-11.

@@ -22,13 +22,11 @@
  * Conditional writes ride the server's `ETag`, an opaque quoted strong
  * validator, enforced uniformly for plaintext and encrypted resources, so
  * there is no plaintext-vs-encrypted fork. `putContent`/`deleteContent`
- * return the server-acked {@link WriteAck}: the write's raw `etag`, plus a
- * `version` only when the validator has the reference server's
- * `"<generation>.<version>"` form (see {@link parseEtag}). A caller records
- * the acked `etag` immediately and echoes it back verbatim as a later write's
- * `ifMatch`. Conditional writes are a baseline server requirement, so a write
- * carrying `ifMatch` or `ifNoneMatch` goes out as given and the server answers
- * a lost race with a `412`.
+ * return the server-acked {@link WriteAck}: the write's raw `etag`, which the
+ * port never parses. A caller records the acked `etag` immediately and echoes
+ * it back verbatim as a later write's `ifMatch`. Conditional writes are a
+ * baseline server requirement, so a write carrying `ifMatch` or `ifNoneMatch`
+ * goes out as given and the server answers a lost race with a `412`.
  *
  * Bypassing the codec is not bypassing the error mapper. Every failure caught
  * here goes through the client's own `mapError` first, so the port's signals
@@ -45,7 +43,8 @@ import {
   WRITER_ID_HEADER
 } from '../internal/conditional.js'
 import { resourceMeta, resourcePath } from '../internal/paths.js'
-import { ProblemTypes } from '@interop/storage-core'
+import { isMetaStamp, isWriteStamp, ProblemTypes } from '@interop/storage-core'
+import type { ResourceMetadata } from '@interop/storage-core'
 import {
   mapError,
   NotFoundError,
@@ -204,63 +203,6 @@ function mapWriteError(
 }
 
 /**
- * Parses a quoted strong `ETag` of the `"<generation>.<version>"` form into
- * its numeric revision: the decimal integer after the LAST `.` inside the
- * quotes (`"3mJr7AoUXx2.3"` to `3`). Returns `undefined` when the header is
- * absent, has no `.`, or the trailing segment is anything other than a run of
- * digits.
- *
- * That form is the reference server's. The WAS spec makes an `ETag` an opaque
- * strong validator, and a conformant server may send `"a1b2c3"` or `"3"`,
- * which yield `undefined` here. The parse is a convenience for servers that
- * use the form. It is not the wire contract, so an absent revision stays
- * absent and is never read as `0`.
- *
- * The quoted string as a whole is opaque, so this is one-way: there is no
- * `formatEtag` to build a validator back out of a bare revision number.
- * Always echo the `etag` a read or write returned back verbatim for
- * `ifMatch`; this helper only reads the revision out of it for comparison or
- * display.
- *
- * @param etag {string | null | undefined}
- * @returns {number | undefined}
- */
-export function parseEtag(etag: string | null | undefined): number | undefined {
-  if (!etag) {
-    return undefined
-  }
-  const unquoted = etag.replace(/"/g, '')
-  const lastDot = unquoted.lastIndexOf('.')
-  if (lastDot === -1) {
-    return undefined
-  }
-  const versionPart = unquoted.slice(lastDot + 1)
-  return /^\d+$/.test(versionPart) ? Number(versionPart) : undefined
-}
-
-/**
- * Reads a response's `ETag` together with the revision parsed out of it, the
- * one place the two are paired. `etag` is absent when the response carried no
- * validator (a backend that does not version the resource); `version` is
- * absent whenever `etag` is, and also when the validator does not end in a
- * revision number. Callers decide what an absent value means for them.
- *
- * @param response {HttpResponse}
- * @returns {{ etag?: string, version?: number }}
- */
-function versionedEtag(response: HttpResponse): {
-  etag?: string
-  version?: number
-} {
-  const etag = readEtag(response)
-  const version = parseEtag(etag)
-  return {
-    ...(etag !== undefined && { etag }),
-    ...(version !== undefined && { version })
-  }
-}
-
-/**
  * Builds a {@link WasSyncPort} bound to one Space + Collection, backed by the
  * caller's signed {@link WasClient}. With no `capability`, requests invoke the
  * client's own root capability.
@@ -321,7 +263,7 @@ export function createWasSyncPort({
     .space(spaceId)
     .collection(collectionId, { capability })
 
-  /** Re-reads a resource's raw content body + version (no decrypt, no `/meta`). */
+  /** Re-reads a resource's raw content body + `ETag` (no decrypt, no `/meta`). */
   const readContent = async (id: string): Promise<MasterState | null> => {
     let response: HttpResponse
     try {
@@ -343,10 +285,10 @@ export function createWasSyncPort({
       }
       throw mapped
     }
-    const { etag, version } = versionedEtag(response)
+    const etag = readEtag(response)
     // `.data` is populated only for a JSON media type, so a resource stored as
     // `text/jsonl`, `text/html`, or opaque bytes would otherwise produce a
-    // `MasterState` carrying a real `version`/`etag` and no `data` -- which a
+    // `MasterState` carrying a real `etag` and no `data` -- which a
     // replica reads as a live-but-empty document and then pushes over the
     // content that is actually there. The port contract promises `Json`, so a
     // body it cannot deliver as `Json` is a fault, reported as one.
@@ -360,7 +302,6 @@ export function createWasSyncPort({
       )
     }
     return {
-      ...(version !== undefined && { version }),
       ...(etag !== undefined && { etag }),
       updatedAt: UNKNOWN_UPDATED_AT,
       data: response.data as Json
@@ -371,10 +312,12 @@ export function createWasSyncPort({
    * The acked {@link WriteAck} of a write response. Taken from the response's
    * own `ETag` only: a re-read after the fact could return a concurrent
    * writer's validator as this write's ack. A response with no `ETag`, or
-   * with one the client cannot see, acks neither `etag` nor `version`. An
-   * opaque validator acks its `etag` with no `version`.
+   * with one the client cannot see, acks no `etag`.
    */
-  const writeAck = (response: HttpResponse): WriteAck => versionedEtag(response)
+  const writeAck = (response: HttpResponse): WriteAck => {
+    const etag = readEtag(response)
+    return etag === undefined ? {} : { etag }
+  }
 
   // The signals `deleteContent` and `putMeta` ask `mapWriteError` for: the
   // not-found mapping on the default port, the auth mapping under
@@ -471,7 +414,7 @@ export function createWasSyncPort({
           },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
-        const ack = versionedEtag(response)
+        const ack = writeAck(response)
         return ack.etag !== undefined ? ack : undefined
       } catch (err) {
         // A `/meta` write against a nonexistent resource legitimately `404`s
@@ -501,9 +444,10 @@ export function createWasSyncPort({
       }
 
       // Metadata (best-effort): the `/meta` body carries the server-managed
-      // `updatedAt`, the creator DID, the key-epoch id, the writer-attribution
-      // label, and the user-writable `custom`, plus its own
-      // `metaVersion`/`metaEtag` ETag. A resource with no metadata yet 404s
+      // write stamp (`updatedAt`, `updatedAtCounter`, `originId`), the nested
+      // `meta` stamp of the `/meta` record, the creator DID, the key-epoch id,
+      // the writer-attribution label, and the user-writable `custom`, plus its
+      // own `metaEtag` ETag. A resource with no metadata yet 404s
       // here; only a hard error propagates.
       const meta = await metaRead
       if (!meta.ok) {
@@ -521,16 +465,18 @@ export function createWasSyncPort({
       }
 
       const metaBody = meta.response.data as
-        | {
-            updatedAt?: string
-            createdBy?: string
-            epoch?: string
-            writerId?: string
-            custom?: Json
-          }
-        | undefined
-      if (metaBody?.updatedAt) {
+        (Omit<ResourceMetadata, 'custom'> & { custom?: Json }) | undefined
+      // The stamp is copied whole or not at all. A bare `updatedAt` leaves the
+      // placeholder in place: without its counter and origin it cannot be
+      // ordered against another revision, and a counter or origin beside the
+      // placeholder would read as a complete stamp that loses to every one.
+      if (isWriteStamp(metaBody)) {
         master.updatedAt = metaBody.updatedAt
+        master.updatedAtCounter = metaBody.updatedAtCounter
+        master.originId = metaBody.originId
+      }
+      if (isMetaStamp(metaBody?.meta)) {
+        master.meta = metaBody.meta
       }
       if (metaBody?.createdBy !== undefined) {
         master.createdBy = metaBody.createdBy
@@ -545,15 +491,10 @@ export function createWasSyncPort({
         master.custom = metaBody.custom
       }
       // The validator is kept whenever the server sent one, so a later
-      // `putMeta` can pin on it even when no revision number parses out of it.
-      const { etag: metaEtag, version: metaVersion } = versionedEtag(
-        meta.response
-      )
+      // `putMeta` can pin on it.
+      const metaEtag = readEtag(meta.response)
       if (metaEtag !== undefined) {
         master.metaEtag = metaEtag
-      }
-      if (metaVersion !== undefined) {
-        master.metaVersion = metaVersion
       }
 
       return master

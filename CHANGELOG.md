@@ -1,5 +1,25 @@
 # @interop/was-client Changelog
 
+## 0.87.0 - TBD
+
+### Changed
+
+- **BREAKING**: `parseEtag` is removed from `./sync`, with `WriteAck.version`,
+  `MasterState.version` and `MasterState.metaVersion`. The server's `ETag` is
+  now `"<generation>.<ms>.<counter>.<originId>"`, which has no revision number
+  to read. The client reads nothing out of it; the write stamp comes from the
+  change feed or `/meta`. A write acks its `etag` alone. Echo it verbatim as
+  `ifMatch`.
+- **BREAKING**: `WireDoc` follows the storage-core `ChangeDocument`. It carries
+  required `updatedAtCounter` and `originId` beside `updatedAt`, and the `/meta`
+  record's stamp nested as `meta`. Its `version` and `metaVersion` members are
+  removed.
+- `MasterState` carries optional `updatedAtCounter`, `originId` and `meta`, read
+  from the Resource's `/meta` object. Each stamp is copied whole or not at all
+  (storage-core's `isWriteStamp` / `isMetaStamp`); a `/meta` object without a
+  whole stamp leaves the epoch-zero `updatedAt` placeholder in place.
+- Requires `@interop/storage-core` 0.29.0.
+
 ## 0.86.0 - 2026-10-02
 
 ### Changed

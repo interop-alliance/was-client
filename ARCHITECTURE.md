@@ -632,17 +632,16 @@ declared one, and on a tombstone the deleting request's own label).
 Conditional writes ride the server's opaque `ETag` uniformly for plaintext and
 encrypted resources, so there is no plaintext-vs-encrypted fork. The validator
 is a quoted string the client echoes verbatim as `ifMatch`. Each write returns a
-`WriteAck` carrying the new `etag`. `WriteAck.version` and `MasterState.version`
-are present only when the validator has the reference server's
-`"<generation>.<version>"` form, which `parseEtag` reads. That parse is a
-convenience for ordering and display, not the wire contract. A conformant opaque
-validator such as `"a1b2c3"` acks its `etag` with no `version`, and a response
-whose `ETag` did not reach the client acks neither. The port never substitutes
-`0` for an absent revision, since a consumer would read that as a real
-acknowledgement. The parsed number is not reassembled into a validator. Every
-feed document carries its current `etag` and `metaEtag`, so a push loop pins its
-writes from feed state alone. Two typed signals in `src/errors.ts` let a push
-loop catch exactly what it can handle: `WasSyncConflictError` (412, a subtype of
+`WriteAck` carrying the new `etag` and nothing else, and a response whose `ETag`
+did not reach the client acks none. The port reads no revision number out of a
+validator. Revisions are compared by the write stamp instead: `updatedAt`,
+`updatedAtCounter` and `originId`, ordered as `(ms, updatedAtCounter, originId)`
+with `ms` the epoch millisecond value of `updatedAt`. `WireDoc` carries the
+stamp, with the `/meta` record's own stamp nested as `meta`, and `MasterState`
+carries both when the server's `/meta` object serves them. Every feed document
+carries its current `etag` and `metaEtag`, so a push loop pins its writes from
+feed state alone. Two typed signals in `src/errors.ts` let a push loop catch
+exactly what it can handle: `WasSyncConflictError` (412, a subtype of
 `PreconditionFailedError`) triggers re-read-and-reconcile, and
 `WasSyncNotFoundError` (404 on delete or on a `/meta` write, a subtype of
 `NotFoundError`) marks an already-gone target: a settled outcome for a delete, a
@@ -657,8 +656,8 @@ which writing agent produced the revision; `putMeta` carries `writerId` the same
 way as a top-level body member beside `custom`. Both are declare-or-clear: an
 omitted value clears whatever was stored, so a caller that wants to keep a prior
 `writerId` must resend it on every write. `writerId` is advisory attribution
-only -- a replica uses it to recognize its own writes echoed back and to break
-same-`updatedAt` ties, and it is never an input to an authorization decision.
+only -- a replica uses it to recognize its own writes echoed back. It is not
+part of the stamp order, and it is never an input to an authorization decision.
 
 Bypassing the codec is not bypassing the error mapper. Every failure the port
 catches goes through `mapError` first, so its signals carry the server's
@@ -737,9 +736,9 @@ No locks; safety is optimistic (ETag/CAS) throughout
 - The server's per-resource version is the ETag; writes send `If-Match` /
   `If-None-Match: *`; 412 maps to `PreconditionFailedError`.
 - Each metadata slot has its own validator, independent of every content
-  version: the Resource `/meta` object has its `metaVersion` ETag, and so does
-  the Collection `/meta` object. The Collection's `metaVersion` covers the whole
-  Collection Metadata object, so one validator advances on a configuration write
+  version: the Resource `/meta` object has its own `ETag`, and so does the
+  Collection `/meta` object. The Collection's `ETag` covers the whole Collection
+  Metadata object, so one validator advances on a configuration write
   (`configure`, `replaceDescription`) and on an annotation write (`setMeta`,
   `setName`, `setTags`) alike -- there is no second, independent validator for
   the configuration members. `Collection.setMeta` and the read-then-CAS
@@ -905,13 +904,13 @@ it, and otherwise cover the client-side concepts this file names.
 - **Space Metadata object** -- a Space's one "about it" document (`name`,
   `controller`, `type`), read and replaced at the Space's reserved `meta`
   segment (`spaceMeta`) rather than at the Space container URL. One object under
-  one `metaVersion` validator. Avoid: Space Description (retired term; there is
-  no separate description object).
+  one `ETag` validator. Avoid: Space Description (retired term; there is no
+  separate description object).
 - **Collection Metadata object** -- a Collection's one "about it" document: its
   configuration (`name`, `backend`, `encryption`, `generator`) together with the
   server-managed timestamps and the user-writable `custom`, read and replaced at
   the Collection's reserved `meta` segment (`collectionMeta`) rather than at the
-  Collection container URL. One object under one `metaVersion` validator, which
+  Collection container URL. One object under one `ETag` validator, which
   advances on a configuration write and on an annotation write alike. Avoid:
   Collection Description (retired term; the Description and the former `/meta`
   object are now the same object).

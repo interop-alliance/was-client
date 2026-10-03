@@ -1243,51 +1243,6 @@ body as a credential. Closing this needs the doc change plus the consumer edit,
 so the item is not done at the doc alone. discovered-from: whole-codebase
 review, 2026-09-11.
 
-### WCL-75: `parseEtag` hard-codes the reference server's ETag format, so spec-conformant tags acknowledge version 0
-
-- status: in-progress
-- priority: medium
-- labels: sync, spec-conformance, conditional-writes
-- touches:
-  - "@interop/was-sync": `src/pushWrites.ts` treats `ack.version !== undefined`
-    as "acknowledged" and `src/conflictHandler.ts` compares versions for
-    equality, so both need the absent case. WS-7 guards the ack write-back
-    against an absent or `0` version. The rest is filed as WS-18:
-    `src/pushWrites.ts:192` copies `primary.version` (now optional) into the
-    required `SyncedDoc.version` (a type error against 0.86.0);
-    `src/pushWrites.ts:373` drops a delete ack that carries an `etag` but no
-    `version`; `src/types.ts:236` and `src/syncedDocSchema.ts:31,76` keep
-    `version` required on the local row.
-  - wallet-core: the sync engine reads `WriteAck` / `MasterState` version. It
-    compiles against 0.86.0 (`markPushed` / `markDeletedPushed` already take an
-    optional `version`). Follow-up item not yet filed: `src/sync/push.ts:85` and
-    `:207` use `replica.version > 0` as "ever acked", so a resource replica
-    acked under an opaque validator keeps `version: 0` and its next push goes
-    out as `If-None-Match: *`; `src/sync/remint.ts:132` reads `version === 0` as
-    "never acked"; `adoptLatest` hands a `MasterState` with no `version` to a
-    store whose `SyncedResourceReplica.version` (`src/sync/types.ts:76`) is
-    required.
-- acceptance:
-  - [x] `WriteAck.version` and `MasterState.version` are left absent when no
-        revision parses, instead of being coerced to `0`
-  - [x] An opaque validator such as `"a1b2c3"` or `"3"` round-trips as a
-        precondition without producing a fabricated version
-  - [x] The `gen.version` parse is documented as a convenience for servers using
-        that form, not as the wire contract
-
-`parseEtag` (`src/sync/port.ts:192-203`) returns `undefined` for any validator
-with no `.`, and the WAS spec's own examples are `"a1b2c3"`, `"3"`, `"1"` and
-`"2"`. None of them parse. `readContent` and `writeAck` then substitute
-`version ?? 0`, so a conformant server looks like it acknowledged revision zero
-on every write. Downstream that reads as a real acknowledgement and then as a
-permanent version mismatch, which is the conflict storm. The `W/` weak-validator
-half of the original finding is out of scope here: the echoed `If-Match` is the
-raw header from `readEtag`, and the spec calls for an opaque strong validator,
-so a weak one is a non-conformant server rather than a case this client must
-absorb.
-
-discovered-from: whole-codebase review, 2026-09-11.
-
 ### WCL-76: The late encryption-declaration CAS rebases only on 412, though the server answers that race with 400 or 409
 
 - status: todo
@@ -1396,9 +1351,9 @@ report an empty schema rather than naming the envelope they could not open.
 - labels: conditional-writes, encryption, cas, fail-closed
 - acceptance:
   - [ ] An annotation write (`setMeta`, `setName`, `setTags`, `declareIndex`)
-        against a backend serving no `metaVersion` validator either does not
-        re-send the stored `encryption` descriptor, or refuses rather than
-        racing a rotation
+        against a backend serving no `ETag` validator on the Collection Metadata
+        object either does not re-send the stored `encryption` descriptor, or
+        refuses rather than racing a rotation
   - [ ] The chosen behavior is stated in the `#writeStored` JSDoc and in the
         README's conditional-writes note
 
@@ -1558,7 +1513,7 @@ discovered-from: whole-codebase review, 2026-09-11.
         the offending value, so `predicates.ts` can classify it
   - [ ] `createPlaintextDocCipher` omits `encryptUpdate`, making presence a
         reliable probe of the content-addressed seam
-  - [ ] `WireDoc` and `MasterState` document that `metaVersion` without
+  - [ ] `WireDoc` and `MasterState` document that a `meta` stamp without
         `metaEtag` means no usable validator and is treated as absent
   - [ ] `cidFrom`'s parameter is narrowed from `object` to `Json`
 
@@ -1569,15 +1524,15 @@ match a bare `Error`, so a driver's push loop falls into generic backoff on a
 row that can never succeed. `createPlaintextDocCipher` defines `encryptUpdate`
 even though the contract says a content-addressed cipher either omits it or
 throws, and omitting it is the only option a caller can probe; both freewallet
-probes are saved today only by their second clause. `metaVersion` and `metaEtag`
-are independently optional in `MasterState` and in the upstream
-`ChangeDocument`; `port.get` cannot produce the divergent state, but a feed
-copied from the server can, so document the pairing rather than changing the
-upstream type. `cidFrom` takes `doc: object` and casts to `Json`, so a `Date`,
-`Map` or class instance is admitted where `contentCid` would refuse and the
-canonicalizer mangles it quietly. `cidFrom` is not dead code: it has production
-callers in freewallet and dcw, so only the narrowing applies and the export
-stays. The narrowing may surface type errors at those call sites.
+probes are saved today only by their second clause. `meta` and `metaEtag` are
+independently optional in `MasterState` and in the upstream `ChangeDocument`;
+`port.get` cannot produce the divergent state, but a feed copied from the server
+can, so document the pairing rather than changing the upstream type. `cidFrom`
+takes `doc: object` and casts to `Json`, so a `Date`, `Map` or class instance is
+admitted where `contentCid` would refuse and the canonicalizer mangles it
+quietly. `cidFrom` is not dead code: it has production callers in freewallet and
+dcw, so only the narrowing applies and the export stays. The narrowing may
+surface type errors at those call sites.
 
 discovered-from: whole-codebase review, 2026-09-11.
 
