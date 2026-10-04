@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.89.1 - TBD
+
+### Added
+
+- `./sync` re-exports the `ResourceMetaStamp` and `WriteStamp` types from
+  `@interop/storage-core`, the stamp shapes `WireDoc` and `MasterState` carry,
+  so a replication consumer names them from the entry that hands them over.
+
 ## 0.89.0 - 2026-10-04
 
 ### Changed

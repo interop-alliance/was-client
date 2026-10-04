@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 123
+nextAvailableId: 124
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -2009,6 +2009,35 @@ Resource's tombstone, is skipped by the port, so a replica that holds the JSON
 revision keeps it. `documents()` drops such a Resource from its snapshot.
 
 discovered-from: was-teaching-server WAS-182, 2026-10-04.
+
+### WCL-123: Policy validators, preconditions, and the `policy` change kind
+
+- status: todo
+- priority: medium
+- labels: policies, etag, changes-feed, dependencies
+- discovered-from: was-teaching-server WAS-183 (2026-10-04)
+- touches:
+  - storage-core: `PolicyDocument` stamp members, `PolicyTombstone`,
+    `PolicyChangeDocument` in the `ChangeDocument` union (0.34.0, publish
+    pending)
+  - was-teaching-server: shipped in its working tree (policy `ETag`, `If-Match`
+    / `If-None-Match: *` on `PUT` and `DELETE`, the tombstone,
+    `?include=deleted`)
+  - wallet-attached-storage-spec: WASS-52
+- acceptance:
+  - [ ] The `@interop/storage-core` dependency is bumped to the version that
+        carries `PolicyChangeDocument`
+  - [ ] `Collection.changes()` passes a `kind: 'policy'` document through, and
+        `documents()` and the sync port skip it. A test covers both
+  - [ ] The policy read returns the served stamp members and exposes the `ETag`
+  - [ ] The policy write and delete accept `If-Match` / `If-None-Match: *`
+        (optional; decide when picked up)
+
+The server now stamps access-control policies and tombstones them on delete. A
+policy read serves `updatedAt`, `updatedAtCounter` and `originId` with a
+four-segment `ETag`. A Collection or Resource policy write or delete appears in
+the `changes` feed as a `kind: 'policy'` document whose `id` is the policy's
+absolute URL. A consumer that skips unknown kinds already handles it.
 
 ## Recorded decisions (kept so they are not re-litigated)
 
