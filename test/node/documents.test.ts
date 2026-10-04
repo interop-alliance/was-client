@@ -6,48 +6,14 @@
  * `changes` feed, and for the server-fault guards in `Collection.changes()`
  * it relies on. A stub `ZcapClient` answers each `changes` POST with a canned
  * page keyed by the checkpoint it was resumed from, so no server is involved.
- * Checkpoints here are arbitrary opaque strings, and every entry shares one
- * `updatedAt`, since the feed's order does not depend on it.
  */
 import { describe, it, expect } from 'vitest'
 
 import type { HttpResponse } from '@interop/http-client'
 import { WasServerError } from '../../src/index.js'
-import type {
-  ChangeDocument,
-  ChangesPage,
-  Collection
-} from '../../src/index.js'
+import type { ChangesPage, Collection } from '../../src/index.js'
+import { feedEntry, recordEntry } from '../helpers/changesFeed.js'
 import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
-
-const UPDATED_AT = '2026-01-01T00:00:00.000Z'
-
-/**
- * Builds a feed entry. A live entry with no `data` models the server's own
- * read-fault shape.
- *
- * @param id {string}
- * @param checkpoint {string}   the opaque checkpoint that resumes after it
- * @param [options] {object}
- * @param [options.data] {unknown}
- * @param [options.deleted] {boolean}   a tombstone
- * @returns {ChangeDocument}
- */
-function entry(
-  id: string,
-  checkpoint: string,
-  { data, deleted = false }: { data?: unknown; deleted?: boolean } = {}
-): ChangeDocument {
-  return {
-    id,
-    _deleted: deleted,
-    updatedAt: UPDATED_AT,
-    updatedAtCounter: 0,
-    originId: 'origin-a',
-    checkpoint,
-    ...(data !== undefined && { data })
-  }
-}
 
 /**
  * A collection handle over a stub client whose `changes` POST answers with the
@@ -91,22 +57,22 @@ describe('Collection.documents()', () => {
     const { notes, bodies } = collectionWithFeed({
       '': {
         documents: [
-          entry('a', 'cp-1', { data: { n: 1 } }),
-          entry('b', 'cp-2', { data: { n: 2 } })
+          feedEntry({ id: 'a', checkpoint: 'cp-1', data: { n: 1 } }),
+          feedEntry({ id: 'b', checkpoint: 'cp-2', data: { n: 2 } })
         ],
         checkpoint: 'cp-2'
       },
       // `b` rewritten mid-walk takes its later position; `a` is tombstoned.
       'cp-2': {
         documents: [
-          entry('b', 'cp-3', { data: { n: 3 } }),
-          entry('a', 'cp-4', { deleted: true })
+          feedEntry({ id: 'b', checkpoint: 'cp-3', data: { n: 3 } }),
+          feedEntry({ id: 'a', checkpoint: 'cp-4', deleted: true })
         ],
         checkpoint: 'cp-4'
       },
       // A short page is not the end: only the null checkpoint is.
       'cp-4': {
-        documents: [entry('c', 'cp-5', { data: { n: 4 } })],
+        documents: [feedEntry({ id: 'c', checkpoint: 'cp-5', data: { n: 4 } })],
         checkpoint: 'cp-5'
       },
       'cp-5': { documents: [], checkpoint: null }
@@ -138,6 +104,74 @@ describe('Collection.documents()', () => {
     ])
   })
 
+  it('skips every entry but a JSON Resource and still resumes past them', async () => {
+    const { notes, bodies } = collectionWithFeed({
+      '': {
+        documents: [
+          recordEntry('collection-metadata', 'cp-1'),
+          feedEntry({ id: 'a', checkpoint: 'cp-2', data: { n: 1 } }),
+          recordEntry('log', 'cp-3')
+        ],
+        checkpoint: 'cp-3'
+      },
+      // A page of skipped entries alone is not the end of the walk.
+      'cp-3': {
+        documents: [
+          recordEntry('policy', 'cp-4'),
+          feedEntry({
+            id: 'pic',
+            checkpoint: 'cp-5',
+            contentType: 'image/png'
+          }),
+          feedEntry({
+            id: 'did.jsonl',
+            checkpoint: 'cp-6',
+            contentType: 'text/jsonl'
+          })
+        ],
+        checkpoint: 'cp-6'
+      },
+      'cp-6': {
+        documents: [feedEntry({ id: 'b', checkpoint: 'cp-7', data: { n: 2 } })],
+        checkpoint: 'cp-7'
+      },
+      'cp-7': { documents: [], checkpoint: null }
+    })
+
+    const docs = await notes.documents({ limit: 3 })
+
+    expect(docs!.map(doc => [doc.kind, doc.id, doc.data])).toEqual([
+      ['resource', 'a', { n: 1 }],
+      ['resource', 'b', { n: 2 }]
+    ])
+    expect(bodies.map(body => body.checkpoint)).toEqual([
+      undefined,
+      'cp-3',
+      'cp-6',
+      'cp-7'
+    ])
+  })
+
+  it('drops a JSON Resource rewritten to a non-JSON type', async () => {
+    const { notes } = collectionWithFeed({
+      '': {
+        documents: [
+          feedEntry({ id: 'a', checkpoint: 'cp-1', data: { n: 1 } }),
+          feedEntry({ id: 'b', checkpoint: 'cp-2', data: { n: 2 } }),
+          feedEntry({
+            id: 'a',
+            checkpoint: 'cp-3',
+            contentType: 'application/octet-stream'
+          }),
+          feedEntry({ id: 'b', checkpoint: 'cp-4', deleted: true })
+        ],
+        checkpoint: null
+      }
+    })
+
+    await expect(notes.documents()).resolves.toEqual([])
+  })
+
   it('asks for 1000 documents per page by default', async () => {
     const { notes, bodies } = collectionWithFeed({
       '': { documents: [], checkpoint: null }
@@ -150,7 +184,10 @@ describe('Collection.documents()', () => {
   it('fails the walk on a live entry the server could not read', async () => {
     const { notes } = collectionWithFeed({
       '': {
-        documents: [entry('a', 'cp-1', { data: { n: 1 } }), entry('b', 'cp-2')],
+        documents: [
+          feedEntry({ id: 'a', checkpoint: 'cp-1', data: { n: 1 } }),
+          feedEntry({ id: 'b', checkpoint: 'cp-2' })
+        ],
         checkpoint: null
       }
     })
@@ -176,7 +213,7 @@ describe('Collection.documents()', () => {
   it('fails the walk on a server that repeats a checkpoint', async () => {
     const { notes, bodies } = collectionWithFeed({
       '': {
-        documents: [entry('a', 'cp-1', { data: { n: 1 } })],
+        documents: [feedEntry({ id: 'a', checkpoint: 'cp-1', data: { n: 1 } })],
         checkpoint: 'cp-1'
       },
       'cp-1': {
@@ -200,7 +237,7 @@ describe('Collection.documents()', () => {
   it('throws a 404 met after the first page rather than dropping pages read', async () => {
     const { notes } = collectionWithFeed({
       '': {
-        documents: [entry('a', 'cp-1', { data: { n: 1 } })],
+        documents: [feedEntry({ id: 'a', checkpoint: 'cp-1', data: { n: 1 } })],
         checkpoint: 'cp-1'
       },
       'cp-1': notFound()
@@ -215,5 +252,61 @@ describe('Collection.documents()', () => {
     })
 
     await expect(notes.documents()).rejects.toThrow()
+  })
+})
+
+describe('Collection.changes() record kinds', () => {
+  it('passes every record kind through, an unknown one included', async () => {
+    const documents = [
+      recordEntry('collection-metadata', 'cp-1'),
+      feedEntry({ id: 'a', checkpoint: 'cp-2', data: { n: 1 } }),
+      recordEntry('log', 'cp-3'),
+      recordEntry('policy', 'cp-4')
+    ]
+    const { notes } = collectionWithFeed({
+      '': { documents, checkpoint: 'cp-4' }
+    })
+
+    await expect(notes.changes()).resolves.toEqual({
+      documents,
+      checkpoint: 'cp-4'
+    })
+  })
+
+  it('accepts a binary or text/jsonl Resource with no data', async () => {
+    const documents = [
+      feedEntry({ id: 'pic', checkpoint: 'cp-1', contentType: 'image/png' }),
+      feedEntry({
+        id: 'did.jsonl',
+        checkpoint: 'cp-2',
+        contentType: 'text/jsonl'
+      }),
+      feedEntry({ id: 'gone', checkpoint: 'cp-3', deleted: true })
+    ]
+    const { notes } = collectionWithFeed({
+      '': { documents, checkpoint: 'cp-3' }
+    })
+
+    const page = await notes.changes()
+    expect(page.documents).toEqual(documents)
+  })
+
+  it('refuses a live JSON Resource with no data', async () => {
+    const { notes } = collectionWithFeed({
+      '': {
+        documents: [
+          feedEntry({
+            id: 'a',
+            checkpoint: 'cp-1',
+            contentType: 'application/ld+json'
+          })
+        ],
+        checkpoint: 'cp-1'
+      }
+    })
+
+    const err = await notes.changes().catch((err: unknown) => err)
+    expect(err).toBeInstanceOf(WasServerError)
+    expect((err as Error).message).toContain('served resource "a" with no body')
   })
 })

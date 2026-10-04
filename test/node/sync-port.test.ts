@@ -32,6 +32,8 @@ import {
   WasServerError
 } from '../../src/index.js'
 import type { IZcap } from '../../src/index.js'
+import { Collection } from '../../src/Collection.js'
+import { feedEntry } from '../helpers/changesFeed.js'
 
 type RequestOptions = {
   path?: string
@@ -94,11 +96,17 @@ function makeWas(options: {
     space: () => ({
       collection: (_collectionId: string, handleOptions?: unknown) => {
         collectionOptions.push(handleOptions)
-        return { changes }
+        // The real page walk over the stubbed `changes()`, so the port's
+        // skip-and-resume tests drive the same code a live handle runs.
+        return {
+          id: COLL,
+          changes,
+          resourceChanges: Collection.prototype.resourceChanges
+        }
       }
     })
   }
-  // The port only touches `request` and the collection's `changes()`.
+  // The port only touches `request` and the collection's feed walk.
   return { was: was as never, request, changes, collectionOptions }
 }
 
@@ -110,20 +118,23 @@ describe('createWasSyncPort helpers', () => {
   })
 })
 
+/**
+ * The Collection's own Metadata record on the feed, one of the kinds the port
+ * skips.
+ */
+function metaEntry(checkpoint: string) {
+  return feedEntry({
+    id: 'https://x/meta',
+    kind: 'collection-metadata',
+    checkpoint
+  })
+}
+
 describe('createWasSyncPort.query', () => {
   it('rides the changes() feed and returns documents + checkpoint', async () => {
+    const entry = feedEntry({ id: 'a', checkpoint: 'c1', data: { n: 1 } })
     const page = {
-      documents: [
-        {
-          id: 'a',
-          _deleted: false,
-          updatedAt: 't1',
-          updatedAtCounter: 0,
-          originId: 'origin-a',
-          checkpoint: 'c1',
-          writerId: 'writer-a'
-        }
-      ],
+      documents: [{ ...entry, writerId: 'writer-a' }],
       checkpoint: 'c1'
     }
     const { was, changes } = makeWas({ changesResult: page })
@@ -133,7 +144,128 @@ describe('createWasSyncPort.query', () => {
     const result = await port.query({ checkpoint, limit: 50 })
 
     expect(changes).toHaveBeenCalledWith({ checkpoint, limit: 50 })
-    expect(result).toEqual(page)
+    // The feed's `deleted` reaches the port's consumers as `_deleted`; every
+    // other member, `writerId` included, rides along unchanged.
+    const { deleted, ...rest } = entry
+    expect(result).toEqual({
+      documents: [{ ...rest, _deleted: deleted, writerId: 'writer-a' }],
+      checkpoint: 'c1'
+    })
+  })
+
+  it('maps a tombstone to _deleted: true', async () => {
+    const { was } = makeWas({
+      changesResult: {
+        documents: [feedEntry({ id: 'gone', checkpoint: 'c1', deleted: true })],
+        checkpoint: 'c1'
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const { documents } = await port.query({ limit: 50 })
+    expect(documents).toHaveLength(1)
+    expect(documents[0]!._deleted).toBe(true)
+    expect(documents[0]).not.toHaveProperty('deleted')
+    expect(documents[0]).not.toHaveProperty('data')
+  })
+
+  it('skips non-Resource kinds and non-JSON Resources, keeping the page checkpoint', async () => {
+    const { was } = makeWas({
+      changesResult: {
+        documents: [
+          metaEntry('c1'),
+          feedEntry({ id: 'a', checkpoint: 'c2', data: { n: 1 } }),
+          feedEntry({
+            id: 'https://x/meta/log',
+            kind: 'log',
+            checkpoint: 'c3'
+          }),
+          feedEntry({ id: 'https://x/p', kind: 'policy', checkpoint: 'c4' }),
+          feedEntry({ id: 'pic', contentType: 'image/png', checkpoint: 'c5' }),
+          feedEntry({
+            id: 'did.jsonl',
+            contentType: 'text/jsonl',
+            checkpoint: 'c6'
+          })
+        ],
+        checkpoint: 'c6'
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const result = await port.query({ limit: 50 })
+    expect(result.documents.map(doc => doc.id)).toEqual(['a'])
+    // The resume point is the page's, past the skipped trailing entries.
+    expect(result.checkpoint).toBe('c6')
+  })
+
+  it('resumes past a page of skipped entries instead of returning it empty', async () => {
+    const pages: Record<string, unknown> = {
+      c0: {
+        documents: [
+          metaEntry('c1'),
+          feedEntry({ id: 'pic', contentType: 'image/png', checkpoint: 'c2' })
+        ],
+        checkpoint: 'c2'
+      },
+      c2: {
+        documents: [
+          feedEntry({ id: 'https://x/meta/log', kind: 'log', checkpoint: 'c3' })
+        ],
+        checkpoint: 'c3'
+      },
+      c3: {
+        documents: [feedEntry({ id: 'b', checkpoint: 'c4', data: { n: 2 } })],
+        checkpoint: 'c4'
+      }
+    }
+    const { was, changes } = makeWas({})
+    changes.mockImplementation(
+      (async ({ checkpoint }: { checkpoint: string }) =>
+        pages[checkpoint]) as never
+    )
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const result = await port.query({ checkpoint: 'c0', limit: 2 })
+    expect(result.documents.map(doc => doc.id)).toEqual(['b'])
+    expect(result.checkpoint).toBe('c4')
+    expect(changes.mock.calls).toEqual([
+      [{ checkpoint: 'c0', limit: 2 }],
+      [{ checkpoint: 'c2', limit: 2 }],
+      [{ checkpoint: 'c3', limit: 2 }]
+    ])
+  })
+
+  it('returns an empty end page when the feed ends on skipped entries', async () => {
+    const { was } = makeWas({
+      changesResult: {
+        documents: [metaEntry('c1')],
+        checkpoint: null
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    await expect(port.query({ limit: 50 })).resolves.toEqual({
+      documents: [],
+      checkpoint: null
+    })
+  })
+
+  it('fails on a server that repeats a checkpoint over skipped entries', async () => {
+    const { was, changes } = makeWas({
+      changesResult: {
+        documents: [metaEntry('c1')],
+        checkpoint: 'c1'
+      }
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const err = await port
+      .query({ limit: 50 })
+      .catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(WasServerError)
+    expect((err as Error).message).toContain('repeated checkpoint')
+    expect(changes).toHaveBeenCalledTimes(2)
   })
 
   it('maps a refused checkpoint to WasSyncCheckpointError, carrying the problems', async () => {

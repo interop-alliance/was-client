@@ -17,7 +17,10 @@
  * The pull path rides the client's `Collection.changes()` feed, bound to the
  * same Space + Collection, which produces the byte-identical signed
  * `POST /space/:s/:c/query` (profile `changes`) as a root invocation and, like
- * the raw writes, ships the stored bodies verbatim without decrypting.
+ * the raw writes, ships the stored bodies verbatim without decrypting. The
+ * port moves JSON documents, so it keeps only the feed's `kind: 'resource'`
+ * entries with a JSON content type, and renames the feed's `deleted` to the
+ * `_deleted` its consumers read.
  *
  * Conditional writes ride the server's `ETag`, an opaque quoted strong
  * validator, enforced uniformly for plaintext and encrypted resources, so
@@ -43,8 +46,16 @@ import {
   WRITER_ID_HEADER
 } from '../internal/conditional.js'
 import { resourceMeta, resourcePath } from '../internal/paths.js'
-import { isMetaStamp, isWriteStamp, ProblemTypes } from '@interop/storage-core'
-import type { ResourceMetadata } from '@interop/storage-core'
+import {
+  isJsonResourceChange,
+  isMetaStamp,
+  isWriteStamp,
+  ProblemTypes
+} from '@interop/storage-core'
+import type {
+  ResourceChangeDocument,
+  ResourceMetadata
+} from '@interop/storage-core'
 import {
   mapError,
   NotFoundError,
@@ -62,6 +73,7 @@ import type {
   MasterState,
   SyncPage,
   WasSyncPort,
+  WireDoc,
   WriteAck
 } from './types.js'
 
@@ -155,6 +167,20 @@ function isRefusedCheckpoint(mapped: WasError): boolean {
     mapped.type === ProblemTypes.INVALID_REQUEST_BODY &&
     (mapped.problems ?? []).some(problem => problem.pointer === '#/checkpoint')
   )
+}
+
+/**
+ * The port's view of one JSON Resource entry (live or tombstone). The feed's
+ * `deleted` becomes `_deleted`, the member the port's consumers read. The
+ * feed's bodies are parsed JSON, so the shared type's `unknown` bodies narrow
+ * to the `Json` the port contract promises.
+ *
+ * @param doc {ResourceChangeDocument}
+ * @returns {WireDoc}
+ */
+function toWireDoc(doc: ResourceChangeDocument): WireDoc {
+  const { deleted, ...rest } = doc
+  return { ...rest, _deleted: deleted } as WireDoc
 }
 
 /**
@@ -319,6 +345,44 @@ export function createWasSyncPort({
     return etag === undefined ? {} : { etag }
   }
 
+  /**
+   * One page of the port's documents: the feed's JSON Resources and their
+   * tombstones. The Collection's own records, a kind this client does not
+   * know, and a binary or `text/jsonl` Resource are not documents the port
+   * moves. A server page whose entries are all skipped is not handed back as
+   * an empty page: an empty page reads as caught up, and a pull loop that
+   * stops on it would never store the checkpoint that moves past those
+   * entries. The pull instead resumes from that page's own checkpoint (the
+   * walk `Collection.resourceChanges()` owns, repeat guard included) until it
+   * has a document to return or the feed ends.
+   *
+   * @param options {object}
+   * @param [options.checkpoint] {string}   the opaque checkpoint to resume after
+   * @param options.limit {number}   max entries per server page
+   * @returns {Promise<SyncPage>}
+   */
+  const pullDocuments = async ({
+    checkpoint,
+    limit
+  }: {
+    checkpoint?: string
+    limit: number
+  }): Promise<SyncPage> => {
+    for await (const page of changesCollection.resourceChanges({
+      checkpoint,
+      limit
+    })) {
+      const documents = page.documents
+        .filter(isJsonResourceChange)
+        .map(toWireDoc)
+      if (documents.length > 0 || page.checkpoint === null) {
+        return { documents, checkpoint: page.checkpoint }
+      }
+    }
+    // Unreachable: the walk's last page has `checkpoint: null` and returns.
+    return { documents: [], checkpoint: null }
+  }
+
   // The signals `deleteContent` and `putMeta` ask `mapWriteError` for: the
   // not-found mapping on the default port, the auth mapping under
   // `mapAuthErrors`.
@@ -327,12 +391,7 @@ export function createWasSyncPort({
   return {
     async query({ checkpoint, limit }) {
       try {
-        // The feed's bodies are parsed JSON, so the shared page's `unknown`
-        // bodies narrow to the `Json` the port contract promises.
-        return (await changesCollection.changes({
-          checkpoint,
-          limit
-        })) as SyncPage
+        return await pullDocuments({ checkpoint, limit })
       } catch (err) {
         // The pull path is where revoked access surfaces reliably: unlike a
         // read or a delete, a `404` on the collection's own query endpoint has

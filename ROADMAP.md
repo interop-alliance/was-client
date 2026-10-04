@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 122
+nextAvailableId: 123
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -1961,6 +1961,54 @@ passes items through unchanged, so it needs no code change. It does need the
 storage-core release that types the new member, and a test so a regression in
 the pass-through is caught. The JSDoc and README already describe the new
 behavior.
+
+### WCL-122: Adopt the widened `changes` feed (record kinds, `deleted`, binary Resources)
+
+- status: in-progress
+- priority: high
+- labels: changes-feed, sync, dependencies, breaking
+- touches:
+  - storage-core: `ChangeDocument` becomes a union discriminated on `kind`,
+    `_deleted` renamed `deleted`, `contentType` and `generation` added,
+    `isResourceChange` guard (0.32.0, publish pending; consumed via `link:`)
+  - was-teaching-server: the feed producer; ships the widened feed
+  - was-sync: unaffected (it reads `WireDoc` off the sync port, which still
+    hands on JSON Resources with `_deleted`)
+  - wallet-core: `WireDoc` now extends `ResourceChangeDocument`, so `kind` and
+    `contentType` are required; its `test/node/sync.test.ts` builds `WireDoc`
+    literals without them and fails type-check on bumping to was-client 0.89.0.
+    Needs a follow-up there to add both fields.
+  - was-react: `sharedCollectionReader` reads `collection.changes()` directly
+    and checks `_deleted`; it needs its own follow-up to narrow on `kind` and
+    read `deleted`
+- acceptance:
+  - [x] `Collection.changes()` returns the `ChangeDocument` union and passes
+        every kind through; its no-`data` fault check applies to a live JSON
+        `resource` entry only
+  - [x] `Collection.documents()` keeps live JSON Resources only and resumes past
+        skipped entries
+  - [x] The sync port's `query` keeps JSON `resource` entries, maps `deleted` to
+        `_deleted`, and does not return an empty page while the feed has more
+        entries
+  - [x] Unit tests cover pass-through, binary entries without `data`, skipped
+        kinds, and checkpoint advance
+  - [ ] The `@interop/storage-core` dependency is the published 0.32.0 rather
+        than the `link:` to the local checkout
+
+The server's `changes` query profile now carries every record kind of a
+Collection: its Resources whatever their content type, its Collection Metadata
+object, and its governing history log, with a `policy` kind to follow. A
+consumer that syncs Resources filters on `kind` and skips a kind it does not
+know. The sync port keeps its `WireDoc` shape, so its consumers need no change.
+A page made entirely of skipped entries would read as caught up to a pull loop
+that stops on an empty page, so the port resumes from that page's checkpoint
+instead.
+
+Open question: a JSON Resource rewritten to a binary type, or a binary
+Resource's tombstone, is skipped by the port, so a replica that holds the JSON
+revision keeps it. `documents()` drops such a Resource from its snapshot.
+
+discovered-from: was-teaching-server WAS-182, 2026-10-04.
 
 ## Recorded decisions (kept so they are not re-litigated)
 

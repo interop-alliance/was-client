@@ -27,6 +27,7 @@ import type { CollectionEncryption, IZcap } from '../../src/index.js'
 import { Space } from '../../src/Space.js'
 import { Collection } from '../../src/Collection.js'
 import { Resource } from '../../src/Resource.js'
+import { feedEntry } from '../helpers/changesFeed.js'
 import {
   mintEpoch,
   wrapEpochSecret,
@@ -425,11 +426,33 @@ describe('changes feed shape guards', () => {
     )
   })
 
+  it('refuses an entry with no kind rather than skipping it', async () => {
+    // A feed entry with no `kind` must fail loudly: skipped
+    // as an unknown kind, `documents()` would resolve to an empty snapshot.
+    const client = clientWithStub(() =>
+      jsonResponse({
+        data: {
+          documents: [{ id: 'a', _deleted: false, data: { x: 1 } }],
+          checkpoint: null
+        }
+      })
+    )
+    await expect(client.space('s').collection('c').documents()).rejects.toThrow(
+      WasServerError
+    )
+  })
+
   it('treats an omitted checkpoint as the end of the walk', async () => {
     // A terminal page that omits `checkpoint` entirely rather than sending an
     // explicit `null` must end the walk, not throw a TypeError.
     const client = clientWithStub(() =>
-      jsonResponse({ data: { documents: [{ id: 'a', data: { x: 1 } }] } })
+      jsonResponse({
+        data: {
+          documents: [
+            feedEntry({ id: 'a', checkpoint: 'cp-1', data: { x: 1 } })
+          ]
+        }
+      })
     )
     const documents = await client.space('s').collection('c').documents()
     expect(documents?.map(doc => doc.id)).toEqual(['a'])

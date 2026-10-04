@@ -658,8 +658,9 @@ left unpopulated there.
 Beside `/meta`, a Collection has a `/meta/log` sub-resource: its governing
 history log (the backend's `governed-history-logs` feature), a JSON Lines body
 the server derives the Collection's `encryption` descriptor from. The log is not
-a Resource of the Collection (it is absent from listings and the `changes` feed)
-and not part of the `/meta` object, and it carries its own ETag.
+a Resource of the Collection (it is absent from listings, and the `changes` feed
+carries it as a `kind: 'log'` entry named by URL) and not part of the `/meta`
+object, and it carries its own ETag.
 
 ```ts
 const log = await collection.getHistoryLog() // { body, etag } | null
@@ -1070,16 +1071,20 @@ plugs into:
   `WasSyncPort`: paged pulls over the collection's `changes` feed (resumable via
   an opaque server-side checkpoint) and conditional pushes
   (`putContent`/`deleteContent`/`putMeta`) guarded by the server's content
-  `ETag`. The port moves stored bodies **verbatim** -- for an encrypted
-  collection that means the opaque EDV envelope, never plaintext, and the port
-  itself never touches keys. A rejected precondition throws
-  `WasSyncConflictError` (412); a delete of an already-gone resource or a
-  `putMeta` against one throws `WasSyncNotFoundError` (404) -- both catchable
-  subtypes of the core `PreconditionFailedError` / `NotFoundError`; a `query`
-  whose checkpoint the server did not issue throws `WasSyncCheckpointError`
-  (400, a `ValidationError` subtype), and the pull restarts from the beginning.
-  Every other failure arrives as the typed `WasError` subclass for its status,
-  carrying the server's `problem+json` fields.
+  `ETag`. A pull hands back the feed's JSON Resources and their tombstones only,
+  with the feed's `deleted` renamed `_deleted`; the Collection's own
+  `collection-metadata` and `log` entries, binary Resources, and any kind the
+  client does not know are skipped, and the checkpoint still moves past them.
+  The port moves stored bodies **verbatim** -- for an encrypted collection that
+  means the opaque EDV envelope, never plaintext, and the port itself never
+  touches keys. A rejected precondition throws `WasSyncConflictError` (412); a
+  delete of an already-gone resource or a `putMeta` against one throws
+  `WasSyncNotFoundError` (404) -- both catchable subtypes of the core
+  `PreconditionFailedError` / `NotFoundError`; a `query` whose checkpoint the
+  server did not issue throws `WasSyncCheckpointError` (400, a `ValidationError`
+  subtype), and the pull restarts from the beginning. Every other failure
+  arrives as the typed `WasError` subclass for its status, carrying the server's
+  `problem+json` fields.
 - **`isSyncConflictError` / `isSyncNotFoundError` / `isSyncCheckpointError` /
   `isSyncAuthError` / `isUnknownEpochError` / `isKeyUnwrapError` /
   `isIntegrityError`** classify those signals by `err.name`. Use them rather
@@ -1125,10 +1130,10 @@ plugs into:
   that carries `history` (a log-governed collection) is refused with
   `UnverifiedDescriptorError` unless its source declares
   `verifiesHistory: true`; `wasDescriptorSource` does not. An epoch rotation
-  emits no change-feed entry, so this is how a replica meets an envelope sealed
-  under an epoch it has never seen without a refetch per resource.
-  `acquireDescriptor` / `acquireDescriptors` are the acquisition alone (fetch,
-  cache the success, fall back to the cache whenever the fetch yields no
+  emits no Resource entry in the change feed, so this is how a replica meets an
+  envelope sealed under an epoch it has never seen without a refetch per
+  resource. `acquireDescriptor` / `acquireDescriptors` are the acquisition alone
+  (fetch, cache the success, fall back to the cache whenever the fetch yields no
   descriptor), and `DescriptorRefreshPolicy` is the
   once-per-collection-per-session guard for a host whose reads scan rows instead
   of going through a cipher.

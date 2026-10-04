@@ -42,6 +42,8 @@ export type {
   ChangeDocument,
   ChangesCheckpoint,
   ChangesPage,
+  ContainerChangeDocument,
+  ResourceChangeDocument,
   SpaceMetadata,
   CollectionEncryption,
   CollectionEncryptionEpoch,

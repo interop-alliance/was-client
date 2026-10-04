@@ -102,10 +102,11 @@ import type {
   ResourceCodec
 } from './codec.js'
 import { Resource } from './Resource.js'
+import { isJsonResourceChange, isResourceChange } from '@interop/storage-core'
 import type {
-  ChangeDocument,
   ChangesCheckpoint,
-  ChangesPage
+  ChangesPage,
+  ResourceChangeDocument
 } from '@interop/storage-core'
 import type {
   AddResult,
@@ -1641,9 +1642,19 @@ export class Collection {
 
   /**
    * Reads one page of the collection's replication change feed (the `changes`
-   * query profile): the JSON-document resources and tombstones changed strictly
-   * after `checkpoint`, in change order, at most `limit` of them. With no
-   * `checkpoint` the feed starts from the beginning.
+   * query profile): the records changed strictly after `checkpoint`, in change
+   * order, at most `limit` of them. With no `checkpoint` the feed starts from
+   * the beginning.
+   *
+   * This is the raw feed, so every record kind passes through, discriminated
+   * on `kind`. A `kind: 'resource'` document is a Resource or its tombstone,
+   * whatever its content type; it carries `data` inline only when it is a live
+   * JSON Resource, and a reader fetches any other representation. The
+   * `collection-metadata` and `log` kinds name the Collection's own records by
+   * their absolute URL in `id` and carry no body. A tombstone of any kind has
+   * `deleted: true`. Skip a `kind` you do not know: the server may add kinds.
+   * `isResourceChange` from `@interop/storage-core` (re-exported here) narrows
+   * to Resources, `isJsonResourceChange` to JSON Resources.
    *
    * This is deliberately a single page, not an iterator: it is shaped for an
    * RxDB `pull.handler(checkpoint, batchSize)`, which owns the iteration and
@@ -1667,8 +1678,10 @@ export class Collection {
    * Malformed responses fail the call with a `WasServerError` instead of
    * passing through as a page: a 2xx response with no JSON body
    * (indistinguishable from an end-of-feed page otherwise), a body with no
-   * `documents` array or with a non-object entry in it, and a live entry with
-   * no `data` (the server could not read or parse that resource's body).
+   * `documents` array or with a non-object entry in it, and a live JSON
+   * `kind: 'resource'` entry with no `data` (the server could not read or
+   * parse that resource's body). Entries of any other kind pass through
+   * unchecked.
    *
    * @param [options] {object}
    * @param [options.checkpoint] {ChangesCheckpoint}   opaque checkpoint from a prior page; resume strictly after it
@@ -1714,14 +1727,26 @@ export class Collection {
     for (const doc of page.documents) {
       // `Array.isArray` accepts `[null]`; a non-object entry is the same class
       // of server fault, reported as a typed `WasServerError` rather than as a
-      // `TypeError` from reading `_deleted` off it.
+      // `TypeError` from reading `kind` off it.
       if (doc === null || typeof doc !== 'object') {
         throw new WasServerError(
           `The changes feed of collection "${this.id}" served a non-object ` +
             'entry in its `documents` array.'
         )
       }
-      if (!doc._deleted && doc.data === undefined) {
+      // Every entry is discriminated on `kind`. An entry with none would
+      // otherwise be skipped as an unknown kind and read as an empty,
+      // caught-up feed; it is a server fault instead.
+      if (typeof doc.kind !== 'string') {
+        throw new WasServerError(
+          `The changes feed of collection "${this.id}" served an entry with ` +
+            'no `kind`.'
+        )
+      }
+      // Only a live JSON Resource carries its body inline, so only its
+      // missing `data` is a read fault. Every other entry, an unknown kind
+      // included, passes through untouched.
+      if (isJsonResourceChange(doc) && !doc.deleted && doc.data === undefined) {
         throw new WasServerError(
           `The changes feed of collection "${this.id}" served resource ` +
             `"${doc.id}" with no body: the server could not read it.`
@@ -1732,64 +1757,44 @@ export class Collection {
   }
 
   /**
-   * Reads the collection's current live JSON documents, bodies included, by
-   * walking the `changes` feed from its beginning to its end. One request per
-   * page rather than one per resource, so a reader with no local replica
-   * snapshots a collection in a handful of round trips.
+   * Walks the `changes` feed page by page from `checkpoint` (or the beginning)
+   * to its end, yielding each page's `kind: 'resource'` entries (live or
+   * tombstone, any content type) with that page's resume `checkpoint`. The
+   * Collection's own records (`collection-metadata`, `log`) and any kind this
+   * client does not know are dropped, so a yielded page may be empty while
+   * its `checkpoint` still moves past the dropped entries. A consumer that
+   * stops on an empty page must store that checkpoint, or it re-reads those
+   * entries forever.
    *
-   * The feed is in the server's feed-position order and carries tombstones,
-   * so the pages reduce to the latest state per id: a later entry for an id
-   * replaces an earlier one (a resource rewritten while the walk was in
-   * flight) and a tombstone drops it. Each surviving entry is returned as the
-   * feed served it, so `data` is the raw stored body (the scheme's opaque
-   * envelope on an encrypted collection; this method does not decrypt) and
-   * `epoch`, `version`, and `createdBy` ride along. Feed order is preserved.
-   *
-   * The walk ends only on the feed's `checkpoint: null`; a short page is not
-   * the end (see `changes()`). Returns `null` if the collection is missing or
-   * not visible to you (404 conflation caveat) on the first page, like
-   * `list()`. Unlike `list()`, a 404 on a later page throws: the collection
-   * vanished mid-walk, and the pages already read are not a snapshot of
-   * anything. The server faults `changes()` rejects on (a bodiless 2xx, a
-   * live entry with no `data`, or a `501` from a server that does not
-   * advertise the `changes-query` feature) fail the walk with the same
-   * `WasServerError`, as does a server that repeats a checkpoint instead of
-   * advancing.
+   * The walk ends only on the feed's `checkpoint: null` (or an omitted
+   * checkpoint); a short page is not the end (see `changes()`). Checkpoints
+   * are opaque strings compared by equality only. A server that hands back a
+   * checkpoint this walk already resumed from (the starting one included)
+   * fails the walk with a `WasServerError` rather than looping. Every fault
+   * `changes()` rejects on fails the walk the same way.
    *
    * @param [options] {object}
-   * @param [options.limit] {number}   max documents per request (default 1000, the teaching server's maximum); the server reduces it to its own maximum
-   * @returns {Promise<ChangeDocument[] | null>}
+   * @param [options.checkpoint] {ChangesCheckpoint}   resume strictly after it
+   * @param [options.limit] {number}   max entries per request, every kind counted
+   * @returns {AsyncGenerator<{ documents: ResourceChangeDocument[], checkpoint: ChangesCheckpoint | null }>}
    */
-  async documents(
-    options: { limit?: number } = {}
-  ): Promise<ChangeDocument[] | null> {
-    const { limit = 1000 } = options
-    const latest = new Map<string, ChangeDocument>()
-    // Every checkpoint the walk has resumed from. Checkpoints are opaque
-    // strings compared by equality only. A server that hands one back again would otherwise loop forever.
-    const seen = new Set<string>()
-    let checkpoint: ChangesCheckpoint | undefined
+  async *resourceChanges(
+    options: { checkpoint?: ChangesCheckpoint; limit?: number } = {}
+  ): AsyncGenerator<{
+    documents: ResourceChangeDocument[]
+    checkpoint: ChangesCheckpoint | null
+  }> {
+    const { limit } = options
+    let checkpoint = options.checkpoint
+    const seen = new Set<string>(checkpoint === undefined ? [] : [checkpoint])
     for (;;) {
-      let page: ChangesPage
-      try {
-        page = await this.changes({ checkpoint, limit })
-      } catch (err) {
-        if (checkpoint === undefined && httpStatus(err) === 404) {
-          return null
-        }
-        throw err
+      const page = await this.changes({ checkpoint, limit })
+      yield {
+        documents: page.documents.filter(isResourceChange),
+        checkpoint: page.checkpoint ?? null
       }
-      for (const doc of page.documents) {
-        // Delete first so a rewritten resource takes its new feed position.
-        latest.delete(doc.id)
-        if (!doc._deleted) {
-          latest.set(doc.id, doc)
-        }
-      }
-      // A terminal page is one with no checkpoint to resume from, whether the
-      // server spelled that as an explicit `null` or by omitting the member.
       if (!page.checkpoint) {
-        return [...latest.values()]
+        return
       }
       if (seen.has(page.checkpoint)) {
         throw new WasServerError(
@@ -1800,6 +1805,64 @@ export class Collection {
       seen.add(page.checkpoint)
       checkpoint = page.checkpoint
     }
+  }
+
+  /**
+   * Reads the collection's current live JSON documents, bodies included, by
+   * walking the `changes` feed from its beginning to its end. One request per
+   * page rather than one per resource, so a reader with no local replica
+   * snapshots a collection in a handful of round trips.
+   *
+   * Only `kind: 'resource'` entries with a JSON `contentType` are kept. The
+   * Collection's own records (`collection-metadata`, `log`), a kind this
+   * client does not know, and a binary or `text/jsonl` Resource are skipped,
+   * and the walk still resumes from each page's own `checkpoint` (see
+   * `resourceChanges()`). The feed is in the server's feed-position order and
+   * carries tombstones, so the pages reduce to the latest state per id: a
+   * later entry for an id replaces an earlier one (a resource rewritten while
+   * the walk was in flight), and a tombstone or a rewrite to a non-JSON type
+   * drops it. Each surviving entry is returned as the feed served it, so
+   * `data` is the raw stored body (the scheme's opaque envelope on an
+   * encrypted collection; this method does not decrypt) and `epoch`, the
+   * write stamp, and `createdBy` ride along. Feed order is preserved.
+   *
+   * Returns `null` if the collection is missing or not visible to you (404
+   * conflation caveat) on the first page, like `list()`. Unlike `list()`, a
+   * 404 on a later page throws: the collection vanished mid-walk, and the
+   * pages already read are not a snapshot of anything. The server faults
+   * `changes()` rejects on (a bodiless 2xx, a live JSON entry with no `data`,
+   * or a `501` from a server that does not advertise the `changes-query`
+   * feature) fail the walk with the same `WasServerError`, as does a server
+   * that repeats a checkpoint instead of advancing.
+   *
+   * @param [options] {object}
+   * @param [options.limit] {number}   max documents per request (default 1000, the teaching server's maximum); the server reduces it to its own maximum
+   * @returns {Promise<ResourceChangeDocument[] | null>}
+   */
+  async documents(
+    options: { limit?: number } = {}
+  ): Promise<ResourceChangeDocument[] | null> {
+    const { limit = 1000 } = options
+    const latest = new Map<string, ResourceChangeDocument>()
+    let pagesRead = 0
+    try {
+      for await (const page of this.resourceChanges({ limit })) {
+        pagesRead += 1
+        for (const doc of page.documents) {
+          // Delete first so a rewritten resource takes its new feed position.
+          latest.delete(doc.id)
+          if (!doc.deleted && isJsonResourceChange(doc)) {
+            latest.set(doc.id, doc)
+          }
+        }
+      }
+    } catch (err) {
+      if (pagesRead === 0 && httpStatus(err) === 404) {
+        return null
+      }
+      throw err
+    }
+    return [...latest.values()]
   }
 
   /**

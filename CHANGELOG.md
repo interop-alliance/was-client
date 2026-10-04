@@ -1,5 +1,33 @@
 # @interop/was-client Changelog
 
+## 0.89.0 - TBD
+
+### Changed
+
+- **BREAKING**: `Collection.changes()` returns the widened feed: a
+  `ChangeDocument` union discriminated on `kind`. Beside `resource` entries it
+  passes through the Collection's `collection-metadata` and `log` entries (`id`
+  is the record's URL) and any kind the client does not know. A tombstone is
+  marked `deleted` (renamed from `_deleted`).
+- `changes()` refuses an entry with no `data` only when it is a live JSON
+  Resource. A binary or `text/jsonl` Resource, which carries no `data`, is
+  accepted.
+- **BREAKING**: `Collection.documents()` returns `ResourceChangeDocument[]`. It
+  keeps live JSON Resources only and drops a Resource rewritten to a non-JSON
+  type.
+- The sync port's `query` hands on JSON Resources and their tombstones only,
+  mapping `deleted` to `WireDoc._deleted`. A page whose entries are all skipped
+  is not returned empty: the port resumes from its checkpoint until it has a
+  document or the feed ends. `WireDoc` now derives from
+  `ResourceChangeDocument`, so it carries `kind` and `contentType`.
+- Adds `Collection.resourceChanges()`, the async generator that walks the feed
+  page by page, keeps the `kind: 'resource'` entries, and guards against a
+  server that repeats a checkpoint. `documents()` and the sync port's pull build
+  on it.
+- Re-exports the `ResourceChangeDocument` and `ContainerChangeDocument` types
+  and the `isResourceChange` and `isJsonResourceChange` feed guards.
+- Requires `@interop/storage-core` 0.33.0.
+
 ## 0.88.0 - 2026-10-03
 
 ### Changed

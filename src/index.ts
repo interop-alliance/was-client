@@ -16,6 +16,9 @@ export { parseSpaceTarget } from './internal/paths.js'
 export type { ParsedSpacePath } from './internal/paths.js'
 export { readEtag, writeHeaders } from './internal/conditional.js'
 export { isGovernedDescriptor } from './internal/describe.js'
+// The `changes` feed guards a consumer filters `Collection.changes()` pages
+// with, so a consumer needs no direct `@interop/storage-core` dependency.
+export { isJsonResourceChange, isResourceChange } from '@interop/storage-core'
 export type { WritePrecondition } from './internal/conditional.js'
 
 export {
@@ -75,6 +78,8 @@ export type {
   ChangeDocument,
   ChangesCheckpoint,
   ChangesPage,
+  ContainerChangeDocument,
+  ResourceChangeDocument,
   SpaceMetadata,
   CollectionWritableFields,
   CollectionEncryption,

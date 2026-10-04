@@ -488,18 +488,20 @@ a security signal, not an outage: `@interop/vh-resource-log`'s
 non-authoritative projection of its governing log, so acquisition adopts one
 only from a source that declares `verifiesHistory: true` and refuses it
 otherwise with `UnverifiedDescriptorError`, before the cache. An epoch rotation
-emits no change-feed entry, so a cipher built from a cached descriptor can meet
-envelopes under an unseen epoch; the remedy is one re-read plus a cipher rebuild
-plus one retry, guarded to once per collection per session so a genuinely
-foreign envelope cannot drive a refetch loop. `DescriptorRefreshPolicy` is that
-guard for a host that scans rows, and `createRefreshingEdvDocCipher` binds
-`createEdvDocCipher` to both for a host whose decrypt seam is the cipher itself.
-The two no-key signals are what the policy dispatches on: only
-`UnknownEpochError` drives a refresh, and `KeyUnwrapError` propagates untouched,
-since re-reading the same descriptor cannot produce a key the reader was never
-given. Their `err.name` matchers, `isUnknownEpochError` and `isKeyUnwrapError`,
-live in `sync/predicates.ts` beside the other injected-seam signals, as does
-`isIntegrityError` for a body that fails verification against its resource id.
+emits no Resource entry in the change feed, only a `collection-metadata` or
+`log` entry the sync port skips, so a cipher built from a cached descriptor can
+meet envelopes under an unseen epoch; the remedy is one re-read plus a cipher
+rebuild plus one retry, guarded to once per collection per session so a
+genuinely foreign envelope cannot drive a refetch loop.
+`DescriptorRefreshPolicy` is that guard for a host that scans rows, and
+`createRefreshingEdvDocCipher` binds `createEdvDocCipher` to both for a host
+whose decrypt seam is the cipher itself. The two no-key signals are what the
+policy dispatches on: only `UnknownEpochError` drives a refresh, and
+`KeyUnwrapError` propagates untouched, since re-reading the same descriptor
+cannot produce a key the reader was never given. Their `err.name` matchers,
+`isUnknownEpochError` and `isKeyUnwrapError`, live in `sync/predicates.ts`
+beside the other injected-seam signals, as does `isIntegrityError` for a body
+that fails verification against its resource id.
 
 A write that declares or changes the `encryption` descriptor re-seals the
 Collection `/meta` envelope in the same body: the server validates `custom`
@@ -619,13 +621,27 @@ collections behind one interface. The pull path rides `Collection.changes()`
 the codec.
 
 The wire model is shared, not local: `SyncCheckpoint`, `WireDoc`, and the feed
-page re-export `@interop/storage-core`'s `ChangesCheckpoint` / `ChangeDocument`
-/ `ChangesPage`. A checkpoint is an opaque string the server issues, scoped to
-that server and Collection. The client stores it, compares it by equality only,
-and echoes it verbatim. Each feed document carries its own `checkpoint`, and the
-page's equals its last document's. A server refuses a checkpoint it did not
-issue with `invalid-request-body` (400), and the pull then restarts from the
-beginning. `WireDoc` and `MasterState` both carry an optional `writerId`, the
+page derive from `@interop/storage-core`'s `ChangesCheckpoint` /
+`ResourceChangeDocument` / `ChangesPage`. The raw feed `Collection.changes()`
+returns carries every record kind of a Collection, discriminated on `kind`: a
+`resource` (any content type, with `data` inline for a live JSON Resource only),
+and the Collection's own `collection-metadata` and `log`, named by URL. Every
+kind marks a tombstone with `deleted`. `Collection.resourceChanges()` is the one
+page walk over that feed: it keeps the `resource` entries of every content type,
+drops the rest (a kind it does not know included), and fails on a server that
+repeats a checkpoint. `Collection.documents()` and the port's `query` both build
+on it. The port moves JSON documents, so `query` further keeps only the entries
+with a JSON content type and renames `deleted` to `_deleted`, the member its
+replication consumers read. A page whose entries the port skips entirely is not
+returned empty, since a pull loop reads an empty page as caught up and would
+never store the checkpoint past them. The port reads on from that page's
+checkpoint instead, until it has a document or the feed ends. A checkpoint is an
+opaque string the server issues, scoped to that server and Collection. The
+client stores it, compares it by equality only, and echoes it verbatim. Each
+feed document carries its own `checkpoint`, and the page's equals its last
+document's. A server refuses a checkpoint it did not issue with
+`invalid-request-body` (400), and the pull then restarts from the beginning.
+`WireDoc` and `MasterState` both carry an optional `writerId`, the
 writer-attribution label from the Resource Metadata (present when the writer
 declared one, and on a tombstone the deleting request's own label).
 
@@ -702,11 +718,11 @@ a single-key collection. An envelope naming only recipients no candidate matches
 fails fast, and which error it raises depends on whether the descriptor lists
 the named epoch. An epoch the descriptor does not list at all throws
 `UnknownEpochError`, the signal that the cached Collection Metadata object is
-stale (epoch rotation emits no change-feed entry) and the codec must be rebuilt
-from a re-read descriptor. An epoch the descriptor lists but wraps only to other
-recipients throws `KeyUnwrapError`: the descriptor is current and this reader is
-simply not a recipient of that epoch (it never was, or it was removed and the
-epoch rotated), so a refresh cannot help.
+stale (epoch rotation emits no Resource entry in the change feed) and the codec
+must be rebuilt from a re-read descriptor. An epoch the descriptor lists but
+wraps only to other recipients throws `KeyUnwrapError`: the descriptor is
+current and this reader is simply not a recipient of that epoch (it never was,
+or it was removed and the epoch rotated), so a refresh cannot help.
 
 `ensureSpaceAndCollection` (`provisioning.ts`) is the idempotent setup step:
 create the Space and the collection when absent, each through the guarded create

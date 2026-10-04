@@ -13,9 +13,9 @@
  * every replication driver reports one feed's state through.
  */
 import type {
-  ChangeDocument,
   ChangesCheckpoint,
   ChangesPage,
+  ResourceChangeDocument,
   ResourceMetaStamp
 } from '@interop/storage-core'
 import type { CodecRequestContext } from '../codec.js'
@@ -33,8 +33,10 @@ export type { Json }
 export type SyncCheckpoint = ChangesCheckpoint
 
 /**
- * One document as it travels on the `changes` feed wire: `id` is the WAS
- * resource id and the stored body is under `data`. `updatedAt`,
+ * One JSON document of the `changes` feed, as the port hands it on: `id` is
+ * the WAS resource id and the stored body is under `data`. The port keeps
+ * only the feed's `kind: 'resource'` entries with a JSON `contentType`, so
+ * `kind` is always `'resource'` here. `updatedAt`,
  * `updatedAtCounter` and `originId` are the content record's write stamp, and
  * the optional nested `meta` is the `/meta` record's. Two revisions of one
  * resource are ordered by `(ms, updatedAtCounter, originId)`, with `ms` the
@@ -44,9 +46,10 @@ export type SyncCheckpoint = ChangesCheckpoint
  * exactly as the server emits them, so a puller passes one back verbatim as a
  * conditional write's `ifMatch` without a {@link WasSyncPort.get} first. A
  * tombstone carries `_deleted: true` with no `data`. This is the shared
- * `ChangeDocument` from `@interop/storage-core` with its two bodies typed as
- * `Json`, the parsed JSON they always are on the wire (the shared type leaves
- * them `unknown`); on an encrypted collection `data`/`custom` are the opaque
+ * `ResourceChangeDocument` from `@interop/storage-core` with the feed's
+ * `deleted` renamed `_deleted`, the member a replication consumer reads, and
+ * its two bodies typed as `Json`, the parsed JSON they always are on the wire
+ * (the shared type leaves them `unknown`); on an encrypted collection `data`/`custom` are the opaque
  * stored envelope, moved verbatim (decrypt is a projection-time concern the
  * engine's `DocCipher` handles, never the port). `writerId` (optional) rides
  * along on `ChangeDocument` unchanged: the writing agent's attribution label,
@@ -55,7 +58,11 @@ export type SyncCheckpoint = ChangesCheckpoint
  * puller uses it to recognize its own writes echoed back. It is not part of
  * the stamp order.
  */
-export interface WireDoc extends Omit<ChangeDocument, 'data' | 'custom'> {
+export interface WireDoc extends Omit<
+  ResourceChangeDocument,
+  'deleted' | 'data' | 'custom'
+> {
+  _deleted: boolean
   data?: Json
   custom?: Json
 }
@@ -131,7 +138,10 @@ export interface WasSyncPort {
   /**
    * Pulls one page of the `changes` feed. Omit `checkpoint` for the first page.
    * Returns the page's `documents` and its resume `checkpoint`, or
-   * `checkpoint: null` for an empty (no-change) page.
+   * `checkpoint: null` for an empty (no-change) page. The documents are the
+   * feed's JSON Resources and their tombstones only. The `checkpoint` resumes
+   * past every entry the pull skipped, so a page is empty only at the end of
+   * the feed.
    */
   query(options: {
     checkpoint?: SyncCheckpoint

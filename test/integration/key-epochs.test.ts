@@ -32,6 +32,7 @@ import type { HttpResponse } from '@interop/http-client'
 import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { isResourceChange } from '@interop/storage-core'
 
 import { WasClient, KeyUnwrapError } from '../../src/index.js'
 import type {
@@ -259,7 +260,9 @@ describeLive('multi-recipient key epochs (live server)', () => {
     expect(item?.epoch).toBe(epoch1)
 
     const changes = await ownerVault().changes()
-    const changed = changes.documents.find(document => document.id === doc1Id)
+    const changed = changes.documents
+      .filter(isResourceChange)
+      .find(document => document.id === doc1Id)
     expect(changed?.epoch).toBe(epoch1)
   })
 
