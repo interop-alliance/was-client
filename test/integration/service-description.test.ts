@@ -14,7 +14,7 @@
 import { describe, it, expect } from 'vitest'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { WasClient } from '../../src/index.js'
+import { WasClient, discoverService } from '../../src/index.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -44,13 +44,19 @@ describeLive('service discovery (live server)', () => {
     expect(info.hasFeature('listing')).toBe(true)
   })
 
-  it('finds the link on a 404 for a URL the client holds', async () => {
-    const response = await fetch(
-      new URL('space/no-such-space/c/r', `${serverUrl!.replace(/\/?$/, '/')}`),
-      { method: 'HEAD' }
+  it('discovers from a 404 on a URL the client holds', async () => {
+    // Discovery probes whatever URL the client has, which may be a resource
+    // that does not exist: the `rel="service"` link rides on the 404 too.
+    const info = await discoverService({
+      url: new URL(
+        'space/no-such-space/c/r',
+        `${serverUrl!.replace(/\/?$/, '/')}`
+      ).toString()
+    })
+    expect(info.version).toBe('0.5')
+    expect(new URL(info.description.url).origin).toBe(
+      new URL(serverUrl!).origin
     )
-    expect(response.status).toBe(404)
-    expect(response.headers.get('link')).toMatch(/rel="?service"?/)
   })
 
   it('creates and lists a Space at the advertised Spaces Repository URL', async () => {

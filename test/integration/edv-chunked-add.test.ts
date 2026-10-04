@@ -18,8 +18,9 @@ import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { WasClient } from '../../src/index.js'
+import { httpStatus, WasClient } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
+import { resourceChunkPath } from '../../src/internal/paths.js'
 import {
   createEdvEncryption,
   ensureFirstEpoch,
@@ -94,6 +95,39 @@ function blobOf(size: number): Uint8Array {
   return bytes
 }
 
+/**
+ * Reads one stored chunk resource of `resourceId` straight off the server,
+ * past the codec, to observe which path the write took. The raw escape hatch
+ * throws on a 404, so the status comes off the error in that case.
+ *
+ * @param options {object}
+ * @param options.was {WasClient}
+ * @param options.resourceId {string}
+ * @param options.chunkIndex {number}
+ * @returns {Promise<number | undefined>}   the response status
+ */
+async function chunkStatus({
+  was,
+  resourceId,
+  chunkIndex
+}: {
+  was: WasClient
+  resourceId: string
+  chunkIndex: number
+}): Promise<number | undefined> {
+  try {
+    const response = await was.request({
+      path: resourceChunkPath(spaceId, 'vault', resourceId, chunkIndex),
+      method: 'GET'
+    })
+    return response.status
+  } catch (err) {
+    return httpStatus(err)
+  }
+}
+
+let spaceId: string
+
 describeLive('collection.add(bigBlob) auto-routing (live server)', () => {
   let was: WasClient
   let space: Space
@@ -103,6 +137,7 @@ describeLive('collection.add(bigBlob) auto-routing (live server)', () => {
     let kak: IKeyAgreementKey
     ;({ was, kak } = await freshClient())
     space = await was.createSpace({ name: 'EDV Chunked Add Integration' })
+    spaceId = space.id
     const declared = await space.createCollection({
       id: 'vault',
       name: 'Vault',
@@ -136,6 +171,15 @@ describeLive('collection.add(bigBlob) auto-routing (live server)', () => {
     const out = new Uint8Array(await (read as Blob).arrayBuffer())
     expect(out.length).toBe(bytes.length)
     expect(out).toEqual(bytes)
+
+    // The blob spans several `CHUNK_SIZE` chunks, so the document carries
+    // chunk resources on the server. A single-document write stores none.
+    await expect(
+      chunkStatus({ was, resourceId: added.id, chunkIndex: 0 })
+    ).resolves.toBe(200)
+    await expect(
+      chunkStatus({ was, resourceId: added.id, chunkIndex: 1 })
+    ).resolves.toBe(200)
   })
 
   it('keeps a blob under the threshold on the single-document path', async () => {
@@ -145,5 +189,10 @@ describeLive('collection.add(bigBlob) auto-routing (live server)', () => {
     })
     const read = await collection.get(id)
     expect(new Uint8Array(await (read as Blob).arrayBuffer())).toEqual(bytes)
+
+    // Sealed into one document: no chunk resource exists under it.
+    await expect(
+      chunkStatus({ was, resourceId: id, chunkIndex: 0 })
+    ).resolves.toBe(404)
   })
 })

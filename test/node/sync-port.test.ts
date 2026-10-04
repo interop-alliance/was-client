@@ -32,7 +32,6 @@ import {
   WasServerError
 } from '../../src/index.js'
 import type { IZcap } from '../../src/index.js'
-import type { SyncStatus } from '../../src/sync/index.js'
 
 type RequestOptions = {
   path?: string
@@ -121,7 +120,8 @@ describe('createWasSyncPort.query', () => {
           updatedAt: 't1',
           updatedAtCounter: 0,
           originId: 'origin-a',
-          checkpoint: 'c1'
+          checkpoint: 'c1',
+          writerId: 'writer-a'
         }
       ],
       checkpoint: 'c1'
@@ -134,28 +134,6 @@ describe('createWasSyncPort.query', () => {
 
     expect(changes).toHaveBeenCalledWith({ checkpoint, limit: 50 })
     expect(result).toEqual(page)
-  })
-
-  it('surfaces writerId on a WireDoc from the changes feed', async () => {
-    const page = {
-      documents: [
-        {
-          id: 'a',
-          _deleted: false,
-          updatedAt: 't1',
-          updatedAtCounter: 0,
-          originId: 'origin-a',
-          checkpoint: 'c1',
-          writerId: 'writer-a'
-        }
-      ],
-      checkpoint: 'c1'
-    }
-    const { was } = makeWas({ changesResult: page })
-    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
-
-    const result = await port.query({ limit: 50 })
-    expect(result.documents[0]!.writerId).toBe('writer-a')
   })
 
   it('maps a refused checkpoint to WasSyncCheckpointError, carrying the problems', async () => {
@@ -937,7 +915,7 @@ describe('createWasSyncPort mapAuthErrors', () => {
       collectionId: COLL,
       mapAuthErrors: true
     })
-    expect((await port.get({ id: 'res-1' }))?.etag).toBeDefined()
+    expect((await port.get({ id: 'res-1' }))?.etag).toBe('"g.4"')
   })
 
   it('raises the not-found signal on a /meta 404 when off', async () => {
@@ -1081,12 +1059,5 @@ describe('createWasSyncPort error classification', () => {
     expect(err).toBeInstanceOf(WasSyncAuthError)
     expect(err).toMatchObject({ status: 403, requestUrl: raw.requestUrl })
     expect((err as Error).cause).toBe(raw)
-  })
-})
-
-describe('SyncStatus', () => {
-  it('names the four states a feed reports', () => {
-    const states: SyncStatus[] = ['idle', 'syncing', 'synced', 'error']
-    expect(states).toHaveLength(4)
   })
 })

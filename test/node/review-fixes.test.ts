@@ -440,15 +440,16 @@ describe('Resource conditional writes', () => {
   /**
    * A plaintext collection that serves a validator on every read and ack. The
    * `unreadable` variant answers the Collection Metadata read with the 404 WAS
-   * masks an unauthorized read as. Records every request's method and URL.
+   * masks an unauthorized read as. Records every request's method, URL, and
+   * `If-Match` header.
    *
    * @param [readable] {boolean}   whether the Collection Metadata object reads
    * @returns {object}
    */
   function plaintextClient(readable = true) {
-    const calls: Array<{ method?: string; url?: string }> = []
-    const client = clientWithStub(({ method, url }) => {
-      calls.push({ method, url })
+    const calls: Array<{ method?: string; url?: string; ifMatch?: string }> = []
+    const client = clientWithStub(({ method, url, headers }) => {
+      calls.push({ method, url, ifMatch: headers?.['if-match'] })
       if (method === 'GET') {
         if (!readable) {
           throw Object.assign(new Error('HTTP 404'), { status: 404 })
@@ -477,32 +478,68 @@ describe('Resource conditional writes', () => {
     const { resource, calls } = walkedResource()
     await resource.put({ a: 1 }, { ifMatch: '"g.1"' })
     expect(calls.filter(call => call.url?.endsWith('/backend'))).toEqual([])
-    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([
+      {
+        method: 'PUT',
+        url: 'https://was.example/space/s/c/r',
+        ifMatch: '"g.1"'
+      }
+    ])
   })
 
   it('sends an unguarded put', async () => {
     const { resource, calls } = walkedResource()
     await resource.put({ a: 1 })
-    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([
+      {
+        method: 'PUT',
+        url: 'https://was.example/space/s/c/r',
+        ifMatch: undefined
+      }
+    ])
   })
 
   it('sends a guarded and an unguarded delete', async () => {
     const { resource, calls } = walkedResource()
     await resource.delete({ ifMatch: '"g.1"' })
     await resource.delete()
-    expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'DELETE')).toEqual([
+      {
+        method: 'DELETE',
+        url: 'https://was.example/space/s/c/r',
+        ifMatch: '"g.1"'
+      },
+      {
+        method: 'DELETE',
+        url: 'https://was.example/space/s/c/r',
+        ifMatch: undefined
+      }
+    ])
   })
 
   it('sends a setMeta naming ifMatch', async () => {
     const { resource, calls } = walkedResource()
     await resource.setMeta({ custom: { name: 'A' } }, { ifMatch: '"m.1"' })
-    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([
+      {
+        method: 'PUT',
+        url: 'https://was.example/space/s/c/r/meta',
+        ifMatch: '"m.1"'
+      }
+    ])
   })
 
   it('pins setName to the validator its own read returned', async () => {
     const { resource, calls } = walkedResource()
     await resource.setName('New')
-    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
+    // The stub serves `"g.1"` on the read; the write must carry it back.
+    expect(calls.filter(call => call.method === 'PUT')).toEqual([
+      {
+        method: 'PUT',
+        url: 'https://was.example/space/s/c/r/meta',
+        ifMatch: '"g.1"'
+      }
+    ])
   })
 
   it('refuses setName when the metadata cannot be read', async () => {
@@ -525,7 +562,19 @@ describe('Resource conditional writes', () => {
 
     await resource.put({ a: 1 }, { ifMatch: '"g.1"' })
     await resource.delete({ ifMatch: '"g.1"' })
-    expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1)
-    expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(1)
+    expect(
+      calls.filter(call => call.method === 'PUT' || call.method === 'DELETE')
+    ).toEqual([
+      {
+        method: 'PUT',
+        url: 'https://was.example/space/s/c/r',
+        ifMatch: '"g.1"'
+      },
+      {
+        method: 'DELETE',
+        url: 'https://was.example/space/s/c/r',
+        ifMatch: '"g.1"'
+      }
+    ])
   })
 })

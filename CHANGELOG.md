@@ -1,5 +1,17 @@
 # @interop/was-client Changelog
 
+## 0.88.0 - TBD
+
+### Changed
+
+- `pnpm test` now runs the integration tier (`test:integration`) between the
+  unit and browser tiers. It still skips when `TEST_SERVER_URL` is unset.
+- Test audit: the guarded-write tests now assert the `If-Match` header on the
+  wire; the governed-descriptor type rule is reached by a signed wrong-type
+  append; the chunked `add()` integration test checks for chunk resources on the
+  server; service discovery from a 404 goes through `discoverService`. Removed
+  tests that could not fail or duplicated a sibling.
+
 ## 0.87.0 - 2026-10-03
 
 ### Changed

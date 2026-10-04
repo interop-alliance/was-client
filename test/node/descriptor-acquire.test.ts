@@ -252,7 +252,7 @@ describe('acquireDescriptor', () => {
     })
     expect(acquired).toEqual(descriptor)
     // The cached copy is deliberately not cleared (mirrors the offline path).
-    expect(cache._get(COLLECTION_ID)).toBeDefined()
+    expect(cache._get(COLLECTION_ID)).toEqual(descriptor)
   })
 
   it('resolves undefined on an empty description with nothing cached', async () => {
@@ -798,11 +798,3 @@ describe('createRefreshingEdvDocCipher', () => {
     })
   })
 })
-
-/**
- * `isKeyUnwrapError` (`src/descriptors/errors.ts`): the not-a-recipient half
- * of what an injected cipher throws. Matched by name, since the cipher may
- * come from a second copy of `@interop/was-client` -- and a scan that misses
- * the class drops a real, permanently-unreadable row into the undecryptable
- * bucket a host is entitled to purge.
- */

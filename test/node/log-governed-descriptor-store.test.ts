@@ -22,6 +22,7 @@ import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import { RESOURCE_LOG_METHOD } from '@interop/storage-core'
 import type { ResourceLogEntry } from '@interop/storage-core'
 import {
+  buildResourceLogEntry,
   memoryResourceLogPinStore,
   parseResourceLog,
   serializeResourceLog,
@@ -509,14 +510,18 @@ describe('logGovernedCollectionDescriptorStore over a governed collection', () =
   })
 
   it('refuses a verified head whose state is not an epoch configuration', async () => {
-    const { fake, storeOptions } = await governedFixture()
+    const { fake, writer, storeOptions } = await governedFixture()
     const [genesis] = fake._entries()
-    fake._setEntries([
-      { ...genesis!, state: { ...genesis!.state, type: 'SomethingElse' } }
-    ])
-    // The projection mirrors the (tampered) head, so only the type rule can
-    // refuse it; the entry hash no longer matches either, and the library's
-    // integrity check runs first.
+    // A properly signed and hashed append whose state carries the wrong
+    // type: the library's integrity and continuity checks both pass, so the
+    // store's own type rule is the only thing left to refuse it.
+    const foreign = await buildResourceLogEntry({
+      head: genesis!,
+      state: { ...genesis!.state, type: 'SomethingElse' },
+      controller: writer.controller,
+      signer: writer.signer
+    })
+    fake._setEntries([genesis!, foreign])
     const err = await logGovernedCollectionDescriptorStore({
       ...storeOptions,
       pinStore: memoryResourceLogPinStore()
@@ -524,6 +529,9 @@ describe('logGovernedCollectionDescriptorStore over a governed collection', () =
       .read()
       .catch(err => err)
     expect((err as Error).name).toBe('ResourceLogIntegrityError')
+    expect((err as Error).message).toMatch(
+      /"SomethingElse", not "WasEpochConfiguration"/
+    )
   })
 
   it('passes the library integrity refusal through unwrapped', async () => {

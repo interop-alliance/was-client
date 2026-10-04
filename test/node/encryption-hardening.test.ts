@@ -20,11 +20,7 @@ import type {
 } from '@interop/data-integrity-core'
 import type { HttpResponse } from '@interop/http-client'
 
-import {
-  EncryptionError,
-  IntegrityError,
-  ValidationError
-} from '../../src/index.js'
+import { EncryptionError, IntegrityError } from '../../src/index.js'
 import type { CollectionEncryption } from '../../src/index.js'
 import type { SingleWriteCodec } from '../helpers/codec.js'
 import type { Collection } from '../../src/Collection.js'
@@ -833,7 +829,5 @@ describe('epoch key id helper stays consistent', () => {
     const { epochId } = await mintEpoch()
     const kid = epochKeyIdFor(epochId)
     expect(kid.split('#')[0]).toBe(epochId)
-    // A ValidationError type is exported and usable (sanity import guard).
-    expect(ValidationError).toBeTypeOf('function')
   })
 })

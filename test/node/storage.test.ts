@@ -1678,15 +1678,6 @@ describe('Resource reserved-id guard (path-collision safety)', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('guards reads/deletes too, not just writes', async () => {
-    const { client, calls } = clientWithRequestSpy()
-    // Construction throws, so get()/delete() never even build a request.
-    expect(() => client.space('s').collection('c').resource('policy')).toThrow(
-      ValidationError
-    )
-    expect(calls).toHaveLength(0)
-  })
-
   it('allows an ordinary resource id', () => {
     const { client } = clientWithRequestSpy()
     expect(() =>

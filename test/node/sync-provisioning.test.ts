@@ -600,6 +600,9 @@ describe('ensureSpaceAndCollection', () => {
       controllerDid: DID,
       collectionId: COLL
     })
+    expect(space.replaceCalls).toEqual([])
+    expect(space.collectionObj.replaceCalls).toEqual([])
+    expect(space.collectionObj.current()!.encryption).toBe(EDV)
   })
 
   it('heals a missing world-read grant on an existing public collection', async () => {
@@ -654,21 +657,17 @@ describe('ensureSpaceAndCollection', () => {
       collectionId: COLL
     })
     expect(freshSpace.replaceCalls).toHaveLength(1)
+    expect(freshSpace.collectionObj.replaceCalls).toHaveLength(1)
 
-    const settledSpace = new FakeSpace({
-      current: { name: 'WAS Space', controller: DID },
-      collection: new FakeCollection({
-        current: { name: COLL, encryption: EDV }
-      })
-    })
+    // The second run reads the state the first run left behind.
     await ensureSpaceAndCollection({
-      was: new FakeWas(settledSpace).asClient(),
+      was: new FakeWas(freshSpace).asClient(),
       spaceId: SPACE,
       controllerDid: DID,
       collectionId: COLL
     })
-    expect(settledSpace.replaceCalls).toEqual([])
-    expect(settledSpace.collectionObj.replaceCalls).toEqual([])
+    expect(freshSpace.replaceCalls).toHaveLength(1)
+    expect(freshSpace.collectionObj.replaceCalls).toHaveLength(1)
   })
 
   it('honours a custom space name', async () => {
@@ -1174,27 +1173,5 @@ describe('ensureSpaceAndCollection with a supplied space description', () => {
     expect(space.collectionObj.replaceCalls).toEqual([
       { fields: { name: COLL, encryption: EDV }, ifNoneMatch: true }
     ])
-  })
-
-  it('rejects a description that names a different space', async () => {
-    const space = new FakeSpace()
-    const was = new FakeWas(space)
-    await expect(
-      ensureSpaceAndCollection({
-        was: was.asClient(),
-        spaceId: SPACE,
-        controllerDid: DID,
-        collectionId: COLL,
-        spaceDescription: {
-          id: 'urn:uuid:a-different-space',
-          type: ['Space'],
-          controller: DID
-        } as never
-      })
-    ).rejects.toThrow(ValidationError)
-
-    // Caught before anything is provisioned: supplying the description skips
-    // the Space half, so the mismatch would leave `spaceId` unensured.
-    expect(space.describeCalls).toBe(0)
   })
 })
