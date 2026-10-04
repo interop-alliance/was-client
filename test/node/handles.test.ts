@@ -20,7 +20,7 @@ import {
 import type { IDID } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
 import {
-  clientWithStub,
+  clientWithRequestSpy,
   jsonResponse,
   serviceDescriptionFor
 } from '../helpers/stubClient.js'
@@ -163,31 +163,6 @@ describe('fromCapability', () => {
     ).toThrow(/sub-resource/)
   })
 })
-
-/**
- * Builds a `WasClient` over a stub `ZcapClient` that records the most recent
- * `request(...)` call and either returns a canned 204 or throws an error
- * carrying the given HTTP status (so `mapError` sees a real status).
- *
- * @param options {object}
- * @param [options.fail] {number}   an HTTP status to throw instead of
- *   succeeding
- * @returns {object} { client, lastRequest }
- */
-function clientWithRequestSpy({ fail }: { fail?: number } = {}): {
-  client: WasClient
-  lastRequest: () => RequestArgs | undefined
-} {
-  let captured: RequestArgs | undefined
-  const client = clientWithStub(args => {
-    captured = args
-    if (fail !== undefined) {
-      throw { status: fail, response: { status: fail } }
-    }
-    return jsonResponse()
-  })
-  return { client, lastRequest: () => captured }
-}
 
 describe('Space.deleteWithOutcome / delete', () => {
   it('deleteWithOutcome() resolves { outcome: "deleted" } on a 2xx response', async () => {

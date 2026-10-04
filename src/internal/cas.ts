@@ -13,6 +13,7 @@
  */
 import { PreconditionFailedError, ValidationError } from '../errors.js'
 import { unenforcedPreconditionError } from './conditional.js'
+import type { WritePrecondition } from './conditional.js'
 
 /**
  * How many times {@link compareAndSwap} retries a stale (`412`) write before
@@ -248,10 +249,7 @@ export async function composeAndSwap<B, W extends object, R>({
   read: () => Promise<{ value: B; etag?: string }>
   current?: { value: B; etag?: string }
   compose: (baseline: B) => W | Promise<W>
-  write: (
-    body: W,
-    precondition: { ifMatch?: string; ifNoneMatch?: boolean }
-  ) => Promise<R>
+  write: (body: W, precondition: WritePrecondition) => Promise<R>
   operation: string
   maxAttempts?: number
 }): Promise<R> {

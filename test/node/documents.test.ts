@@ -117,7 +117,12 @@ describe('Collection.documents()', () => {
       // A page of skipped entries alone is not the end of the walk.
       'cp-3': {
         documents: [
-          recordEntry('policy', 'cp-4'),
+          feedEntry({
+            kind: 'policy',
+            id: 'https://was.example/space/s/notes/a/policy',
+            checkpoint: 'cp-4',
+            deleted: true
+          }),
           feedEntry({
             id: 'pic',
             checkpoint: 'cp-5',
@@ -261,16 +266,49 @@ describe('Collection.changes() record kinds', () => {
       recordEntry('collection-metadata', 'cp-1'),
       feedEntry({ id: 'a', checkpoint: 'cp-2', data: { n: 1 } }),
       recordEntry('log', 'cp-3'),
-      recordEntry('policy', 'cp-4')
+      recordEntry('policy', 'cp-4'),
+      recordEntry('future-kind', 'cp-5')
     ]
     const { notes } = collectionWithFeed({
-      '': { documents, checkpoint: 'cp-4' }
+      '': { documents, checkpoint: 'cp-5' }
     })
 
     await expect(notes.changes()).resolves.toEqual({
       documents,
-      checkpoint: 'cp-4'
+      checkpoint: 'cp-5'
     })
+  })
+
+  it('passes live and deleted policy documents through, and documents() skips them', async () => {
+    const policies = [
+      // The Collection's own policy, live.
+      feedEntry({
+        kind: 'policy',
+        id: 'https://was.example/space/s/notes/policy',
+        checkpoint: 'cp-2'
+      }),
+      // A Resource's policy, deleted.
+      feedEntry({
+        kind: 'policy',
+        id: 'https://was.example/space/s/notes/a/policy',
+        checkpoint: 'cp-3',
+        deleted: true
+      })
+    ]
+    const documents = [
+      feedEntry({ id: 'a', checkpoint: 'cp-1', data: { n: 1 } }),
+      ...policies
+    ]
+    const { notes } = collectionWithFeed({
+      '': { documents, checkpoint: 'cp-3' },
+      'cp-3': { documents: [], checkpoint: null }
+    })
+
+    const page = await notes.changes()
+    expect(page.documents).toEqual(documents)
+
+    const docs = await notes.documents()
+    expect(docs!.map(doc => doc.id)).toEqual(['a'])
   })
 
   it('accepts a binary or text/jsonl Resource with no data', async () => {

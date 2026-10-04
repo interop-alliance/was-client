@@ -2,59 +2,16 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for the access-control policy handle methods
- * (`getPolicy`/`setPolicy`/`setPublic`/`clearPolicy`) and `linkset()` on Space,
- * Collection, and Resource. A stub `ZcapClient` captures the request args and
- * returns a canned `HttpResponse`, so no signer or server is involved.
+ * Unit tests for the access-control policy handle methods (`getPolicy`,
+ * `getPolicyWithEtag`, `setPolicy`, `setPublic`, `clearPolicy`) and
+ * `linkset()` on Space, Collection, and Resource. A stub `ZcapClient`
+ * captures the request args and returns a canned `HttpResponse`, so no signer
+ * or server is involved.
  */
 import { describe, it, expect } from 'vitest'
 
-import type { HttpResponse } from '@interop/http-client'
-import type { WasClient } from '../../src/index.js'
-import { clientWithStub } from '../helpers/stubClient.js'
-
-interface RequestArgs {
-  url?: string
-  method?: string
-  action?: string
-  json?: unknown
-  capability?: unknown
-}
-
-/**
- * Builds a `WasClient` over a stub `ZcapClient` that records the most recent
- * `request(...)` call and returns a canned response. When `fail` is set, the
- * stub throws an error carrying that HTTP status (to exercise 404 -> null).
- *
- * @param options {object}
- * @param [options.data] {unknown}   the response `data` payload
- * @param [options.fail] {number}    an HTTP status to throw instead
- * @returns {object} { client, lastRequest }
- */
-function clientWithRequestSpy({
-  data,
-  fail
-}: { data?: unknown; fail?: number } = {}): {
-  client: WasClient
-  lastRequest: () => RequestArgs | undefined
-} {
-  let captured: RequestArgs | undefined
-  const client = clientWithStub(async (args: RequestArgs) => {
-    captured = args
-    if (fail !== undefined) {
-      throw { status: fail, response: { status: fail } }
-    }
-    return {
-      status: 200,
-      headers: new Headers(),
-      data,
-      async json() {
-        return data
-      }
-    } as unknown as HttpResponse
-  })
-  return { client, lastRequest: () => captured }
-}
+import type { Collection, Resource, Space, WasClient } from '../../src/index.js'
+import { clientWithRequestSpy } from '../helpers/stubClient.js'
 
 describe('policy handle methods', () => {
   it('setPublic() PUTs { type: PublicCanRead } to the collection policy', async () => {
@@ -103,6 +60,122 @@ describe('policy handle methods', () => {
     const { client, lastRequest } = clientWithRequestSpy()
     await client.space('s').collection('c').resource('r').setPublic()
     expect(lastRequest()?.url).toBe('https://was.example/space/s/c/r/policy')
+  })
+
+  it('getPolicyWithEtag() returns null when no policy is set (404)', async () => {
+    const { client } = clientWithRequestSpy({ fail: 404 })
+    expect(
+      await client.space('s').collection('c').getPolicyWithEtag()
+    ).toBeNull()
+  })
+
+  it('setPolicy() with ifNoneMatch sends If-None-Match: *', async () => {
+    const { client, lastRequest } = clientWithRequestSpy({ etag: '"p1"' })
+    await client
+      .space('s')
+      .collection('c')
+      .setPolicy({ type: 'PublicCanRead' }, { ifNoneMatch: true })
+    expect(lastRequest()?.headers?.['if-none-match']).toBe('*')
+    expect(lastRequest()?.headers?.['if-match']).toBeUndefined()
+  })
+
+  it('setPolicy() with no precondition sends no conditional headers', async () => {
+    const { client, lastRequest } = clientWithRequestSpy()
+    await client.space('s').collection('c').setPolicy({ type: 'PublicCanRead' })
+    expect(lastRequest()?.headers).toBeUndefined()
+  })
+
+  it('setPolicy() rejects ifMatch and ifNoneMatch together, sending nothing', async () => {
+    const { client, lastRequest } = clientWithRequestSpy()
+    await expect(
+      client
+        .space('s')
+        .collection('c')
+        .setPolicy(
+          { type: 'PublicCanRead' },
+          { ifMatch: '"p1"', ifNoneMatch: true }
+        )
+    ).rejects.toMatchObject({ name: 'ValidationError' })
+    expect(lastRequest()).toBeUndefined()
+  })
+
+  it('setPublic() passes ifMatch through and returns the new ETag', async () => {
+    const { client, lastRequest } = clientWithRequestSpy({ etag: '"p2"' })
+    const result = await client
+      .space('s')
+      .collection('c')
+      .setPublic({ ifMatch: '"p1"' })
+    expect(lastRequest()?.json).toEqual({ type: 'PublicCanRead' })
+    expect(lastRequest()?.headers?.['if-match']).toBe('"p1"')
+    expect(result).toEqual({ etag: '"p2"' })
+  })
+
+  it('clearPolicy() of an absent policy returns no ETag', async () => {
+    const { client } = clientWithRequestSpy()
+    expect(await client.space('s').collection('c').clearPolicy()).toEqual({
+      etag: undefined
+    })
+  })
+
+  describe('ETag round trip', () => {
+    const itRoundTripsEtag = (
+      level: string, // 'space', 'collection', 'resource'
+      policyUrl: string,
+      getHandle: (client: WasClient) => Space | Collection | Resource
+    ): void => {
+      describe(level, () => {
+        it('getPolicyWithEtag() returns the policy with its ETag', async () => {
+          const { client, lastRequest } = clientWithRequestSpy({
+            data: { type: 'PublicCanRead', updatedAtCounter: 1 },
+            etag: '"p1"'
+          })
+          const read = await getHandle(client).getPolicyWithEtag()
+          expect(lastRequest()?.url).toBe(policyUrl)
+          expect(lastRequest()?.method).toBe('GET')
+          expect(read).toEqual({
+            policy: { type: 'PublicCanRead', updatedAtCounter: 1 },
+            etag: '"p1"'
+          })
+        })
+
+        it('setPolicy() sends If-Match and returns the new ETag', async () => {
+          const { client, lastRequest } = clientWithRequestSpy({ etag: '"p2"' })
+          const result = await getHandle(client).setPolicy(
+            { type: 'PublicCanRead' },
+            { ifMatch: '"p1"' }
+          )
+          expect(lastRequest()?.url).toBe(policyUrl)
+          expect(lastRequest()?.headers?.['if-match']).toBe('"p1"')
+          expect(lastRequest()?.headers?.['if-none-match']).toBeUndefined()
+          expect(result).toEqual({ etag: '"p2"' })
+        })
+
+        it('clearPolicy() sends If-Match and returns the tombstone ETag', async () => {
+          const { client, lastRequest } = clientWithRequestSpy({ etag: '"p3"' })
+          const result = await getHandle(client).clearPolicy({
+            ifMatch: '"p2"'
+          })
+          expect(lastRequest()?.url).toBe(policyUrl)
+          expect(lastRequest()?.method).toBe('DELETE')
+          expect(lastRequest()?.headers?.['if-match']).toBe('"p2"')
+          expect(result).toEqual({ etag: '"p3"' })
+        })
+      })
+    }
+
+    itRoundTripsEtag('space', 'https://was.example/space/s/policy', client =>
+      client.space('s')
+    )
+    itRoundTripsEtag(
+      'collection',
+      'https://was.example/space/s/c/policy',
+      client => client.space('s').collection('c')
+    )
+    itRoundTripsEtag(
+      'resource',
+      'https://was.example/space/s/c/r/policy',
+      client => client.space('s').collection('c').resource('r')
+    )
   })
 
   describe('isPublic()', () => {

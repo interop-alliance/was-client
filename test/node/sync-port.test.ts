@@ -180,15 +180,25 @@ describe('createWasSyncPort.query', () => {
             kind: 'log',
             checkpoint: 'c3'
           }),
-          feedEntry({ id: 'https://x/p', kind: 'policy', checkpoint: 'c4' }),
+          feedEntry({
+            id: 'https://x/policy',
+            kind: 'policy',
+            checkpoint: 'c4'
+          }),
           feedEntry({ id: 'pic', contentType: 'image/png', checkpoint: 'c5' }),
           feedEntry({
             id: 'did.jsonl',
             contentType: 'text/jsonl',
             checkpoint: 'c6'
+          }),
+          feedEntry({
+            id: 'https://x/a/policy',
+            kind: 'policy',
+            deleted: true,
+            checkpoint: 'c7'
           })
         ],
-        checkpoint: 'c6'
+        checkpoint: 'c7'
       }
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
@@ -196,7 +206,7 @@ describe('createWasSyncPort.query', () => {
     const result = await port.query({ limit: 50 })
     expect(result.documents.map(doc => doc.id)).toEqual(['a'])
     // The resume point is the page's, past the skipped trailing entries.
-    expect(result.checkpoint).toBe('c6')
+    expect(result.checkpoint).toBe('c7')
   })
 
   it('resumes past a page of skipped entries instead of returning it empty', async () => {

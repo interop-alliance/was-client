@@ -536,6 +536,16 @@ const policy = await collection.getPolicy() // { type: 'PublicCanRead' } | null
 const isPublic = await collection.isPublic() // true if its own policy is PublicCanRead
 await collection.clearPolicy() // revert to capability-only access (idempotent)
 
+// Conditional writes: the policy carries an ETag and a write stamp.
+const read = await collection.getPolicyWithEtag() // { policy, etag } | null
+// read.policy also carries updatedAt / updatedAtCounter / originId
+const { etag } = await collection.setPolicy(
+  { type: 'PublicCanRead' },
+  // 412 PreconditionFailedError if created or changed meanwhile
+  read === null ? { ifNoneMatch: true } : { ifMatch: read.etag }
+)
+await collection.clearPolicy({ ifMatch: etag }) // returns the tombstone's { etag }
+
 // setPolicy() is the generic, forward-compatible primitive; setPublic() is sugar.
 await space.setPolicy({ type: 'PublicCanRead' }) // inherited by all contents
 await resource.setPublic() // a single public resource

@@ -66,6 +66,7 @@ import {
   readEtag,
   writeHeaders
 } from './internal/conditional.js'
+import type { WritePrecondition } from './internal/conditional.js'
 import { compareAndSwap, composeAndSwap } from './internal/cas.js'
 import {
   readCollectionMetadata,
@@ -75,6 +76,7 @@ import {
 import { codecRequestContext, insertResource } from './internal/write.js'
 import {
   readPolicy,
+  readPolicyWithEtag,
   writePolicy,
   deletePolicy,
   isPublicPolicy,
@@ -467,7 +469,7 @@ export class Collection {
     assertSinglePrecondition({ ifMatch, ifNoneMatch })
     const put = async (
       body: StoredCollectionMetadata,
-      precondition: { ifMatch?: string; ifNoneMatch?: boolean }
+      precondition: WritePrecondition
     ): Promise<{ metadata?: CollectionMetadata; etag?: string }> => {
       // A write supersedes whatever this handle last read, even one that loses
       // (a `412`), so a rebase never reuses that read.
@@ -714,7 +716,7 @@ export class Collection {
    */
   async replaceDescription(
     description: CollectionWritableFields,
-    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+    options: WritePrecondition = {}
   ): Promise<{ description: CollectionMetadata; etag?: string }> {
     const fields = collectionWritableFields(description)
     const { metadata, etag } = await this.#writeStored({
@@ -953,7 +955,7 @@ export class Collection {
    */
   async setMeta(
     meta: { custom?: ResourceMetadataCustomInput } = {},
-    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+    options: WritePrecondition = {}
   ): Promise<{ etag?: string }> {
     const codec = await this.#codecForWrite(options.ifNoneMatch === true)
     const { custom, epoch } = await codec.encodeMeta({
@@ -1123,7 +1125,7 @@ export class Collection {
    */
   async putHistoryLog(
     body: string,
-    options: { ifMatch?: string; ifNoneMatch?: boolean }
+    options: WritePrecondition
   ): Promise<{ etag?: string }> {
     if (options.ifMatch === undefined && !options.ifNoneMatch) {
       throw new ValidationError(
@@ -1651,7 +1653,9 @@ export class Collection {
    * whatever its content type; it carries `data` inline only when it is a live
    * JSON Resource, and a reader fetches any other representation. The
    * `collection-metadata` and `log` kinds name the Collection's own records by
-   * their absolute URL in `id` and carry no body. A tombstone of any kind has
+   * their absolute URL in `id` and carry no body. A `policy` document names an
+   * access-control policy (the Collection's own or a Resource's) by its
+   * absolute URL in `id`, also with no body. A tombstone of any kind has
    * `deleted: true`. Skip a `kind` you do not know: the server may add kinds.
    * `isResourceChange` from `@interop/storage-core` (re-exported here) narrows
    * to Resources, `isJsonResourceChange` to JSON Resources.
@@ -1760,11 +1764,11 @@ export class Collection {
    * Walks the `changes` feed page by page from `checkpoint` (or the beginning)
    * to its end, yielding each page's `kind: 'resource'` entries (live or
    * tombstone, any content type) with that page's resume `checkpoint`. The
-   * Collection's own records (`collection-metadata`, `log`) and any kind this
-   * client does not know are dropped, so a yielded page may be empty while
-   * its `checkpoint` still moves past the dropped entries. A consumer that
-   * stops on an empty page must store that checkpoint, or it re-reads those
-   * entries forever.
+   * Collection's own records (`collection-metadata`, `log`), `policy`
+   * documents, and any kind this client does not know are dropped, so a
+   * yielded page may be empty while its `checkpoint` still moves past the
+   * dropped entries. A consumer that stops on an empty page must store that
+   * checkpoint, or it re-reads those entries forever.
    *
    * The walk ends only on the feed's `checkpoint: null` (or an omitted
    * checkpoint); a short page is not the end (see `changes()`). Checkpoints
@@ -1814,10 +1818,11 @@ export class Collection {
    * snapshots a collection in a handful of round trips.
    *
    * Only `kind: 'resource'` entries with a JSON `contentType` are kept. The
-   * Collection's own records (`collection-metadata`, `log`), a kind this
-   * client does not know, and a binary or `text/jsonl` Resource are skipped,
-   * and the walk still resumes from each page's own `checkpoint` (see
-   * `resourceChanges()`). The feed is in the server's feed-position order and
+   * Collection's own records (`collection-metadata`, `log`), `policy`
+   * documents, a kind this client does not know, and a binary or `text/jsonl`
+   * Resource are skipped, and the walk still resumes from each page's own
+   * `checkpoint` (see `resourceChanges()`). The feed is in the server's
+   * feed-position order and
    * carries tombstones, so the pages reduce to the latest state per id: a
    * later entry for an id replaces an earlier one (a resource rewritten while
    * the walk was in flight), and a tombstone or a rewrite to a non-JSON type
@@ -1886,6 +1891,10 @@ export class Collection {
    * controller-level operation; a capability scoped to the collection does not
    * cover its policy sub-resource.
    *
+   * The body carries the server-derived write stamp of the policy's last write
+   * (`updatedAt`, `updatedAtCounter`, `originId`); use
+   * {@link getPolicyWithEtag} for its `ETag` validator as well.
+   *
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
@@ -1896,15 +1905,49 @@ export class Collection {
   }
 
   /**
+   * Reads the collection's access-control policy together with its `ETag`
+   * validator. The `ETag` is the opaque validator to pass to
+   * {@link setPolicy}'s or {@link clearPolicy}'s `ifMatch` for a
+   * lost-update-safe (compare-and-swap) policy write. Like {@link getPolicy},
+   * returns `null` when no policy is set (or it is not visible to you); `etag`
+   * is absent only where the header did not reach the client.
+   *
+   * @returns {Promise<{ policy: PolicyDocument; etag?: string } | null>}
+   */
+  async getPolicyWithEtag(): Promise<{
+    policy: PolicyDocument
+    etag?: string
+  } | null> {
+    return readPolicyWithEtag(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
+    })
+  }
+
+  /**
    * Sets (creates or replaces) the collection's access-control policy.
    *
+   * Conditional policy writes: pass `ifMatch` (the `etag` from a prior
+   * {@link getPolicyWithEtag}) for an update-if-unchanged, or
+   * `ifNoneMatch: true` for a write-only-if-no-policy. A failed precondition
+   * throws `PreconditionFailedError` (412). Naming both throws
+   * `ValidationError`. Returns the new `etag`.
+   *
    * @param policy {PolicyDocument}
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}       update only if the policy ETag matches
+   * @param [options.ifNoneMatch] {boolean}  write only if no policy is set
+   * @returns {Promise<{ etag?: string }>}   the policy's new ETag
    */
-  async setPolicy(policy: PolicyDocument): Promise<void> {
+  async setPolicy(
+    policy: PolicyDocument,
+    { ifMatch, ifNoneMatch }: WritePrecondition = {}
+  ): Promise<{ etag?: string }> {
     return writePolicy(this.#context, {
       policyPath: this.#policyPath,
       policy,
+      ifMatch,
+      ifNoneMatch,
       capability: this.#capability
     })
   }
@@ -1927,25 +1970,43 @@ export class Collection {
    * Makes the collection world-readable: every resource in it becomes readable
    * without authorization (unless overridden by a more specific policy). Sugar
    * for `setPolicy({ type: 'PublicCanRead' })`.
+   * Takes the same precondition options as {@link setPolicy}.
    *
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}       update only if the policy ETag matches
+   * @param [options.ifNoneMatch] {boolean}  write only if no policy is set
+   * @returns {Promise<{ etag?: string }>}   the policy's new ETag
    */
-  async setPublic(): Promise<void> {
+  async setPublic({ ifMatch, ifNoneMatch }: WritePrecondition = {}): Promise<{
+    etag?: string
+  }> {
     return setPublicPolicy(this.#context, {
       policyPath: this.#policyPath,
+      ifMatch,
+      ifNoneMatch,
       capability: this.#capability
     })
   }
 
   /**
    * Removes the collection's access-control policy, reverting it to
-   * capability-only access. Idempotent.
+   * capability-only access. Idempotent: clearing an absent policy succeeds.
+   * The server keeps a tombstone in the policy's place. Pass `ifMatch` (the
+   * `etag` from a prior {@link getPolicyWithEtag}) to delete only if the
+   * policy is unchanged; a failed precondition throws
+   * `PreconditionFailedError` (412).
    *
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}   delete only if the policy ETag matches
+   * @returns {Promise<{ etag?: string }>}   the tombstone's ETag; absent when
+   *   there was no policy to delete
    */
-  async clearPolicy(): Promise<void> {
+  async clearPolicy({ ifMatch }: { ifMatch?: string } = {}): Promise<{
+    etag?: string
+  }> {
     return deletePolicy(this.#context, {
       policyPath: this.#policyPath,
+      ifMatch,
       capability: this.#capability
     })
   }

@@ -14,8 +14,7 @@ import { WasClient, ValidationError, NotFoundError } from '../../src/index.js'
 import type { IDelegatedZcap } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
 import {
-  clientWithStub,
-  jsonResponse,
+  clientWithRequestSpy,
   serviceDescriptionFor
 } from '../helpers/stubClient.js'
 
@@ -53,32 +52,6 @@ function delegatedZcap({
       proofValue: 'zStubProofValue'
     }
   }
-}
-
-/**
- * Builds a `WasClient` over a stub `ZcapClient` that records the most recent
- * `request(...)` call and answers with `response` (a 204 by default), or throws
- * `rejectWith` when given.
- *
- * @param [options] {object}
- * @param [options.rejectWith] {unknown}   an error the stub request throws
- * @returns {object}
- * @returns return.client {WasClient}
- * @returns return.lastRequest {function} returns the captured request args
- */
-function clientWithRequestSpy({ rejectWith }: { rejectWith?: unknown } = {}): {
-  client: WasClient
-  lastRequest: () => RequestArgs | undefined
-} {
-  let captured: RequestArgs | undefined
-  const client = clientWithStub(args => {
-    captured = args
-    if (rejectWith !== undefined) {
-      throw rejectWith
-    }
-    return jsonResponse()
-  })
-  return { client, lastRequest: () => captured }
 }
 
 describe('space.revoke (revocation)', () => {
@@ -145,18 +118,7 @@ describe('space.revoke (revocation)', () => {
 
   describe('error mapping', () => {
     it('maps the resubmission 400 to ValidationError (not idempotent)', async () => {
-      const { client } = clientWithRequestSpy({
-        rejectWith: {
-          status: 400,
-          data: {
-            type: 'https://w3id.org/pws#invalid-request-body',
-            title: 'Invalid Revoke Capability request',
-            errors: [
-              { detail: 'The provided capability delegation is invalid.' }
-            ]
-          }
-        }
-      })
+      const { client } = clientWithRequestSpy({ fail: 400 })
       const error = await client
         .space('space-1')
         .revoke(delegatedZcap())
@@ -167,7 +129,7 @@ describe('space.revoke (revocation)', () => {
     })
 
     it('maps the non-participant 404 to NotFoundError', async () => {
-      const { client } = clientWithRequestSpy({ rejectWith: { status: 404 } })
+      const { client } = clientWithRequestSpy({ fail: 404 })
 
       await expect(
         client.space('space-1').revoke(delegatedZcap())

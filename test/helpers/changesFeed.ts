@@ -12,9 +12,9 @@ export const FEED_UPDATED_AT = '2026-01-01T00:00:00.000Z'
 
 /**
  * One feed entry. `kind` defaults to a JSON Resource; any other kind is the
- * Collection's own record (or one this client does not know), named by its
- * URL, with no `contentType` and no body. A live JSON Resource with no `data`
- * models the server's own read-fault shape.
+ * Collection's own record, a policy (or a kind this client does not know),
+ * named by its URL, with no `contentType` and no body. A live JSON Resource
+ * with no `data` models the server's own read-fault shape.
  *
  * @param options {object}
  * @param options.id {string}
@@ -56,7 +56,8 @@ export function feedEntry({
 /**
  * A feed entry for one of the Collection's own records, named by URL.
  *
- * @param kind {string}   `collection-metadata`, `log`, or an unknown kind
+ * @param kind {string}   `collection-metadata`, `log`, `policy`, or an
+ *   unknown kind
  * @param checkpoint {string}
  * @returns {ChangeDocument}
  */

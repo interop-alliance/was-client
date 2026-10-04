@@ -13,12 +13,14 @@ import type { ClientContext } from './internal/request.js'
 import { send } from './internal/request.js'
 import { collectionCodecHolder } from './internal/codec.js'
 import { writeHeaders, readEtag } from './internal/conditional.js'
+import type { WritePrecondition } from './internal/conditional.js'
 import { withCodec } from './internal/withCodec.js'
 import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
 import { ENCODER, decodedText } from './internal/content.js'
 import { codecRequestContext, upsertResource } from './internal/write.js'
 import {
   readPolicy,
+  readPolicyWithEtag,
   writePolicy,
   deletePolicy,
   isPublicPolicy,
@@ -404,7 +406,7 @@ export class Resource {
    */
   async setMeta(
     meta: { custom?: ResourceMetadataCustom } = {},
-    options: { ifMatch?: string; ifNoneMatch?: boolean } = {}
+    options: WritePrecondition = {}
   ): Promise<{ etag?: string }> {
     return writeMeta(this.#context, {
       metaPath: this.#metaPath,
@@ -451,6 +453,10 @@ export class Resource {
    * set (or it is not visible to you). Managing a policy is a controller-level
    * operation.
    *
+   * The body carries the server-derived write stamp of the policy's last write
+   * (`updatedAt`, `updatedAtCounter`, `originId`); use
+   * {@link getPolicyWithEtag} for its `ETag` validator as well.
+   *
    * @returns {Promise<PolicyDocument | null>}
    */
   async getPolicy(): Promise<PolicyDocument | null> {
@@ -461,15 +467,49 @@ export class Resource {
   }
 
   /**
+   * Reads the resource's access-control policy together with its `ETag`
+   * validator. The `ETag` is the opaque validator to pass to
+   * {@link setPolicy}'s or {@link clearPolicy}'s `ifMatch` for a
+   * lost-update-safe (compare-and-swap) policy write. Like {@link getPolicy},
+   * returns `null` when no policy is set (or it is not visible to you); `etag`
+   * is absent only where the header did not reach the client.
+   *
+   * @returns {Promise<{ policy: PolicyDocument; etag?: string } | null>}
+   */
+  async getPolicyWithEtag(): Promise<{
+    policy: PolicyDocument
+    etag?: string
+  } | null> {
+    return readPolicyWithEtag(this.#context, {
+      policyPath: this.#policyPath,
+      capability: this.#capability
+    })
+  }
+
+  /**
    * Sets (creates or replaces) the resource's access-control policy.
    *
+   * Conditional policy writes: pass `ifMatch` (the `etag` from a prior
+   * {@link getPolicyWithEtag}) for an update-if-unchanged, or
+   * `ifNoneMatch: true` for a write-only-if-no-policy. A failed precondition
+   * throws `PreconditionFailedError` (412). Naming both throws
+   * `ValidationError`. Returns the new `etag`.
+   *
    * @param policy {PolicyDocument}
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}       update only if the policy ETag matches
+   * @param [options.ifNoneMatch] {boolean}  write only if no policy is set
+   * @returns {Promise<{ etag?: string }>}   the policy's new ETag
    */
-  async setPolicy(policy: PolicyDocument): Promise<void> {
+  async setPolicy(
+    policy: PolicyDocument,
+    { ifMatch, ifNoneMatch }: WritePrecondition = {}
+  ): Promise<{ etag?: string }> {
     return writePolicy(this.#context, {
       policyPath: this.#policyPath,
       policy,
+      ifMatch,
+      ifNoneMatch,
       capability: this.#capability
     })
   }
@@ -477,12 +517,20 @@ export class Resource {
   /**
    * Makes this single resource world-readable: it becomes readable without
    * authorization. Sugar for `setPolicy({ type: 'PublicCanRead' })`.
+   * Takes the same precondition options as {@link setPolicy}.
    *
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}       update only if the policy ETag matches
+   * @param [options.ifNoneMatch] {boolean}  write only if no policy is set
+   * @returns {Promise<{ etag?: string }>}   the policy's new ETag
    */
-  async setPublic(): Promise<void> {
+  async setPublic({ ifMatch, ifNoneMatch }: WritePrecondition = {}): Promise<{
+    etag?: string
+  }> {
     return setPublicPolicy(this.#context, {
       policyPath: this.#policyPath,
+      ifMatch,
+      ifNoneMatch,
       capability: this.#capability
     })
   }
@@ -503,13 +551,23 @@ export class Resource {
 
   /**
    * Removes the resource's access-control policy, reverting it to
-   * capability-only access. Idempotent.
+   * capability-only access. Idempotent: clearing an absent policy succeeds.
+   * The server keeps a tombstone in the policy's place. Pass `ifMatch` (the
+   * `etag` from a prior {@link getPolicyWithEtag}) to delete only if the
+   * policy is unchanged; a failed precondition throws
+   * `PreconditionFailedError` (412).
    *
-   * @returns {Promise<void>}
+   * @param options {object}
+   * @param [options.ifMatch] {string}   delete only if the policy ETag matches
+   * @returns {Promise<{ etag?: string }>}   the tombstone's ETag; absent when
+   *   there was no policy to delete
    */
-  async clearPolicy(): Promise<void> {
+  async clearPolicy({ ifMatch }: { ifMatch?: string } = {}): Promise<{
+    etag?: string
+  }> {
     return deletePolicy(this.#context, {
       policyPath: this.#policyPath,
+      ifMatch,
       capability: this.#capability
     })
   }

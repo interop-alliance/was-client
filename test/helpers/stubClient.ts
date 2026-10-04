@@ -105,3 +105,40 @@ export function jsonResponse({
     }
   } as unknown as HttpResponse
 }
+
+/**
+ * A stubbed `WasClient` that records every request and answers each with the
+ * same canned response. `data` is the JSON body (`undefined` for a bodiless
+ * reply), `etag` the response `ETag` header (none when left out), and `fail`
+ * an HTTP status to throw instead, in the shape `@interop/http-client` rejects
+ * with.
+ *
+ * @param [options] {object}
+ * @param [options.data] {unknown}   the response `data` payload
+ * @param [options.fail] {number}    an HTTP status to throw instead
+ * @param [options.etag] {string}    the response `ETag` header, if any
+ * @returns {object} { client, calls, lastRequest }
+ */
+export function clientWithRequestSpy({
+  data,
+  fail,
+  etag
+}: { data?: unknown; fail?: number; etag?: string } = {}): {
+  client: WasClient
+  calls: RequestArgs[]
+  lastRequest: () => RequestArgs | undefined
+} {
+  const calls: RequestArgs[] = []
+  const client = clientWithStub(args => {
+    calls.push(args)
+    if (fail !== undefined) {
+      throw { status: fail, response: { status: fail } }
+    }
+    return jsonResponse({
+      data,
+      status: 200,
+      headers: etag === undefined ? {} : { etag }
+    })
+  })
+  return { client, calls, lastRequest: () => calls.at(-1) }
+}

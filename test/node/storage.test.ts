@@ -22,52 +22,26 @@ import {
   WasServerError
 } from '../../src/index.js'
 import type { RequestArgs } from '../helpers/stubClient.js'
-import { clientWithStub, jsonResponse } from '../helpers/stubClient.js'
+import {
+  clientWithRequestSpy,
+  clientWithStub,
+  jsonResponse
+} from '../helpers/stubClient.js'
 import { installFileReader, rnBlob } from '../helpers/rnBlob.js'
 
 /**
- * Builds a `WasClient` over a stub `ZcapClient` that records every
- * `request(...)` call and returns each entry of `responses` in turn (a single
- * `data` payload is reused for every call). When `fail` is set, the stub throws
- * an error carrying that HTTP status.
+ * The shared request spy, serving an `ETag` on every response by default (a
+ * WAS server versions every resource), so a compare-and-swap write always has
+ * something to pin `If-Match` to. Pass `etag: undefined` explicitly to serve
+ * none, for the one test covering that refusal.
  *
- * Every response carries an `ETag` by default (a WAS server versions every
- * resource), so a compare-and-swap write always has something to pin
- * `If-Match` to. Pass `etag: null` to serve none, for the one test covering
- * that refusal.
- *
- * @param options {object}
- * @param [options.data] {unknown}         the response `data` payload
- * @param [options.fail] {number}          an HTTP status to throw instead
- * @param [options.etag] {string | null}   the `ETag` header to return on every
- *   response; defaults to `'"g.1"'`, or pass `null` for none
+ * @param [options] {object}   as `clientWithRequestSpy`'s
  * @returns {object} { client, calls }
  */
-function clientWithRequestSpy({
-  data,
-  fail,
-  etag = '"g.1"'
-}: {
-  data?: unknown
-  fail?: number
-  etag?: string | null
-} = {}): {
-  client: WasClient
-  calls: RequestArgs[]
-} {
-  const calls: RequestArgs[] = []
-  const client = clientWithStub(args => {
-    calls.push(args)
-    if (fail !== undefined) {
-      throw { status: fail, response: { status: fail } }
-    }
-    return jsonResponse({
-      data,
-      status: 200,
-      headers: etag !== null ? { etag } : {}
-    })
-  })
-  return { client, calls }
+function storageClient(
+  options: Parameters<typeof clientWithRequestSpy>[0] = {}
+): ReturnType<typeof clientWithRequestSpy> {
+  return clientWithRequestSpy({ etag: '"g.1"', ...options })
 }
 
 describe('space.backends()', () => {
@@ -75,7 +49,7 @@ describe('space.backends()', () => {
     const backends = [
       { id: 'default', name: 'Server Filesystem', managedBy: 'server' }
     ]
-    const { client, calls } = clientWithRequestSpy({ data: backends })
+    const { client, calls } = storageClient({ data: backends })
     const result = await client.space('s').backends()
     expect(calls[0]?.url).toBe('https://was.example/space/s/backends')
     expect(calls[0]?.method).toBe('GET')
@@ -83,7 +57,7 @@ describe('space.backends()', () => {
   })
 
   it('returns null when the space is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').backends()).toBeNull()
   })
 })
@@ -102,7 +76,7 @@ describe('space.registerBackend()', () => {
       provider: 'google-drive',
       connection: { kind: 'oauth2-google', status: 'registered' }
     }
-    const { client, calls } = clientWithRequestSpy({ data: descriptor })
+    const { client, calls } = storageClient({ data: descriptor })
     const result = await client.space('s').registerBackend(registration)
     expect(calls[0]?.url).toBe('https://was.example/space/s/backends')
     expect(calls[0]?.method).toBe('POST')
@@ -111,7 +85,7 @@ describe('space.registerBackend()', () => {
   })
 
   it('throws ConflictError when the id already exists / provider is barred (409)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 409 })
+    const { client } = storageClient({ fail: 409 })
     await expect(
       client.space('s').registerBackend(registration)
     ).rejects.toBeInstanceOf(ConflictError)
@@ -130,7 +104,7 @@ describe('space.registerBackend()', () => {
 describe('space.import()', () => {
   it('POSTs the tar and returns the import stats', async () => {
     const stats = { collections: 1, resources: 2 }
-    const { client, calls } = clientWithRequestSpy({ data: stats })
+    const { client, calls } = storageClient({ data: stats })
     const result = await client.space('s').import(new Uint8Array([1, 2, 3]))
     expect(calls[0]?.method).toBe('POST')
     expect(calls[0]?.url).toBe('https://was.example/space/s/import')
@@ -161,7 +135,7 @@ describe('space.updateBackend()', () => {
       provider: 'google-drive',
       connection: { kind: 'oauth2-google', status: 'registered' }
     }
-    const { client, calls } = clientWithRequestSpy({ data: descriptor })
+    const { client, calls } = storageClient({ data: descriptor })
     const result = await client.space('s').updateBackend(registration)
     expect(calls[0]?.url).toBe(
       'https://was.example/space/s/backends/gdrive-personal'
@@ -173,14 +147,14 @@ describe('space.updateBackend()', () => {
 
   it('returns null on an in-place replace (204, no body)', async () => {
     // No `data` -> the stub mimics a 204 with no parsed body.
-    const { client } = clientWithRequestSpy()
+    const { client } = storageClient()
     expect(await client.space('s').updateBackend(registration)).toBeNull()
   })
 })
 
 describe('space.deregisterBackend()', () => {
   it('DELETEs the per-id path', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client.space('s').deregisterBackend('gdrive-personal')
     expect(calls[0]?.url).toBe(
       'https://was.example/space/s/backends/gdrive-personal'
@@ -189,7 +163,7 @@ describe('space.deregisterBackend()', () => {
   })
 
   it('resolves (idempotent) when the backend is absent (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     await expect(
       client.space('s').deregisterBackend('missing')
     ).resolves.toBeUndefined()
@@ -199,7 +173,7 @@ describe('space.deregisterBackend()', () => {
 describe('space.quotas()', () => {
   it('GETs the quotas endpoint and returns the report', async () => {
     const report = { respondedAt: '2026-06-12T13:25:00Z', backends: [] }
-    const { client, calls } = clientWithRequestSpy({ data: report })
+    const { client, calls } = storageClient({ data: report })
     const result = await client.space('s').quotas()
     expect(calls[0]?.url).toBe('https://was.example/space/s/quotas')
     expect(calls[0]?.method).toBe('GET')
@@ -208,7 +182,7 @@ describe('space.quotas()', () => {
 
   it('requests the per-collection breakdown with includeCollections', async () => {
     const report = { respondedAt: '2026-06-12T13:25:00Z', backends: [] }
-    const { client, calls } = clientWithRequestSpy({ data: report })
+    const { client, calls } = storageClient({ data: report })
     await client.space('s').quotas({ includeCollections: true })
     expect(calls[0]?.url).toBe(
       'https://was.example/space/s/quotas?include=collections'
@@ -217,7 +191,7 @@ describe('space.quotas()', () => {
   })
 
   it('returns null when the space is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').quotas()).toBeNull()
   })
 })
@@ -229,7 +203,7 @@ describe('collection.backend()', () => {
       name: 'Server Filesystem',
       managedBy: 'server'
     }
-    const { client, calls } = clientWithRequestSpy({ data: backend })
+    const { client, calls } = storageClient({ data: backend })
     const result = await client.space('s').collection('c').backend()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/backend')
     expect(calls[0]?.method).toBe('GET')
@@ -237,7 +211,7 @@ describe('collection.backend()', () => {
   })
 
   it('returns null when the collection is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').collection('c').backend()).toBeNull()
   })
 })
@@ -253,7 +227,7 @@ describe('collection.quota()', () => {
       restrictedActions: [],
       measuredAt: '2026-06-12T13:25:00Z'
     }
-    const { client, calls } = clientWithRequestSpy({ data: usage })
+    const { client, calls } = storageClient({ data: usage })
     const result = await client.space('s').collection('c').quota()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/quota')
     expect(calls[0]?.method).toBe('GET')
@@ -261,7 +235,7 @@ describe('collection.quota()', () => {
   })
 
   it('returns null when the collection is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').collection('c').quota()).toBeNull()
   })
 })
@@ -273,7 +247,7 @@ describe('resource.meta()', () => {
       size: 16,
       custom: { name: 'Hello' }
     }
-    const { client, calls } = clientWithRequestSpy({ data: meta })
+    const { client, calls } = storageClient({ data: meta })
     const result = await client.space('s').collection('c').resource('r').meta()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/r/meta')
     expect(calls[0]?.method).toBe('GET')
@@ -282,7 +256,7 @@ describe('resource.meta()', () => {
   })
 
   it('returns null when the resource is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     const result = await client.space('s').collection('c').resource('r').meta()
     expect(result).toBeNull()
   })
@@ -293,7 +267,7 @@ describe('resource.meta()', () => {
     // JSON, so an absent body is a malformed response -- surfaced as a typed
     // error instead of a `TypeError` on `metadata.custom`, and kept distinct
     // from the `null` (missing/unauthorized) return.
-    const { client } = clientWithRequestSpy({ data: undefined })
+    const { client } = storageClient({ data: undefined })
     await expect(
       client.space('s').collection('c').resource('r').meta()
     ).rejects.toThrow(WasServerError)
@@ -302,7 +276,7 @@ describe('resource.meta()', () => {
 
 describe('resource.setMeta()', () => {
   it('PUTs the custom object to the meta endpoint', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client
       .space('s')
       .collection('c')
@@ -316,7 +290,7 @@ describe('resource.setMeta()', () => {
   })
 
   it('clears the custom object when called with no argument', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client.space('s').collection('c').resource('r').setMeta()
     expect(calls[0]?.json).toEqual({ custom: {} })
   })
@@ -330,7 +304,7 @@ describe('collection.meta()', () => {
       createdBy: 'did:example:alice',
       custom: { name: 'Notes' }
     }
-    const { client, calls } = clientWithRequestSpy({ data: meta })
+    const { client, calls } = storageClient({ data: meta })
     const result = await client.space('s').collection('c').meta()
     expect(calls[0]?.url).toBe('https://was.example/space/s/c/meta')
     expect(calls[0]?.method).toBe('GET')
@@ -341,7 +315,7 @@ describe('collection.meta()', () => {
   it('reports custom as {} when the server omitted it (no metadata written)', async () => {
     // The server omits `custom` entirely while it is empty, so the decode side
     // must normalize the absent member rather than surfacing `undefined`.
-    const { client } = clientWithRequestSpy({
+    const { client } = storageClient({
       data: { createdBy: 'did:example:alice' }
     })
     const result = await client.space('s').collection('c').meta()
@@ -349,19 +323,19 @@ describe('collection.meta()', () => {
   })
 
   it('returns null when the collection is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').collection('c').meta()).toBeNull()
   })
 
   it('throws a WasServerError on a 200 with no JSON body (not a raw TypeError)', async () => {
-    const { client } = clientWithRequestSpy({ data: undefined })
+    const { client } = storageClient({ data: undefined })
     await expect(client.space('s').collection('c').meta()).rejects.toThrow(
       WasServerError
     )
   })
 
   it('carries the metaVersion etag when the backend versions metadata', async () => {
-    const { client } = clientWithRequestSpy({
+    const { client } = storageClient({
       data: { custom: { name: 'Notes' } },
       etag: '"3"'
     })
@@ -380,7 +354,7 @@ describe('collection.describe() / meta(): one path, one validator', () => {
       custom: { name: 'Annotated' },
       createdAt: '2026-01-01T00:00:00Z'
     }
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: stored,
       etag: '"9"'
     })
@@ -407,7 +381,7 @@ describe('collection.setMeta()', () => {
     // The PUT at `meta` replaces the merged Collection Metadata object, so an
     // annotation write reads it first and re-sends the configuration members
     // the server would otherwise clear.
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: {
         id: 'c',
         type: ['Collection'],
@@ -440,7 +414,7 @@ describe('collection.setMeta()', () => {
   })
 
   it('clears the custom object when called with no argument', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { id: 'c', type: ['Collection'] }
     })
     await client.space('s').collection('c').setMeta()
@@ -448,7 +422,7 @@ describe('collection.setMeta()', () => {
   })
 
   it('pins the write to the version it composed against', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { id: 'c', type: ['Collection'] },
       etag: '"7"'
     })
@@ -457,7 +431,7 @@ describe('collection.setMeta()', () => {
   })
 
   it('sends If-Match when pinned to a prior etag', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { id: 'c', type: ['Collection'] }
     })
     await client
@@ -487,7 +461,7 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
   })
 
   it('returns null when there is no log, or the collection is not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').collection('c').getHistoryLog()).toBeNull()
   })
 
@@ -509,7 +483,7 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
   })
 
   it('refuses an unconditional write before any request', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await expect(
       client
         .space('s')
@@ -521,7 +495,7 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
 
   it('PUTs the body as text/jsonl under the guarded-create precondition', async () => {
     const body = '{"versionId":"1-a","state":{"type":"X"}}\n'
-    const { client, calls } = clientWithRequestSpy({ etag: '"g.1"' })
+    const { client, calls } = storageClient({ etag: '"g.1"' })
     const result = await client
       .space('s')
       .collection('c')
@@ -535,7 +509,7 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
   })
 
   it('sends If-Match for a compare-and-swap append', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client
       .space('s')
       .collection('c')
@@ -545,7 +519,7 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
   })
 
   it('maps a 412 to PreconditionFailedError', async () => {
-    const { client } = clientWithRequestSpy({ fail: 412 })
+    const { client } = storageClient({ fail: 412 })
     await expect(
       client
         .space('s')
@@ -557,7 +531,7 @@ describe('collection.getHistoryLog() / putHistoryLog()', () => {
 
 describe('collection.setName() / setTags()', () => {
   it('setName() preserves existing tags (read-modify-write)', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: {
         id: 'c',
         type: ['Collection'],
@@ -575,7 +549,7 @@ describe('collection.setName() / setTags()', () => {
   })
 
   it('setTags() preserves the existing name (read-modify-write)', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: {
         id: 'c',
         type: ['Collection'],
@@ -590,7 +564,7 @@ describe('collection.setName() / setTags()', () => {
   })
 
   it('setName() pins the write to the meta etag (lost-update guard)', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { id: 'c', type: ['Collection'], custom: { name: 'Old' } },
       etag: '"meta-v1"'
     })
@@ -643,7 +617,7 @@ describe('collection.setName() / setTags()', () => {
 
 describe('resource.setName() / setTags()', () => {
   it('setName() preserves existing tags (read-modify-write)', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: {
         contentType: 'application/json',
         size: 16,
@@ -659,7 +633,7 @@ describe('resource.setName() / setTags()', () => {
   })
 
   it('setTags() preserves the existing name (read-modify-write)', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: {
         contentType: 'application/json',
         size: 16,
@@ -680,7 +654,7 @@ describe('resource.setName() / setTags()', () => {
     // The read-modify-write must thread the `meta()` etag as `If-Match`, or a
     // concurrent `setTags()` would be silently erased by this full-replacement
     // write.
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { contentType: 'application/json', custom: { name: 'Old' } },
       etag: '"meta-v1"'
     })
@@ -689,7 +663,7 @@ describe('resource.setName() / setTags()', () => {
   })
 
   it('setTags() pins the write to the meta etag (lost-update guard)', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { contentType: 'application/json', custom: {} },
       etag: '"meta-v1"'
     })
@@ -703,9 +677,9 @@ describe('resource.setName() / setTags()', () => {
     // leaves the read-modify-write with nothing to pin `If-Match` to. It is
     // refused before any write goes out rather than degrading to
     // last-write-wins.
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: { contentType: 'application/json', custom: {} },
-      etag: null
+      etag: undefined
     })
     await expect(
       client.space('s').collection('c').resource('r').setName('New')
@@ -724,7 +698,7 @@ describe('was.listSpaces()', () => {
         { id: 's2', url: '/space/s2' }
       ]
     }
-    const { client, calls } = clientWithRequestSpy({ data: listing })
+    const { client, calls } = storageClient({ data: listing })
     const result = await client.listSpaces()
     expect(calls[0]?.url).toBe('https://was.example/spaces/')
     expect(calls[0]?.method).toBe('GET')
@@ -733,7 +707,7 @@ describe('was.listSpaces()', () => {
 
   it('returns the empty listing the server sends an unauthorized caller', async () => {
     const empty = { url: '/spaces/', totalItems: 0, items: [] }
-    const { client } = clientWithRequestSpy({ data: empty })
+    const { client } = storageClient({ data: empty })
     const result = await client.listSpaces()
     expect(result.items).toEqual([])
     expect(result.totalItems).toBe(0)
@@ -742,7 +716,7 @@ describe('was.listSpaces()', () => {
 
 describe('Collection reserved-id guard', () => {
   it('rejects a reserved id at handle construction, before any request', () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     expect(() => client.space('s').collection('export')).toThrow(
       ValidationError
     )
@@ -753,7 +727,7 @@ describe('Collection reserved-id guard', () => {
     // `collectionPath(s, 'policy')` is byte-identical to the space policy path,
     // so an unguarded handle's DELETE would be wire-identical to
     // `space.clearPolicy()`.
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     expect(() => client.space('s').collection('policy')).toThrow(
       ValidationError
     )
@@ -765,7 +739,7 @@ describe('Collection reserved-id guard', () => {
     // `meta` would address the Space's own description. The segment is not in
     // storage-core 0.14.0's reserved-Collection-id set yet, so the client names
     // it locally until a release adds it upstream.
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     expect(() => client.space('s').collection('meta')).toThrow(ValidationError)
     expect(calls).toHaveLength(0)
   })
@@ -774,7 +748,7 @@ describe('Collection reserved-id guard', () => {
     // `get()` must enforce the same reserved-id rule as `put()`: an unguarded
     // `get('policy')` would fetch the collection's policy sub-resource and
     // return it as if it were resource content.
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await expect(
       client.space('s').collection('c').get('policy')
     ).rejects.toThrow(ValidationError)
@@ -782,7 +756,7 @@ describe('Collection reserved-id guard', () => {
   })
 
   it('allows configuring an ordinary collection id', async () => {
-    const { client, calls } = clientWithRequestSpy({ data: {} })
+    const { client, calls } = storageClient({ data: {} })
     await client.space('s').collection('docs').configure({ name: 'Docs' })
     // describe() GET + configure() PUT.
     expect(calls.some(call => call.method === 'PUT')).toBe(true)
@@ -799,7 +773,7 @@ describe('Collection reserved-id guard', () => {
       backend: { id: 'custom' },
       encryption: { scheme: 'edv' }
     }
-    const { client, calls } = clientWithRequestSpy({ data: current })
+    const { client, calls } = storageClient({ data: current })
     const result = await client
       .space('s')
       .collection('docs')
@@ -824,7 +798,7 @@ describe('Collection reserved-id guard', () => {
       name: 'Notes',
       generator: { id: 'did:key:zApp', origin: 'https://app.example' }
     }
-    const { client, calls } = clientWithRequestSpy({ data: current })
+    const { client, calls } = storageClient({ data: current })
     const result = await client
       .space('s')
       .collection('notes')
@@ -852,7 +826,7 @@ describe('Collection reserved-id guard', () => {
         url: 'https://app.example/notes'
       }
     }
-    const { client, calls } = clientWithRequestSpy({ data: current })
+    const { client, calls } = storageClient({ data: current })
     await client
       .space('s')
       .collection('notes')
@@ -868,7 +842,7 @@ describe('Collection reserved-id guard', () => {
 
 describe('space.createCollection() request body', () => {
   it('POSTs the writable fields, including the generator attribution', async () => {
-    const { client, calls } = clientWithRequestSpy({ data: { id: 'notes' } })
+    const { client, calls } = storageClient({ data: { id: 'notes' } })
     const collection = await client.space('s').createCollection({
       id: 'notes',
       name: 'Notes',
@@ -891,7 +865,7 @@ describe('Collection.configure() unreadable-description guard', () => {
     // unauthorized reads as 404), so the merge would send a body without
     // `backend`/`encryption` -- silently dropping them on a replace-semantics
     // server. That is exactly the clobber the merge exists to prevent.
-    const { client, calls } = clientWithRequestSpy({ fail: 404 })
+    const { client, calls } = storageClient({ fail: 404 })
     await expect(
       client.space('s').collection('docs').configure({ name: 'x' })
     ).rejects.toThrow(ValidationError)
@@ -993,7 +967,7 @@ describe('Collection.configure() unreadable-description guard', () => {
     // `current: null` is an answer the caller already read, not a request to
     // read: the guard fires on it exactly as it does on this handle's own
     // masked describe().
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await expect(
       client
         .space('s')
@@ -1011,7 +985,7 @@ describe('Space.configure() unreadable-description guard', () => {
     // current description as 404, so `configure({ name })` would merge forward
     // from a `null` current -- silently defaulting `controller` (a stealth
     // ownership change) and dropping the existing name. The guard blocks that.
-    const { client, calls } = clientWithRequestSpy({ fail: 404 })
+    const { client, calls } = storageClient({ fail: 404 })
     await expect(client.space('s').configure({ name: 'x' })).rejects.toThrow(
       ValidationError
     )
@@ -1092,7 +1066,7 @@ describe('Space.configure() unreadable-description guard', () => {
   })
 
   it('fails closed on a supplied `current: null`', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await expect(
       client.space('s').configure({ name: 'x', current: null })
     ).rejects.toThrow(ValidationError)
@@ -1110,7 +1084,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   }
 
   it('reads the description with its ETag', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: current,
       etag: '"7"'
     })
@@ -1121,12 +1095,12 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   })
 
   it('returns null when the space is missing or not visible (404)', async () => {
-    const { client } = clientWithRequestSpy({ fail: 404 })
+    const { client } = storageClient({ fail: 404 })
     expect(await client.space('s').describeWithEtag()).toBeNull()
   })
 
   it('PUTs the given fields under If-Match, with no read or merge first', async () => {
-    const { client, calls } = clientWithRequestSpy({ etag: '"8"' })
+    const { client, calls } = storageClient({ etag: '"8"' })
     const result = await client
       .space('s')
       .replaceDescription(
@@ -1147,7 +1121,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   })
 
   it('PUTs under If-None-Match: * for a guarded create and echoes the created description', async () => {
-    const { client, calls } = clientWithRequestSpy({
+    const { client, calls } = storageClient({
       data: current,
       etag: '"1"'
     })
@@ -1168,7 +1142,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   })
 
   it('sends no precondition header when neither option is given', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client
       .space('s')
       .replaceDescription({ controller: 'did:example:alice' })
@@ -1177,7 +1151,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   })
 
   it('surfaces a failed precondition as PreconditionFailedError', async () => {
-    const { client } = clientWithRequestSpy({ fail: 412 })
+    const { client } = storageClient({ fail: 412 })
     await expect(
       client
         .space('s')
@@ -1189,7 +1163,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   })
 
   it('writes to its own id when the description carries another id', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     // A description read from another Space, handed back with one change.
     const other = { ...current, id: 'other', name: 'Renamed' }
     await client.space('s').replaceDescription(other)
@@ -1198,7 +1172,7 @@ describe('Space.describeWithEtag() / replaceDescription()', () => {
   })
 
   it('rejects ifMatch and ifNoneMatch together before sending', async () => {
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await expect(
       client
         .space('s')
@@ -1222,7 +1196,7 @@ describe('configure() with a supplied current description', () => {
       controller: 'did:example:alice',
       etag: '"g.1"'
     } as SpaceMetadata & { etag: string }
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client.space('s').configure({ name: 'Renamed', current })
     // One request, the PUT: `type` and `controller` still carry forward, from
     // the supplied description rather than from a second GET.
@@ -1243,7 +1217,7 @@ describe('configure() with a supplied current description', () => {
       backend: { id: 'custom' },
       etag: '"g.1"'
     } as CollectionMetadata & { etag: string }
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     await client
       .space('s')
       .collection('docs')
@@ -1660,7 +1634,7 @@ describe('Resource reserved-id guard (path-collision safety)', () => {
     // endpoint -- a `delete()` would wipe access control. The guard fires
     // synchronously, before any request, for every reserved segment that
     // collides with a collection-level path.
-    const { client, calls } = clientWithRequestSpy()
+    const { client, calls } = storageClient()
     for (const reserved of [
       'policy',
       'backend',
@@ -1679,7 +1653,7 @@ describe('Resource reserved-id guard (path-collision safety)', () => {
   })
 
   it('allows an ordinary resource id', () => {
-    const { client } = clientWithRequestSpy()
+    const { client } = storageClient()
     expect(() =>
       client.space('s').collection('c').resource('greeting')
     ).not.toThrow()

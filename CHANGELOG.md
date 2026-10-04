@@ -1,5 +1,28 @@
 # @interop/was-client Changelog
 
+## 0.90.0 - TBD
+
+### Added
+
+- `getPolicyWithEtag()` on Space, Collection, and Resource reads the
+  access-control policy with its `ETag` validator. The policy body carries the
+  server-derived write stamp (`updatedAt`, `updatedAtCounter`, `originId`),
+  which `@interop/storage-core` 0.34.0 types on `PolicyDocument`.
+- `PolicyTombstone` and `PolicyChangeDocument` are re-exported from
+  `@interop/storage-core`. A `kind: 'policy'` entry in the `changes` feed passes
+  through `Collection.changes()`; `documents()`, `resourceChanges()`, and the
+  sync port skip it, as they do every non-Resource kind.
+
+### Changed
+
+- **BREAKING**: `setPolicy()`, `setPublic()`, and `clearPolicy()` return
+  `{ etag? }` (the policy's new `ETag`, or the tombstone's on a delete) instead
+  of `void`. `setPolicy()` and `setPublic()` take `{ ifMatch, ifNoneMatch }` and
+  `clearPolicy()` takes `{ ifMatch }` as conditional-write preconditions, sent
+  as `If-Match` / `If-None-Match: *`; a failed precondition throws
+  `PreconditionFailedError`.
+- `@interop/storage-core` bumped to `^0.34.0`.
+
 ## 0.89.1 - 2026-10-04
 
 ### Added

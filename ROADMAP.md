@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 124
+nextAvailableId: 126
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -382,6 +382,37 @@ of the Resource returns the reassembled bytes, how the chunk count and order are
 recorded, or how a partial upload is told apart from a finished one. Those are
 new wire conventions and need a spec decision before this item gains acceptance
 criteria.
+
+### WCL-125: Drop the `writerId` option from the sync port's `putMeta`
+
+- status: todo
+- priority: medium
+- labels: sync, writer-id, was-96
+- touches:
+  - was-client (ARCHITECTURE.md "writer attribution" prose in the sync-port
+    section, the `putMeta` JSDoc in `src/sync/types.ts`, the `sync-port.test.ts`
+    case that sends `writerId: ''` on a `/meta` write)
+  - was-sync (the driver stopped sending the member in WS-25; its local port
+    type already omits the option)
+  - wallet-core (unaffected: the engine issues no `/meta` write)
+- acceptance:
+  - [ ] `putMeta` accepts no `writerId`; the port never writes a `writerId`
+        member into a `/meta` body
+  - [ ] `putContent` and `deleteContent` keep the `Writer-Id` header and its
+        declare-or-clear behavior
+  - [ ] ARCHITECTURE.md no longer says `putMeta` carries the label as a body
+        member
+  - [ ] CHANGELOG.md entry (breaking for a caller that passed the option)
+
+Context: WAS-96's open point 2 moves `writerId` to the content record alone. The
+spec now says a server ignores a `writerId` member in the body of an Update
+Resource Metadata request, and the declare-or-clear rule for that request is
+withdrawn. `putMeta` still takes a `writerId` option and spreads it into the
+`/meta` body beside `custom`, and ARCHITECTURE.md describes that as the way the
+label is kept across a metadata write. Sending it is harmless once the server
+ignores it, but the option invites a caller to believe a `/meta` write affects
+attribution. Filed from was-sync WS-25, which stopped the driver from passing
+it.
 
 ## Whole-codebase review findings (2026-09-11)
 
@@ -1962,82 +1993,26 @@ storage-core release that types the new member, and a test so a regression in
 the pass-through is caught. The JSDoc and README already describe the new
 behavior.
 
-### WCL-122: Adopt the widened `changes` feed (record kinds, `deleted`, binary Resources)
-
-- status: in-progress
-- priority: high
-- labels: changes-feed, sync, dependencies, breaking
-- touches:
-  - storage-core: `ChangeDocument` becomes a union discriminated on `kind`,
-    `_deleted` renamed `deleted`, `contentType` and `generation` added,
-    `isResourceChange` guard (0.32.0, publish pending; consumed via `link:`)
-  - was-teaching-server: the feed producer; ships the widened feed
-  - was-sync: unaffected (it reads `WireDoc` off the sync port, which still
-    hands on JSON Resources with `_deleted`)
-  - wallet-core: `WireDoc` now extends `ResourceChangeDocument`, so `kind` and
-    `contentType` are required; its `test/node/sync.test.ts` builds `WireDoc`
-    literals without them and fails type-check on bumping to was-client 0.89.0.
-    Needs a follow-up there to add both fields.
-  - was-react: `sharedCollectionReader` reads `collection.changes()` directly
-    and checks `_deleted`; it needs its own follow-up to narrow on `kind` and
-    read `deleted`
-- acceptance:
-  - [x] `Collection.changes()` returns the `ChangeDocument` union and passes
-        every kind through; its no-`data` fault check applies to a live JSON
-        `resource` entry only
-  - [x] `Collection.documents()` keeps live JSON Resources only and resumes past
-        skipped entries
-  - [x] The sync port's `query` keeps JSON `resource` entries, maps `deleted` to
-        `_deleted`, and does not return an empty page while the feed has more
-        entries
-  - [x] Unit tests cover pass-through, binary entries without `data`, skipped
-        kinds, and checkpoint advance
-  - [ ] The `@interop/storage-core` dependency is the published 0.32.0 rather
-        than the `link:` to the local checkout
-
-The server's `changes` query profile now carries every record kind of a
-Collection: its Resources whatever their content type, its Collection Metadata
-object, and its governing history log, with a `policy` kind to follow. A
-consumer that syncs Resources filters on `kind` and skips a kind it does not
-know. The sync port keeps its `WireDoc` shape, so its consumers need no change.
-A page made entirely of skipped entries would read as caught up to a pull loop
-that stops on an empty page, so the port resumes from that page's checkpoint
-instead.
-
-Open question: a JSON Resource rewritten to a binary type, or a binary
-Resource's tombstone, is skipped by the port, so a replica that holds the JSON
-revision keeps it. `documents()` drops such a Resource from its snapshot.
-
-discovered-from: was-teaching-server WAS-182, 2026-10-04.
-
-### WCL-123: Policy validators, preconditions, and the `policy` change kind
+### WCL-124: Read a policy tombstone (`?include=deleted`)
 
 - status: todo
-- priority: medium
-- labels: policies, etag, changes-feed, dependencies
-- discovered-from: was-teaching-server WAS-183 (2026-10-04)
-- touches:
-  - storage-core: `PolicyDocument` stamp members, `PolicyTombstone`,
-    `PolicyChangeDocument` in the `ChangeDocument` union (0.34.0, publish
-    pending)
-  - was-teaching-server: shipped in its working tree (policy `ETag`, `If-Match`
-    / `If-None-Match: *` on `PUT` and `DELETE`, the tombstone,
-    `?include=deleted`)
-  - wallet-attached-storage-spec: WASS-52
+- priority: low
+- labels: policies, changes-feed, api
 - acceptance:
-  - [ ] The `@interop/storage-core` dependency is bumped to the version that
-        carries `PolicyChangeDocument`
-  - [ ] `Collection.changes()` passes a `kind: 'policy'` document through, and
-        `documents()` and the sync port skip it. A test covers both
-  - [ ] The policy read returns the served stamp members and exposes the `ETag`
-  - [ ] The policy write and delete accept `If-Match` / `If-None-Match: *`
-        (optional; decide when picked up)
+  - [ ] A policy read can ask for the tombstone (`?include=deleted`) and returns
+        `PolicyDocument | PolicyTombstone` with its `ETag`; a tombstone has
+        `deleted: true` and no `type`
+  - [ ] A test covers a live policy, a tombstone, and the 404 of an absent
+        policy
 
-The server now stamps access-control policies and tombstones them on delete. A
-policy read serves `updatedAt`, `updatedAtCounter` and `originId` with a
-four-segment `ETag`. A Collection or Resource policy write or delete appears in
-the `changes` feed as a `kind: 'policy'` document whose `id` is the policy's
-absolute URL. A consumer that skips unknown kinds already handles it.
+The server tombstones a deleted policy. A plain `GET` answers the tombstone 404,
+the same as no policy at all; `GET .../policy?include=deleted` under a
+capability serves it with the stamp of the delete and its `ETag`. WCL-123 left
+this out: `getPolicy()` / `getPolicyWithEtag()` read the live policy only. A
+`kind: 'policy'` entry in the `changes` feed names the policy by its absolute
+URL, so decide whether the read belongs on the handles (an `includeDeleted`
+option on `getPolicyWithEtag()`) or on a URL-taking helper the feed consumer can
+call directly. discovered-from: WCL-123.
 
 ## Recorded decisions (kept so they are not re-litigated)
 

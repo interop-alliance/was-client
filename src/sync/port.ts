@@ -19,7 +19,8 @@
  * `POST /space/:s/:c/query` (profile `changes`) as a root invocation and, like
  * the raw writes, ships the stored bodies verbatim without decrypting. The
  * port moves JSON documents, so it keeps only the feed's `kind: 'resource'`
- * entries with a JSON content type, and renames the feed's `deleted` to the
+ * entries with a JSON content type (skipping the `collection-metadata`, `log`,
+ * and `policy` kinds), and renames the feed's `deleted` to the
  * `_deleted` its consumers read.
  *
  * Conditional writes ride the server's `ETag`, an opaque quoted strong
@@ -347,9 +348,10 @@ export function createWasSyncPort({
 
   /**
    * One page of the port's documents: the feed's JSON Resources and their
-   * tombstones. The Collection's own records, a kind this client does not
-   * know, and a binary or `text/jsonl` Resource are not documents the port
-   * moves. A server page whose entries are all skipped is not handed back as
+   * tombstones. The Collection's own records (`collection-metadata`, `log`),
+   * `policy` documents, a kind this client does not know, and a binary or
+   * `text/jsonl` Resource are not documents the port moves. A server page
+   * whose entries are all skipped is not handed back as
    * an empty page: an empty page reads as caught up, and a pull loop that
    * stops on it would never store the checkpoint that moves past those
    * entries. The pull instead resumes from that page's own checkpoint (the
