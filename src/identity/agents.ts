@@ -8,9 +8,9 @@
  * WAS account/Space.
  *
  * The derivation: secret or 32-byte seed enters `CapabilityAgent` under the
- * fixed `'bootstrap'` / `'boostrap-key'` names (the typo is load-bearing --
- * every account's data identity derives through these exact strings, so they
- * can never change without stranding existing accounts). The resulting Ed25519
+ * pinned `'bootstrap'` / `'bootstrap-key'` names. Both are derivation inputs:
+ * every account's data identity derives through these exact strings, so a
+ * change to either renames every existing account. The resulting Ed25519
  * signing key backs a did:key DID, a `ZcapClient` for signing storage
  * requests, and -- via did:key's encryption-key derivation (the Montgomery
  * form of the signing key) -- the X25519 key agreement key (KAK) the EDV
@@ -29,11 +29,11 @@ import { zcapClientForSigner } from '../zcapClient.js'
 import { singleKeyResolver } from './keyResolver.js'
 
 /**
- * The load-bearing `CapabilityAgent` derivation names (see the module doc:
- * the typo in the key name can never be fixed without stranding accounts).
+ * The pinned `CapabilityAgent` derivation names (see the module doc: both are
+ * inputs to every account's key derivation).
  */
 export const BOOTSTRAP_HANDLE = 'bootstrap'
-export const BOOTSTRAP_KEY_NAME = 'boostrap-key'
+export const BOOTSTRAP_KEY_NAME = 'bootstrap-key'
 
 /**
  * The agents derived from a controller secret or seed: the signing

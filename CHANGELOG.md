@@ -1,5 +1,15 @@
 # @interop/was-client Changelog
 
+## 0.92.0 - TBD
+
+### Changed
+
+- **BREAKING**: `BOOTSTRAP_KEY_NAME` is now `'bootstrap-key'` (was the
+  misspelled `'boostrap-key'`). The name is an HMAC input in
+  `CapabilityAgent.fromSeed`, so every did:key derived from a client seed or
+  controller secret changes, and with it every existing account's data
+  identity. No migration is provided.
+
 ## 0.91.0 - 2026-10-04
 
 ### Added

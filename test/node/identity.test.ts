@@ -3,10 +3,8 @@
  */
 /**
  * The WAS identity derivation (`./identity`). The fixture values are
- * byte-critical: they were captured from the wallet apps' original derivation
- * (DCW `agentsFromSecret`, Freewallet `agentsFromSeed`) and carried through
- * `@interop/wallet-core/identity` to here, so these tests pin the exact keys
- * every existing account derives through. If any fixture here changes,
+ * byte-critical: they pin the exact keys every account derives through under
+ * the `'bootstrap'` / `'bootstrap-key'` names. If any fixture here changes,
  * existing accounts are stranded -- that is a bug in the change, not in the
  * test. `@interop/wallet-core` runs the same fixture against this subpath.
  */
@@ -24,20 +22,20 @@ import type { ProfileAgents } from '../../src/identity/index.js'
 import { ValidationError } from '../../src/errors.js'
 
 const SECRET = 'test-passphrase'
-// The app-captured fixture for the string-secret path (DCW profiles).
-const SECRET_DID = 'did:key:z6MkjpXcSL52t3j5hzooU2hKaXMCGbhnPBX9cZ1gM1wbiPNE'
-const SECRET_KAK_PUB = 'z6LSipWZB2yondq7hes32riaFotVTxH4NiN7Joi7aBCSLmCf'
+// The fixture for the string-secret path (DCW profiles).
+const SECRET_DID = 'did:key:z6MkpLgNBDTZxHy56eemacRARY5G7qFXJPy4KL9hyuQPcAk4'
+const SECRET_KAK_PUB = 'z6LSjkbuR8aSb8JR37g4QZL7V7sTiwndu8WLNY7MsWGuXNfr'
 
-// seed = bytes 0..31; the app-captured fixture for the seed path (Freewallet
-// keyring / guest sessions).
+// seed = bytes 0..31; the fixture for the seed path (Freewallet keyring /
+// guest sessions).
 const SEED = new Uint8Array(32).map((_, i) => i)
-const SEED_DID = 'did:key:z6Mkff8vLZrPzRgQmV5EQ1zaruuKy6funtwQumLUSrvQc7sp'
-const SEED_KAK_PUB = 'z6LSfPNtHH7mnNdAPtVDdeUBp8m5VZT7ywgtdUaJGxtK725h'
+const SEED_DID = 'did:key:z6MkozBx9SvxwfZmNnu1dWfXtFLPRHMQWnsqAPHmJzcQZzUB'
+const SEED_KAK_PUB = 'z6LScgAqXnkdmKURvGjcyYfxJEvPKvmLNYVjrDddQdh7j3Ce'
 
 describe('bootstrap constants', () => {
-  it('pins the load-bearing handle and (typo included) key name', () => {
+  it('pins the derivation handle and key name', () => {
     expect(BOOTSTRAP_HANDLE).toBe('bootstrap')
-    expect(BOOTSTRAP_KEY_NAME).toBe('boostrap-key')
+    expect(BOOTSTRAP_KEY_NAME).toBe('bootstrap-key')
   })
 })
 

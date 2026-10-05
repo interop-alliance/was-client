@@ -3637,3 +3637,40 @@ The residual: the cache paths (no source, a fetch that threw, an empty
 description) serve the cache as they do without the policy. A cache entry
 written through a plain source while the policy was off is served there until
 the first verified fetch overwrites it.
+
+### WCL-130: [M] Rename `BOOTSTRAP_KEY_NAME` from `'boostrap-key'` to `'bootstrap-key'`
+
+- status: done
+- done: 2026-10-05
+- priority: medium
+- labels: identity, breaking, key-derivation
+- touches:
+  - was-client: `src/identity/agents.ts` (the constant, the module doc's
+    "load-bearing typo" paragraph), `test/node/identity.test.ts`, CHANGELOG
+    (a breaking release)
+  - wallet-core: WC-277 (ARCHITECTURE.md's two mentions, its identity test,
+    the dependency bump)
+  - freewallet: FW-653 (four unit tests spelling the literal, three `_spec`
+    docs calling the typo frozen, the dependency bump)
+  - dcw: DCW-91 (the dependency bump; its test profiles are re-created)
+  - encrypted-collections-spec: ECS-16 prints `'bootstrap-key'` with no
+    "sic" (amended in place 2026-10-05)
+  - was-react: dependency bump only; `walletCoreCounterpart.test.ts` derives
+    through the constant and spells no literal
+- acceptance:
+  - [x] `BOOTSTRAP_KEY_NAME` is `'bootstrap-key'`, and the module doc
+        describes the pair as pinned derivation inputs without the
+        never-fixable claim
+  - [x] `test/node/identity.test.ts` pins the corrected value
+  - [x] CHANGELOG records the rename as breaking: every did:key derived
+        from a client seed, and so every existing account's data identity,
+        changes; no migration is provided
+
+The key name enters `CapabilityAgent.fromSeed` as the HMAC message over the
+32-byte seed, so it decides the Ed25519 key and the did:key of every wallet
+client and of the FW-478 pairwise connection key. The typo was written as
+permanent in the module doc, wallet-core's ARCHITECTURE.md, and three
+freewallet planning docs, on the theory that fixing it strands existing
+accounts. Nothing deployed holds accounts worth carrying, so the fix is a
+rename and a dependency bump in each consumer, taken before FW-478 binds the
+name a second time (its N1 sign-off, 2026-10-05).
