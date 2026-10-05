@@ -648,29 +648,36 @@ declared one, and on a tombstone the deleting request's own label).
 Conditional writes ride the server's opaque `ETag` uniformly for plaintext and
 encrypted resources, so there is no plaintext-vs-encrypted fork. The validator
 is a quoted string the client echoes verbatim as `ifMatch`. Each write returns a
-`WriteAck` carrying the new `etag` and nothing else, and a response whose `ETag`
-did not reach the client acks none. The port reads no revision number out of a
-validator. Revisions are compared by the write stamp instead: `updatedAt`,
-`updatedAtCounter` and `originId`, ordered as `(ms, updatedAtCounter, originId)`
-with `ms` the epoch millisecond value of `updatedAt`. `WireDoc` carries the
-stamp, with the `/meta` record's own stamp nested as `meta`, and `MasterState`
-carries both when the server's `/meta` object serves them. Every feed document
-carries its current `etag` and `metaEtag`, so a push loop pins its writes from
-feed state alone. Two typed signals in `src/errors.ts` let a push loop catch
-exactly what it can handle: `WasSyncConflictError` (412, a subtype of
-`PreconditionFailedError`) triggers re-read-and-reconcile, and
-`WasSyncNotFoundError` (404 on delete or on a `/meta` write, a subtype of
-`NotFoundError`) marks an already-gone target: a settled outcome for a delete, a
-delete race for a metadata write. A third, `WasSyncCheckpointError` (400 at
-`#/checkpoint`, a subtype of `ValidationError`), is raised by `query` when the
-server did not issue the presented checkpoint, and tells a pull loop to restart
-from the beginning. A fourth, `WasSyncAuthError` (401, 403, or the masked 404),
-is opt-in under `mapAuthErrors` and reports revoked access. The port's
-`putContent` and `deleteContent` also stamp the `Key-Epoch` and `Writer-Id`
-headers, so the server records which key epoch a body was encrypted under and
-which writing agent produced the revision; `putMeta` carries `writerId` the same
-way as a top-level body member beside `custom`. Both are declare-or-clear: an
-omitted value clears whatever was stored, so a caller that wants to keep a prior
+`WriteAck` carrying the new `etag`, and a response whose `ETag` did not reach
+the client acks none. The port reads no revision number out of a validator. When
+the server answers the write with the Resource's server-managed members (`201`
+on a create, `200` on an update or a `/meta` write), the ack also carries the
+write's stamp, the `/meta` record's stamp under `meta` on a metadata write, and
+`createdBy` on a create, so a replica learns the state the feed will echo
+without waiting for the echo. The body is read only in the Resource Metadata
+shape (`contentType` a string, `size` a number), each stamp is copied whole or
+not at all, and a `204` acks the validator alone. Revisions are compared by the
+write stamp instead: `updatedAt`, `updatedAtCounter` and `originId`, ordered as
+`(ms, updatedAtCounter, originId)` with `ms` the epoch millisecond value of
+`updatedAt`. `WireDoc` carries the stamp, with the `/meta` record's own stamp
+nested as `meta`, and `MasterState` carries both when the server's `/meta`
+object serves them. Every feed document carries its current `etag` and
+`metaEtag`, so a push loop pins its writes from feed state alone. Two typed
+signals in `src/errors.ts` let a push loop catch exactly what it can handle:
+`WasSyncConflictError` (412, a subtype of `PreconditionFailedError`) triggers
+re-read-and-reconcile, and `WasSyncNotFoundError` (404 on delete or on a `/meta`
+write, a subtype of `NotFoundError`) marks an already-gone target: a settled
+outcome for a delete, a delete race for a metadata write. A third,
+`WasSyncCheckpointError` (400 at `#/checkpoint`, a subtype of
+`ValidationError`), is raised by `query` when the server did not issue the
+presented checkpoint, and tells a pull loop to restart from the beginning. A
+fourth, `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
+`mapAuthErrors` and reports revoked access. The port's `putContent` and
+`deleteContent` also stamp the `Key-Epoch` and `Writer-Id` headers, so the
+server records which key epoch a body was encrypted under and which writing
+agent produced the revision; `putMeta` carries `writerId` the same way as a
+top-level body member beside `custom`. Both are declare-or-clear: an omitted
+value clears whatever was stored, so a caller that wants to keep a prior
 `writerId` must resend it on every write. `writerId` is advisory attribution
 only -- a replica uses it to recognize its own writes echoed back. It is not
 part of the stamp order, and it is never an input to an authorization decision.

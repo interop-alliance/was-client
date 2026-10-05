@@ -1,9 +1,21 @@
 # @interop/was-client Changelog
 
+## 0.90.1 - TBD
+
+### Added
+
+- Release the `WriteAck` from below.
+
 ## 0.90.0 - 2026-10-04
 
 ### Added
 
+- `WriteAck` carries the write's own stamp (`updatedAt`, `updatedAtCounter`,
+  `originId`), the `/meta` record's stamp under `meta` on a metadata write, and
+  `createdBy` on a create. `putContent`, `deleteContent`, and `putMeta` lift
+  them from a `2xx` body in the Resource Metadata shape; a `204` acks the `etag`
+  alone, as before. `putMeta` returns an ack that carries a body but no `ETag`
+  instead of `undefined`.
 - `getPolicyWithEtag()` on Space, Collection, and Resource reads the
   access-control policy with its `ETag` validator. The policy body carries the
   server-derived write stamp (`updatedAt`, `updatedAtCounter`, `originId`),
@@ -32,10 +44,9 @@
   no longer throw `NotSupportedError`. A fresh Resource reads with no `meta`
   stamp and no `ETag` (the server mints the validator with the first metadata
   write), so the first patch is a guarded create under `If-None-Match: *`. A
-  read that carries the `meta` stamp but no `ETag` is still refused, and so is
-  a Collection read with no `ETag`: the Collection Metadata object has no
-  unwritten state, so its `setName()` / `setTags()` never take the create
-  path.
+  read that carries the `meta` stamp but no `ETag` is still refused, and so is a
+  Collection read with no `ETag`: the Collection Metadata object has no
+  unwritten state, so its `setName()` / `setTags()` never take the create path.
 - Docs and the integration test for a revocation submitted to the wrong Space
   now match the server: a foreign-rooted capability is denied with the masked
   `NotFoundError`, not `ValidationError`.

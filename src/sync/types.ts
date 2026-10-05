@@ -120,11 +120,25 @@ export interface MasterState {
  * a later write's `ifMatch`. It is absent only where the header did not reach
  * the client (for example a cross-origin response without
  * `Access-Control-Expose-Headers: ETag`). The validator is opaque, so the ack
- * carries no revision number. A caller that needs the write's stamp reads it
- * from the change feed or from {@link WasSyncPort.get}.
+ * carries no revision number.
+ *
+ * A server that answers a write with the Resource's server-managed members
+ * (`201` on a create, `200` on an update or a `/meta` write) also acks the
+ * write's own stamp, so a replica learns the state the feed will echo without
+ * waiting for the echo. The content record's stamp (`updatedAt`,
+ * `updatedAtCounter`, `originId`) is copied whole or not at all, as is the
+ * `/meta` record's stamp under `meta`, which only a `/meta` write carries.
+ * `createdBy` is present only when this write recorded it: a `201`, a
+ * re-creation over a tombstone included. A server that answers `204`, or a
+ * body that is not the Resource Metadata shape, acks the `etag` alone.
  */
 export interface WriteAck {
   etag?: string
+  updatedAt?: string
+  updatedAtCounter?: number
+  originId?: string
+  meta?: ResourceMetaStamp
+  createdBy?: string
 }
 
 /**
@@ -201,8 +215,9 @@ export interface WasSyncPort {
    * already stored for this resource -- a metadata write is itself a
    * revision, and on an encrypted collection it replaces the `custom`
    * envelope wholesale, so keeping a previous writer's label would
-   * misattribute it. Returns the new metadata {@link WriteAck}, or `undefined`
-   * when the response carried no `ETag`. Throws {@link WasSyncConflictError}
+   * misattribute it. Returns the new metadata {@link WriteAck} (the `/meta`
+   * record's stamp under `meta` when the server answered with a body), or
+   * `undefined` when the response carried neither an `ETag` nor a body. Throws {@link WasSyncConflictError}
    * on `412`, and {@link WasSyncNotFoundError} on `404` (the resource is gone:
    * a delete race the caller corroborates). A port built with
    * `mapAuthErrors: true` raises {@link WasSyncAuthError} with `status: 404`

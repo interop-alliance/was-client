@@ -336,14 +336,42 @@ export function createWasSyncPort({
   }
 
   /**
-   * The acked {@link WriteAck} of a write response. Taken from the response's
-   * own `ETag` only: a re-read after the fact could return a concurrent
-   * writer's validator as this write's ack. A response with no `ETag`, or
-   * with one the client cannot see, acks no `etag`.
+   * The acked {@link WriteAck} of a write response. The validator is taken
+   * from the response's own `ETag` only: a re-read after the fact could return
+   * a concurrent writer's validator as this write's ack. A response with no
+   * `ETag`, or with one the client cannot see, acks no `etag`.
+   *
+   * The stamp members come from a `2xx` body in the Resource Metadata shape
+   * (an object whose `contentType` is a string and whose `size` is a number,
+   * which tells it from an echoed representation). Each stamp is copied whole
+   * or not at all, and `createdBy` only as a string. A `204` has no body and
+   * acks the validator alone.
    */
   const writeAck = (response: HttpResponse): WriteAck => {
     const etag = readEtag(response)
-    return etag === undefined ? {} : { etag }
+    const ack: WriteAck = etag === undefined ? {} : { etag }
+    const body = response.data as Partial<ResourceMetadata> | undefined
+    if (
+      body === null ||
+      typeof body !== 'object' ||
+      typeof body.contentType !== 'string' ||
+      typeof body.size !== 'number'
+    ) {
+      return ack
+    }
+    const { meta, createdBy, ...stamp } = body
+    if (isWriteStamp(stamp)) {
+      ack.updatedAt = stamp.updatedAt
+      ack.updatedAtCounter = stamp.updatedAtCounter
+      ack.originId = stamp.originId
+    }
+    if (isMetaStamp(meta)) {
+      ack.meta = meta
+    }
+    if (typeof createdBy === 'string') {
+      ack.createdBy = createdBy
+    }
+    return ack
   }
 
   /**
@@ -475,8 +503,10 @@ export function createWasSyncPort({
           },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
+        // An ack with nothing in it (a `204` whose `ETag` did not reach the
+        // client) is reported as no ack at all.
         const ack = writeAck(response)
-        return ack.etag !== undefined ? ack : undefined
+        return Object.keys(ack).length > 0 ? ack : undefined
       } catch (err) {
         // A `/meta` write against a nonexistent resource legitimately `404`s
         // (the resource was deleted by another replica after this one read

@@ -969,13 +969,129 @@ describe('createWasSyncPort.putMeta clear + write ack', () => {
     )
   })
 
-  it('returns undefined when the response carries no ETag', async () => {
+  it('returns undefined when the response carries neither ETag nor body', async () => {
     const { was } = makeWas({ onRequest: () => response(null) })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
     expect(
       await port.putMeta({ id: 'res-1', custom: { a: 1 } })
     ).toBeUndefined()
+  })
+})
+
+describe('createWasSyncPort write ack body', () => {
+  const stamp = {
+    updatedAt: '2026-10-04T12:00:00.000Z',
+    updatedAtCounter: 0,
+    originId: 'origin-a'
+  }
+  const metaStamp = { ...stamp, updatedAtCounter: 1, generation: 'g1' }
+  const created = {
+    contentType: 'application/json',
+    size: 7,
+    createdAt: '2026-10-04T12:00:00.000Z',
+    createdBy: 'did:key:z6MkCreator',
+    ...stamp
+  }
+
+  it('acks the stamp and createdBy from a 201 body beside the etag', async () => {
+    const { was } = makeWas({
+      onRequest: () => response(created, { etag: '"g.1"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const ack = await port.putContent({
+      id: 'res-1',
+      data: { a: 1 },
+      ifNoneMatch: true
+    })
+    expect(ack).toStrictEqual({
+      etag: '"g.1"',
+      ...stamp,
+      createdBy: 'did:key:z6MkCreator'
+    })
+  })
+
+  it('acks the stamp alone from a 200 body (no provenance on an update)', async () => {
+    const { contentType, size } = created
+    const { was } = makeWas({
+      onRequest: () =>
+        response({ contentType, size, ...stamp }, { etag: '"g.2"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const ack = await port.putContent({ id: 'res-1', data: { a: 2 } })
+    expect(ack).toStrictEqual({ etag: '"g.2"', ...stamp })
+  })
+
+  it('acks the /meta stamp under meta on a metadata write', async () => {
+    const { contentType, size } = created
+    const { was } = makeWas({
+      onRequest: () =>
+        response(
+          { contentType, size, ...stamp, meta: metaStamp },
+          { etag: '"m.1"' }
+        )
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    expect(await port.putMeta({ id: 'res-1', custom: { a: 1 } })).toStrictEqual(
+      { etag: '"m.1"', ...stamp, meta: metaStamp }
+    )
+  })
+
+  it('returns a /meta ack with no validator when only the body reached the client', async () => {
+    const { contentType, size } = created
+    const { was } = makeWas({
+      onRequest: () =>
+        response({ contentType, size, ...stamp, meta: metaStamp })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    expect(await port.putMeta({ id: 'res-1', custom: { a: 1 } })).toStrictEqual(
+      { ...stamp, meta: metaStamp }
+    )
+  })
+
+  it('copies a stamp whole or not at all', async () => {
+    const { contentType, size } = created
+    const { was } = makeWas({
+      onRequest: () =>
+        response(
+          {
+            contentType,
+            size,
+            updatedAt: stamp.updatedAt,
+            meta: { updatedAt: stamp.updatedAt, generation: 'g1' }
+          },
+          { etag: '"g.3"' }
+        )
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const ack = await port.putContent({ id: 'res-1', data: { a: 1 } })
+    expect(ack).toStrictEqual({ etag: '"g.3"' })
+  })
+
+  it('ignores a body that is not the Resource Metadata shape', async () => {
+    const { was } = makeWas({
+      onRequest: () => response({ a: 1, ...stamp }, { etag: '"g.4"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const ack = await port.putContent({ id: 'res-1', data: { a: 1 } })
+    expect(ack).toStrictEqual({ etag: '"g.4"' })
+  })
+
+  it('ignores a non-string createdBy', async () => {
+    const { was } = makeWas({
+      onRequest: () =>
+        response({ ...created, createdBy: 42 }, { etag: '"g.5"' })
+    })
+    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
+
+    const ack = await port.putContent({ id: 'res-1', data: { a: 1 } })
+    expect(ack).toStrictEqual({ etag: '"g.5"', ...stamp })
   })
 })
 

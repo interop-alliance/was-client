@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 128
+nextAvailableId: 129
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -427,19 +427,19 @@ it.
     `ReplicaSummary`, `ReplicaStatus`, `ReplicaListing`, `ReplicaStallReason`,
     `ProblemTypes.REPLICA_REFUSED`, `CollectionMetadata.created`) and the two
     new reserved Collection ids. Nothing to file there
-  - was-react: unaffected unless it re-exports the Space Metadata type
-    (check when the client ships)
+  - was-react: unaffected unless it re-exports the Space Metadata type (check
+    when the client ships)
   - freewallet: the registration flow consumes this API (FW-638)
 - acceptance:
   - [ ] storage-core is bumped to 0.35.0, and the Space Metadata read surfaces
         the `replicas` member (`[{ fromSpace, toSpace, role }]`) without
         client-side shaping
   - [ ] A registration API over `/space/:id/replicas`: create (`POST` of
-        `{ id, fromSpace, toSpace, capability, collections?, role }`), list
-        (the `{ url, totalItems, items }` listing), get, delete, and read of
-        the `status` sub-resource, all typed with the storage-core types
-  - [ ] A `replica-refused` (409) refusal surfaces as a typed error that
-        names the problem type, apart from `invalid-request-body` (400)
+        `{ id, fromSpace, toSpace, capability, collections?, role }`), list (the
+        `{ url, totalItems, items }` listing), get, delete, and read of the
+        `status` sub-resource, all typed with the storage-core types
+  - [ ] A `replica-refused` (409) refusal surfaces as a typed error that names
+        the problem type, apart from `invalid-request-body` (400)
   - [ ] The `status` read exposes `stall.reason` as `ReplicaStallReason`
   - [ ] `Collection.meta()` surfaces the server-managed `created` stamp
         (`{ updatedAt, updatedAtCounter, originId }`), and no write path sends

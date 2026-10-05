@@ -3501,3 +3501,41 @@ passes items through unchanged, so it needs no code change. It does need the
 storage-core release that types the new member, and a test so a regression in
 the pass-through is caught. The JSDoc and README already describe the new
 behavior.
+
+### WCL-128: `WriteAck` carries the write response body's stamp and provenance
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: sync, write-ack, was-96, wire-contract
+- touches:
+  - was-client (ARCHITECTURE.md conditional-writes paragraph, the `WriteAck` and
+    `putMeta` JSDoc in `src/sync/types.ts`, `sync-port.test.ts`)
+  - was-sync: WS-17 (the ack write-back stamps the members under the unit rule)
+  - wallet-core (optional: the engine may adopt the new members)
+  - was-teaching-server: WAS-189 (shipped the body; the server side of this
+    contract)
+- acceptance:
+  - [x] `WriteAck` carries `updatedAt`, `updatedAtCounter`, `originId`, `meta`,
+        and `createdBy`, all optional
+  - [x] `writeAck` lifts them from a `2xx` body only when the body is an object
+        whose `contentType` is a string and `size` is a number; each stamp is
+        copied whole via `isWriteStamp` / `isMetaStamp`; `createdBy` only as a
+        string
+  - [x] `putMeta` returns an ack that has any member, `undefined` only when the
+        response carried neither an `ETag` nor a body
+  - [x] A `204` with an `ETag` still acks `{ etag }` alone
+  - [x] ARCHITECTURE.md and the JSDoc describe the members and the shape guard
+  - [x] CHANGELOG.md entry
+
+Context: was-teaching-server WAS-189 (done 2026-10-04) changed a successful
+Resource write to answer `201` on a create and `200` on an update or `/meta`
+write, with a body carrying the server-managed members of the Resource Metadata
+object: `contentType`, `size`, the content record's stamp, `createdAt` and
+`createdBy` when the write recorded them, and the `/meta` record's stamp on a
+metadata write. The sync port discarded that body and acked the `ETag` alone, so
+a replica could learn its own write's stamp and `createdBy` only from the feed
+echo, which RxDB drops when it arrives during the push (was-sync WS-17). The ack
+now carries what the body carries, and a consumer that was written for the
+`{ etag }` ack keeps working since every new member is optional. Filed from
+was-sync WS-17.
