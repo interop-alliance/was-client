@@ -106,7 +106,9 @@ export type {
   DocCipher
 } from './types.js'
 
-// The write stamp types the port's documents carry, re-exported so a consumer
-// names them from the entry that hands them over rather than from
-// `@interop/storage-core` directly.
+// The write stamp types the port's documents carry, and the guards that tell a
+// whole stamp from a partial one, re-exported so a consumer names them from
+// the entry that hands them over rather than from `@interop/storage-core`
+// directly.
 export type { ResourceMetaStamp, WriteStamp } from '@interop/storage-core'
+export { isMetaStamp, isWriteStamp } from '@interop/storage-core'

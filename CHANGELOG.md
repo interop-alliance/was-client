@@ -1,5 +1,13 @@
 # @interop/was-client Changelog
 
+## 0.90.2 - TBD
+
+### Added
+
+- `./sync` re-exports `isWriteStamp` and `isMetaStamp` from
+  `@interop/storage-core`, so a replication consumer that patches a stamp as a
+  unit checks it from the entry that hands it over.
+
 ## 0.90.1 - 2026-10-04
 
 ### Added
