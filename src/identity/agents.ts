@@ -83,6 +83,14 @@ export async function agentsFromSeed({
  * Passing a string keeps every secret typeable/scannable into a login form
  * (the cross-wallet linking flow).
  *
+ * The secret is trimmed before derivation, so leading and trailing whitespace
+ * (a pasted passphrase, a scanned code) does not change the identity. An
+ * empty or whitespace-only secret is rejected with `ValidationError`: the
+ * handle and key name are public constants, so the identity such a secret
+ * would derive is computable by anyone, and a caller passing an unfilled
+ * field would otherwise land silently in that shared account. No minimum
+ * length is enforced beyond that.
+ *
  * @param options {object}
  * @param options.secret {string}   the controller secret (see above)
  * @returns {Promise<ProfileAgents>}
@@ -92,8 +100,14 @@ export async function agentsFromSecret({
 }: {
   secret: string
 }): Promise<ProfileAgents> {
+  const trimmed = secret.trim()
+  if (trimmed.length === 0) {
+    throw new ValidationError(
+      'Expected a non-empty controller secret, got an empty or whitespace-only string.'
+    )
+  }
   const keyAgent = await CapabilityAgent.fromSecret({
-    secret,
+    secret: trimmed,
     handle: BOOTSTRAP_HANDLE,
     keyName: BOOTSTRAP_KEY_NAME
   })

@@ -1,5 +1,14 @@
 # @interop/was-client Changelog
 
+## 0.93.0 - TBD
+
+### Changed
+
+- `agentsFromSecret` trims the secret before derivation and throws
+  `ValidationError` on an empty or whitespace-only secret. Previously such
+  secrets derived fixed, publicly computable identities. A secret with
+  surrounding whitespace now derives a different identity than before.
+
 ## 0.92.0 - 2026-10-05
 
 ### Changed
@@ -7,8 +16,8 @@
 - **BREAKING**: `BOOTSTRAP_KEY_NAME` is now `'bootstrap-key'` (was the
   misspelled `'boostrap-key'`). The name is an HMAC input in
   `CapabilityAgent.fromSeed`, so every did:key derived from a client seed or
-  controller secret changes, and with it every existing account's data
-  identity. No migration is provided.
+  controller secret changes, and with it every existing account's data identity.
+  No migration is provided.
 
 ## 0.91.0 - 2026-10-04
 

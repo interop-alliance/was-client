@@ -23,8 +23,6 @@ Ready:
 - WCL-56 [M] The write epoch goes stale with no signal on any write path
 - WCL-74 [M] `isEncryptedEnvelope` is a fail-open routing predicate, and its
   JSDoc says to use it that way
-- WCL-77 [M] `agentsFromSecret` accepts an empty secret and derives a well-known
-  identity
 - WCL-85 [M] `mapError` hardening -- prototype lookup, the unmapped 422, and
   unvalidated server strings
 - WCL-96 [M] `resourceDescriptorStore.read()` reads a masked 404 as "no
@@ -393,37 +391,6 @@ consumer acts on the invitation today and accepts a server-supplied plaintext
 body as a credential. Closing this needs the doc change plus the consumer edit,
 so the item is not done at the doc alone. discovered-from: whole-codebase
 review, 2026-09-11.
-
-### WCL-77: [M] `agentsFromSecret` accepts an empty secret and derives a well-known identity
-
-- status: todo
-- priority: medium
-- labels: api, fail-closed, correctness
-- touches:
-  - freewallet, dcw: any login path that could pass an empty or unfilled field
-    into the derivation
-  - wallet-core: if it wraps the derivation
-- acceptance:
-  - [ ] `agentsFromSecret({ secret: '' })` throws `ValidationError`, matching
-        `agentsFromSeed`'s fail-closed shape
-  - [ ] The whitespace and minimum-length policy is settled with the maintainer
-        and documented on the function
-  - [ ] The consumers under `touches:` are walked for call sites that could
-        supply an unfilled secret
-
-Execution-proven: an empty secret resolves without error to
-`did:key:z6MkjkHZwwFoQRN6wJu1t5UQVinLRK9UQohxsLoDPwJdoEQz`, and a
-whitespace-only secret derives another fixed identity. Both are deterministic
-and globally derivable, since the handle and key name are fixed public
-constants, so a caller bug lands the user silently in a shared account whose
-decryption key anyone can compute. `agentsFromSeed` twenty-five lines above
-already validates its input, and `agentsFromSecret` is a public subpath export,
-so the guard is this library's to own. The empty case is clear-cut. Whether
-whitespace-only is rejected, whether the string is trimmed first, and whether
-any minimum length applies are maintainer decisions, because they permanently
-partition who can derive which account; ask before coding beyond the empty case.
-
-discovered-from: whole-codebase review, 2026-09-11.
 
 ### WCL-85: [M] `mapError` hardening -- prototype lookup, the unmapped 422, and unvalidated server strings
 

@@ -57,6 +57,20 @@ describe('agentsFromSecret', () => {
     expect(again.keyAgreementKey.id).toBe(agents.keyAgreementKey.id)
   })
 
+  it('rejects an empty or whitespace-only secret', async () => {
+    await expect(agentsFromSecret({ secret: '' })).rejects.toThrow(
+      ValidationError
+    )
+    await expect(agentsFromSecret({ secret: ' \t\n ' })).rejects.toThrow(
+      ValidationError
+    )
+  })
+
+  it('trims surrounding whitespace before deriving', async () => {
+    const padded = await agentsFromSecret({ secret: `  ${SECRET}\n` })
+    expect(padded.controllerDid).toBe(agents.controllerDid)
+  })
+
   it('matches seedFromSecret + agentsFromSeed (the stored-seed path)', async () => {
     const seed = await CapabilityAgent.seedFromSecret({
       secret: SECRET,
