@@ -3842,3 +3842,59 @@ label is kept across a metadata write. Sending it is harmless once the server
 ignores it, but the option invites a caller to believe a `/meta` write affects
 attribution. Filed from was-sync WS-25, which stopped the driver from passing
 it.
+
+### WCL-34: [M] The integration tier never runs, and skips provisioning entirely
+
+- status: done (2026-10-05)
+- priority: medium
+- labels: testing, provisioning, ci
+- discovered-from: freewallet FW-384's CI failure (2026-08-29)
+- acceptance:
+  - [x] `test/integration/` covers `ensureSpace` and `ensureSpaceAndCollection`
+        against a real server, including the already-provisioned second pass
+  - [x] The description that test threads comes from `ensureSpace`'s own return
+        rather than a hand-written literal
+  - [x] `test:integration` runs in CI, or the reason it cannot is recorded here
+
+Context: the integration tier exists and covers ten files, but it runs against a
+server the developer starts by hand (`TEST_SERVER_URL`, absent means
+`describe.skip`), appears in no CI workflow, and is documented nowhere outside
+the test file headers. It also does not touch provisioning at all: `ensureSpace`
+appears in exactly one test file in the repo, the fakes tier.
+
+That combination let a real divergence through. `ensureSpaceAndCollection`
+refuses a supplied `spaceDescription` whose `id` does not name the Space being
+provisioned, and `ensureSpace` returns the served description verbatim on its
+existing-Space path. So the guard depends on a member only a real server
+supplies. The fakes tier tested the two halves separately, each against its own
+hand-written description -- one of which carried no `id`, and the one that did
+threaded a literal with an `as never` cast at exactly the join where the type
+system would have objected. The seam was covered twice and never once end to
+end. (The joined case now exists, added 2026-08-29; what is still missing is a
+real server supplying the description.)
+
+A live-server test is what pins "a served description always carries `id`". No
+fake can assert that about a server, and this repo is where the guard lives.
+
+The CI half is the larger point. Three live-server tiers exist across this repo,
+freewallet, and freewallet's e2e, and none of them runs in any workflow. A tier
+that runs when someone remembers catches nothing. The server publishes to npm
+and exports `createApp` / `FileSystemBackend`, and its own suite already boots
+it in-process on port 0 (`was-teaching-server/test/helpers.ts`), so an
+in-process boot is available here too and would remove the `TEST_SERVER_URL`
+handshake. Weigh the licence edge first: the server is AGPL-3.0-or-later and
+this package is MIT, so a test-only devDependency needs a deliberate call rather
+than a default.
+
+Siblings, each owning its own repo's half: wallet-core WC-152, freewallet
+FW-392.
+
+Resolution (2026-10-05): `was-teaching-server` (unscoped on npm,
+AGPL-3.0-or-later) is a devDependency, and the integration tier's vitest
+`globalSetup` boots it in-process through `was-teaching-server/testing` whenever
+`TEST_SERVER_URL` is unset; a set `TEST_SERVER_URL` still points the tier at an
+external server. CI runs `test:integration` after the unit tier. The licence
+edge was weighed: a devDependency never enters the published tarball (`files` is
+`dist`, README and LICENSE), no `src/` module imports the server, and the tests
+reach it over HTTP, so the AGPL terms never attach to this MIT package. The
+first CI-visible run caught one stale assertion, filed as WCL-131.

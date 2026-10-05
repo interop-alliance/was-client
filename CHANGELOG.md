@@ -12,6 +12,12 @@
 
 ### Added
 
+- The integration tier (`pnpm test:integration`) boots the reference server
+  in-process when `TEST_SERVER_URL` is unset, through a `was-teaching-server`
+  devDependency, and runs in CI. A set `TEST_SERVER_URL` still selects an
+  external server.
+- A live-server test for `ensureSpace` and `ensureSpaceAndCollection`, threading
+  the served Space description through both passes.
 - `ResourceData` admits a `ReadableStream<Uint8Array>`. On an encrypted
   collection, `add(stream)` and `put(id, stream)` always write it as a document
   plus chunk resources, without buffering, whatever its size. `put(id, stream)`

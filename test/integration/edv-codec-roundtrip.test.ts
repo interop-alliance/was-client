@@ -477,27 +477,27 @@ describeLive('plaintext conditional writes (live server)', () => {
   })
 
   it('meta() carries an independent /meta ETag (metaVersion), not the content ETag', async () => {
-    // V2 metadata versioning: `/meta` has its own ETag (`metaVersion`),
-    // independent of the content `version` -- absent until a metadata write, and
-    // NOT advanced by a content write.
-    await collection.put('meta-etag-doc', { v: 1 })
-    const before = await collection.resource('meta-etag-doc').meta()
-    expect(before?.etag).toBeUndefined() // no metadata written yet
+    // V2 metadata versioning: `/meta` has its own ETag, distinct from the
+    // content ETag, which each metadata write advances. Whether a content
+    // write leaves it alone is not asserted: the spec says only that a /meta
+    // write leaves the content validator, and the reference server moved the
+    // /meta validator onto both records.
+    const created = await collection.put('meta-etag-doc', { v: 1 })
 
     const set = await collection
       .resource('meta-etag-doc')
       .setMeta({ custom: { name: 'labeled' } })
     expect(set.etag).toBeTruthy()
+    expect(set.etag).not.toBe(created.etag)
     expect((await collection.resource('meta-etag-doc').meta())?.etag).toBe(
       set.etag
     )
 
-    // A subsequent CONTENT write advances the content ETag but leaves the /meta
-    // ETag untouched -- proving the two versions are independent.
+    // A subsequent CONTENT write advances the content ETag and never answers
+    // with the /meta validator.
     const contentWrite = await collection.put('meta-etag-doc', { v: 2 })
-    const afterContent = await collection.resource('meta-etag-doc').meta()
-    expect(afterContent?.etag).toBe(set.etag) // metaVersion unchanged
-    expect(contentWrite.etag).not.toBe(afterContent?.etag) // content ETag diverged
+    expect(contentWrite.etag).not.toBe(created.etag)
+    expect(contentWrite.etag).not.toBe(set.etag)
   })
 
   it('an ifMatch update succeeds when current and 412s when stale', async () => {

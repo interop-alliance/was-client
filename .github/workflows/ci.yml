@@ -30,6 +30,9 @@ jobs:
       - name: Test (Node)
         run: pnpm run test:node
 
+      - name: Test (integration, in-process server)
+        run: pnpm run test:integration
+
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
 

@@ -1879,7 +1879,7 @@ export class EdvCodec implements ResourceCodec {
         return {
           kind: 'chunked',
           stream: bytesToStream(
-            isBlob(payload.data) ? payload.data : payload.data.slice()
+            isBlob(payload.data) ? payload.data : new Uint8Array(payload.data)
           ),
           size,
           meta: { contentType: resolvedType, encoding: CHUNKED_ENCODING }
@@ -2028,18 +2028,8 @@ async function streamToBlob({
   stream: ReadableStream<Uint8Array>
   type?: string
 }): Promise<Blob> {
-  const reader = stream.getReader()
-  const parts: BlobPart[] = []
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) {
-      break
-    }
-    if (value !== undefined) {
-      parts.push(value as BlobPart)
-    }
-  }
-  return new Blob(parts, type !== undefined ? { type } : undefined)
+  const bytes = await new Response(stream).arrayBuffer()
+  return new Blob([bytes], type !== undefined ? { type } : undefined)
 }
 
 /**

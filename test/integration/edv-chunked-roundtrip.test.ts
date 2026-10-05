@@ -26,7 +26,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
 import { WasTransport } from '../../src/edv/index.js'
-import { drain } from '../helpers/bytes.js'
+import { drain, streamOf } from '../helpers/bytes.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -41,29 +41,6 @@ async function freshWasClient(): Promise<WasClient> {
   return WasClient.fromSigner({
     serverUrl: serverUrl!,
     signer: keyPair.didKeySigner()
-  })
-}
-
-/**
- * Wraps a byte array in a WHATWG `ReadableStream`, enqueuing it in fixed-size
- * slices so `EdvClientCore` sees a genuinely multi-part source.
- *
- * @param bytes {Uint8Array}
- * @param sliceSize {number}
- * @returns {ReadableStream<Uint8Array>}
- */
-function streamOf(bytes: Uint8Array, sliceSize: number): ReadableStream {
-  let offset = 0
-  return new ReadableStream({
-    pull(controller) {
-      if (offset >= bytes.length) {
-        controller.close()
-        return
-      }
-      const end = Math.min(offset + sliceSize, bytes.length)
-      controller.enqueue(bytes.subarray(offset, end))
-      offset = end
-    }
   })
 }
 
@@ -175,7 +152,7 @@ describeLive('chunked encrypted blobs over WAS (live server)', () => {
 
     const inserted = await edv.insert({
       doc: { content: { label: 'big-blob' } },
-      stream: streamOf(plaintext, 256 * 1024),
+      stream: streamOf({ bytes: plaintext, pieceSize: 256 * 1024 }),
       transport
     })
 

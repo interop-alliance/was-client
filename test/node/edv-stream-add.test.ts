@@ -16,37 +16,8 @@ import { EdvClientCore } from '@interop/edv-client'
 import { NotFoundError, ValidationError } from '../../src/index.js'
 import type { Collection } from '../../src/index.js'
 import { blobBytes } from '../../src/edv/core.js'
-import { bytesOf, drain } from '../helpers/bytes.js'
+import { bytesOf, drain, streamOf } from '../helpers/bytes.js'
 import { memoryServer, readerWithDescriptor } from '../helpers/memoryServer.js'
-
-/**
- * A stream that yields `bytes` in pieces of `pieceSize`, so the source shape
- * differs from the chunk size the codec writes with.
- *
- * @param options {object}
- * @param options.bytes {Uint8Array}
- * @param options.pieceSize {number}
- * @returns {ReadableStream<Uint8Array>}
- */
-function streamOf({
-  bytes,
-  pieceSize
-}: {
-  bytes: Uint8Array
-  pieceSize: number
-}): ReadableStream<Uint8Array> {
-  let offset = 0
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (offset >= bytes.length) {
-        controller.close()
-        return
-      }
-      controller.enqueue(bytes.slice(offset, offset + pieceSize))
-      offset += pieceSize
-    }
-  })
-}
 
 /**
  * An encrypted collection over a fresh in-memory server.

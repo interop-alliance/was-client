@@ -397,7 +397,7 @@ export class UnknownEpochError extends Error {
     super(
       `Cannot decrypt a resource in collection "${collectionId}": its ` +
         `envelope names recipient key id(s) ` +
-        `[${cleanText(kids.join(', '), MAX_KIDS_LENGTH)}] whose key ` +
+        `[${cleanText(kids.join(', '), MAX_TEXT_LENGTH)}] whose key ` +
         'epoch is not on the Collection Metadata object this reader holds. ' +
         'The cached descriptor may be stale (an epoch rotation emits no ' +
         'change-feed entry); re-read it and rebuild the cipher.'
@@ -434,10 +434,8 @@ type WasErrorClass = new (
 
 // Client-side hygiene limits on server-supplied strings carried into errors.
 const MAX_TYPE_LENGTH = 2048
-// Applies to `title`, each `errors[].detail`, and each `errors[].pointer`.
+// Applies to every other server-supplied string carried into an error.
 const MAX_TEXT_LENGTH = 1024
-// Applies to the joined recipient key ids in an `UnknownEpochError` message.
-const MAX_KIDS_LENGTH = 1024
 
 /**
  * Normalizes an untrusted string for display: strips C0 and C1 control

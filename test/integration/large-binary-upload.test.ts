@@ -18,6 +18,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { WasClient } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
+import { bytesOf } from '../helpers/bytes.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -28,20 +29,6 @@ const describeLive = serverUrl ? describe : describe.skip
  * default 64 MiB per-upload cap.
  */
 const LARGE_BODY_BYTES = 40 * 1024 * 1024 + 13
-
-/**
- * A deterministic pseudo-random body, so the digest comparison is meaningful.
- *
- * @param size {number}
- * @returns {Uint8Array}
- */
-function bytesOf(size: number): Uint8Array<ArrayBuffer> {
-  const bytes = new Uint8Array(size)
-  for (let index = 0; index < size; index++) {
-    bytes[index] = (index * 31 + (index >> 8) * 17) % 256
-  }
-  return bytes
-}
 
 /**
  * Hex SHA-256 of a Blob's bytes, for comparing a large read-back without an

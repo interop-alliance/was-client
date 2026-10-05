@@ -9,10 +9,9 @@
  * that what the server stores is opaque ciphertext (a JWE envelope, no
  * cleartext).
  *
- * Requires a running server: set `TEST_SERVER_URL`. The suite skips when it is
- * unset, so a bare `pnpm test:integration` (no server) is not a failure. Start
- * a server yourself (e.g. in was-teaching-server) and point `TEST_SERVER_URL`
- * at it.
+ * Requires a running server: `TEST_SERVER_URL`, which the global setup sets
+ * when it boots one in-process. Point it at an external server to use that
+ * one instead.
  */
 import { describe, it, beforeAll, afterAll, expect } from 'vitest'
 import { EdvClientCore } from '@interop/edv-client'

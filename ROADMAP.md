@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 131
+nextAvailableId: 132
 
 <!-- roadmap-order:index:start -->
 
@@ -92,6 +92,8 @@ Ready:
 
 Ready:
 
+- WCL-131 [M] The Resource `/meta` validator's relation to content writes is
+  unstated in the spec
 - WCL-107 [M] Require an authorization profile entry in the service description
   and read the signature members from it
 - WCL-32 [L] Provisioning creates cannot be made race-safe (no create-if-absent
@@ -117,7 +119,6 @@ Ready:
 
 Ready:
 
-- WCL-34 [M] The integration tier never runs, and skips provisioning entirely
 - WCL-72 [L] Collection internal-state hygiene
 - WCL-80 [L] `singleKeyResolver` / `ProfileAgents.keyResolver` is required by
   the seam but never invoked
@@ -1409,6 +1410,37 @@ without this upstream fix.
 Conformance gaps against the spec, and wire-contract changes the client adopts
 once the spec or the server has settled them.
 
+### WCL-131: [M] The Resource `/meta` validator's relation to content writes is unstated in the spec
+
+- status: todo
+- priority: medium
+- labels: spec, conditional-writes, metadata
+- discovered-from: WCL-34 (2026-10-05)
+- touches:
+  - wallet-attached-storage-spec: the Read Resource Metadata and Update Resource
+    Metadata operations state what a `/meta` write leaves (the Resource's
+    `updatedAt` and `ETag`) but not what a content write does to the `/meta`
+    validator, nor whether the validator exists before any `/meta` write
+  - was-teaching-server: 0.42.1 serves a `/meta` `ETag` from the Resource's
+    first write; its unreleased changelog has the validator cover both records
+    and move on a content write
+- acceptance:
+  - [ ] The spec states whether a `/meta` `ETag` is present before any metadata
+        write, and whether a content write advances it
+  - [ ] The live `meta()` validator test asserts that rule, and the
+        `ARCHITECTURE.md` conditional-writes text matches it
+
+Context: the first CI run of the integration tier failed on one assertion in the
+plaintext conditional-writes suite, which expected `meta()` on a freshly created
+Resource to carry no `ETag` and a later content write to leave the `/meta`
+validator unchanged. The reference server serves a `/meta` validator from the
+first write, and its next release has a content write move it, so the client's
+belief that the two validators are independent came from nothing the spec says.
+The test now asserts only what the spec guarantees: a metadata write advances
+the `/meta` validator, and neither validator is ever answered for the other. The
+independence question is a spec decision, so it is filed here rather than
+settled in a test.
+
 ### WCL-107: [M] Require an authorization profile entry in the service description and read the signature members from it
 
 - status: todo
@@ -1675,52 +1707,6 @@ review, 2026-09-11.
 
 Test coverage, docstring and decision-record corrections, and refactors with no
 behavior change.
-
-### WCL-34: [M] The integration tier never runs, and skips provisioning entirely
-
-- status: todo
-- priority: medium
-- labels: testing, provisioning, ci
-- discovered-from: freewallet FW-384's CI failure (2026-08-29)
-- acceptance:
-  - [ ] `test/integration/` covers `ensureSpace` and `ensureSpaceAndCollection`
-        against a real server, including the already-provisioned second pass
-  - [ ] The description that test threads comes from `ensureSpace`'s own return
-        rather than a hand-written literal
-  - [ ] `test:integration` runs in CI, or the reason it cannot is recorded here
-
-Context: the integration tier exists and covers ten files, but it runs against a
-server the developer starts by hand (`TEST_SERVER_URL`, absent means
-`describe.skip`), appears in no CI workflow, and is documented nowhere outside
-the test file headers. It also does not touch provisioning at all: `ensureSpace`
-appears in exactly one test file in the repo, the fakes tier.
-
-That combination let a real divergence through. `ensureSpaceAndCollection`
-refuses a supplied `spaceDescription` whose `id` does not name the Space being
-provisioned, and `ensureSpace` returns the served description verbatim on its
-existing-Space path. So the guard depends on a member only a real server
-supplies. The fakes tier tested the two halves separately, each against its own
-hand-written description -- one of which carried no `id`, and the one that did
-threaded a literal with an `as never` cast at exactly the join where the type
-system would have objected. The seam was covered twice and never once end to
-end. (The joined case now exists, added 2026-08-29; what is still missing is a
-real server supplying the description.)
-
-A live-server test is what pins "a served description always carries `id`". No
-fake can assert that about a server, and this repo is where the guard lives.
-
-The CI half is the larger point. Three live-server tiers exist across this repo,
-freewallet, and freewallet's e2e, and none of them runs in any workflow. A tier
-that runs when someone remembers catches nothing. The server publishes to npm
-and exports `createApp` / `FileSystemBackend`, and its own suite already boots
-it in-process on port 0 (`was-teaching-server/test/helpers.ts`), so an
-in-process boot is available here too and would remove the `TEST_SERVER_URL`
-handshake. Weigh the licence edge first: the server is AGPL-3.0-or-later and
-this package is MIT, so a test-only devDependency needs a deliberate call rather
-than a default.
-
-Siblings, each owning its own repo's half: wallet-core WC-152, freewallet
-FW-392.
 
 ### WCL-72: [L] Collection internal-state hygiene
 

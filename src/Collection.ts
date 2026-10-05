@@ -201,7 +201,7 @@ function changesMethodFor(capability?: IZcap): 'POST' | 'GET' {
  * @param options.method {'POST' | 'GET'}
  * @param [options.checkpoint] {ChangesCheckpoint}
  * @param [options.limit] {number}
- * @returns {{ path: string, json?: object }}
+ * @returns {{ path: string, method: 'POST' | 'GET', json?: object }}
  */
 function changesRequest({
   queryPath,
@@ -213,20 +213,20 @@ function changesRequest({
   method: 'POST' | 'GET'
   checkpoint?: ChangesCheckpoint
   limit?: number
-}): { path: string; json?: object } {
+}): { path: string; method: 'POST' | 'GET'; json?: object } {
   const params = {
     profile: 'changes',
     ...(checkpoint !== undefined && { checkpoint }),
     ...(limit !== undefined && { limit })
   }
   if (method === 'POST') {
-    return { path: queryPath, json: params }
+    return { path: queryPath, method, json: params }
   }
   const search = new URLSearchParams()
   for (const [name, value] of Object.entries(params)) {
     search.set(name, String(value))
   }
-  return { path: `${queryPath}?${search.toString()}` }
+  return { path: `${queryPath}?${search.toString()}`, method }
 }
 
 export class Collection {
@@ -1801,7 +1801,6 @@ export class Collection {
         checkpoint,
         limit
       }),
-      method,
       capability: this.#capability
     })
     // Neither form carries the null-on-404 `read` flag: a missing or
