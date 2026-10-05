@@ -28,6 +28,7 @@ import type {
   ResourceMetadataCustom
 } from '../../src/index.js'
 import { CodecHolder, identityCodec } from '../../src/internal/codec.js'
+import { drain } from '../helpers/bytes.js'
 import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 interface RequestArgs {
@@ -984,6 +985,89 @@ describe('identityCodec: metadata identity (byte-for-byte)', () => {
         { kind: 'collection' }
       )
     ).toEqual({})
+  })
+})
+
+describe('identityCodec: decodeStream', () => {
+  it('hands back the body stream of a binary response, with its type', async () => {
+    const bytes = new Uint8Array([0, 1, 2, 250, 251])
+    const body = new Blob([bytes]).stream()
+    const response = {
+      headers: new Headers({ 'content-type': 'image/png' }),
+      body
+    } as unknown as HttpResponse
+    const read = await identityCodec.decodeStream!(response)
+    expect(read.contentType).toBe('image/png')
+    expect(read.stream).toBe(body)
+    expect(await drain(read.stream)).toEqual(bytes)
+  })
+
+  it('reports the bare media type, without parameters', async () => {
+    const body = new Blob([new Uint8Array([104, 105])]).stream()
+    const response = {
+      headers: new Headers({ 'content-type': 'text/plain; charset=utf-8' }),
+      body
+    } as unknown as HttpResponse
+    const read = await identityCodec.decodeStream!(response)
+    expect(read.contentType).toBe('text/plain')
+    expect(read.stream).toBe(body)
+  })
+
+  it('re-serializes a pre-parsed JSON body', async () => {
+    const response = {
+      headers: new Headers({ 'content-type': 'application/json' }),
+      data: { hello: 'world' },
+      body: null
+    } as unknown as HttpResponse
+    const read = await identityCodec.decodeStream!(response)
+    expect(read.contentType).toBe('application/json')
+    expect(new TextDecoder().decode(await drain(read.stream))).toBe(
+      '{"hello":"world"}'
+    )
+  })
+
+  it('reads an absent body as an empty stream', async () => {
+    const response = {
+      headers: new Headers(),
+      body: null
+    } as unknown as HttpResponse
+    const read = await identityCodec.decodeStream!(response)
+    expect(read.contentType).toBeUndefined()
+    expect(await drain(read.stream)).toEqual(new Uint8Array(0))
+  })
+})
+
+describe('Resource.getStream: a codec without decodeStream', () => {
+  it('falls back to decode and converts the value in memory', async () => {
+    const log: string[] = []
+    const encryption: EncryptionProvider = {
+      async codecFor() {
+        return fakeCodec(log)
+      }
+    }
+    const { client } = clientWithRouter({
+      encryption,
+      readData: { jwe: 'ciphertext' },
+      readContentType: 'application/jose+json'
+    })
+    const read = await client
+      .space('s')
+      .collection('c', { encryption: { scheme: 'edv' } })
+      .resource('zDoc')
+      .getStream()
+    expect(log).toContain('decode')
+    expect(read!.contentType).toBe('application/json')
+    expect(read!.etag).toBe('"g.1"')
+    expect(new TextDecoder().decode(await drain(read!.stream))).toBe(
+      '{"decrypted":true}'
+    )
+  })
+
+  it('resolves null for a missing resource', async () => {
+    const { client } = clientWithRouter({ readStatus: 404 })
+    await expect(
+      client.space('s').collection('c').getStream('missing')
+    ).resolves.toBeNull()
   })
 })
 

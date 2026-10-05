@@ -2,8 +2,9 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for JSON-vs-binary detection on writes (`prepareBody`) and
- * content-type-aware parsing on reads (`parseResource`). The read path is
+ * Unit tests for JSON-vs-binary-vs-stream detection on writes
+ * (`resolvePayload`, `prepareBody`) and content-type-aware parsing on reads
+ * (`parseResource`). The read path is
  * exercised against a minimal `HttpResponse` stub so no server is needed.
  */
 import { describe, it, expect } from 'vitest'
@@ -12,6 +13,8 @@ import type { HttpResponse } from '@interop/http-client'
 import { ValidationError, WasServerError } from '../../src/index.js'
 import {
   prepareBody,
+  resolvePayload,
+  isReadableStream,
   parseResource,
   guessContentTypeFromId,
   createdId,
@@ -142,6 +145,64 @@ describe('prepareBody', () => {
   it('throws a ValidationError for unsupported data (e.g. a primitive)', () => {
     expect(() => prepareBody('not allowed' as never)).toThrow(ValidationError)
     expect(() => prepareBody(null as never)).toThrow(ValidationError)
+  })
+
+  it('refuses a ReadableStream with a ValidationError that names the remedy', () => {
+    const stream = new Blob([new Uint8Array([1, 2, 3])]).stream()
+    expect(() => prepareBody(stream)).toThrow(ValidationError)
+    expect(() => prepareBody(stream)).toThrow(/encrypted collection/)
+    expect(() => prepareBody(stream)).toThrow(/Blob/)
+    // Refused without reading it.
+    expect(stream.locked).toBe(false)
+  })
+})
+
+describe('resolvePayload: streams', () => {
+  /**
+   * A fresh one-chunk byte stream.
+   *
+   * @returns {ReadableStream<Uint8Array>}
+   */
+  function aStream(): ReadableStream<Uint8Array> {
+    return new Blob([new Uint8Array([1, 2, 3])]).stream()
+  }
+
+  it('classifies a ReadableStream as a stream, not as JSON', () => {
+    const stream = aStream()
+    const payload = resolvePayload({ data: stream })
+    expect(payload.kind).toBe('stream')
+    expect(payload).toMatchObject({ data: stream })
+  })
+
+  it('defaults the content-type to application/octet-stream', () => {
+    expect(resolvePayload({ data: aStream() })).toMatchObject({
+      kind: 'stream',
+      contentType: 'application/octet-stream'
+    })
+  })
+
+  it('guesses from the id extension when no contentType is given', () => {
+    expect(resolvePayload({ data: aStream(), id: 'index.html' })).toMatchObject(
+      { kind: 'stream', contentType: 'text/html' }
+    )
+  })
+
+  it('prefers an explicit contentType over the extension guess', () => {
+    expect(
+      resolvePayload({
+        data: aStream(),
+        id: 'index.html',
+        contentType: 'image/png'
+      })
+    ).toMatchObject({ kind: 'stream', contentType: 'image/png' })
+  })
+
+  it('recognizes a stream-like value that fails instanceof (another realm)', () => {
+    const foreign = { getReader: () => ({}) }
+    expect(isReadableStream(foreign)).toBe(true)
+    expect(isReadableStream({ getReader: 'not a function' })).toBe(false)
+    expect(isReadableStream(new Blob([]))).toBe(false)
+    expect(isReadableStream(null)).toBe(false)
   })
 })
 

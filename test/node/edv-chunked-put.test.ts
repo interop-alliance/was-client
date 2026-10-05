@@ -11,188 +11,24 @@
  * `resource.delete()`, which takes its chunks with it.
  */
 import { describe, it, expect } from 'vitest'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { EdvClientCore } from '@interop/edv-client'
-import type {
-  IKeyAgreementKey,
-  IKeyResolver
-} from '@interop/data-integrity-core'
-import type { HttpResponse } from '@interop/http-client'
 
 import {
   ConflictError,
   EncryptionError,
-  PreconditionFailedError,
-  WasClient
+  PreconditionFailedError
 } from '../../src/index.js'
-import type { CollectionEncryption, Json } from '../../src/index.js'
+import type { Json } from '../../src/index.js'
 import {
   createEdvDocCipher,
-  createEdvEncryption,
-  createRefreshingEdvDocCipher,
-  ownerRecipient
+  createRefreshingEdvDocCipher
 } from '../../src/edv/index.js'
 import { blobBytes } from '../../src/edv/core.js'
-import { mintEpoch, wrapEpochSecret } from '../../src/edv/epochCrypto.js'
-import { serviceDescriptionFor } from '../helpers/stubClient.js'
-import type { RequestArgs } from '../helpers/stubClient.js'
-
-/**
- * A reader's keys and the single-epoch descriptor it is recipient zero of.
- *
- * @returns {Promise<object>}
- */
-async function readerWithDescriptor(): Promise<{
-  keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
-  encryption: CollectionEncryption
-}> {
-  const kak = await X25519KeyAgreementKey2020.generate({
-    controller: 'did:example:alice'
-  })
-  const keyAgreementKey = kak as unknown as IKeyAgreementKey
-  const keyResolver = (async () => ({
-    id: kak.id,
-    type: kak.type,
-    publicKeyMultibase: kak.publicKeyMultibase
-  })) as unknown as IKeyResolver
-  const { epochId, secret } = await mintEpoch()
-  const recipient = await wrapEpochSecret({
-    epochSecret: secret,
-    recipient: ownerRecipient({ keyAgreementKey })
-  })
-  return {
-    keys: { keyAgreementKey, keyResolver },
-    encryption: {
-      scheme: 'edv',
-      epochs: [{ id: epochId, recipients: [recipient] }],
-      currentEpoch: epochId
-    }
-  }
-}
-
-/**
- * An in-memory WAS server behind a stub `ZcapClient`: `PUT` stores the body
- * under a fresh `ETag` (refusing an `If-None-Match: *` create over a stored
- * path, or an `If-Match` on a stale `ETag`, with 412), `GET` serves it back
- * (404 when absent), and `DELETE` removes a resource together with every
- * chunk stored under it (honoring `If-Match` too). `failWhen` makes a chosen
- * request fail with its `status` (default 503), to tear a write, and
- * `beforeRequest` lets a test act as a concurrent writer.
- *
- * @returns {object}   the client, the stored bodies by path, and the hooks
- */
-function memoryServer(): {
-  store: Map<string, Uint8Array>
-  write: (path: string, body: Uint8Array) => string
-  client: (options: { maxBlobBytes: number; chunkSize: number }) => WasClient
-  failWhen: {
-    test?: (args: RequestArgs, path: string) => boolean
-    status?: number
-  }
-  beforeRequest: { run?: (args: RequestArgs, path: string) => void }
-} {
-  const store = new Map<string, Uint8Array>()
-  const etags = new Map<string, string>()
-  let version = 0
-  const write = (path: string, body: Uint8Array): string => {
-    const etag = `"${++version}"`
-    store.set(path, body)
-    etags.set(path, etag)
-    return etag
-  }
-  const failWhen: {
-    test?: (args: RequestArgs, path: string) => boolean
-    status?: number
-  } = {}
-  const beforeRequest: { run?: (args: RequestArgs, path: string) => void } = {}
-  const fail = (status: number): never => {
-    throw { status, response: { status } }
-  }
-  const request = async (args: RequestArgs): Promise<HttpResponse> => {
-    const path = new URL(args.url!).pathname
-    const method = args.method ?? 'GET'
-    beforeRequest.run?.(args, path)
-    if (failWhen.test?.(args, path)) {
-      fail(failWhen.status ?? 503)
-    }
-    const ifMatch = args.headers?.['if-match']
-    if (ifMatch !== undefined && etags.get(path) !== ifMatch) {
-      fail(412)
-    }
-    if (method === 'PUT') {
-      if (args.headers?.['if-none-match'] === '*' && store.has(path)) {
-        fail(412)
-      }
-      const body =
-        args.body instanceof Uint8Array
-          ? args.body
-          : new TextEncoder().encode(JSON.stringify(args.json))
-      const etag = write(path, body)
-      return {
-        status: 204,
-        headers: new Headers({ etag })
-      } as unknown as HttpResponse
-    }
-    if (method === 'DELETE') {
-      for (const stored of [...store.keys()]) {
-        if (stored === path || stored.startsWith(`${path}/chunks/`)) {
-          store.delete(stored)
-          etags.delete(stored)
-        }
-      }
-      return { status: 204, headers: new Headers() } as unknown as HttpResponse
-    }
-    const bytes = store.get(path)
-    if (bytes === undefined) {
-      fail(404)
-    }
-    const text = new TextDecoder().decode(bytes)
-    const isChunk = path.includes('/chunks/')
-    return {
-      status: 200,
-      headers: new Headers({
-        'content-type': isChunk
-          ? 'application/octet-stream'
-          : 'application/jose+json',
-        etag: etags.get(path)!
-      }),
-      ...(!isChunk && { data: JSON.parse(text) }),
-      async json() {
-        return JSON.parse(text)
-      },
-      async text() {
-        return text
-      },
-      async arrayBuffer() {
-        return bytes!.slice().buffer
-      }
-    } as unknown as HttpResponse
-  }
-  const client = ({
-    maxBlobBytes,
-    chunkSize
-  }: {
-    maxBlobBytes: number
-    chunkSize: number
-  }): WasClient =>
-    new WasClient({
-      serverUrl: 'https://was.example',
-      serviceDescription: serviceDescriptionFor(),
-      zcapClient: {
-        invocationSigner: { id: 'did:example:alice#key-1' },
-        request
-      } as unknown as ConstructorParameters<typeof WasClient>[0]['zcapClient'],
-      encryption: createEdvEncryption({
-        resolveKeys: async () => null,
-        maxBlobBytes,
-        chunkSize
-      })
-    })
-  return { store, write, client, failWhen, beforeRequest }
-}
+import { bytesOf } from '../helpers/bytes.js'
+import { memoryServer, readerWithDescriptor } from '../helpers/memoryServer.js'
 
 describe('Resource.put: a chunked encrypted write by id', () => {
-  const blob = new Uint8Array(64).map((_value, index) => (index * 3) % 251)
+  const blob = bytesOf(64)
 
   it('round-trips at the caller id, and a second create-if-absent put gets a 412', async () => {
     const { keys, encryption } = await readerWithDescriptor()

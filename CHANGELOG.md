@@ -2,6 +2,33 @@
 
 ## 0.93.0 - TBD
 
+### Added
+
+- `ResourceData` admits a `ReadableStream<Uint8Array>`. On an encrypted
+  collection, `add(stream)` and `put(id, stream)` always write it as a document
+  plus chunk resources, without buffering, whatever its size. `put(id, stream)`
+  keeps the create-only rule. Over an existing document it throws
+  `ValidationError` before the stream is read. The content type is the explicit
+  `contentType`, then the guess from the id's extension, then
+  `application/octet-stream`.
+- A stream is refused with `ValidationError` by a plaintext collection and by a
+  content-addressed collection (`idDerivation: 'content'`). On a plaintext
+  collection, buffer it into a `Blob`.
+- A chunked write that fails midway cancels the caller's stream, so the source
+  behind it (a file handle, a response body) is released.
+- `getStream()` on `Resource` and `getStream(id)` on `Collection` read a
+  resource as a byte stream. They resolve `{ stream, contentType?, etag? }`, or
+  `null` for a missing resource. `contentType` is the bare media type (no
+  `; charset=...`) on every collection. On an encrypted collection a chunked
+  document's decrypt stream is returned unbuffered, and its chunks are fetched
+  as the stream is read. A missing chunk errors the stream with `NotFoundError`
+  and a tampered one with `EncryptionError`, rather than failing the call.
+  `get()` still returns a `Blob`.
+- An optional `decodeStream(response, expectedId?, context?)` method on
+  `ResourceCodec`, resolving `{ stream, contentType? }`. The identity codec and
+  `EdvCodec` implement it. A codec without it is read through `decode`, and the
+  value is converted to a stream in memory.
+
 ### Changed
 
 - `mapError` dispatches on the full problem-type URI through a `Map` instead of

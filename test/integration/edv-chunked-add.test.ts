@@ -7,8 +7,9 @@
  * binary payload over the codec's `maxBlobBytes` threshold is written as one
  * EDV document plus its chunk resources, and the ordinary `get()` handle reads
  * it back byte-exact -- no `EdvClientCore` or `WasTransport` in the caller's
- * code. The threshold is set small here so the blob need not exceed the 512 KiB
- * default.
+ * code. A `ReadableStream` payload takes the same path whatever its size, and
+ * `getStream()` reads it back as a stream. The threshold is set small here so
+ * the blob need not exceed the 512 KiB default.
  *
  * Requires a running server: set `TEST_SERVER_URL`. The suite skips when it is
  * unset, so a bare `pnpm test:integration` (no server) is not a failure.
@@ -26,6 +27,7 @@ import {
   ensureFirstEpoch,
   ownerRecipient
 } from '../../src/edv/index.js'
+import { bytesOf, drain } from '../helpers/bytes.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -78,21 +80,6 @@ async function freshClient(): Promise<{
     }),
     kak: kak as IKeyAgreementKey
   }
-}
-
-/**
- * A deterministic pseudo-random blob, so a byte-exact comparison is meaningful
- * (a run of zeros would round-trip even through a broken reassembly).
- *
- * @param size {number}
- * @returns {Uint8Array}
- */
-function blobOf(size: number): Uint8Array {
-  const bytes = new Uint8Array(size)
-  for (let index = 0; index < size; index++) {
-    bytes[index] = (index * 31 + (index >> 8) * 17) % 256
-  }
-  return bytes
 }
 
 /**
@@ -159,7 +146,7 @@ describeLive('collection.add(bigBlob) auto-routing (live server)', () => {
   })
 
   it('routes a blob over the threshold to chunks and reads it back byte-exact', async () => {
-    const bytes = blobOf(MAX_BLOB_BYTES * 5 + 123)
+    const bytes = bytesOf(MAX_BLOB_BYTES * 5 + 123)
     const added = await collection.add(bytes, {
       contentType: 'application/octet-stream'
     })
@@ -182,8 +169,27 @@ describeLive('collection.add(bigBlob) auto-routing (live server)', () => {
     ).resolves.toBe(200)
   })
 
+  it('writes a stream as chunks and reads it back through get() and getStream()', async () => {
+    const bytes = bytesOf(CHUNK_SIZE * 2 + 321)
+    const stream = new Blob([bytes as BlobPart]).stream()
+    const added = await collection.add(stream, { contentType: 'video/mp4' })
+    expect(added.contentType).toBe('video/mp4')
+
+    const read = await collection.get(added.id)
+    expect((read as Blob).type).toBe('video/mp4')
+    expect(new Uint8Array(await (read as Blob).arrayBuffer())).toEqual(bytes)
+
+    const streamed = await collection.getStream(added.id)
+    expect(streamed?.contentType).toBe('video/mp4')
+    expect(await drain(streamed!.stream)).toEqual(bytes)
+
+    await expect(
+      chunkStatus({ was, resourceId: added.id, chunkIndex: 2 })
+    ).resolves.toBe(200)
+  })
+
   it('keeps a blob under the threshold on the single-document path', async () => {
-    const bytes = blobOf(MAX_BLOB_BYTES - 1)
+    const bytes = bytesOf(MAX_BLOB_BYTES - 1)
     const { id } = await collection.add(bytes, {
       contentType: 'application/octet-stream'
     })

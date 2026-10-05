@@ -3747,3 +3747,17 @@ adjacent `errors` field already gets. If the 422 fix mints a new error name
 rather than reusing `ValidationError` or `ConflictError`, that name is a public
 contract and needs the maintainer's sign-off first. discovered-from:
 whole-codebase review, 2026-09-11.
+
+### WCL-13: [L] Streaming `add()` (accept a `ReadableStream`)
+
+- status: done (2026-10-05)
+- priority: low
+- labels: streams, ergonomics
+- acceptance:
+  - [x] `collection.add(stream)` (or an explicit stream option) writes a chunked
+        document without buffering the whole payload in memory
+
+discovered-from: WCL-2. The routed write takes bytes already in memory (`Blob` /
+`Uint8Array`); the underlying `EdvClientCore.insert({ stream })` path is already
+streaming, so the gap is only the public `add()` surface and the read-side
+counterpart (a streaming `get` variant) for callers that cannot buffer.

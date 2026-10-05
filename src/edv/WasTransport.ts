@@ -53,7 +53,7 @@ import type {
   IEncryptedDocument
 } from '@interop/data-integrity-core'
 import type { WasClient } from '../WasClient.js'
-import { httpStatus, NotSupportedError } from '../errors.js'
+import { httpStatus, NotFoundError, NotSupportedError } from '../errors.js'
 import { readJsonData } from '../internal/content.js'
 import { readEtag, writeHeaders } from '../internal/conditional.js'
 import {
@@ -560,12 +560,18 @@ export class WasTransport extends Transport {
         method: 'GET'
       })
     } catch (err) {
-      mapTransportError(err, {
-        404: {
-          name: 'NotFoundError',
-          message: `Chunk ${chunkIndex} of document "${docId}" not found.`
-        }
-      })
+      // The client's typed `NotFoundError`, not the bare named error the other
+      // methods throw: a missing chunk surfaces to the caller through the
+      // decrypt stream of `getStream()` (or a `get()`), where it must dispatch
+      // as every other read failure on the handle does. Its `name` is the one
+      // `EdvClientCore` dispatches on, so the core sees no difference.
+      if (httpStatus(err) === 404) {
+        throw new NotFoundError(
+          `Chunk ${chunkIndex} of document "${docId}" not found.`,
+          { status: 404, cause: err }
+        )
+      }
+      throw err
     }
     // The chunk was stored as opaque bytes, so the http-client did not
     // pre-parse it: decode the body text and parse the EDV chunk object back.

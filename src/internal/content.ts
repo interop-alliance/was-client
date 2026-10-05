@@ -7,12 +7,14 @@
  * as JSON; a `Blob`/`Uint8Array`/`Buffer` is sent as binary, with the
  * content-type taken from `options.contentType`, the `Blob.type`, a guess from
  * the resource id's file extension (`options.filename`), or
- * `application/octet-stream`.
+ * `application/octet-stream`. A `ReadableStream<Uint8Array>` is classified as
+ * a stream, which only an encrypting codec can store; the plaintext path
+ * refuses it.
  */
 import type { HttpResponse } from '@interop/http-client'
 import { isJsonContentType } from '@interop/storage-core'
-import type { ResponseLike } from '../codec.js'
-import { blobText } from './blob.js'
+import type { DecodedStream, ResponseLike } from '../codec.js'
+import { blobText, bytesToStream } from './blob.js'
 import { ValidationError, WasServerError } from '../errors.js'
 import type { Json, ResourceData } from '../types.js'
 
@@ -44,6 +46,17 @@ export const ENCODER = new TextEncoder()
 export const DECODER = new TextDecoder()
 
 /**
+ * The bare media type of a `Content-Type` value: `text/plain; charset=utf-8`
+ * is `text/plain`. Case is kept as given.
+ *
+ * @param contentType {string}
+ * @returns {string}
+ */
+export function mediaType(contentType: string): string {
+  return (contentType.split(';')[0] ?? '').trim()
+}
+
+/**
  * Whether a content type denotes UTF-8-safe text that should be stored inline as
  * a plain string (legible, no ~33% base64 inflation) rather than as opaque
  * binary -- `text/*`, plus the XML/SVG family that is textual despite an
@@ -57,7 +70,7 @@ export const DECODER = new TextDecoder()
  * @returns {boolean}
  */
 export function isTextContentType(contentType: string): boolean {
-  const type = (contentType.split(';')[0] ?? '').trim().toLowerCase()
+  const type = mediaType(contentType).toLowerCase()
   return (
     type.startsWith('text/') ||
     type === 'application/xml' ||
@@ -123,6 +136,26 @@ export function isBlob(value: unknown): value is Blob {
 }
 
 /**
+ * Whether a value is a `ReadableStream`. Duck-typed on `getReader` rather
+ * than `instanceof`, so a stream from another realm or a polyfill counts (and
+ * so it works where the `ReadableStream` global is undefined): no JSON value
+ * has a `getReader` method, and classifying such a stream as JSON would
+ * silently store `{}`.
+ *
+ * @param value {unknown}
+ * @returns {boolean}
+ */
+export function isReadableStream(
+  value: unknown
+): value is ReadableStream<Uint8Array> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { getReader?: unknown }).getReader === 'function'
+  )
+}
+
+/**
  * Coerces a `Uint8Array` (including a Node `Buffer`, which is a subclass) to a
  * plain `Uint8Array` view, as ezcap's `body` type expects.
  *
@@ -138,31 +171,38 @@ export function toPlainBytes(bytes: Uint8Array): Uint8Array {
 
 /**
  * Write data classified by `resolvePayload`: binary (a `Blob`/`Uint8Array`
- * with its resolved content-type), JSON (a plain object/array), or invalid (a
- * bare primitive -- the caller throws its own error message).
+ * with its resolved content-type), a stream (a `ReadableStream<Uint8Array>`
+ * with its resolved content-type, size unknown), JSON (a plain object/array),
+ * or invalid (a bare primitive -- the caller throws its own error message).
  */
 type ResolvedPayload =
   | { kind: 'binary'; data: Blob | Uint8Array; contentType: string }
+  | { kind: 'stream'; data: ReadableStream<Uint8Array>; contentType: string }
   | { kind: 'json' }
   | { kind: 'invalid' }
 
 /**
- * Classifies write data as binary or JSON and resolves the binary
- * content-type -- the single source of the detection and precedence rules
- * shared by the plaintext `prepareBody` and the EDV codec's document builder.
+ * Classifies write data as binary, a stream, or JSON and resolves the binary
+ * or stream content-type -- the single source of the detection and precedence
+ * rules shared by the plaintext `prepareBody` and the EDV codec's document
+ * builder.
  *
  * The binary content-type resolves in precedence order: an explicit
  * `contentType`, then a non-empty `Blob.type`, then a guess from the resource
  * `id`'s extension, then `application/octet-stream`. (Coalescing with `||`
  * rather than `??` so an empty-string `Blob.type` -- a typeless Blob -- falls
- * through to the guess instead of becoming an empty content-type.)
+ * through to the guess instead of becoming an empty content-type.) A stream
+ * resolves the same way as a `Uint8Array`, since it has no `Blob.type`: an
+ * explicit `contentType`, then the extension guess, then
+ * `application/octet-stream`. A stream is tested before the JSON branch, so it
+ * is never mistaken for a plain object.
  *
  * @param options {object}
  * @param options.data {ResourceData}       the resource content
  * @param [options.contentType] {string}    overrides the inferred content-type
- *   for binary data
+ *   for binary or stream data
  * @param [options.id] {string}             resource id used to guess a
- *   content-type by extension when none is given (binary data only)
+ *   content-type by extension when none is given (binary or stream data only)
  * @returns {ResolvedPayload}
  */
 export function resolvePayload({
@@ -174,9 +214,9 @@ export function resolvePayload({
   contentType?: string
   id?: string
 }): ResolvedPayload {
-  // Guess lazily: the extension guess is only ever consulted on a binary
-  // branch (and only when neither an explicit `contentType` nor a non-empty
-  // `Blob.type` won), so a JSON write never pays for it.
+  // Guess lazily: the extension guess is only ever consulted on a binary or
+  // stream branch (and only when neither an explicit `contentType` nor a
+  // non-empty `Blob.type` won), so a JSON write never pays for it.
   const guess = (): string | undefined =>
     id ? guessContentTypeFromId(id) : undefined
   if (isBlob(data)) {
@@ -193,6 +233,13 @@ export function resolvePayload({
       contentType: contentType || guess() || OCTET_STREAM
     }
   }
+  if (isReadableStream(data)) {
+    return {
+      kind: 'stream',
+      data,
+      contentType: contentType || guess() || OCTET_STREAM
+    }
+  }
   if (data !== null && typeof data === 'object') {
     return { kind: 'json' }
   }
@@ -202,6 +249,10 @@ export function resolvePayload({
 /**
  * Inspects write data and resolves it to a JSON or binary payload, using
  * {@link resolvePayload} for the detection and content-type precedence rules.
+ *
+ * A `ReadableStream` is refused with `ValidationError`. A plaintext resource
+ * has no chunked representation, and every signed request carries a `Digest`
+ * of its whole body, so a stream cannot be sent as one plaintext resource.
  *
  * @param data {ResourceData}                the resource content
  * @param options {object}
@@ -243,6 +294,16 @@ export function prepareBody(
       }
     }
     return { json: data as object }
+  }
+
+  if (payload.kind === 'stream') {
+    throw new ValidationError(
+      'Cannot write a ReadableStream to a plaintext collection: a plaintext ' +
+        'resource has no chunked representation, and every signed request ' +
+        'carries a Digest of its whole body, so a stream cannot be sent as ' +
+        'one resource. Write it to an encrypted collection (which stores it ' +
+        'as a document plus chunk resources), or buffer it into a Blob first.'
+    )
   }
 
   throw new ValidationError(
@@ -410,4 +471,40 @@ export async function parseResource(
  */
 export async function decodedText(value: Json | Blob): Promise<string> {
   return isBlob(value) ? blobText(value) : JSON.stringify(value)
+}
+
+/**
+ * Presents a decoded resource value (the `Json | Blob` a codec's `decode`
+ * produces) as a byte stream -- the in-memory fallback of a streaming read,
+ * for a value that is already buffered. A `Blob` streams its bytes; a parsed
+ * JSON value is re-serialized to UTF-8, matching {@link decodedText}
+ * (semantically identical JSON, not guaranteed byte-identical).
+ *
+ * The reported content type is the caller's `contentType` when it knows the
+ * resource type (an encrypting codec's sealed plaintext type), else a
+ * non-empty `Blob.type` for a blob, or `application/json` for a JSON value.
+ *
+ * @param options {object}
+ * @param options.value {Json | Blob}   the decoded value
+ * @param [options.contentType] {string}   the plaintext resource type
+ * @returns {DecodedStream}
+ */
+export function decodedStream({
+  value,
+  contentType
+}: {
+  value: Json | Blob
+  contentType?: string
+}): DecodedStream {
+  if (isBlob(value)) {
+    const type = contentType || value.type || undefined
+    return {
+      stream: bytesToStream(value),
+      ...(type !== undefined && { contentType: type })
+    }
+  }
+  return {
+    stream: bytesToStream(ENCODER.encode(JSON.stringify(value))),
+    contentType: contentType || 'application/json'
+  }
 }

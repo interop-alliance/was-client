@@ -292,7 +292,9 @@ signed-request escape hatch a chunked write runs on. `getText`/`getBytes`
 deliberately bypass the codec (they never decrypt);
 `getWithEtag({ as: 'text' })` is the codec-aware text read, projecting the
 decoded value through the content layer's `decodedText` (the inverse of
-`parseResource`'s content-type rule).
+`parseResource`'s content-type rule). `getStream` is the streaming read. It
+calls the codec's optional `decodeStream` with the same arguments, and falls
+back to `decode` plus the content layer's `decodedStream` when a codec lacks it.
 
 ### The 404-vs-null convention
 
@@ -304,7 +306,8 @@ throw `NotFoundError`. This ambiguity drives the fail-closed rules below.
 ## The codec seam
 
 - `src/codec.ts` -- the contract: `ResourceCodec` (`encode`/`decode` for
-  content, `encodeMeta`/`decodeMeta` for the custom name/tags metadata, plus a
+  content, the optional `decodeStream` for a streaming read,
+  `encodeMeta`/`decodeMeta` for the custom name/tags metadata, plus a
   `conditionalWrites` flag) and `EncryptionProvider` (`codecFor`, which is
   **keys-only**: it supplies key material but never decides whether a collection
   is encrypted -- the Collection Metadata object's `encryption` descriptor does;
@@ -356,6 +359,24 @@ such as an archive's chunk files. It needs no `spaceId` and issues no request. A
 caller that supplies neither fails loudly on a chunked document rather than
 decoding it to a stub.
 
+A `ReadableStream<Uint8Array>` payload has no single-request form. Its size is
+unknown until it is read. The identity codec refuses it with `ValidationError`
+(in `prepareBody`). A plaintext resource has no chunked representation, and a
+signed request carries a `Digest` of its whole body. An encrypting codec answers
+a stream with a `ChunkedWrite` plan whatever its length, so a stream takes the
+same insert and write-by-id rules as an over-threshold blob. A write by id over
+an existing document is refused before the stream is read.
+
+`decodeStream` is the streaming counterpart of `decode`, behind
+`Resource.getStream()`. It takes the same inputs and runs the same checks, but
+resolves `{ stream, contentType? }`, where `contentType` is the plaintext
+resource type. It is optional, so a third-party codec need not implement it. A
+handle whose codec lacks it reads through `decode` and converts the value in
+memory with `decodedStream` (`src/internal/content.ts`). The identity codec
+hands back the response body. A JSON body the request layer already parsed is
+re-serialized, so it is semantically identical but not guaranteed
+byte-identical.
+
 An `EncodedWrite` from the EDV codec carries the envelope twice: `body`, the
 wire bytes, and `envelope`, the object form the codec already holds. `body` is a
 memoizing getter, so only a consumer that actually sends the write pays the
@@ -406,8 +427,8 @@ Two integration levels share `src/edv/`:
 - **`EdvCodec`** (pass-through encryption): plugs into the codec seam so the
   normal `Collection`/`Resource` API transparently encrypts. Ids are minted by
   the codec (`random`, or `content`-derived for immutable content-addressed
-  documents). A binary `add()` over `maxBlobBytes` is routed to the chunked
-  path: the codec returns a plan that drives
+  documents). A binary `add()` over `maxBlobBytes`, or any `ReadableStream`
+  payload, is routed to the chunked path: the codec returns a plan that drives
   `EdvClientCore.insert({ doc, stream, transport })` over a `WasTransport`, and
   so is a `put()` of one at an id that holds no document. The codec does not
   construct that transport: a `CodecTransportFactory` is injected by whichever
@@ -415,18 +436,29 @@ Two integration levels share `src/edv/`:
   local-replica doc cipher) refuses the chunked write, and reads a chunked
   document only from a caller's `chunkSource`. The factory over WAS is
   `wasTransportFactory` in `src/edv/transportFactory.ts`, which is the only
-  module that calls `new WasTransport(...)`. Routing is decided on the payload's
-  size alone and the payload is passed on as a stream, so an over-threshold blob
-  is never buffered whole by the codec. Reads reverse it through `getStream`,
-  trusting only AEAD-authenticated inputs sealed in the JWE payload: the
-  `meta.encoding` discriminator that says the document is chunked, the chunk
-  count, and the bound resource id the chunks are addressed by (never the
-  envelope's cleartext `id`). The read runs on a local `Transport` subclass that
-  serves only `getChunk`, from the network or from a `chunkSource`, and refuses
-  with `EncryptionError` a chunk whose protected-header `was` binding differs
-  from the envelope's. The writer seals the same binding into every chunk, so a
-  genuine chunk of another resource or another epoch is caught on either path.
-  `maxBlobBytes` is therefore a routing threshold, not a cap. The write is
+  module that calls `new WasTransport(...)`. A blob is routed on its size alone
+  and passed on as a stream, so an over-threshold `Blob` is never buffered whole
+  by the codec; an over-threshold `Uint8Array` is copied once, since the chunks
+  are encrypted across one round-trip each and the caller may reuse its buffer
+  meanwhile. A `ReadableStream` has no size, so it is routed to the chunked path
+  unconditionally and handed on unread. A failed chunked write cancels the
+  caller's stream (the EDV core does so when a chunk write throws). Reads
+  reverse it through `EdvClientCore.getStream` (in `#chunkedStream`), trusting
+  only AEAD-authenticated inputs sealed in the JWE payload: the `meta.encoding`
+  discriminator that says the document is chunked, the chunk count, and the
+  bound resource id the chunks are addressed by (never the envelope's cleartext
+  `id`). The read runs on a local `Transport` subclass that serves only
+  `getChunk`, from the network or from a `chunkSource`, and refuses with
+  `EncryptionError` a chunk whose protected-header `was` binding differs from
+  the envelope's. A missing chunk surfaces as the typed `NotFoundError` from
+  either source, so the decrypt stream errors with the same classes as every
+  other read on the handle. The writer seals the same binding into every chunk,
+  so a genuine chunk of another resource or another epoch is caught on either
+  path. `maxBlobBytes` is therefore a routing threshold, not a cap. `decode`
+  buffers that decrypt stream into a `Blob`. `decodeStream` returns it
+  unbuffered, so chunks are fetched and decrypted as the caller reads, and a
+  missing or tampered chunk errors the stream rather than the call. The two
+  share the envelope opening and binding checks (`#openStored`). The write is
   two-phase, so a failure partway would leave a pending stub: the plan
   best-effort deletes it (the delete takes its chunks with it) and rethrows. A
   507 stays a `QuotaExceededError`, and any other failure becomes an
@@ -966,8 +998,9 @@ it, and otherwise cover the client-side concepts this file names.
   implementation: `ResourceCodec` and `EncryptionProvider` in `src/codec.ts`.
   See The codec seam.
 - **`ResourceCodec`** -- the per-collection transform a resource's content and
-  metadata pass through: `encode` / `decode`, `encodeMeta` / `decodeMeta`, and
-  the `conditionalWrites` flag. See The codec seam.
+  metadata pass through: `encode` / `decode`, the optional `decodeStream`,
+  `encodeMeta` / `decodeMeta`, and the `conditionalWrites` flag. See The codec
+  seam.
 - **Identity codec** -- the byte-exact pass-through `ResourceCodec` used for a
   plaintext collection (`src/internal/codec.ts`). See The codec seam.
 - **`EncryptionProvider`** -- the keys-only injection point (`codecFor`) that
@@ -979,9 +1012,10 @@ it, and otherwise cover the client-side concepts this file names.
   with child handles and invalidated by `reset()` when the encryption descriptor
   changes. See The handle model and Concurrency.
 - **`ChunkedWrite` plan** -- what `encode` answers with instead of an
-  `EncodedWrite` when a payload cannot be one request: a resource id plus an
-  `execute` method the insert path runs over a `CodecRequestContext`, and the
-  write-by-id path runs where no document is stored yet. See The codec seam.
+  `EncodedWrite` when a payload cannot be one request (a blob over
+  `maxBlobBytes`, or any `ReadableStream`): a resource id plus an `execute`
+  method the insert path runs over a `CodecRequestContext`, and the write-by-id
+  path runs where no document is stored yet. See The codec seam.
 - **Indexing capability** -- the optional per-codec state and methods
   (`applySchema` / `schema` / `buildQuery`) that let an encrypted collection
   carry a persisted index schema and blind its query terms. Present only where
@@ -1024,7 +1058,8 @@ it, and otherwise cover the client-side concepts this file names.
   protected header (scheme version, plus `resource` or `collection`) that ties
   an envelope to the slot it belongs in, verified on decode. See The EDV layer.
 - **`maxBlobBytes`** -- the payload size above which a binary `add()` is routed
-  to the chunked path. Avoid: blob size cap, size limit.
+  to the chunked path. A stream has no size and is routed there regardless.
+  Avoid: blob size cap, size limit.
 - **Chunk source** -- a caller-supplied function (`ChunkSource`) that serves a
   chunked document's chunks by `{ docId, chunkIndex }` from bytes the caller
   already holds, in place of a request context. Passed to the EDV doc cipher's
@@ -1076,4 +1111,5 @@ it, and otherwise cover the client-side concepts this file names.
 | Encryption format or key handling | `src/edv/` (never in core; keep the seam interface-only)                     |
 | Descriptor read or refresh policy | `src/edv/acquire.ts`, `src/edv/refresh.ts`, `src/edv/refreshingDocCipher.ts` |
 | Codec resolution policy           | `src/internal/codec.ts`                                                      |
+| Write payload kinds, content type | `src/internal/content.ts` (`resolvePayload`)                                 |
 | Cross-replica sync behavior       | `src/sync/` (port stays verbatim/keyless; ciphers implement `DocCipher`)     |

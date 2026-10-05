@@ -179,12 +179,19 @@ export type Json = JsonPrimitive | JsonObject | JsonArray
 
 /**
  * The value accepted by a resource write (`put`/`add`): a JSON object or array,
- * or binary as a `Blob`/`Uint8Array`. A top-level JSON primitive
- * (`string`/`number`/`boolean`/`null`) is intentionally excluded -- the wire and
- * EDV paths only carry container JSON, so wrap a bare primitive in an object or
- * array before storing it.
+ * binary as a `Blob`/`Uint8Array`, or binary as a `ReadableStream<Uint8Array>`.
+ * A top-level JSON primitive (`string`/`number`/`boolean`/`null`) is
+ * intentionally excluded -- the wire and EDV paths only carry container JSON,
+ * so wrap a bare primitive in an object or array before storing it.
+ *
+ * A stream is accepted only by an encrypted collection, which writes it
+ * through the chunked-stream path (a document plus chunk resources) without
+ * buffering it. A plaintext collection refuses it with `ValidationError`: a
+ * signed request carries a `Digest` of its whole body, so a stream cannot be
+ * sent as one plaintext resource. Buffer it into a `Blob` first there.
  */
-export type ResourceData = JsonObject | JsonArray | Blob | Uint8Array
+export type ResourceData =
+  JsonObject | JsonArray | Blob | Uint8Array | ReadableStream<Uint8Array>
 
 /**
  * Return shape of `collection.add()` (server-generated resource id + location).

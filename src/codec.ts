@@ -296,6 +296,15 @@ export type MetaReadSlot =
  * Implementations must be stateless with respect to a given call (a resolved
  * codec is reused across every read/write on the handle).
  */
+/**
+ * What a streaming read resolves: the plaintext bytes as a stream, with the
+ * plaintext resource type when the codec knows it.
+ */
+export interface DecodedStream {
+  stream: ReadableStream<Uint8Array>
+  contentType?: string
+}
+
 export interface ResourceCodec {
   /**
    * The codec's search capability, when it indexes what it stores (the EDV
@@ -373,6 +382,29 @@ export interface ResourceCodec {
     expectedId?: string,
     context?: CodecRequestContext
   ): Promise<Json | Blob>
+
+  /**
+   * The streaming counterpart of {@link decode}, for a caller that cannot
+   * buffer a large resource (`Resource.getStream()`). Takes the same inputs
+   * and runs the same checks, but resolves the plaintext bytes as a stream
+   * instead of a `Json | Blob` value. `contentType` is the plaintext resource
+   * type (an encrypting codec's sealed type, not the envelope type), absent
+   * when the codec does not know it.
+   *
+   * Optional, so a third-party codec need not implement it. When it is
+   * absent, the handle falls back to {@link decode} and converts the decoded
+   * value to a stream in memory.
+   *
+   * @param response {ResponseLike}
+   * @param [expectedId] {string}   as for {@link decode}
+   * @param [context] {CodecRequestContext}   as for {@link decode}
+   * @returns {Promise<DecodedStream>}
+   */
+  decodeStream?(
+    response: ResponseLike,
+    expectedId?: string,
+    context?: CodecRequestContext
+  ): Promise<DecodedStream>
 
   /**
    * Transforms a caller's user-writable metadata (`custom`) into the value to

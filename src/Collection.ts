@@ -99,6 +99,7 @@ import type { CustomWithIndexSchema } from './internal/indexSchema.js'
 import type {
   CodecIndexing,
   CodecRequestContext,
+  DecodedStream,
   IndexDeclaration,
   IndexSchema,
   ResourceCodec
@@ -1461,12 +1462,21 @@ export class Collection {
 
   /**
    * Adds a resource with a server-generated id. JSON for plain objects/arrays,
-   * binary for `Blob`/`Uint8Array`. Throws `NotFoundError` if the collection
-   * does not exist (WAS does not auto-create parents).
+   * binary for `Blob`/`Uint8Array` or `ReadableStream<Uint8Array>`. Throws
+   * `NotFoundError` if the collection does not exist (WAS does not
+   * auto-create parents).
    *
    * On an encrypted collection a binary payload above the codec's
    * single-document threshold is auto-routed to the chunked-stream path, which
-   * a server that does not serve the chunk endpoints answers with `501`.
+   * a server that does not serve the chunk endpoints answers with `501`. A
+   * `ReadableStream<Uint8Array>` is always written through that path, without
+   * buffering, since its size is unknown. A content-addressed collection
+   * (`idDerivation: 'content'`) cannot store a chunked payload, so it refuses
+   * a stream with `ValidationError` before reading it.
+   *
+   * On a plaintext collection a stream is refused with `ValidationError`: a
+   * plaintext resource has no chunked representation, and a signed request
+   * carries a `Digest` of its whole body. Buffer it into a `Blob` there.
    *
    * @param data {ResourceData}
    * @param options {object}
@@ -1560,10 +1570,27 @@ export class Collection {
   }
 
   /**
+   * Reads a resource by id as a byte stream, decrypting on an encrypted
+   * collection -- the read for a caller that cannot buffer a large chunked
+   * blob. Delegates to `Resource.getStream`; see it for the details. The
+   * ordinary {@link get} still returns a `Blob`. Returns `null` on a
+   * missing/unauthorized resource (404 conflation caveat).
+   *
+   * @param resourceId {string}
+   * @returns {Promise<(DecodedStream & { etag?: string }) | null>}
+   */
+  async getStream(
+    resourceId: string
+  ): Promise<(DecodedStream & { etag?: string }) | null> {
+    return this.resource(resourceId).getStream()
+  }
+
+  /**
    * Creates or replaces a resource by id (upsert). Forwards the
    * conditional-write options (`ifMatch` / `ifNoneMatch`) to `Resource.put`;
-   * see it for the conditional-write semantics. Returns the stored
-   * resource's new `etag`.
+   * see it for the conditional-write semantics and for which payloads
+   * (including a `ReadableStream<Uint8Array>`) each kind of collection
+   * accepts. Returns the stored resource's new `etag`.
    *
    * @param resourceId {string}
    * @param data {ResourceData}

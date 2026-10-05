@@ -37,12 +37,14 @@
  * - **Inline non-JSON as a single JWE.** A `Blob`/`Uint8Array` under the size cap
  *   is encrypted as one document -- stored as a legible UTF-8 string for a
  *   text-family type (else base64) -- with the plaintext content type and the
- *   encoding carried in the document `meta`. A blob over `maxBlobBytes` is
- *   auto-routed by `add()` to the chunked-stream path instead: `encode` returns
- *   a multi-request plan the write path executes, storing one document plus its
- *   chunk resources over a `WasTransport` supplied by the injected
- *   `CodecTransportFactory`. Reads reassemble transparently, so `get()`
- *   returns the same `Blob` either way.
+ *   encoding carried in the document `meta`. A blob over `maxBlobBytes`, and
+ *   any `ReadableStream` (whose size is unknown), is auto-routed by `add()` to
+ *   the chunked-stream path instead: `encode` returns a multi-request plan the
+ *   write path executes, storing one document plus its chunk resources over a
+ *   `WasTransport` supplied by the injected `CodecTransportFactory`. Reads
+ *   reassemble transparently, so `get()` returns the same `Blob` either way,
+ *   and `decodeStream` hands a chunked document's decrypt stream back
+ *   unbuffered.
  * - **Enforced sequence (conditional writes).** The codec sets
  *   `conditionalWrites`, so the write path pre-reads the current envelope and
  *   hands it to `encode`: an update advances `sequence` from its prior value and
@@ -82,6 +84,7 @@ import type {
   CodecIndexing,
   CodecRequestContext,
   CodecWrite,
+  DecodedStream,
   IndexSchema,
   MetaReadSlot,
   MetaWriteSlot,
@@ -104,7 +107,7 @@ import {
   UnknownEpochError,
   ValidationError
 } from '../errors.js'
-import { blobBytes } from '../internal/blob.js'
+import { blobBytes, bytesToStream } from '../internal/blob.js'
 import { readEtag, writeHeaders } from '../internal/conditional.js'
 import type { WritePrecondition } from '../internal/conditional.js'
 import type { WasTransport } from './WasTransport.js'
@@ -116,6 +119,7 @@ import { resolveHmacKey } from './hmacKey.js'
 import type { BlindingKey } from './hmacKey.js'
 import {
   DECODER,
+  decodedStream,
   isBlob,
   isTextContentType,
   readJsonData,
@@ -609,15 +613,24 @@ export class EdvCodec implements ResourceCodec {
     const parts = await this.#toDocument(data, contentType, docId)
     if (parts.kind === 'chunked') {
       if (docId === undefined) {
+        // A stream is chunked whatever its size, so only a sized payload can
+        // be brought under the threshold.
+        const why =
+          parts.size === undefined
+            ? 'Encrypted stream write has no known size'
+            : `Encrypted binary write of ${parts.size} bytes exceeds the ` +
+              `single-document threshold of ${this.#maxBlobBytes} bytes`
+        const remedy =
+          parts.size === undefined
+            ? 'buffer the stream into a Blob under the threshold'
+            : 'keep the payload under the threshold'
         throw new ValidationError(
-          `Encrypted binary write of ${parts.size} bytes exceeds the ` +
-            `single-document threshold of ${this.#maxBlobBytes} bytes, so it ` +
-            'must be stored as a document plus chunk resources -- which a ' +
-            "content-addressed collection (idDerivation: 'content') cannot " +
-            'do: the document is written twice (once to reserve it, once to ' +
-            'record the chunk count), so no single ciphertext derives its id. ' +
-            'Store large blobs in a random-id collection, or keep the payload ' +
-            'under the threshold.'
+          `${why}, so it must be stored as a document plus chunk resources. ` +
+            "A content-addressed collection (idDerivation: 'content') cannot " +
+            'store a document plus chunk resources: the document is written ' +
+            'twice (once to reserve it, once to record the chunk count), so ' +
+            'no single ciphertext derives its id. Store it in a random-id ' +
+            `collection, or ${remedy}.`
         )
       }
       return this.#chunkedWrite({
@@ -753,11 +766,11 @@ export class EdvCodec implements ResourceCodec {
   }
 
   /**
-   * The plan for a binary payload over the single-document threshold: one EDV
-   * document plus its chunk resources, written by `EdvClientCore.insert({ doc,
-   * stream, transport })` over a transport built from the write context. The
-   * document id is minted before the plan is returned, so the caller can report
-   * it without waiting for the write.
+   * The plan for a binary payload over the single-document threshold, or for
+   * a stream of any size: one EDV document plus its chunk resources, written
+   * by `EdvClientCore.insert({ doc, stream, transport })` over a transport
+   * built from the write context. The document id is minted before the plan
+   * is returned, so the caller can report it without waiting for the write.
    *
    * The `was` binding, the recipients and the write epoch are exactly the
    * single-document path's, and `additionalProtectedParams` carries the binding
@@ -779,7 +792,9 @@ export class EdvCodec implements ResourceCodec {
    * undecryptable and listed. The plan therefore compensates: if the document
    * was written and the write then failed, it best-effort deletes the stub
    * before rethrowing. A stub that survives (the process died, or the cleanup
-   * failed) is recognized with {@link isPendingStub}.
+   * failed) is recognized with {@link isPendingStub}. The EDV core cancels the
+   * caller's source stream on such a failure, so the source behind it is
+   * released.
    *
    * @param options {object}
    * @param options.id {string}   the document id (minted, or the caller's)
@@ -806,10 +821,10 @@ export class EdvCodec implements ResourceCodec {
       // why the payload needs several requests, and which low-level API
       // writes one directly.
       guidance:
-        'This payload is too large for a single encrypted document, so it is ' +
-        'stored as a document plus chunk resources. Drive the write yourself ' +
-        'with `EdvClientCore.update({ doc, stream, transport })` over a ' +
-        '`WasTransport`.',
+        'This payload is too large for a single encrypted document, or is a ' +
+        'stream, so it is stored as a document plus chunk resources. Drive ' +
+        'the write yourself with `EdvClientCore.update({ doc, stream, ' +
+        'transport })` over a `WasTransport`.',
       execute: async (context: CodecRequestContext) => {
         // The EDV core owns the write and swallows the responses, so the
         // transport reports the document write it made: whether one landed at
@@ -1020,6 +1035,92 @@ export class EdvCodec implements ResourceCodec {
     context?: CodecRequestContext,
     chunkSource?: ChunkSource
   ): Promise<Json | Blob> {
+    const opened = await this.#openStored({
+      response,
+      expectedId,
+      context,
+      chunkSource
+    })
+    if (opened.kind === 'chunked') {
+      // Reassemble: buffer the decrypt stream into the same `Blob` a small
+      // binary read returns, typed with the sealed plaintext content type.
+      const { stream, contentType } = await this.#chunkedStream(opened.read)
+      return streamToBlob({
+        stream,
+        ...(contentType !== undefined && { type: contentType })
+      })
+    }
+    return this.#fromDocument(opened.content, opened.meta)
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * Opens the envelope exactly as {@link decode} does, with the same checks.
+   * A chunked document's decrypt stream is handed back unbuffered, so its
+   * chunks are fetched and decrypted as the caller reads; a chunk that fails
+   * to fetch or verify then errors the stream rather than this call. An
+   * inline document is decoded as {@link decode} decodes it and presented as
+   * a one-value stream. `contentType` is the sealed plaintext type.
+   *
+   * @param response {ResponseLike}   the stored envelope
+   * @param [expectedId] {string}   the resource id the read targeted
+   * @param [context] {CodecRequestContext}   the signed-request context a
+   *   chunked document's chunks are fetched through
+   * @param [chunkSource] {ChunkSource}   serves a chunked document's chunks in
+   *   place of `context`
+   * @returns {Promise<DecodedStream>}
+   */
+  async decodeStream(
+    response: ResponseLike,
+    expectedId?: string,
+    context?: CodecRequestContext,
+    chunkSource?: ChunkSource
+  ): Promise<DecodedStream> {
+    const opened = await this.#openStored({
+      response,
+      expectedId,
+      context,
+      chunkSource
+    })
+    if (opened.kind === 'chunked') {
+      return this.#chunkedStream(opened.read)
+    }
+    return decodedStream({
+      value: this.#fromDocument(opened.content, opened.meta),
+      contentType: sealedContentType(opened.meta)
+    })
+  }
+
+  /**
+   * The opening shared by {@link decode} and {@link decodeStream}: refuses an
+   * ambiguous chunk route, opens the stored envelope (decrypt, then binding
+   * verification), and says whether the document is chunked. A chunked
+   * document answers the inputs its chunked read needs; an inline one answers
+   * its decrypted `content` and `meta`.
+   *
+   * @param options {object}
+   * @param options.response {ResponseLike}   the stored envelope
+   * @param [options.expectedId] {string}   the resource id the read targeted
+   * @param [options.context] {CodecRequestContext}   the signed-request context
+   * @param [options.chunkSource] {ChunkSource}   serves the chunks in place of
+   *   `context`
+   * @returns {Promise<object>}
+   */
+  async #openStored({
+    response,
+    expectedId,
+    context,
+    chunkSource
+  }: {
+    response: ResponseLike
+    expectedId?: string
+    context?: CodecRequestContext
+    chunkSource?: ChunkSource
+  }): Promise<
+    | { kind: 'chunked'; read: ChunkedRead }
+    | { kind: 'inline'; content?: unknown; meta?: Record<string, unknown> }
+  > {
     if (context !== undefined && chunkSource !== undefined) {
       throw new ValidationError(
         'Cannot decode this resource: both a request context and a ' +
@@ -1040,23 +1141,27 @@ export class EdvCodec implements ResourceCodec {
     // is still `{ pending: true }`: it fails loudly rather than decoding to an
     // empty document.
     if (decrypted.meta?.encoding === CHUNKED_ENCODING) {
-      return this.#readChunked({
-        // Address the chunk resources by the AEAD-bound `was.resource` id, not
-        // by the envelope's cleartext `id`: a server that serves document A's
-        // authentic envelope with the cleartext id swapped to B would
-        // otherwise have the read fetch (and cleanly decrypt) B's chunks,
-        // exactly the envelope swap the `was.resource` binding exists to
-        // detect.
-        id: decrypted.resourceId,
-        chunks: (decrypted.stream as { chunks?: unknown } | undefined)?.chunks,
-        meta: decrypted.meta,
-        keyId: decrypted.keyId,
-        binding: decrypted.binding,
-        context,
-        chunkSource
-      })
+      return {
+        kind: 'chunked',
+        read: {
+          // Address the chunk resources by the AEAD-bound `was.resource` id,
+          // not by the envelope's cleartext `id`: a server that serves
+          // document A's authentic envelope with the cleartext id swapped to B
+          // would otherwise have the read fetch (and cleanly decrypt) B's
+          // chunks, exactly the envelope swap the `was.resource` binding
+          // exists to detect.
+          id: decrypted.resourceId,
+          chunks: (decrypted.stream as { chunks?: unknown } | undefined)
+            ?.chunks,
+          meta: decrypted.meta,
+          keyId: decrypted.keyId,
+          binding: decrypted.binding,
+          context,
+          chunkSource
+        }
+      }
     }
-    return this.#fromDocument(decrypted.content, decrypted.meta)
+    return { kind: 'inline', content: decrypted.content, meta: decrypted.meta }
   }
 
   /**
@@ -1092,11 +1197,11 @@ export class EdvCodec implements ResourceCodec {
   }
 
   /**
-   * Reassembles a chunked binary document: drives `EdvClientCore.getStream`
-   * over a chunk-reading transport, buffers the decrypt stream, and returns the
-   * same `Blob` a small binary read returns. The chunks come from the server
-   * through a transport built from the read context, or from the caller's
-   * `chunkSource`.
+   * Opens a chunked binary document's decrypt stream: drives
+   * `EdvClientCore.getStream` over a chunk-reading transport and returns the
+   * stream unbuffered, with the sealed plaintext content type. The chunks come
+   * from the server through a transport built from the read context, or from
+   * the caller's `chunkSource`, as the stream is read.
    *
    * Only AEAD-authenticated inputs are trusted -- the sealed chunk count and
    * the `was.resource` id the envelope is bound to, never the envelope's
@@ -1118,9 +1223,9 @@ export class EdvCodec implements ResourceCodec {
    * @param [options.context] {CodecRequestContext}   the signed-request context
    * @param [options.chunkSource] {ChunkSource}   serves the chunks in place of
    *   `context`
-   * @returns {Promise<Blob>}
+   * @returns {Promise<DecodedStream>}
    */
-  async #readChunked({
+  async #chunkedStream({
     id,
     chunks,
     meta,
@@ -1128,15 +1233,7 @@ export class EdvCodec implements ResourceCodec {
     binding,
     context,
     chunkSource
-  }: {
-    id?: string
-    chunks: unknown
-    meta?: Record<string, unknown>
-    keyId: string
-    binding: Record<string, unknown>
-    context?: CodecRequestContext
-    chunkSource?: ChunkSource
-  }): Promise<Blob> {
+  }: ChunkedRead): Promise<DecodedStream> {
     if (typeof chunks !== 'number') {
       throw new EncryptionError(
         'Cannot read this resource: it is a chunked encrypted blob whose ' +
@@ -1188,12 +1285,8 @@ export class EdvCodec implements ResourceCodec {
       keyAgreementKey,
       transport: new ChunkReadTransport({ fetchChunk, binding })
     })) as ReadableStream<Uint8Array>
-    const contentType =
-      typeof meta?.contentType === 'string' ? meta.contentType : undefined
-    return streamToBlob({
-      stream,
-      ...(contentType !== undefined && { type: contentType })
-    })
+    const contentType = sealedContentType(meta)
+    return { stream, ...(contentType !== undefined && { contentType }) }
   }
 
   /**
@@ -1724,7 +1817,10 @@ export class EdvCodec implements ResourceCodec {
    * for messages) and the `meta` the chunked-stream path seals, and the caller
    * routes the write there. The routing decision is made on the payload's size
    * alone, so a `Blob` over the threshold is never buffered here: it is handed
-   * on as `blob.stream()`, and the EDV core re-chunks it as it reads.
+   * on as `blob.stream()`, and the EDV core re-chunks it as it reads. A
+   * `ReadableStream` payload answers `kind: 'chunked'` unconditionally, with
+   * no `size`: its size is unknown until it is read, so the threshold cannot
+   * apply, and it is handed on unread.
    *
    * A bare primitive is rejected (mirroring the plaintext `prepareBody`
    * contract). The binary/text detection and content-type precedence are the
@@ -1736,7 +1832,7 @@ export class EdvCodec implements ResourceCodec {
    * @param [id] {string}            resource id, for the extension guess
    * @returns {Promise<object>}   the inline document `{ content, meta }`, or
    *   the `{ stream, size, meta }` of a payload to route to the chunked-stream
-   *   path
+   *   path (`size` absent for a stream payload)
    */
   async #toDocument(
     data: ResourceData,
@@ -1751,11 +1847,19 @@ export class EdvCodec implements ResourceCodec {
     | {
         kind: 'chunked'
         stream: ReadableStream<Uint8Array>
-        size: number
+        size?: number
         meta: Record<string, unknown>
       }
   > {
     const payload = resolvePayload({ data, contentType, id })
+
+    if (payload.kind === 'stream') {
+      return {
+        kind: 'chunked',
+        stream: payload.data,
+        meta: { contentType: payload.contentType, encoding: CHUNKED_ENCODING }
+      }
+    }
 
     if (payload.kind === 'binary') {
       const resolvedType = payload.contentType
@@ -1767,12 +1871,16 @@ export class EdvCodec implements ResourceCodec {
       if (size > this.#maxBlobBytes) {
         // Too large for one document: route it to the chunked-stream path,
         // where the bytes live in the document's own chunk resources. Hand it
-        // over as a stream -- a `Blob` streams itself, and bytes already in
-        // hand become a one-value stream the same way -- so the payload is not
-        // held twice while the EDV core re-chunks it.
+        // over as a stream. A `Blob` is immutable and streams itself, so it is
+        // not held twice while the EDV core re-chunks it. A `Uint8Array` is
+        // snapshotted once into a one-value stream: the chunks are encrypted
+        // across one server round-trip each, and the caller may reuse its
+        // buffer before the write resolves.
         return {
           kind: 'chunked',
-          stream: bytesToStream(payload.data),
+          stream: bytesToStream(
+            isBlob(payload.data) ? payload.data : payload.data.slice()
+          ),
           size,
           meta: { contentType: resolvedType, encoding: CHUNKED_ENCODING }
         }
@@ -1813,8 +1921,8 @@ export class EdvCodec implements ResourceCodec {
     }
 
     throw new ValidationError(
-      'Encrypted resource data must be a plain object/array (JSON) or a ' +
-        'Blob/Uint8Array (binary).'
+      'Encrypted resource data must be a plain object/array (JSON), a ' +
+        'Blob/Uint8Array (binary), or a ReadableStream<Uint8Array>.'
     )
   }
 
@@ -1840,8 +1948,7 @@ export class EdvCodec implements ResourceCodec {
    */
   #fromDocument(content: unknown, meta?: Record<string, unknown>): Json | Blob {
     const encoding = meta?.encoding
-    const contentType =
-      typeof meta?.contentType === 'string' ? meta.contentType : undefined
+    const contentType = sealedContentType(meta)
     if (encoding === 'utf-8') {
       const text = (content as { text?: unknown } | null)?.text
       if (typeof text !== 'string') {
@@ -1879,18 +1986,30 @@ export class EdvCodec implements ResourceCodec {
 }
 
 /**
- * Presents a binary payload as the `ReadableStream`
- * `EdvClientCore.insert({ stream })` consumes. A `Blob` streams itself; bytes
- * already in hand are wrapped in a `Blob` and stream the same way. The encrypt
- * stream re-chunks whatever it is fed at its own `chunkSize`, so the shape of
- * the source stream does not affect the stored chunks.
- *
- * @param data {Blob | Uint8Array}
- * @returns {ReadableStream<Uint8Array>}
+ * The inputs of a chunked document's read, produced by opening its envelope:
+ * the AEAD-bound resource id, the sealed chunk count, the decrypted meta, the
+ * id of the key that opened the envelope, the verified `was` binding every
+ * chunk must carry, and where the chunks come from.
  */
-function bytesToStream(data: Blob | Uint8Array): ReadableStream<Uint8Array> {
-  const blob = isBlob(data) ? data : new Blob([data as BlobPart])
-  return blob.stream() as ReadableStream<Uint8Array>
+interface ChunkedRead {
+  id?: string
+  chunks: unknown
+  meta?: Record<string, unknown>
+  keyId: string
+  binding: Record<string, unknown>
+  context?: CodecRequestContext
+  chunkSource?: ChunkSource
+}
+
+/**
+ * The plaintext content type sealed in a decrypted document's `meta`, or
+ * `undefined` when it records none.
+ *
+ * @param [meta] {Record<string, unknown>}
+ * @returns {string | undefined}
+ */
+function sealedContentType(meta?: Record<string, unknown>): string | undefined {
+  return typeof meta?.contentType === 'string' ? meta.contentType : undefined
 }
 
 /**

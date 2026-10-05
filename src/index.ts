@@ -52,6 +52,7 @@ export {
 
 export { isChunkedWrite } from './codec.js'
 export type {
+  DecodedStream,
   ResourceCodec,
   EncryptionProvider,
   ChunkedWrite,

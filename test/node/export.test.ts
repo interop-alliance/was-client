@@ -15,6 +15,7 @@ import type { HttpResponse } from '@interop/http-client'
 import type { WasClient } from '../../src/index.js'
 import { WasServerError } from '../../src/index.js'
 import { clientWithStub } from '../helpers/stubClient.js'
+import { drain } from '../helpers/bytes.js'
 
 const TAR_BYTES = new Uint8Array([0x74, 0x61, 0x72, 0x00, 0xff, 0x01])
 
@@ -80,32 +81,6 @@ function clientWithExportResponse(response: ExportResponse = {}): WasClient {
       }
     } as unknown as HttpResponse
   })
-}
-
-/**
- * Drains a `ReadableStream<Uint8Array>` into a single concatenated array.
- *
- * @param stream {ReadableStream<Uint8Array>}
- * @returns {Promise<Uint8Array>}
- */
-async function drain(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = []
-  const reader = stream.getReader()
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) {
-      break
-    }
-    chunks.push(value)
-  }
-  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return out
 }
 
 describe('space.export()', () => {

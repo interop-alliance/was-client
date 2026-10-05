@@ -16,7 +16,7 @@ import { writeHeaders, readEtag } from './internal/conditional.js'
 import type { WritePrecondition } from './internal/conditional.js'
 import { withCodec } from './internal/withCodec.js'
 import { readMeta, writeMeta, patchCustom } from './internal/meta.js'
-import { ENCODER, decodedText } from './internal/content.js'
+import { ENCODER, decodedStream, decodedText } from './internal/content.js'
 import { codecRequestContext, upsertResource } from './internal/write.js'
 import {
   readPolicy,
@@ -26,7 +26,11 @@ import {
   isPublicPolicy,
   setPublicPolicy
 } from './internal/policy.js'
-import type { CodecRequestContext, ResourceCodec } from './codec.js'
+import type {
+  CodecRequestContext,
+  DecodedStream,
+  ResourceCodec
+} from './codec.js'
 import type {
   EncryptionOverride,
   IZcap,
@@ -154,9 +158,10 @@ export class Resource {
   }
 
   /**
-   * Sends the shared resource GET -- the byte-identical request the three public
-   * readers (`get` / `getText` / `getBytes`) issue -- resolving a missing or
-   * unauthorized resource (404) to `null` via the `read` flag.
+   * Sends the shared resource GET -- the byte-identical request every public
+   * reader (`get` / `getWithEtag` / `getStream` / `getText` / `getBytes`)
+   * issues -- resolving a missing or unauthorized resource (404) to `null` via
+   * the `read` flag.
    *
    * @returns {Promise<HttpResponse | null>}
    */
@@ -218,6 +223,41 @@ export class Resource {
   }
 
   /**
+   * Reads the resource as a byte stream, for a caller that cannot buffer a
+   * large chunked blob. Like {@link get} it runs the codec, so on an encrypted
+   * collection it decrypts: a chunked document's decrypt stream is handed back
+   * unbuffered, its chunks fetched and decrypted as the stream is read. A
+   * failure in that read (a missing or tampered chunk) errors the stream
+   * rather than this call. The ordinary {@link get} still returns a `Blob`.
+   *
+   * A codec without the optional `decodeStream` (a third-party one) is read
+   * through its `decode`, and the decoded value is converted in memory. The
+   * plaintext path hands back the response body itself, except for a JSON
+   * body the request layer already parsed, which is re-serialized
+   * (semantically identical JSON, not guaranteed byte-identical).
+   *
+   * Returns `null` if the resource is missing or not visible to you (404
+   * conflation caveat). `contentType` is the plaintext resource type, and
+   * `etag` the validator to pass to {@link put}'s `ifMatch`; each is absent
+   * where it is not known.
+   *
+   * @returns {Promise<(DecodedStream & { etag?: string }) | null>}
+   */
+  async getStream(): Promise<(DecodedStream & { etag?: string }) | null> {
+    const [codec, response] = await withCodec(this.#codec(), this.#read())
+    if (response === null) {
+      return null
+    }
+    const decoded = codec.decodeStream
+      ? await codec.decodeStream(response, this.id, this.#codecContext())
+      : decodedStream({
+          value: await codec.decode(response, this.id, this.#codecContext())
+        })
+    const etag = readEtag(response)
+    return etag !== undefined ? { ...decoded, etag } : decoded
+  }
+
+  /**
    * Reads the resource body as text. Returns `null` on a missing/unauthorized
    * resource (404 conflation caveat). A raw escape hatch: it does NOT run the
    * codec, so on an encrypted collection it never decrypts -- use `get()` to
@@ -267,7 +307,8 @@ export class Resource {
 
   /**
    * Creates or replaces the resource by id (upsert). JSON for plain
-   * objects/arrays, binary for `Blob`/`Uint8Array`. Throws `NotFoundError` if
+   * objects/arrays, binary for `Blob`/`Uint8Array` (or, on an encrypted
+   * collection, a `ReadableStream<Uint8Array>`). Throws `NotFoundError` if
    * the parent collection does not exist (WAS does not auto-create parents).
    *
    * For binary data with no explicit `contentType` (and no `Blob.type`), the
@@ -296,6 +337,14 @@ export class Resource {
    * `QuotaExceededError`. A write that fails partway deletes what it wrote;
    * one that could not leaves a pending stub, which the EDV doc cipher's
    * `isPendingStub` recognizes and `delete()` removes with its chunks.
+   *
+   * A `ReadableStream<Uint8Array>` is accepted on an encrypted collection,
+   * where it is always written through the same chunked-stream path, without
+   * buffering, whatever its size. It is subject to the same create-only rule:
+   * over an existing document it is refused with `ValidationError` before the
+   * stream is read. On a plaintext collection a stream is refused with
+   * `ValidationError`, since a signed request carries a `Digest` of its whole
+   * body; buffer it into a `Blob` there.
    *
    * @param data {ResourceData}
    * @param options {object}

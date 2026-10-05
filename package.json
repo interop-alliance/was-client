@@ -83,7 +83,7 @@
     "@interop/capability-agent": "^0.2.1",
     "@interop/data-integrity-core": "^8.8.0",
     "@interop/ed25519-signature": "^7.2.3",
-    "@interop/edv-client": "^17.9.1",
+    "@interop/edv-client": "^17.9.2",
     "@interop/ezcap": "^7.5.0",
     "@interop/http-client": "^1.0.5",
     "@interop/minimal-cipher": "^7.10.3",

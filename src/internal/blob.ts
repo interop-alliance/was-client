@@ -2,7 +2,8 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Portable `Blob` reads.
+ * Portable `Blob` reads, plus the one-way conversion of in-hand bytes to a
+ * byte stream.
  *
  * A `Blob` in a browser or in Node implements `text()` and `arrayBuffer()`, so
  * reading one is a single await. React Native's built-in `Blob` implements
@@ -146,4 +147,39 @@ export async function blobBytes(blob: Blob): Promise<Uint8Array> {
   throw new TypeError(
     'FileReader.readAsArrayBuffer did not yield an ArrayBuffer.'
   )
+}
+
+/**
+ * Presents a binary payload as a `ReadableStream<Uint8Array>`. Bytes already
+ * in hand become a one-chunk stream over that same buffer (no copy), so a
+ * caller whose consumer reads across many awaits snapshots the buffer itself
+ * if it may be reused meanwhile. A `Blob` is immutable and streams itself
+ * where it implements `stream()`; React Native's built-in `Blob` does not, so
+ * there the stream reads the blob's bytes through {@link blobBytes} on first
+ * pull. A consumer that re-chunks what it reads (the EDV encrypt stream) is
+ * unaffected by the shape of the source stream.
+ *
+ * @param data {Blob | Uint8Array}
+ * @returns {ReadableStream<Uint8Array>}
+ */
+export function bytesToStream(
+  data: Blob | Uint8Array
+): ReadableStream<Uint8Array> {
+  if (data instanceof Uint8Array) {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data)
+        controller.close()
+      }
+    })
+  }
+  if (typeof data.stream === 'function') {
+    return data.stream() as ReadableStream<Uint8Array>
+  }
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      controller.enqueue(await blobBytes(data))
+      controller.close()
+    }
+  })
 }

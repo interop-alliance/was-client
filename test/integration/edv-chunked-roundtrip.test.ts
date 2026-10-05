@@ -26,6 +26,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '../../src/index.js'
 import type { Space, Collection } from '../../src/index.js'
 import { WasTransport } from '../../src/edv/index.js'
+import { drain } from '../helpers/bytes.js'
 
 const serverUrl = process.env.TEST_SERVER_URL
 const describeLive = serverUrl ? describe : describe.skip
@@ -64,33 +65,6 @@ function streamOf(bytes: Uint8Array, sliceSize: number): ReadableStream {
       offset = end
     }
   })
-}
-
-/**
- * Drains a `ReadableStream` of `Uint8Array` chunks into one contiguous array.
- *
- * @param stream {ReadableStream<Uint8Array>}
- * @returns {Promise<Uint8Array>}
- */
-async function drain(stream: ReadableStream): Promise<Uint8Array> {
-  const reader = (stream as ReadableStream<Uint8Array>).getReader()
-  const parts: Uint8Array[] = []
-  let total = 0
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) {
-      break
-    }
-    parts.push(value)
-    total += value.length
-  }
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.length
-  }
-  return out
 }
 
 describeLive('chunked encrypted blobs over WAS (live server)', () => {

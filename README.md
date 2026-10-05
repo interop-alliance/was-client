@@ -432,7 +432,12 @@ await collection.resource('vc-1').delete() // idempotent
 
 Writes detect the payload: a plain object/array is sent as JSON; a
 `Blob`/`Uint8Array`/`Buffer` is sent as binary, with the content-type taken from
-`options.contentType`, the `Blob.type`, or `application/octet-stream`.
+`options.contentType`, the `Blob.type`, or `application/octet-stream`. A
+`ReadableStream<Uint8Array>` is accepted only by an encrypted collection (see
+[Encrypted collections](#encrypted-collections-edv-over-was-pass-through-encryption-via-the-was-client-recommended)).
+A plaintext collection refuses it with `ValidationError`. A plaintext resource
+has no chunked representation, and a signed request carries a `Digest` of its
+whole body. Buffer the stream into a `Blob` there.
 
 ```ts
 // JSON
@@ -452,13 +457,17 @@ Reads auto-parse: `get()` returns a parsed object for a JSON content-type and a
 `Blob` otherwise; `getText()` / `getBytes()` are explicit escape hatches.
 `getWithEtag()` pairs the decoded value with its ETag validator, and
 `getWithEtag({ as: 'text' })` projects it to text (decrypting where `getText()`
-would not).
+would not). `getStream()` resolves `{ stream, contentType?, etag? }`, or `null`
+on a miss. It runs the codec like `get()`, so it decrypts on an encrypted
+collection. A JSON body is re-serialized, so it is semantically identical JSON
+but not guaranteed byte-identical.
 
-A write value is a JSON object/array or binary (`Blob`/`Uint8Array`) -- the
-`ResourceData` type. A top-level JSON primitive (a bare `string`, `number`,
-`boolean`, or `null`) is **not** accepted; it is a compile-time error. To store
-one, either wrap it in an object (`put('greeting', { value: 'hello' })`) or
-write it as binary via a `Blob`:
+A write value is a JSON object/array or binary (`Blob`/`Uint8Array`, or a
+`ReadableStream<Uint8Array>` on an encrypted collection) -- the `ResourceData`
+type. A top-level JSON primitive (a bare `string`, `number`, `boolean`, or
+`null`) is **not** accepted; it is a compile-time error. To store one, either
+wrap it in an object (`put('greeting', { value: 'hello' })`) or write it as
+binary via a `Blob`:
 
 ```ts
 await collection.put('greeting', new Blob(['hello'], { type: 'text/plain' }))
@@ -966,6 +975,21 @@ scope for now):
   `isPendingStub` recognizes it, and `delete()` removes it with its chunks. Tune
   the threshold and the chunk size with
   `createEdvEncryption({ maxBlobBytes, chunkSize })`.
+- **Streams.** A `ReadableStream<Uint8Array>` has no known size, so `add()`
+  always routes it to the chunked-stream path, however short it is. It is
+  encrypted and written as it is read, without buffering. `put(id, stream)`
+  takes the same route where no document is stored at `id` yet. Over an existing
+  document it is refused with `ValidationError` before the stream is read. A
+  content-addressed collection refuses a stream for the reason it refuses a
+  large blob. A write that fails midway cancels the stream, so the source behind
+  it is released. The content type is `options.contentType`, then a guess from
+  the id's extension, then `application/octet-stream`. To read without
+  buffering, call `resource.getStream()` or `collection.getStream(id)`. Its
+  `contentType` is the bare media type, with no parameters, on every collection.
+  For a chunked document the stream fetches and decrypts each chunk as it is
+  read. A missing chunk therefore errors the stream, with `NotFoundError`,
+  rather than the `getStream()` call; a tampered one errors it with
+  `EncryptionError`. `get()` still returns a `Blob`.
 - **Raw reads.** `get()` decrypts; the `getText()` / `getBytes()` escape hatches
   do not (they return the stored representation).
 

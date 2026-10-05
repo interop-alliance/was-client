@@ -26,9 +26,15 @@
  * its schema.
  */
 import type { HttpResponse } from '@interop/http-client'
-import type { EncodedWrite, ResourceCodec } from '../codec.js'
+import type { DecodedStream, EncodedWrite, ResourceCodec } from '../codec.js'
 import type { ClientContext } from './request.js'
-import { prepareBody, parseResource } from './content.js'
+import {
+  decodedStream,
+  mediaType,
+  prepareBody,
+  parseResource
+} from './content.js'
+import { bytesToStream } from './blob.js'
 import {
   asCollectionMetadata,
   storedEncryption,
@@ -167,8 +173,9 @@ export function collectionCodecHolder(
  * caller's `id` (so `put(id, ...)` is a `PUT` and `add(...)`, with no id, stays
  * a server-minting `POST`) and reuses `prepareBody` -- including the
  * filename-extension content-type guess when an id is present. `decode` reuses
- * `parseResource`. `encodeMeta` / `decodeMeta` are the identity transform, so
- * metadata round-trips as server-visible plaintext byte-for-byte.
+ * `parseResource`, and `decodeStream` hands back the response body itself.
+ * `encodeMeta` / `decodeMeta` are the identity transform, so metadata
+ * round-trips as server-visible plaintext byte-for-byte.
  */
 export const identityCodec: ResourceCodec = {
   async encode({
@@ -189,6 +196,29 @@ export const identityCodec: ResourceCodec = {
   // and core's read path only ever hands it a real HttpResponse.
   async decode(response: HttpResponse): Promise<Json | Blob> {
     return (await parseResource(response)) as Json | Blob
+  },
+
+  // Narrowed to `HttpResponse` like `decode`. A body the http-client already
+  // parsed into `data` (a JSON content type) has a spent stream, so it is
+  // re-serialized through `decodedStream`: semantically identical JSON, not
+  // guaranteed byte-identical. Any other body is passed on unread, and an
+  // absent body (a bodiless response) reads as an empty stream. The reported
+  // type is the bare media type (no `; charset=...`), as the seam documents
+  // and as an encrypting codec's sealed type is, so a caller sees one shape
+  // whichever codec served the read.
+  async decodeStream(response: HttpResponse): Promise<DecodedStream> {
+    const contentType =
+      mediaType(response.headers.get('content-type') ?? '') || undefined
+    if (response.data !== undefined) {
+      return decodedStream({
+        value: response.data as Json,
+        ...(contentType !== undefined && { contentType })
+      })
+    }
+    const stream = response.body
+      ? (response.body as ReadableStream<Uint8Array>)
+      : bytesToStream(new Uint8Array(0))
+    return { stream, ...(contentType !== undefined && { contentType }) }
   },
 
   async encodeMeta({
