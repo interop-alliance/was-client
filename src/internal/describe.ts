@@ -139,7 +139,12 @@ const SERVER_MANAGED_MEMBERS: readonly string[] = [
   'linkset',
   'createdAt',
   'updatedAt',
-  'createdBy'
+  'createdBy',
+  // The write stamp of the Collection's create, kept for its life.
+  'created',
+  // The other two members of the object's own write stamp (with `updatedAt`).
+  'updatedAtCounter',
+  'originId'
 ]
 
 /**

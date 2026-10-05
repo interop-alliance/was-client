@@ -659,7 +659,12 @@ decrypt therefore happen above the port, at the engine's `DocCipher`, which is
 what reconciles plaintext, single-recipient, and multi-recipient (key-epoch)
 collections behind one interface. The pull path rides `Collection.changes()`
 (the signed `POST .../query`, profile `changes`), which likewise never resolves
-the codec.
+the codec. The read-only `GET .../query?profile=changes` form carries the same
+parameters in the query string. It exists for a GET-only capability, which the
+`POST` form refuses, so `changes()` derives the form from the bound capability's
+`allowedAction` (`GET` when it is stated and excludes `POST`); `method`
+overrides it, and `resourceChanges()` forwards it. The port binds no such
+capability and sends `POST`.
 
 The wire model is shared, not local: `SyncCheckpoint`, `WireDoc`, and the feed
 page derive from `@interop/storage-core`'s `ChangesCheckpoint` /
@@ -966,18 +971,26 @@ it, and otherwise cover the client-side concepts this file names.
   `Space`, `Collection`, and `Resource`, each creating the next (`src/*.ts`).
   See The handle model.
 - **Space Metadata object** -- a Space's one "about it" document (`name`,
-  `controller`, `type`), read and replaced at the Space's reserved `meta`
-  segment (`spaceMeta`) rather than at the Space container URL. One object under
-  one `ETag` validator. Avoid: Space Description (retired term; there is no
-  separate description object).
+  `controller`, `type`, and the server-derived, read-only `replicas`), read and
+  replaced at the Space's reserved `meta` segment (`spaceMeta`) rather than at
+  the Space container URL. One object under one `ETag` validator. Avoid: Space
+  Description (retired term; there is no separate description object).
 - **Collection Metadata object** -- a Collection's one "about it" document: its
   configuration (`name`, `backend`, `encryption`, `generator`) together with the
-  server-managed timestamps and the user-writable `custom`, read and replaced at
+  server-managed members (`createdAt`, `updatedAt`, `createdBy`, and the
+  `created` write stamp) and the user-writable `custom`, read and replaced at
   the Collection's reserved `meta` segment (`collectionMeta`) rather than at the
   Collection container URL. One object under one `ETag` validator, which
   advances on a configuration write and on an annotation write alike. Avoid:
   Collection Description (retired term; the Description and the former `/meta`
   object are now the same object).
+- **Replica registration** -- a Space controller's record, on one server, of a
+  peer Space that server pulls from. It is a directed `fromSpace` to `toSpace`
+  edge carrying a GET-only pull capability delegated to the server's DID.
+  Managed at the Space's reserved `replicas` segment (`spaceReplicas`) through
+  `Space.registerReplica` and its siblings, all controller-only. Per-server
+  state: not replicated, not exported. Its runtime state is the separate replica
+  status (`replicaStatus`). Avoid: sync peer, subscription, mirror.
 - **`ClientContext`** -- the single
   `{ serverUrl, zcapClient, controllerDid, encryption?, service }` record every
   handle shares by reference (`src/internal/request.ts`). See The handle model.

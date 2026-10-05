@@ -26,6 +26,7 @@
   - [Conditional writes (optimistic concurrency)](#conditional-writes-optimistic-concurrency)
   - [Storage introspection: backends and quotas](#storage-introspection-backends-and-quotas)
   - [Registering a Bring-Your-Own-Storage backend](#registering-a-bring-your-own-storage-backend)
+  - [Replica registration](#replica-registration)
   - [Encrypted collections (EDV-over-WAS): pass-through encryption via the WAS client (recommended)](#encrypted-collections-edv-over-was-pass-through-encryption-via-the-was-client-recommended)
   - [Cross-replica sync](#cross-replica-sync)
   - [Resource logs (co-managed key resources)](#resource-logs-co-managed-key-resources)
@@ -636,11 +637,12 @@ collection listings; updating one updates the other.
 A Collection's configuration (`name`, `backend`, `encryption`, `generator`, read
 by [`describe()`](#collections)) and its annotations live in one object at the
 Collection's reserved `/meta` path: server-managed properties (`createdAt` /
-`updatedAt` / `createdBy`) plus a user-writable `custom` object (`name` and
-`tags`), under one `ETag` validator. `meta()` is that same object with `custom`
-decoded through the codec; `describe()` does not resolve the codec at all, so on
-an encrypted collection it reports `custom` as the opaque envelope. A server
-without the endpoint surfaces its 501 as `NotImplementedError`.
+`updatedAt` / `createdBy` / `created`) plus a user-writable `custom` object
+(`name` and `tags`), under one `ETag` validator. `meta()` is that same object
+with `custom` decoded through the codec; `describe()` does not resolve the codec
+at all, so on an encrypted collection it reports `custom` as the opaque
+envelope. A server without the endpoint surfaces its 501 as
+`NotImplementedError`.
 
 ```ts
 const meta = await collection.meta() // CollectionMetadata | null (null on a miss)
@@ -657,6 +659,12 @@ await collection.setMeta({ custom: { name: 'Vault' } }, { ifMatch: meta?.etag })
 // ...or create the Collection only if it does not exist yet:
 await collection.setMeta({ custom: { name: 'Vault' } }, { ifNoneMatch: true })
 ```
+
+`created` is the write stamp of the write that created the Collection
+(`{ updatedAt, updatedAtCounter, originId }`), kept for the Collection's life. A
+Collection deleted and created again carries the stamp of the later create. No
+write sends it back. A Collection created before the server supported the stamp
+may lack it.
 
 A failed precondition throws `PreconditionFailedError` (412). This `/meta` ETag
 is independent of every Resource's versions, but not of the configuration
@@ -852,6 +860,125 @@ sends no body on an in-place replace).
 > A registered backend's record exists immediately, but whether its connection
 > can actually serve bytes depends on the server having a live provider adapter
 > for it. Until then it is registered but inert (`status: 'registered'`).
+
+### Replica registration
+
+A Space can pull from a copy of itself on another server. The Space controller
+registers that peer Space with this server, and this server then runs a pull
+loop against the peer. Replication is one-way. The peer receives nothing unless
+its own server holds a registration pointing back.
+
+A registration is a directed edge. `fromSpace` is the peer Space's canonical
+trailing-slash URL, and `toSpace` is this Space's. `role` is always `source`.
+`capability` is the pull capability: a zcap the controller delegates to this
+server's DID, rooted in the peer Space, with `allowedAction` within `GET` and
+`HEAD`. `collections` lists the Collections to pull. Leave it out to pull every
+Collection.
+
+```ts
+// The DID of the server that will pull: the reference server discloses it
+// as `instance.serverDid` in its service description. `instance` is an
+// operator disclosure, so a deployment may leave it out; ask the operator
+// for the DID then.
+const { description } = await was.service()
+const serverDid = description.instance?.serverDid
+if (serverDid === undefined) {
+  throw new Error('This server does not disclose its DID.')
+}
+
+// The pull capability: GET-only, rooted in the peer Space, delegated to that
+// DID.
+const capability = await peerWas.space(peerSpaceId).grant({
+  to: serverDid,
+  actions: ['GET']
+})
+
+const registration = await space.registerReplica({
+  id: 'peer-1', // client-chosen and URL-safe
+  fromSpace: `https://peer.example/space/${peerSpaceId}/`,
+  toSpace: `https://was.example/space/${space.id}/`,
+  capability,
+  collections: [{ id: 'credentials' }], // omit to pull every Collection
+  role: 'source'
+}) // the stored ReplicaRegistration
+
+const listing = await space.replicas() // { url, totalItems, items } | null
+const one = await space.replica('peer-1') // ReplicaRegistration | null
+
+const status = await space.replicaStatus('peer-1') // ReplicaStatus | null
+// status.state: 'idle' | 'pulling' | 'backing-off' | 'stalled'
+for (const entry of status?.collections ?? []) {
+  if (entry.state === 'stalled') {
+    // entry.stall: { reason, since, detail? }
+  }
+}
+
+// The data already pulled under the registration stays. 'not-found' is the
+// server's masked 404: absent, or the caller is not the controller.
+const { outcome } = await space.deregisterReplica('peer-1') // 'deleted' | 'not-found'
+```
+
+`replicaStatus()` reports the pull loop's runtime state. The response is
+uncacheable and is not part of the registration record. Each Collection entry
+has its own `state` (`synced`, `syncing`, `stalled`, or `skipped`). A stalled
+Collection keeps its checkpoint until the cause is removed, and the other
+Collections continue. Its `stall.reason` is one of:
+
+- `clock-bound` -- a received write stamp is dated further ahead of local time
+  than the server allows. It clears as local time catches up.
+- `fork` -- a history log or an immutable Collection member differs from the
+  local one in a way no write order resolves.
+- `quota-exceeded` -- applying the change would exceed a local quota.
+- `unsupported-backend` -- the Collection names a `backend` this server has no
+  registration for.
+- `container-refused` -- the local Space or Collection refused the write.
+
+Every replica method is controller-only on the server, the reads included, since
+a registration holds the pull capability. A delegated capability gets the
+masked 404. `replicas()`, `replica()`, and `replicaStatus()` then return `null`,
+and `registerReplica()` throws `NotFoundError`. `deregisterReplica()` reports it
+as `{ outcome: 'not-found' }` rather than swallowing it, so a delegated caller
+can tell that nothing was removed. The three reads reserve `null` for that 404.
+A 2xx with no JSON body is a server fault and throws `WasServerError`.
+
+`registerReplica()` throws `ValidationError` (400 `invalid-request-body`) for a
+malformed body. Each entry of the error's `problems` carries a `pointer` naming
+the offending member. It throws `ConflictError` (409) for two refusals, told
+apart by the error's `type` URI:
+
+- `replica-refused` (`ProblemTypes.REPLICA_REFUSED`) -- the server refuses the
+  peer. For example, the peer Space's `controller` or `type` differs from this
+  one, the peer advertises no replication, the capability's controller is not
+  this server, or a listed Collection's immutable members differ. The cause is
+  in the error's `details`.
+- `id-conflict` (`ProblemTypes.ID_CONFLICT`) -- a registration with this `id`
+  already exists.
+
+```ts
+import { ProblemTypes } from '@interop/was-client'
+
+try {
+  await space.registerReplica(registration)
+} catch (err) {
+  if (err instanceof ConflictError && err.type === ProblemTypes.ID_CONFLICT) {
+    // already registered under this id
+  } else {
+    throw err
+  }
+}
+```
+
+`deregisterReplica()` throws `ConflictError` (`replica-refused`) when the
+registration is the one that maps this Space's did:webvh controller. Removing it
+would leave the Space with no way to follow its controller's log.
+
+A peer advertises replication in its service description, under
+`specs['https://w3id.org/pws/replication']` (version `0.1` on the reference
+server). A registration is per-server state. It is not replicated, it is not
+part of an export, and deleting the Space removes it. `space.describe()`
+surfaces the Space's registrations as the read-only `replicas` member, one
+`{ fromSpace, toSpace, role }` summary per peer, with no registration id and no
+capability. The server ignores `replicas` in a write body.
 
 ### Encrypted collections (EDV-over-WAS): pass-through encryption via the WAS client (recommended)
 
@@ -1247,6 +1374,17 @@ carries a blinded-index key, pass the cipher the stored `/meta` value
 (`meta: { custom }`) so its writes emit the same blinded index tokens a
 Collection-handle write does; a cipher built without it writes documents
 `find()` cannot see until they are rewritten.
+
+`collection.changes()` reads one page of the raw feed, and sends the query as a
+`POST` by default. Pass `method: 'GET'` for the read-only form,
+`GET .../query?profile=changes&checkpoint=...&limit=...`. The server verifies it
+under the `GET` action and answers the same `ChangesPage`. A caller holding a
+GET-only capability, such as a pull capability, reads the feed this way. The
+`POST` form refuses that capability with `NotFoundError`.
+
+```ts
+const page = await collection.changes({ method: 'GET', checkpoint, limit: 100 })
+```
 
 ### Resource logs (co-managed key resources)
 

@@ -185,19 +185,37 @@ export function spaceLinkset(spaceId: string): string {
 }
 
 /**
+ * `/space/:spaceId/replicas` -- the Space's replica registrations: `GET` lists
+ * them and `POST` registers one. Controller-only, both forms.
+ */
+export function spaceReplicas(spaceId: string): string {
+  return `${spacePrefix(spaceId)}/replicas`
+}
+
+/**
+ * `/space/:spaceId/replicas/:replicaId` -- one replica registration (read and
+ * delete by id).
+ */
+export function replicaRegistration(
+  spaceId: string,
+  replicaId: string
+): string {
+  return `${spaceReplicas(spaceId)}/${encode(replicaId)}`
+}
+
+/**
+ * `/space/:spaceId/replicas/:replicaId/status` -- the pull loop's runtime
+ * state for one registration.
+ */
+export function replicaStatus(spaceId: string, replicaId: string): string {
+  return `${replicaRegistration(spaceId, replicaId)}/status`
+}
+
+/**
  * `/space/:spaceId/zcaps/revocations/:capabilityId` -- submit a revocation of a
  * Space-rooted capability. The capability's `id` (typically a `urn:uuid:`) is
- * percent-encoded into the single final segment.
- *
- * `zcaps` is not in the Reserved Path Segment Registry, and does not need to
- * be. Depth is not the reason: this route is exactly as deep as a
- * Resource sub-resource route (`/space/:s/:c/:r/meta`), so a Collection named
- * `zcaps` does reach the same depth. Two other properties make the shadowing
- * unreachable. A zcap `id` is an absolute URI, so the final segment never
- * matches one of the reserved sub-resource segments (`meta`, `policy`,
- * `chunks/:n`, ...) a Resource route would read there. And the two routes are
- * method-disjoint: a revocation is submitted with `POST`, while the Resource
- * routes at that depth answer `GET` / `PUT` / `DELETE`.
+ * percent-encoded into the single final segment. `zcaps` is in the Reserved
+ * Path Segment Registry, so no Collection can take that slot.
  */
 export function spaceRevocation(spaceId: string, capabilityId: string): string {
   return `${spacePrefix(spaceId)}/zcaps/revocations/${encode(capabilityId)}`

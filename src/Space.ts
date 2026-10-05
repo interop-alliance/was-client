@@ -4,8 +4,9 @@
 /**
  * A navigational handle to a Space. Exposes its own lifecycle
  * (`describe`/`configure`/`delete`/`deleteWithOutcome`), contained Collections
- * (`collection`/`createCollection`/`collections`), delegation (`grant`), and
- * whole-space `export`/`import`.
+ * (`collection`/`createCollection`/`collections`), delegation (`grant`),
+ * replica registration (`registerReplica`/`replicas`/`replica`/
+ * `deregisterReplica`/`replicaStatus`), and whole-space `export`/`import`.
  *
  * The Space is an ordinary container: its canonical URL (`/space/{id}/`) lists
  * its Collections, creates one, and deletes the Space, while the Space's own
@@ -23,6 +24,9 @@ import {
   spaceQuotas,
   spacePolicy,
   spaceLinkset,
+  spaceReplicas,
+  replicaRegistration,
+  replicaStatus,
   toUrl
 } from './internal/paths.js'
 import { assertNotReserved } from './internal/reserved.js'
@@ -70,6 +74,9 @@ import type {
   ImportStats,
   LinkSet,
   PolicyDocument,
+  ReplicaListing,
+  ReplicaRegistration,
+  ReplicaStatus,
   SpaceMetadata,
   SpaceQuotaReport
 } from './types.js'
@@ -132,6 +139,49 @@ function missingJsonBodyError({
     `${operation} response carried no JSON body (the server sent ` +
       `${contentType}); expected ${expected}.`
   )
+}
+
+/**
+ * A controller-only `GET` of a replica record: `null` on the masked 404
+ * (missing, or the caller is not the controller), the parsed body otherwise.
+ * Unlike `readData`, a 2xx with no JSON body is a server fault
+ * (`WasServerError`), so a misbehaving server is not read as "nothing
+ * registered".
+ *
+ * @param context {ClientContext}
+ * @param options {object}
+ * @param options.path {string}
+ * @param [options.capability] {IZcap}
+ * @param options.expected {string}   what the body should have carried, for
+ *   the error message
+ * @returns {Promise<T | null>}
+ */
+async function readReplicaRecord<T>(
+  context: ClientContext,
+  {
+    path,
+    capability,
+    expected
+  }: { path: string; capability?: IZcap; expected: string }
+): Promise<T | null> {
+  const response = await send(context, {
+    path,
+    method: 'GET',
+    capability,
+    read: true
+  })
+  if (response === null) {
+    return null
+  }
+  const record = dataOrNull<T>(response)
+  if (record === null) {
+    throw missingJsonBodyError({
+      response,
+      operation: 'Replica read',
+      expected
+    })
+  }
+  return record
 }
 
 export class Space {
@@ -728,6 +778,139 @@ export class Space {
     return readData<SpaceQuotaReport>(this.#context, {
       path,
       capability: this.#capability
+    })
+  }
+
+  /**
+   * Registers a replica of this Space (`POST /space/:id/replicas`): a peer
+   * Space this one pulls from, as a directed edge. The body carries the pull
+   * capability the controller delegated to the server's DID (its chain roots
+   * in the peer Space and its `allowedAction` lies within `GET` and `HEAD`),
+   * the peer's `fromSpace` URL, this Space's `toSpace` URL, the `role`
+   * (`source`), and an optional `collections` list naming what to pull (absent
+   * means every Collection). Controller-only: the server answers a delegated
+   * capability with the masked 404, so open the handle with the controller's
+   * authority.
+   *
+   * Returns the stored record, as the server serves it back. The registration
+   * is per-server state: it is not replicated or exported, and deleting the
+   * Space removes it.
+   *
+   * Throws `ValidationError` (400, `invalid-request-body`) for a malformed
+   * body, each problem's `pointer` naming the member, and `ConflictError` for
+   * a refusal: `replica-refused` (409) when the peer cannot be registered
+   * (its controller or `type` differs, it advertises no replication, the
+   * capability's controller is not the server, a Collection's immutable
+   * members differ, ...), or `id-conflict` (409) when a registration with
+   * this `id` already exists. Tell them apart on the error's `type`.
+   *
+   * @param registration {ReplicaRegistration}
+   * @returns {Promise<ReplicaRegistration>}   the stored record
+   */
+  async registerReplica(
+    registration: ReplicaRegistration
+  ): Promise<ReplicaRegistration> {
+    const response = await send(this.#context, {
+      path: spaceReplicas(this.id),
+      method: 'POST',
+      capability: this.#capability,
+      json: registration
+    })
+    const stored = dataOrNull<ReplicaRegistration>(response)
+    if (stored === null) {
+      throw missingJsonBodyError({
+        response,
+        operation: 'Replica registration',
+        expected: 'the stored replica registration'
+      })
+    }
+    return stored
+  }
+
+  /**
+   * Lists this Space's replica registrations (`GET /space/:id/replicas`): the
+   * unpaginated `{ url, totalItems, items }` listing, each item a full
+   * registration with its pull capability. Controller-only, like the records
+   * it lists; returns `null` if the Space is missing or the caller is not its
+   * controller (404 conflation caveat). A 2xx with no JSON body throws
+   * `WasServerError` rather than reading as an empty listing.
+   *
+   * @returns {Promise<ReplicaListing | null>}
+   */
+  async replicas(): Promise<ReplicaListing | null> {
+    return readReplicaRecord<ReplicaListing>(this.#context, {
+      path: spaceReplicas(this.id),
+      capability: this.#capability,
+      expected: 'the replica listing'
+    })
+  }
+
+  /**
+   * Reads one replica registration by id
+   * (`GET /space/:id/replicas/:replicaId`). Controller-only; returns `null`
+   * if the registration or the Space is missing, or the caller is not the
+   * controller (404 conflation caveat). A 2xx with no JSON body throws
+   * `WasServerError`.
+   *
+   * @param replicaId {string}
+   * @returns {Promise<ReplicaRegistration | null>}
+   */
+  async replica(replicaId: string): Promise<ReplicaRegistration | null> {
+    return readReplicaRecord<ReplicaRegistration>(this.#context, {
+      path: replicaRegistration(this.id, replicaId),
+      capability: this.#capability,
+      expected: 'the replica registration'
+    })
+  }
+
+  /**
+   * Removes a replica registration (`DELETE /space/:id/replicas/:replicaId`)
+   * and reports the server's answer. The data already pulled under it stays.
+   *
+   * Controller-only, and the server answers a delegated capability with the
+   * same masked 404 as an absent registration, so the 404 is not swallowed as
+   * success the way an idempotent delete would: `'not-found'` means "absent
+   * or refused", and only a caller with its own prior discovery (a
+   * {@link replica} read under the same authority) may read it as absence. A
+   * caller that wants removing twice to be a no-op ignores the outcome.
+   *
+   * The server refuses with `ConflictError` (409, `replica-refused`) when the
+   * registration is the one that maps this Space's did:webvh controller,
+   * since removing it would leave the Space with no way to follow its
+   * controller's log.
+   *
+   * @param replicaId {string}
+   * @returns {Promise<{ outcome: 'deleted' | 'not-found' }>}
+   */
+  async deregisterReplica(
+    replicaId: string
+  ): Promise<{ outcome: 'deleted' | 'not-found' }> {
+    const response = await send(this.#context, {
+      path: replicaRegistration(this.id, replicaId),
+      method: 'DELETE',
+      capability: this.#capability,
+      idempotent: true
+    })
+    return { outcome: response === null ? 'not-found' : 'deleted' }
+  }
+
+  /**
+   * Reads the pull loop's runtime state for one registration
+   * (`GET /space/:id/replicas/:replicaId/status`): the loop `state` (`idle`,
+   * `pulling`, `backing-off`, `stalled`), its cycle timestamps, and one entry
+   * per Collection with its own `state` and, while stalled, a `stall` naming
+   * the `ReplicaStallReason` and when it began. Uncacheable and controller-
+   * only; returns `null` (and throws on a bodiless 2xx) on the same terms as
+   * {@link replica}.
+   *
+   * @param replicaId {string}
+   * @returns {Promise<ReplicaStatus | null>}
+   */
+  async replicaStatus(replicaId: string): Promise<ReplicaStatus | null> {
+    return readReplicaRecord<ReplicaStatus>(this.#context, {
+      path: replicaStatus(this.id, replicaId),
+      capability: this.#capability,
+      expected: 'the pull loop status'
     })
   }
 

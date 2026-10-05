@@ -74,6 +74,18 @@ describe('assertNotReserved', () => {
     ).toThrow(ValidationError)
   })
 
+  it('rejects the replication segments as collection ids', () => {
+    // `replicas` is the registration endpoint and `zcaps` the revocation
+    // route, both directly under the Space; a Collection named either would
+    // shadow it.
+    for (const segment of ['replicas', 'zcaps']) {
+      expect(() =>
+        assertNotReserved({ id: segment, kind: 'collection' })
+      ).toThrow(ValidationError)
+      expect(() => collectionPath('s', segment)).toThrow(ValidationError)
+    }
+  })
+
   it('accepts an ordinary id', () => {
     expect(() =>
       assertNotReserved({ id: 'credentials', kind: 'collection' })

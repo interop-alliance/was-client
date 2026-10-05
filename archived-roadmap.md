@@ -3761,3 +3761,52 @@ discovered-from: WCL-2. The routed write takes bytes already in memory (`Blob` /
 `Uint8Array`); the underlying `EdvClientCore.insert({ stream })` path is already
 streaming, so the gap is only the public `add()` surface and the read-side
 counterpart (a streaming `get` variant) for callers that cannot buffer.
+
+### WCL-127: [M] Replica registration API and the replication wire members
+
+- status: done (2026-10-05)
+- priority: medium
+- labels: replication, spaces, storage-core, api
+- discovered-from: was-teaching-server WAS-176 (2026-10-04)
+- touches:
+  - was-client (README.md and ARCHITECTURE.md for the new handle, reserved ids,
+    and the `created` member): shipped with this item
+  - storage-core: 0.35.0 carries the types (`ReplicaRegistration`,
+    `ReplicaSummary`, `ReplicaStatus`, `ReplicaListing`, `ReplicaStallReason`,
+    `ProblemTypes.REPLICA_REFUSED`, `CollectionMetadata.created`) and the two
+    new reserved Collection ids. Nothing to file there
+  - unaffected: was-react (it does not re-export the Space Metadata type;
+    checked 2026-10-05)
+  - freewallet: the registration flow consumes this API (FW-638, already filed
+    there)
+- acceptance:
+  - [x] storage-core is bumped to 0.35.0, and the Space Metadata read surfaces
+        the `replicas` member (`[{ fromSpace, toSpace, role }]`) without
+        client-side shaping
+  - [x] A registration API over `/space/:id/replicas`: create (`POST` of
+        `{ id, fromSpace, toSpace, capability, collections?, role }`), list (the
+        `{ url, totalItems, items }` listing), get, delete, and read of the
+        `status` sub-resource, all typed with the storage-core types
+  - [x] A `replica-refused` (409) refusal surfaces as a typed error that names
+        the problem type, apart from `invalid-request-body` (400)
+  - [x] The `status` read exposes `stall.reason` as `ReplicaStallReason`
+  - [x] `Collection.meta()` surfaces the server-managed `created` stamp
+        (`{ updatedAt, updatedAtCounter, originId }`), and no write path sends
+        it
+  - [x] `replicas` and `zcaps` are rejected client-side as Collection ids,
+        matching the reserved list in storage-core
+  - [x] Optional: `Collection.changes()` can use the read-only GET form of the
+        changes query (`GET .../query?profile=changes&checkpoint=...&limit=...`)
+        so a caller holding a GET-only capability can read the feed
+  - [x] Tests over each call, the 409 refusal, the reserved ids, and the
+        `created` member; CHANGELOG.md entry
+
+Context: the reference server now registers a replica of a Space, pulls from a
+peer, and applies what it pulls. The wire gained a `replicas` member on the
+Space Metadata object, a `created` stamp on the Collection Metadata object, the
+registration endpoints, and two reserved Collection ids. The client has no
+binding for any of them, so a wallet cannot register a replica or read its
+status through the client. The registration endpoints are controller-only,
+including the `GET` forms. The GET form of the changes query exists because a
+pull capability allows only GET and HEAD. This item waits on the spec text for
+the registration record, so names may still move before it is final.

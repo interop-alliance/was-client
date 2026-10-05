@@ -28,6 +28,28 @@
   `ResourceCodec`, resolving `{ stream, contentType? }`. The identity codec and
   `EdvCodec` implement it. A codec without it is read through `decode`, and the
   value is converted to a stream in memory.
+- Replica registration on `Space`, over `/space/:id/replicas`:
+  `registerReplica(registration)`, `replicas()`, `replica(id)`,
+  `deregisterReplica(id)` and `replicaStatus(id)`. All five are controller-only
+  on the server. `registerReplica()` throws `ValidationError` for a malformed
+  body and `ConflictError` for `replica-refused` or `id-conflict`, told apart by
+  the error's `type`. The three reads return `null` on the masked 404 and throw
+  `WasServerError` on a 2xx with no JSON body. `deregisterReplica()` resolves
+  `{ outcome: 'deleted' | 'not-found' }`, since the masked 404 also covers a
+  delegated caller's refusal.
+- The types `ReplicaRegistration`, `ReplicaSummary`, `ReplicaRole`,
+  `ReplicaListing`, `ReplicaStatus`, `ReplicaCollectionStatus`,
+  `ReplicaStallReason` and `WriteStamp`, and the `ProblemTypes` registry,
+  re-exported from the package root.
+- `space.describe()` surfaces the server-derived, read-only `replicas` member of
+  the Space Metadata object.
+- `collection.meta()` and `collection.describe()` surface the server-managed
+  `created` write stamp. No write sends it, nor the `updatedAtCounter` and
+  `originId` members of the object's own stamp.
+- `collection.changes()` sends the read-only `GET .../query?profile=changes`
+  form when the bound capability's `allowedAction` excludes `POST` (a GET-only
+  pull capability), and `POST` otherwise. A `method` option overrides the
+  derived form, and `resourceChanges()` accepts and forwards it.
 
 ### Changed
 
@@ -51,6 +73,10 @@
   `ValidationError` on an empty or whitespace-only secret. Previously such
   secrets derived fixed, publicly computable identities. A secret with
   surrounding whitespace now derives a different identity than before.
+- **BREAKING**: `replicas` and `zcaps` are reserved Collection ids. Handle
+  constructors and path builders reject them with `ValidationError`, so a
+  Collection already created under either id is no longer addressable through
+  the handle API (only through `was.request()`).
 
 ## 0.92.0 - 2026-10-05
 

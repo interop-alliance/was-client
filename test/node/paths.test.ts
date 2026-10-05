@@ -23,6 +23,9 @@ import {
   spaceQuotas,
   spacePolicy,
   spaceLinkset,
+  spaceReplicas,
+  replicaRegistration,
+  replicaStatus,
   collectionPath,
   collectionPolicy,
   collectionLinkset,
@@ -84,6 +87,19 @@ describe('path builders', () => {
   it('builds the per-id registered backend path (replace / deregister)', () => {
     expect(registeredBackend('home', 'gdrive')).toBe(
       '/space/home/backends/gdrive'
+    )
+  })
+
+  it('builds the replica registration paths (space level)', () => {
+    expect(spaceReplicas('home')).toBe('/space/home/replicas')
+    expect(replicaRegistration('home', 'peer-1')).toBe(
+      '/space/home/replicas/peer-1'
+    )
+    expect(replicaStatus('home', 'peer-1')).toBe(
+      '/space/home/replicas/peer-1/status'
+    )
+    expect(replicaRegistration('home', 'a/b')).toBe(
+      '/space/home/replicas/a%2Fb'
     )
   })
 
@@ -153,6 +169,9 @@ describe('the trailing-slash convention', () => {
     spaceQuotas: spaceQuotas('home'),
     spacePolicy: spacePolicy('home'),
     spaceLinkset: spaceLinkset('home'),
+    spaceReplicas: spaceReplicas('home'),
+    replicaRegistration: replicaRegistration('home', 'r1'),
+    replicaStatus: replicaStatus('home', 'r1'),
     collectionPath: collectionPath('home', 'docs'),
     collectionMeta: collectionMeta('home', 'docs'),
     collectionLog: collectionLog('home', 'docs'),
@@ -215,6 +234,15 @@ describe('parseSpacePath', () => {
       spaceId: 's'
     })
     expect(parseSpacePath('/space/s/backends/gdrive')).toMatchObject({
+      kind: 'sub-resource',
+      spaceId: 's'
+    })
+    expect(parseSpacePath('/space/s/replicas/peer-1/status')).toEqual({
+      kind: 'sub-resource',
+      spaceId: 's',
+      segments: ['replicas', 'peer-1', 'status']
+    })
+    expect(parseSpacePath('/space/s/zcaps/revocations/urn:x')).toMatchObject({
       kind: 'sub-resource',
       spaceId: 's'
     })

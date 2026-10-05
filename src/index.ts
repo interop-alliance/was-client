@@ -17,8 +17,14 @@ export type { ParsedSpacePath } from './internal/paths.js'
 export { readEtag, writeHeaders } from './internal/conditional.js'
 export { isGovernedDescriptor } from './internal/describe.js'
 // The `changes` feed guards a consumer filters `Collection.changes()` pages
-// with, so a consumer needs no direct `@interop/storage-core` dependency.
-export { isJsonResourceChange, isResourceChange } from '@interop/storage-core'
+// with, and the problem-type registry a consumer tells one `ConflictError`
+// kind from another by, so a consumer needs no direct `@interop/storage-core`
+// dependency.
+export {
+  isJsonResourceChange,
+  isResourceChange,
+  ProblemTypes
+} from '@interop/storage-core'
 export type { WritePrecondition } from './internal/conditional.js'
 
 export {
@@ -118,6 +124,14 @@ export type {
   CollectionUsage,
   BackendUsage,
   SpaceQuotaReport,
+  ReplicaRegistration,
+  ReplicaSummary,
+  ReplicaRole,
+  ReplicaListing,
+  ReplicaStatus,
+  ReplicaCollectionStatus,
+  ReplicaStallReason,
+  WriteStamp,
   ServiceDescription,
   ServiceDescriptionVersionEntry,
   PwsVersionEntry,

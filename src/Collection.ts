@@ -176,6 +176,59 @@ function mergedConfiguration(
   })
 }
 
+/**
+ * The request form of the `changes` query a bound capability admits: `GET`
+ * when the capability's `allowedAction` is stated and excludes `POST` (a
+ * GET-only pull capability), `POST` otherwise (no capability, a root one, or
+ * one whose actions are unrestricted or include `POST`).
+ */
+function changesMethodFor(capability?: IZcap): 'POST' | 'GET' {
+  const allowed = capability?.allowedAction ?? 'POST'
+  const actions = Array.isArray(allowed) ? allowed : [allowed]
+  return actions.some(action => action.toUpperCase() === 'POST')
+    ? 'POST'
+    : 'GET'
+}
+
+/**
+ * The path and body of a `changes` query in the given form. The `POST` form
+ * carries the parameters in its JSON body; the read-only `GET` form carries
+ * them in the query string, each percent-encoded by `URLSearchParams` so an
+ * opaque checkpoint never breaks the URL.
+ *
+ * @param options {object}
+ * @param options.queryPath {string}   the collection's `/query` path
+ * @param options.method {'POST' | 'GET'}
+ * @param [options.checkpoint] {ChangesCheckpoint}
+ * @param [options.limit] {number}
+ * @returns {{ path: string, json?: object }}
+ */
+function changesRequest({
+  queryPath,
+  method,
+  checkpoint,
+  limit
+}: {
+  queryPath: string
+  method: 'POST' | 'GET'
+  checkpoint?: ChangesCheckpoint
+  limit?: number
+}): { path: string; json?: object } {
+  const params = {
+    profile: 'changes',
+    ...(checkpoint !== undefined && { checkpoint }),
+    ...(limit !== undefined && { limit })
+  }
+  if (method === 'POST') {
+    return { path: queryPath, json: params }
+  }
+  const search = new URLSearchParams()
+  for (const [name, value] of Object.entries(params)) {
+    search.set(name, String(value))
+  }
+  return { path: `${queryPath}?${search.toString()}` }
+}
+
 export class Collection {
   readonly spaceId: string
   readonly id: string
@@ -1714,30 +1767,48 @@ export class Collection {
    * parse that resource's body). Entries of any other kind pass through
    * unchecked.
    *
+   * The query is sent as a `POST` whose body carries the parameters, or in
+   * the read-only `GET` form with the parameters in the query string, which
+   * the server verifies under the `GET` action and answers with the same page.
+   * A capability whose `allowedAction` excludes `POST` (a GET-only pull
+   * capability, say) reads the feed with `GET`, since the `POST` form refuses
+   * it with `NotFoundError`; every other handle sends `POST`. `method`
+   * overrides the derived form.
+   *
    * @param [options] {object}
    * @param [options.checkpoint] {ChangesCheckpoint}   opaque checkpoint from a prior page; resume strictly after it
    * @param [options.limit] {number}   max documents; the server reduces it to its own maximum
+   * @param [options.method] {'POST' | 'GET'}   the request form; derived from
+   *   the bound capability by default
    * @returns {Promise<ChangesPage>}
    */
   async changes(
-    options: { checkpoint?: ChangesCheckpoint; limit?: number } = {}
+    options: {
+      checkpoint?: ChangesCheckpoint
+      limit?: number
+      method?: 'POST' | 'GET'
+    } = {}
   ): Promise<ChangesPage> {
-    const { checkpoint, limit } = options
+    const {
+      checkpoint,
+      limit,
+      method = changesMethodFor(this.#capability)
+    } = options
     const response = await send(this.#context, {
-      path: collectionQuery(this.spaceId, this.id),
-      method: 'POST',
-      capability: this.#capability,
-      json: {
-        profile: 'changes',
-        ...(checkpoint !== undefined && { checkpoint }),
-        ...(limit !== undefined && { limit })
-      }
+      ...changesRequest({
+        queryPath: collectionQuery(this.spaceId, this.id),
+        method,
+        checkpoint,
+        limit
+      }),
+      method,
+      capability: this.#capability
     })
-    // A `changes` query is a POST, so it never carries the null-on-404 `read`
-    // flag: a missing or unauthorized collection throws, as every other write
-    // -shaped call on this handle does. A `null` here is therefore a 2xx whose
-    // body did not parse as JSON, which must not masquerade as the end-of-feed
-    // page `{ documents: [], checkpoint: null }`.
+    // Neither form carries the null-on-404 `read` flag: a missing or
+    // unauthorized collection throws, as every other write-shaped call on this
+    // handle does. A `null` here is therefore a 2xx whose body did not parse
+    // as JSON, which must not masquerade as the end-of-feed page
+    // `{ documents: [], checkpoint: null }`.
     const page = dataOrNull<ChangesPage>(response)
     if (page === null) {
       throw new WasServerError(
@@ -1807,19 +1878,25 @@ export class Collection {
    * @param [options] {object}
    * @param [options.checkpoint] {ChangesCheckpoint}   resume strictly after it
    * @param [options.limit] {number}   max entries per request, every kind counted
+   * @param [options.method] {'POST' | 'GET'}   the request form of each page,
+   *   as for {@link changes}
    * @returns {AsyncGenerator<{ documents: ResourceChangeDocument[], checkpoint: ChangesCheckpoint | null }>}
    */
   async *resourceChanges(
-    options: { checkpoint?: ChangesCheckpoint; limit?: number } = {}
+    options: {
+      checkpoint?: ChangesCheckpoint
+      limit?: number
+      method?: 'POST' | 'GET'
+    } = {}
   ): AsyncGenerator<{
     documents: ResourceChangeDocument[]
     checkpoint: ChangesCheckpoint | null
   }> {
-    const { limit } = options
+    const { limit, method } = options
     let checkpoint = options.checkpoint
     const seen = new Set<string>(checkpoint === undefined ? [] : [checkpoint])
     for (;;) {
-      const page = await this.changes({ checkpoint, limit })
+      const page = await this.changes({ checkpoint, limit, method })
       yield {
         documents: page.documents.filter(isResourceChange),
         checkpoint: page.checkpoint ?? null
