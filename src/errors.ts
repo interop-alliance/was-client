@@ -104,7 +104,7 @@ export class ValidationError extends WasError {
  * refusal keeps doing so; the `name` is the one signal a consumer matches
  * across package copies. Catch this name alone to make revoking twice a
  * no-op without also swallowing a tampered, expired, or foreign-rooted
- * capability, which stay plain `ValidationError`s.
+ * capability, which the server denies with a masked `NotFoundError`.
  */
 export class AlreadyRevokedError extends ValidationError {
   override name = 'AlreadyRevokedError'

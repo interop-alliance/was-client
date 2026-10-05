@@ -68,4 +68,22 @@ describeLive('service discovery (live server)', () => {
     // Space creation, listing, and deletion run past the 5s default when the
     // rest of the integration tier loads the same server in parallel.
   }, 30_000)
+
+  it('lists every Space with its type array, auxiliary Spaces included', async () => {
+    const was = await freshWasClient()
+    const [data, auxiliary] = await Promise.all([
+      was.createSpace({ name: 'Data' }),
+      was.createSpace({ name: 'Clients', type: ['AuxiliarySpace', 'Space'] })
+    ])
+    try {
+      const { items } = await was.listSpaces()
+      expect(items.find(item => item.id === data.id)?.type).toEqual(['Space'])
+      expect(items.find(item => item.id === auxiliary.id)?.type).toEqual([
+        'AuxiliarySpace',
+        'Space'
+      ])
+    } finally {
+      await Promise.all([data.delete(), auxiliary.delete()])
+    }
+  }, 30_000)
 })

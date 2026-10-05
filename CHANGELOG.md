@@ -12,6 +12,9 @@
   `@interop/storage-core`. A `kind: 'policy'` entry in the `changes` feed passes
   through `Collection.changes()`; `documents()`, `resourceChanges()`, and the
   sync port skip it, as they do every non-Resource kind.
+- `createSpace()` takes an optional `type` array, so a client can create a typed
+  Space (e.g. `['AuxiliarySpace', 'Space']`). Tests cover that each
+  `listSpaces()` item carries its `type` array, auxiliary Spaces included.
 
 ### Changed
 
@@ -21,7 +24,21 @@
   `clearPolicy()` takes `{ ifMatch }` as conditional-write preconditions, sent
   as `If-Match` / `If-None-Match: *`; a failed precondition throws
   `PreconditionFailedError`.
-- `@interop/storage-core` bumped to `^0.34.0`.
+- `@interop/storage-core` bumped to `^0.35.0`.
+
+### Fixed
+
+- `setName()` / `setTags()` on a Resource whose `/meta` has never been written
+  no longer throw `NotSupportedError`. A fresh Resource reads with no `meta`
+  stamp and no `ETag` (the server mints the validator with the first metadata
+  write), so the first patch is a guarded create under `If-None-Match: *`. A
+  read that carries the `meta` stamp but no `ETag` is still refused, and so is
+  a Collection read with no `ETag`: the Collection Metadata object has no
+  unwritten state, so its `setName()` / `setTags()` never take the create
+  path.
+- Docs and the integration test for a revocation submitted to the wrong Space
+  now match the server: a foreign-rooted capability is denied with the masked
+  `NotFoundError`, not `ValidationError`.
 
 ## 0.89.1 - 2026-10-04
 

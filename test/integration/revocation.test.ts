@@ -189,10 +189,10 @@ describeLive('space.revoke() (live server)', () => {
     const zcap = await grantToApp()
     await alice.space(spaceId).revoke(zcap)
 
-    // `revoke()` is deliberately not idempotent: the chain now contains a
-    // revoked link, which the server reports with the same 400 it uses for a
-    // tampered or foreign-rooted capability, so the client cannot tell them
-    // apart and does not swallow any of them.
+    // `revoke()` is deliberately not idempotent: the chain verifies but now
+    // contains a revoked link, which the server reports as a 400. (A tampered
+    // or foreign-rooted capability fails verification instead and is masked as
+    // the 404 below.)
     await expect(alice.space(spaceId).revoke(zcap)).rejects.toThrow(
       ValidationError
     )
@@ -211,9 +211,12 @@ describeLive('space.revoke() (live server)', () => {
       })
 
     try {
-      // Revocation is scoped to one space; there is no global revocation.
+      // Revocation is scoped to one space; there is no global revocation. A
+      // chain that does not verify against this space's root leaves the
+      // revocation URL with no controller, so the server masks the denial as
+      // not-found instead of disclosing whether the space exists.
       await expect(alice.space(spaceId).revoke(foreign)).rejects.toThrow(
-        ValidationError
+        NotFoundError
       )
 
       // Submitted to its own space, it revokes -- scoping cuts both ways.

@@ -1024,7 +1024,7 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return patchCustom(this, { name }, 'Collection name update')
+    return patchCustom(this, { name }, { operation: 'Collection name update' })
   }
 
   /**
@@ -1036,7 +1036,7 @@ export class Collection {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return patchCustom(this, { tags }, 'Collection tags update')
+    return patchCustom(this, { tags }, { operation: 'Collection tags update' })
   }
 
   get #logPath(): string {

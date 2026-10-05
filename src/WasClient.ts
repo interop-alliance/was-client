@@ -261,17 +261,27 @@ export class WasClient {
    * @param [desc.id] {string}
    * @param [desc.name] {string}
    * @param [desc.controller] {string}
+   * @param [desc.type] {string[]}   the Space Metadata object's `type` array,
+   *   for a typed Space such as an auxiliary one (`['AuxiliarySpace',
+   *   'Space']`). The server defaults it to `['Space']` and treats it as
+   *   immutable after creation
    * @returns {Promise<Space>}
    * @throws {NotSupportedError}   when the server has no Spaces Repository
    */
   async createSpace(
-    desc: { id?: string; name?: string; controller?: string } = {}
+    desc: {
+      id?: string
+      name?: string
+      controller?: string
+      type?: string[]
+    } = {}
   ): Promise<Space> {
     const controller = desc.controller ?? this.controllerDid
     const body = {
       controller,
       ...(desc.id !== undefined && { id: desc.id }),
-      ...(desc.name !== undefined && { name: desc.name })
+      ...(desc.name !== undefined && { name: desc.name }),
+      ...(desc.type !== undefined && { type: desc.type })
     }
     const response = await send(this.#context, {
       url: await this.#spacesUrl(),

@@ -430,7 +430,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setName(name: string): Promise<void> {
-    return patchCustom(this, { name })
+    return patchCustom(this, { name }, { create: true })
   }
 
   /**
@@ -441,7 +441,7 @@ export class Resource {
    * @returns {Promise<void>}
    */
   async setTags(tags: Record<string, string>): Promise<void> {
-    return patchCustom(this, { tags })
+    return patchCustom(this, { tags }, { create: true })
   }
 
   get #policyPath(): string {

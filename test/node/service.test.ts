@@ -473,6 +473,17 @@ describe('the Spaces Repository URL', () => {
     await was.createSpace({ name: 'Home' })
     expect(signed[0]?.url).toBe('https://repo.example/tenants/')
     expect(signed[0]?.method).toBe('POST')
+    expect(signed[0]?.json).not.toHaveProperty('type')
+
+    const typed = client({ serviceDescription: description })
+    await typed.was.createSpace({
+      name: 'Clients',
+      type: ['AuxiliarySpace', 'Space']
+    })
+    expect(typed.signed[0]?.json).toMatchObject({
+      name: 'Clients',
+      type: ['AuxiliarySpace', 'Space']
+    })
 
     const listing = client({
       data: { url: 'https://repo.example/tenants/', totalItems: 0, items: [] },

@@ -613,6 +613,21 @@ describe('collection.setName() / setTags()', () => {
     })
     expect(writes[1]?.headers?.['if-match']).toBe('"2"')
   })
+
+  it('refuses the write when the read carries no ETag validator', async () => {
+    // A Collection's Metadata object is the Collection itself, so a read with
+    // no ETag (e.g. a browser client whose CORS configuration hides the
+    // header) is a missing validator, not an unwritten record. It is refused
+    // before any write goes out rather than degrading to last-write-wins.
+    const { client, calls } = storageClient({
+      data: { id: 'c', type: ['Collection'], custom: {} },
+      etag: undefined
+    })
+    await expect(
+      client.space('s').collection('c').setName('New')
+    ).rejects.toBeInstanceOf(NotSupportedError)
+    expect(calls).toHaveLength(1)
+  })
 })
 
 describe('resource.setName() / setTags()', () => {
@@ -671,14 +686,33 @@ describe('resource.setName() / setTags()', () => {
     expect(calls[1]?.headers?.['if-match']).toBe('"meta-v1"')
   })
 
-  it('refuses the write when the read carries no ETag validator', async () => {
-    // A WAS server serves an ETag on every resource read; a read with none
-    // (e.g. a browser client whose CORS configuration hides the header)
-    // leaves the read-modify-write with nothing to pin `If-Match` to. It is
-    // refused before any write goes out rather than degrading to
-    // last-write-wins.
+  it('creates the metadata under If-None-Match when none has been written yet', async () => {
+    // A fresh Resource's `/meta` reads with no `meta` stamp and no ETag: the
+    // server mints the validator with the first metadata write. The first
+    // patch is therefore a guarded create, not an unconditional replace.
     const { client, calls } = storageClient({
-      data: { contentType: 'application/json', custom: {} },
+      data: { contentType: 'application/json', size: 7, custom: {} },
+      etag: undefined
+    })
+    await client.space('s').collection('c').resource('r').setName('New')
+    expect(calls[1]?.method).toBe('PUT')
+    expect(calls[1]?.json).toEqual({ custom: { name: 'New' } })
+    expect(calls[1]?.headers?.['if-none-match']).toBe('*')
+    expect(calls[1]?.headers?.['if-match']).toBeUndefined()
+  })
+
+  it('refuses the write when a written metadata read carries no ETag validator', async () => {
+    // A WAS server serves an ETag on every written `/meta` read; a read that
+    // carries the `meta` stamp but no validator (e.g. a browser client whose
+    // CORS configuration hides the header) leaves the read-modify-write with
+    // nothing to pin `If-Match` to. It is refused before any write goes out
+    // rather than degrading to last-write-wins.
+    const { client, calls } = storageClient({
+      data: {
+        contentType: 'application/json',
+        meta: { updatedAt: '2026-10-04T00:00:00Z', updatedAtCounter: 0 },
+        custom: {}
+      },
       etag: undefined
     })
     await expect(
@@ -694,8 +728,12 @@ describe('was.listSpaces()', () => {
       url: '/spaces/',
       totalItems: 2,
       items: [
-        { id: 's1', url: '/space/s1', name: 'Home' },
-        { id: 's2', url: '/space/s2' }
+        { id: 's1', url: '/space/s1/', name: 'Home', type: ['Space'] },
+        {
+          id: 's2',
+          url: '/space/s2/',
+          type: ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
+        }
       ]
     }
     const { client, calls } = storageClient({ data: listing })

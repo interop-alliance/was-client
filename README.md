@@ -272,6 +272,11 @@ no `spaces` URL, they throw `NotSupportedError` without sending anything.
 
 ```ts
 const space = await was.createSpace({ name: 'Home' }) // POST {spacesUrl}
+// A typed Space, e.g. an auxiliary one; `type` defaults to ['Space'].
+const aux = await was.createSpace({
+  name: 'Clients',
+  type: ['AuxiliarySpace', 'Space']
+})
 
 // Lazy handle to an existing space by id -- no I/O until a verb runs.
 const same = was.space(space.id)
@@ -505,7 +510,8 @@ it holds, without being granted anything extra. Anyone else gets a
 Three properties are easy to get wrong:
 
 - **Revocation is Space-scoped.** There is no global or cross-Space revocation;
-  submitting a capability rooted in another Space throws `ValidationError`.
+  submitting a capability rooted in another Space throws `NotFoundError`, the
+  same mask as any other denied revocation.
 - **It withdraws the capability, not a policy grant.** Access-control policies
   are permissive, so a `PublicCanRead` target stays world-readable after you
   revoke a capability naming it. What dies is the capability: on such a target
@@ -607,6 +613,8 @@ const meta = await resource.meta() // ResourceMetadata | null (null on a miss)
 await resource.setMeta({ custom: { name: 'Diploma', tags: { year: '2026' } } })
 
 // setName() / setTags() are read-modify-write sugar that preserve the other.
+// The write is pinned to the /meta ETag the read returned; on a resource whose
+// metadata has never been written (no ETag yet) it is a guarded create instead.
 await resource.setName('Renamed diploma') // keeps existing tags
 await resource.setTags({ status: 'verified' }) // keeps existing name
 ```

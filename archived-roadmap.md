@@ -3476,3 +3476,28 @@ policy read serves `updatedAt`, `updatedAtCounter` and `originId` with a
 four-segment `ETag`. A Collection or Resource policy write or delete appears in
 the `changes` feed as a `kind: 'policy'` document whose `id` is the policy's
 absolute URL. A consumer that skips unknown kinds already handles it.
+
+### WCL-121: Consume the storage-core `SpaceSummary.type` and test that `listSpaces()` surfaces it
+
+- status: done
+- done: 2026-10-04
+- priority: low
+- labels: list-spaces, auxiliary-spaces, dependencies
+- touches:
+  - was-teaching-server: shipped 2026-10-01 (every List Spaces item carries the
+    Space's `type`; auxiliary Spaces are listed instead of hidden)
+  - storage-core: `SpaceSummary` gains a required `type: string[]` (shipped
+    0.25.0 on 2026-10-01; this client depends on `^0.34.0`)
+- acceptance:
+  - [x] The `@interop/storage-core` dependency is bumped to the version whose
+        `SpaceSummary` carries `type`
+  - [x] A test asserts that each `listSpaces()` item carries a `type` array,
+        including an item for an auxiliary Space
+
+The server's List Spaces now lists every Space the signer is authorized for,
+auxiliary ones included, and puts each Space's `type` array on its item. There
+is no opt-in parameter. `listSpaces()` returns storage-core's `SpaceListing` and
+passes items through unchanged, so it needs no code change. It does need the
+storage-core release that types the new member, and a test so a regression in
+the pass-through is caught. The JSDoc and README already describe the new
+behavior.

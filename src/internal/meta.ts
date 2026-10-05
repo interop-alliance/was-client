@@ -191,27 +191,44 @@ export async function writeMeta(
  *
  * A handle whose metadata cannot be read at all is refused with
  * `NotFoundError` rather than patched onto an empty object, so a masked 404
- * cannot turn a rename into a create. A read that carried no validator is
- * refused by the compare-and-swap loop: the full-replacement write would go
- * out with no `If-Match` at all.
+ * cannot turn a rename into a create. A read that carries no `ETag`
+ * validator is refused by the compare-and-swap loop: the full-replacement
+ * write would go out with no `If-Match` at all.
+ *
+ * The one exception is opted into with `create`: a read with no `meta` stamp
+ * and no `ETag` is an unwritten Resource `/meta` (the server mints the
+ * validator with the first metadata write), so the first patch is a guarded
+ * create under `If-None-Match: *`. A Collection never opts in: its Metadata
+ * object is the Collection itself, so a validator-less read there is a
+ * missing header, not a missing record.
  *
  * @param handle {object}   the Collection or Resource handle to patch
  * @param patch {ResourceMetadataCustom}   the properties to merge over the
  *   current `custom`
- * @param operation {string}   what the caller is doing, for the exhaustion
- *   error (e.g. `Metadata update`)
+ * @param [options] {object}
+ * @param [options.operation] {string}   what the caller is doing, for the
+ *   exhaustion error (e.g. `Metadata update`)
+ * @param [options.create] {boolean}   treat a read with no `meta` stamp and
+ *   no `ETag` as an unwritten record and create it under `If-None-Match: *`
  * @returns {Promise<void>}
  */
 export async function patchCustom(
   handle: {
-    meta(): Promise<{ custom?: ResourceMetadataCustom; etag?: string } | null>
+    meta(): Promise<{
+      custom?: ResourceMetadataCustom
+      meta?: unknown
+      etag?: string
+    } | null>
     setMeta(
       meta: { custom?: ResourceMetadataCustom },
-      options: { ifMatch?: string }
+      options: { ifMatch?: string; ifNoneMatch?: boolean }
     ): Promise<{ etag?: string }>
   },
   patch: ResourceMetadataCustom,
-  operation = 'Metadata update'
+  {
+    operation = 'Metadata update',
+    create = false
+  }: { operation?: string; create?: boolean } = {}
 ): Promise<void> {
   await compareAndSwap<ResourceMetadataCustom>({
     store: {
@@ -224,16 +241,31 @@ export async function patchCustom(
               'visible with this capability (WAS returns 404 for both).'
           )
         }
+        if (
+          create &&
+          current.etag === undefined &&
+          current.meta === undefined
+        ) {
+          // No metadata record yet: the target exists, but nothing has been
+          // written to its `/meta`, so there is no validator to pin to and
+          // the patch is a guarded create instead.
+          return null
+        }
         return {
           value: current.custom ?? {},
           ...(current.etag !== undefined && { etag: current.etag })
         }
+      },
+      // Only reached after the `create` branch above returned `null`.
+      create: async custom => {
+        await handle.setMeta({ custom }, { ifNoneMatch: true })
       },
       replace: async (custom, { ifMatch }) => {
         await handle.setMeta({ custom }, { ifMatch })
       }
     },
     operation,
+    onAbsent: () => ({}),
     mutate: custom => ({ ...custom, ...patch })
   })
 }

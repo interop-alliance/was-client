@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 126
+nextAvailableId: 128
 
 Status as of 2026-08-12 (was-client 0.34.0). Converted on this date from the
 prior narrative gap-analysis roadmap (produced 2026-07-20 by comparing `spec.md`
@@ -413,6 +413,54 @@ label is kept across a metadata write. Sending it is harmless once the server
 ignores it, but the option invites a caller to believe a `/meta` write affects
 attribution. Filed from was-sync WS-25, which stopped the driver from passing
 it.
+
+### WCL-127: Replica registration API and the replication wire members
+
+- status: todo
+- priority: medium
+- labels: replication, spaces, storage-core, api
+- discovered-from: was-teaching-server WAS-176 (2026-10-04)
+- touches:
+  - was-client (README.md and ARCHITECTURE.md for the new handle, reserved ids,
+    and the `created` member)
+  - storage-core: 0.35.0 carries the types (`ReplicaRegistration`,
+    `ReplicaSummary`, `ReplicaStatus`, `ReplicaListing`, `ReplicaStallReason`,
+    `ProblemTypes.REPLICA_REFUSED`, `CollectionMetadata.created`) and the two
+    new reserved Collection ids. Nothing to file there
+  - was-react: unaffected unless it re-exports the Space Metadata type
+    (check when the client ships)
+  - freewallet: the registration flow consumes this API (FW-638)
+- acceptance:
+  - [ ] storage-core is bumped to 0.35.0, and the Space Metadata read surfaces
+        the `replicas` member (`[{ fromSpace, toSpace, role }]`) without
+        client-side shaping
+  - [ ] A registration API over `/space/:id/replicas`: create (`POST` of
+        `{ id, fromSpace, toSpace, capability, collections?, role }`), list
+        (the `{ url, totalItems, items }` listing), get, delete, and read of
+        the `status` sub-resource, all typed with the storage-core types
+  - [ ] A `replica-refused` (409) refusal surfaces as a typed error that
+        names the problem type, apart from `invalid-request-body` (400)
+  - [ ] The `status` read exposes `stall.reason` as `ReplicaStallReason`
+  - [ ] `Collection.meta()` surfaces the server-managed `created` stamp
+        (`{ updatedAt, updatedAtCounter, originId }`), and no write path sends
+        it
+  - [ ] `replicas` and `zcaps` are rejected client-side as Collection ids,
+        matching the reserved list in storage-core
+  - [ ] Optional: `Collection.changes()` can use the read-only GET form of the
+        changes query (`GET .../query?profile=changes&checkpoint=...&limit=...`)
+        so a caller holding a GET-only capability can read the feed
+  - [ ] Tests over each call, the 409 refusal, the reserved ids, and the
+        `created` member; CHANGELOG.md entry
+
+Context: the reference server now registers a replica of a Space, pulls from a
+peer, and applies what it pulls. The wire gained a `replicas` member on the
+Space Metadata object, a `created` stamp on the Collection Metadata object, the
+registration endpoints, and two reserved Collection ids. The client has no
+binding for any of them, so a wallet cannot register a replica or read its
+status through the client. The registration endpoints are controller-only,
+including the `GET` forms. The GET form of the changes query exists because a
+pull capability allows only GET and HEAD. This item waits on the spec text for
+the registration record, so names may still move before it is final.
 
 ## Whole-codebase review findings (2026-09-11)
 
@@ -1970,29 +2018,6 @@ repeated refresh failures.
 
 discovered-from: whole-codebase review, 2026-09-11.
 
-### WCL-121: Consume the storage-core `SpaceSummary.type` and test that `listSpaces()` surfaces it
-
-- status: todo
-- priority: low
-- labels: list-spaces, auxiliary-spaces, dependencies
-- touches:
-  - was-teaching-server: shipped 2026-10-01 (every List Spaces item carries the
-    Space's `type`; auxiliary Spaces are listed instead of hidden)
-  - storage-core: `SpaceSummary` gains a required `type: string[]`
-- acceptance:
-  - [ ] The `@interop/storage-core` dependency is bumped to the version whose
-        `SpaceSummary` carries `type`
-  - [ ] A test asserts that each `listSpaces()` item carries a `type` array,
-        including an item for an auxiliary Space
-
-The server's List Spaces now lists every Space the signer is authorized for,
-auxiliary ones included, and puts each Space's `type` array on its item. There
-is no opt-in parameter. `listSpaces()` returns storage-core's `SpaceListing` and
-passes items through unchanged, so it needs no code change. It does need the
-storage-core release that types the new member, and a test so a regression in
-the pass-through is caught. The JSDoc and README already describe the new
-behavior.
-
 ### WCL-124: Read a policy tombstone (`?include=deleted`)
 
 - status: todo
@@ -2014,6 +2039,43 @@ URL, so decide whether the read belongs on the handles (an `includeDeleted`
 option on `getPolicyWithEtag()`) or on a URL-taking helper the feed consumer can
 call directly. discovered-from: WCL-123.
 
+### WCL-126: Pin Collection annotation writes to the Collection `meta` stamp once the server serves one
+
+- status: draft
+- priority: low
+- labels: metadata, conditional-writes, storage-core
+- touches:
+  - storage-core: `CollectionMetadata` gains the `meta` stamp member (filed
+    there when the server lands it)
+- acceptance:
+  - [ ] `Collection.meta()` surfaces the served `meta` stamp through the
+        storage-core type, with no client-side shaping
+  - [ ] `patchCustom` applies the same absence test to both handles (no `meta`
+        stamp and no `ETag` means unwritten), and the `create` switch that keeps
+        the Collection off the create path is removed
+  - [ ] The "unwritten" decision lives in `readMeta` (or the handle's `meta()`),
+        not in `patchCustom`: the patch layer consumes an explicit signal
+        instead of inferring absence from two missing optional fields, and the
+        `meta?: unknown` member leaves `patchCustom`'s handle type
+  - [ ] A test covers a Collection read that carries the stamp but no `ETag`
+        (still refused) and one that carries neither (whatever the server then
+        means by it)
+
+was-teaching-server is adding a `meta` write stamp to the Collection Metadata
+object, the counterpart of `ResourceMetadata.meta`. Today the Collection object
+has no such member, so `patchCustom` cannot tell a Collection read with no
+`ETag` (a hidden header, or a non-versioning backend) from an unwritten record,
+and the Resource-only `create` option exists to keep `Collection.setName()` /
+`setTags()` from falling into the guarded Collection create. Once the stamp is
+on the wire and in storage-core, the two handles can share one rule and the
+option goes away. A 2026-10-04 review of the `create` option noted the deeper
+issue: the switch holds a per-handle-kind fact as a caller-set flag, enforced
+only by convention, and `patchCustom` infers "unwritten" by peeking at fields
+`readMeta` happens to produce. Whatever rule replaces the switch should be owned
+by the read layer. Blocked on the server and storage-core releases; decide then
+whether a Collection can be in an "exists but `/meta` unwritten" state at all,
+or whether the stamp only sharpens the refusal.
+
 ## Recorded decisions (kept so they are not re-litigated)
 
 - **Effective-policy resolution: intentionally out of scope.** `isPublic()` /
@@ -2031,11 +2093,13 @@ call directly. discovered-from: WCL-123.
 - **`revoke()` is not idempotent, deliberately.** Resubmitting a stored
   revocation is a 400. The server names it with its own problem type
   (`capability-already-revoked`, since 2026-09-09), which the client maps to
-  `AlreadyRevokedError`; a tampered, expired, or foreign-rooted capability stays
-  a plain `ValidationError`. The client still swallows none of them; a caller
-  who wants revoking twice to be a no-op catches `AlreadyRevokedError` alone,
-  rather than all of `ValidationError`. (Swallowing would make `revoke(garbage)`
-  resolve as though it had worked.)
+  `AlreadyRevokedError`; a tampered, expired, or foreign-rooted capability gets
+  the server's masked `NotFoundError` (since 2026-09-18 the chain is verified
+  only after the invocation is authorized, so a wrong-Space submission does not
+  reveal whether the Space exists). The client still swallows none of them; a
+  caller who wants revoking twice to be a no-op catches `AlreadyRevokedError`
+  alone. (Swallowing would make `revoke(garbage)` resolve as though it had
+  worked.)
 - **Revocation semantics, documented and not overstated.** Because policies are
   permissive, revoking a capability withdraws only what _that capability_
   granted: a `PublicCanRead` target stays publicly readable. And revocation is
