@@ -721,12 +721,13 @@ fourth, `WasSyncAuthError` (401, 403, or the masked 404), is opt-in under
 `mapAuthErrors` and reports revoked access. The port's `putContent` and
 `deleteContent` also stamp the `Key-Epoch` and `Writer-Id` headers, so the
 server records which key epoch a body was encrypted under and which writing
-agent produced the revision; `putMeta` carries `writerId` the same way as a
-top-level body member beside `custom`. Both are declare-or-clear: an omitted
-value clears whatever was stored, so a caller that wants to keep a prior
-`writerId` must resend it on every write. `writerId` is advisory attribution
-only -- a replica uses it to recognize its own writes echoed back. It is not
-part of the stamp order, and it is never an input to an authorization decision.
+agent produced the revision. Both headers are declare-or-clear: an omitted value
+clears whatever was stored, so a caller that wants to keep a prior `writerId`
+must resend it on every content write. `putMeta` carries no `writerId`: the
+label is a property of the content record alone, and a metadata write leaves it
+untouched. `writerId` is advisory attribution only -- a replica uses it to
+recognize its own writes echoed back. It is not part of the stamp order, and it
+is never an input to an authorization decision.
 
 Bypassing the codec is not bypassing the error mapper. Every failure the port
 catches goes through `mapError` first, so its signals carry the server's

@@ -594,7 +594,7 @@ describe('createWasSyncPort.putMeta', () => {
     expect(calls[0]!.json).toEqual({ custom: { name: 'Alice' } })
   })
 
-  it('sends writerId as a top-level member beside custom, and omits it when absent', async () => {
+  it('never writes a writerId member into the /meta body', async () => {
     const calls: RequestOptions[] = []
     const { was } = makeWas({
       onRequest: opts => {
@@ -604,30 +604,12 @@ describe('createWasSyncPort.putMeta', () => {
     })
     const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
 
-    await port.putMeta({
-      id: 'res-1',
-      custom: { name: 'Alice' },
-      writerId: 'writer-a'
-    })
-    expect(calls[0]!.json).toEqual({
-      custom: { name: 'Alice' },
-      writerId: 'writer-a'
-    })
-
     await port.putMeta({ id: 'res-1', custom: { name: 'Alice' } })
-    expect(calls[1]!.json).toEqual({ custom: { name: 'Alice' } })
-  })
+    expect(calls[0]!.json).toEqual({ custom: { name: 'Alice' } })
+    expect(calls[0]!.headers ?? {}).not.toHaveProperty('writer-id')
 
-  it('refuses an empty writerId before sending the request', async () => {
-    const { was, request } = makeWas({
-      onRequest: () => response(null)
-    })
-    const port = createWasSyncPort({ was, spaceId: SPACE, collectionId: COLL })
-
-    await expect(
-      port.putMeta({ id: 'res-1', writerId: '' })
-    ).rejects.toBeInstanceOf(ValidationError)
-    expect(request).not.toHaveBeenCalled()
+    await port.putMeta({ id: 'res-1' })
+    expect(calls[1]!.json).toEqual({})
   })
 })
 

@@ -3810,3 +3810,35 @@ status through the client. The registration endpoints are controller-only,
 including the `GET` forms. The GET form of the changes query exists because a
 pull capability allows only GET and HEAD. This item waits on the spec text for
 the registration record, so names may still move before it is final.
+
+### WCL-125: [M] Drop the `writerId` option from the sync port's `putMeta`
+
+- status: done (2026-10-05)
+- priority: medium
+- labels: sync, writer-id, was-96
+- touches:
+  - was-client (shipped 2026-10-05 for 0.93.0: ARCHITECTURE.md "writer
+    attribution" prose in the sync-port section, the `putMeta` JSDoc in
+    `src/sync/types.ts`, the `sync-port.test.ts` cases that sent `writerId` on a
+    `/meta` write)
+  - was-sync (already shipped: the driver stopped sending the member in WS-25;
+    its local port type already omits the option)
+  - unaffected: wallet-core (the engine issues no `/meta` write)
+- acceptance:
+  - [x] `putMeta` accepts no `writerId`; the port never writes a `writerId`
+        member into a `/meta` body
+  - [x] `putContent` and `deleteContent` keep the `Writer-Id` header and its
+        declare-or-clear behavior
+  - [x] ARCHITECTURE.md no longer says `putMeta` carries the label as a body
+        member
+  - [x] CHANGELOG.md entry (breaking for a caller that passed the option)
+
+Context: WAS-96's open point 2 moves `writerId` to the content record alone. The
+spec now says a server ignores a `writerId` member in the body of an Update
+Resource Metadata request, and the declare-or-clear rule for that request is
+withdrawn. `putMeta` still takes a `writerId` option and spreads it into the
+`/meta` body beside `custom`, and ARCHITECTURE.md describes that as the way the
+label is kept across a metadata write. Sending it is harmless once the server
+ignores it, but the option invites a caller to believe a `/meta` write affects
+attribution. Filed from was-sync WS-25, which stopped the driver from passing
+it.

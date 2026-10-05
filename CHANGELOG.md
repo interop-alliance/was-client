@@ -2,6 +2,14 @@
 
 ## 0.93.0 - TBD
 
+### Changed
+
+- BREAKING: the sync port's `putMeta` no longer accepts a `writerId` option and
+  never writes a `writerId` member into a `/meta` body. Writer attribution
+  belongs to the content record alone (the `Writer-Id` header on `putContent`
+  and `deleteContent`, still declare-or-clear); the spec now has a server ignore
+  the member on an Update Resource Metadata request.
+
 ### Added
 
 - `ResourceData` admits a `ReadableStream<Uint8Array>`. On an encrypted

@@ -40,7 +40,6 @@
 import type { WasClient } from '../WasClient.js'
 import type { HttpResponse } from '@interop/http-client'
 import {
-  assertWriterId,
   KEY_EPOCH_HEADER,
   readEtag,
   writeHeaders,
@@ -483,8 +482,7 @@ export function createWasSyncPort({
       }
     },
 
-    async putMeta({ id, custom, ifMatch, ifNoneMatch, writerId }) {
-      assertWriterId(writerId)
+    async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
       try {
         const response = await was.request({
           capability,
@@ -492,15 +490,12 @@ export function createWasSyncPort({
           method: 'PUT',
           // The `/meta` PUT fully replaces `custom`: a body omitting it writes
           // the CLEARED state (the server clears every property the body
-          // leaves out), which is how a metadata clear replicates. `writerId`
-          // rides as a top-level member beside `custom`, on the same
-          // declare-or-clear terms: an omitted value clears the stored label.
+          // leaves out), which is how a metadata clear replicates. The body
+          // never carries `writerId`: attribution lives on the content record
+          // alone, and the server ignores the member on a `/meta` write.
           // Byte-identical on the wire to the `{ custom: undefined }` this
           // used to send, since `JSON.stringify` drops an `undefined` member.
-          json: {
-            ...(custom !== undefined ? { custom } : {}),
-            ...(writerId !== undefined ? { writerId } : {})
-          },
+          json: custom !== undefined ? { custom } : {},
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
         // An ack with nothing in it (a `204` whose `ETag` did not reach the

@@ -209,13 +209,11 @@ export interface WasSyncPort {
    * The write fully
    * replaces `custom`, so omitting it writes the CLEARED state (the server
    * clears every property the body leaves out) -- that is how a metadata clear
-   * replicates. `writerId` declares the writing agent's attribution label as
-   * the request body's top-level `writerId` member; per the spec's
-   * declare-or-clear rule for a metadata write, omitting it clears any label
-   * already stored for this resource -- a metadata write is itself a
-   * revision, and on an encrypted collection it replaces the `custom`
-   * envelope wholesale, so keeping a previous writer's label would
-   * misattribute it. Returns the new metadata {@link WriteAck} (the `/meta`
+   * replicates. The write carries no `writerId`: attribution is a property of
+   * the content record, declared by `putContent` and `deleteContent` through
+   * the `Writer-Id` header, and a metadata write leaves the stored label
+   * untouched (the server ignores a `writerId` member in a `/meta` body).
+   * Returns the new metadata {@link WriteAck} (the `/meta`
    * record's stamp under `meta` when the server answered with a body), or
    * `undefined` when the response carried neither an `ETag` nor a body. Throws {@link WasSyncConflictError}
    * on `412`, and {@link WasSyncNotFoundError} on `404` (the resource is gone:
@@ -228,7 +226,6 @@ export interface WasSyncPort {
     custom?: Json
     ifMatch?: string
     ifNoneMatch?: boolean
-    writerId?: string
   }): Promise<WriteAck | undefined>
 
   /**
