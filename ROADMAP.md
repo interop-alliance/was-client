@@ -23,8 +23,6 @@ Ready:
 - WCL-56 [M] The write epoch goes stale with no signal on any write path
 - WCL-74 [M] `isEncryptedEnvelope` is a fail-open routing predicate, and its
   JSDoc says to use it that way
-- WCL-85 [M] `mapError` hardening -- prototype lookup, the unmapped 422, and
-  unvalidated server strings
 - WCL-96 [M] `resourceDescriptorStore.read()` reads a masked 404 as "no
   descriptor yet"
 - WCL-60 [L] `was.v` is taken from the unauthenticated descriptor, and
@@ -391,46 +389,6 @@ consumer acts on the invitation today and accepts a server-supplied plaintext
 body as a credential. Closing this needs the doc change plus the consumer edit,
 so the item is not done at the doc alone. discovered-from: whole-codebase
 review, 2026-09-11.
-
-### WCL-85: [M] `mapError` hardening -- prototype lookup, the unmapped 422, and unvalidated server strings
-
-- status: todo
-- priority: medium
-- labels: errors, security, correctness
-- acceptance:
-  - [ ] A problem `type` whose fragment names an `Object.prototype` member falls
-        through to the status switch, instead of returning a non-`Error` or
-        throwing out of `mapError`
-  - [ ] Every `ProblemTypes` key resolves to something other than the bare
-        `WasError`, including the 422 `encryption-scheme-mismatch`
-  - [ ] Dispatch keys on the full problem-type URI; the fragment is kept for
-        display only
-  - [ ] `WasSyncConflictError`, `WasSyncNotFoundError` and `WasSyncAuthError`
-        keep their default status when the caller passes `status: undefined`
-  - [ ] Server-supplied `title`, `details` entries and the joined `kids` are
-        length-capped and stripped of control characters
-  - [ ] A non-string `type` or `title` is normalized away rather than stored on
-        the error and stringified into its message
-
-Six defects in one function plus the three sync constructors, with one test file
-between them. `ERROR_CLASS_BY_KIND` is an object literal indexed by a
-server-controlled fragment, so `type: 'x#constructor'` returns a `String` object
-from `mapError` and `'x#toString'` throws a `TypeError` out of it -- both proven
-against a fresh build of `src/`. `send()` calls `mapError` from its catch block,
-so a routine 412 then surfaces as that `TypeError`. `noUncheckedIndexedAccess`
-hides this: the lookup types as possibly-undefined and the guard looks
-sufficient. Separately, 422 is absent from both the kind map and the status
-switch, so `encryption-scheme-mismatch` lands on a bare `WasError` while its
-storage-core siblings map to `ConflictError`. `problemFragment` discards the URI
-namespace, so any origin's JSON body can assert a kind; the threat model is weak
-(a server that controls the body can send the canonical URI anyway), so this
-part is hygiene. The three sync constructors disagree on spread order, which
-erases the 412 and 404 defaults when the caller passes an explicit `undefined`.
-And `type` and `title` are trusted as strings without the validation the
-adjacent `errors` field already gets. If the 422 fix mints a new error name
-rather than reusing `ValidationError` or `ConflictError`, that name is a public
-contract and needs the maintainer's sign-off first. discovered-from:
-whole-codebase review, 2026-09-11.
 
 ### WCL-96: [M] `resourceDescriptorStore.read()` reads a masked 404 as "no descriptor yet"
 

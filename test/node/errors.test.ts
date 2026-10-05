@@ -7,6 +7,7 @@
  * `application/problem+json` fields.
  */
 import { describe, it, expect } from 'vitest'
+import { ProblemTypes } from '@interop/storage-core'
 
 import {
   WasError,
@@ -22,9 +23,13 @@ import {
   PayloadTooLargeError,
   QuotaExceededError,
   WasServerError,
+  WasSyncAuthError,
+  WasSyncCheckpointError,
+  WasSyncConflictError,
+  WasSyncNotFoundError,
   httpStatus
 } from '../../src/index.js'
-import { mapError } from '../../src/errors.js'
+import { mapError, UnknownEpochError } from '../../src/errors.js'
 
 describe('mapError', () => {
   it('maps 400 to ValidationError', () => {
@@ -188,6 +193,65 @@ describe('mapError', () => {
       expect(mapped.name).toBe('NotFoundError')
     })
 
+    it('resolves every ProblemTypes URI through the type map alone', () => {
+      for (const type of Object.values(ProblemTypes)) {
+        const withoutStatus = mapError({ data: { type } })
+        const unmappedStatus = mapError({ status: 418, data: { type } })
+        expect(withoutStatus.constructor, type).not.toBe(WasError)
+        expect(unmappedStatus.constructor, type).not.toBe(WasError)
+      }
+    })
+
+    it('dispatches the immutable and replica 409 kinds to ConflictError', () => {
+      for (const kind of [
+        'replica-refused',
+        'revisions-immutable',
+        'resource-immutable'
+      ]) {
+        expect(
+          mapError({ status: 409, data: { type: typeUri(kind) } })
+        ).toBeInstanceOf(ConflictError)
+      }
+    })
+
+    it('dispatches encryption-scheme-mismatch (422) to ValidationError', () => {
+      expect(
+        mapError({
+          status: 422,
+          data: { type: typeUri('encryption-scheme-mismatch') }
+        })
+      ).toBeInstanceOf(ValidationError)
+    })
+
+    it('does not resolve inherited object properties as problem kinds', () => {
+      for (const kind of ['constructor', 'toString', '__proto__']) {
+        const mapped = mapError({
+          status: 412,
+          data: { type: `https://example/x#${kind}` }
+        })
+        expect(mapped).toBeInstanceOf(PreconditionFailedError)
+      }
+    })
+
+    it('ignores a known fragment under a foreign namespace', () => {
+      const mapped = mapError({
+        status: 400,
+        data: { type: 'https://evil.example/pws#quota-exceeded' }
+      })
+      expect(mapped).toBeInstanceOf(ValidationError)
+      expect(mapped).not.toBeInstanceOf(QuotaExceededError)
+    })
+
+    it('names the problem kind in the message when there is no title', () => {
+      const mapped = mapError({
+        status: 422,
+        data: { type: typeUri('encryption-scheme-mismatch') }
+      })
+      expect(mapped.message).toBe(
+        'WAS request failed (encryption-scheme-mismatch)'
+      )
+    })
+
     it('falls back to status when the type kind is unrecognized', () => {
       const mapped = mapError({
         status: 404,
@@ -293,6 +357,49 @@ describe('mapError', () => {
     expect(mapped.problems).toEqual([{ detail: 'id already exists' }])
   })
 
+  it('maps 422 to ValidationError', () => {
+    expect(mapError({ status: 422 })).toBeInstanceOf(ValidationError)
+  })
+
+  it('strips control characters from and caps the title', () => {
+    const mapped = mapError({
+      status: 400,
+      data: { title: 'bad\u0007 req\u001b[31muest' }
+    })
+    expect(mapped.title).toBe('bad req[31muest')
+    expect(mapped.message).toBe('bad req[31muest')
+
+    const long = mapError({ status: 400, data: { title: 'x'.repeat(5000) } })
+    expect(long.title).toHaveLength(1024)
+    expect(long.message).toHaveLength(1024)
+  })
+
+  it('strips control characters from and caps each detail and pointer', () => {
+    const mapped = mapError({
+      status: 400,
+      data: {
+        errors: [
+          { detail: 'a\u0007b\u009bc', pointer: '#/x\u001b' },
+          { detail: 'y'.repeat(5000) }
+        ]
+      }
+    })
+    expect(mapped.problems?.[0]).toEqual({ detail: 'abc', pointer: '#/x' })
+    expect(mapped.details?.[1]).toHaveLength(1024)
+  })
+
+  it('drops a non-string type or title', () => {
+    const mapped = mapError({
+      status: 400,
+      data: { type: 12345, title: { nested: true } }
+    })
+    expect(mapped).toBeInstanceOf(ValidationError)
+    expect(mapped.type).toBeUndefined()
+    expect(mapped.title).toBeUndefined()
+    expect(mapped.message).not.toContain('[object Object]')
+    expect(mapped.message).not.toContain('12345')
+  })
+
   it('preserves the original error as the cause', () => {
     const original = { status: 500, message: 'boom' }
     expect(mapError(original).cause).toBe(original)
@@ -311,5 +418,41 @@ describe('httpStatus', () => {
   it('returns undefined for a value carrying no status', () => {
     expect(httpStatus(new Error('boom'))).toBeUndefined()
     expect(httpStatus(undefined)).toBeUndefined()
+  })
+})
+
+describe('sync error constructors', () => {
+  it('keep their default status when passed `status: undefined`', () => {
+    expect(new WasSyncConflictError('m', { status: undefined }).status).toBe(
+      412
+    )
+    expect(new WasSyncNotFoundError('m', { status: undefined }).status).toBe(
+      404
+    )
+    expect(new WasSyncAuthError(403, { status: undefined }).status).toBe(403)
+    expect(new WasSyncCheckpointError('m', { status: undefined }).status).toBe(
+      400
+    )
+  })
+})
+
+describe('UnknownEpochError', () => {
+  it('strips control characters from the key ids in its message', () => {
+    const err = new UnknownEpochError({
+      collectionId: 'notes',
+      kids: ['did:key:z6Mk\u001b[2Jabc', 'did:key:z6Mk\u0007def']
+    })
+    expect(err.message).not.toContain('\u001b')
+    expect(err.message).not.toContain('\u0007')
+    expect(err.message).toContain('did:key:z6Mk[2Jabc, did:key:z6Mkdef')
+  })
+
+  it('caps the joined key ids in its message', () => {
+    const err = new UnknownEpochError({
+      collectionId: 'notes',
+      kids: ['k'.repeat(5000)]
+    })
+    expect(err.message).toContain(`[${'k'.repeat(1024)}]`)
+    expect(err.message).not.toContain('k'.repeat(1025))
   })
 })

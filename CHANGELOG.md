@@ -4,6 +4,22 @@
 
 ### Changed
 
+- `mapError` dispatches on the full problem-type URI through a `Map` instead of
+  a plain object keyed by the `#fragment`. A `type` such as `x#constructor` no
+  longer returns a non-`Error`, and `x#toString` no longer throws out of
+  `mapError`. Every `ProblemTypes` kind now resolves to a typed subclass:
+  `encryption-scheme-mismatch` (422), `unsupported-encryption-scheme` and
+  `invalid-cursor` map to `ValidationError`; `replica-refused`,
+  `revisions-immutable` and `resource-immutable` map to `ConflictError`. A bare
+  422 status also maps to `ValidationError`.
+- Server-supplied `title`, `type`, `errors[].detail` and `errors[].pointer` are
+  stripped of control characters and length-capped before they are stored on the
+  error; a non-string `type` or `title` is dropped instead of being stringified
+  into the message. The joined key ids in an `UnknownEpochError` message get the
+  same treatment.
+- `WasSyncConflictError`, `WasSyncNotFoundError`, `WasSyncAuthError` and
+  `WasSyncCheckpointError` keep their default `status` when the caller passes
+  `status: undefined`.
 - `agentsFromSecret` trims the secret before derivation and throws
   `ValidationError` on an empty or whitespace-only secret. Previously such
   secrets derived fixed, publicly computable identities. A secret with

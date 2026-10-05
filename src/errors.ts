@@ -5,7 +5,9 @@
  * Typed error hierarchy for the WAS client. A `WasError` base carries the
  * server's `application/problem+json` fields (`status` / `title` / `problems` /
  * `details` / `requestUrl`); `mapError()` translates a thrown ky/ezcap error into the
- * appropriate subclass.
+ * appropriate subclass. It dispatches on the full problem-type URI, then on
+ * the HTTP status, and strips control characters from and length-caps every
+ * server string it carries through.
  */
 import { ProblemTypes, type Problem } from '@interop/storage-core'
 
@@ -91,7 +93,8 @@ export class CapabilityExpiredError extends NotFoundError {
 }
 
 /**
- * The request was malformed or rejected as invalid (HTTP 400).
+ * The request was malformed or rejected as invalid (HTTP 400), or well-formed
+ * but unprocessable (HTTP 422, e.g. `encryption-scheme-mismatch`).
  */
 export class ValidationError extends WasError {
   override name = 'ValidationError'
@@ -158,7 +161,10 @@ export class IncompatibleServerError extends WasError {
  * A client-supplied id or backend conflicts with existing state (HTTP 409):
  * `id-conflict` (the id already exists), `reserved-id` (the id collides with a
  * reserved path segment), or `unsupported-backend` (the backend id is not in
- * the space's available list). The specific kind is on the `type` URI.
+ * the space's available list). Also the immutability and replica refusals:
+ * `encryption-immutable`, `encryption-history-log-governed`,
+ * `revisions-immutable`, `resource-immutable`, and `replica-refused`. The
+ * specific kind is on the `type` URI.
  */
 export class ConflictError extends WasError {
   override name = 'ConflictError'
@@ -292,7 +298,7 @@ export class WasSyncConflictError extends PreconditionFailedError {
     message = 'WAS conditional write precondition failed.',
     options: WasErrorOptions = {}
   ) {
-    super(message, { status: 412, ...options })
+    super(message, { ...options, status: options.status ?? 412 })
     this.name = 'WasSyncConflictError'
   }
 }
@@ -310,7 +316,7 @@ export class WasSyncNotFoundError extends NotFoundError {
     message = 'WAS resource not found.',
     options: WasErrorOptions = {}
   ) {
-    super(message, { status: 404, ...options })
+    super(message, { ...options, status: options.status ?? 404 })
     this.name = 'WasSyncNotFoundError'
   }
 }
@@ -354,7 +360,7 @@ export class WasSyncCheckpointError extends ValidationError {
     message = 'WAS changes checkpoint not issued by this server.',
     options: WasErrorOptions = {}
   ) {
-    super(message, { status: 400, ...options })
+    super(message, { ...options, status: options.status ?? 400 })
     this.name = 'WasSyncCheckpointError'
   }
 }
@@ -390,7 +396,8 @@ export class UnknownEpochError extends Error {
   }) {
     super(
       `Cannot decrypt a resource in collection "${collectionId}": its ` +
-        `envelope names recipient key id(s) [${kids.join(', ')}] whose key ` +
+        `envelope names recipient key id(s) ` +
+        `[${cleanText(kids.join(', '), MAX_KIDS_LENGTH)}] whose key ` +
         'epoch is not on the Collection Metadata object this reader holds. ' +
         'The cached descriptor may be stale (an epoch rotation emits no ' +
         'change-feed entry); re-read it and rebuild the cipher.'
@@ -408,7 +415,12 @@ interface HttpClientError {
   requestUrl?: string
   message?: string
   response?: { status?: number }
-  data?: { type?: string; title?: string; errors?: Array<{ detail?: string }> }
+  // Unvalidated server JSON: `type` and `title` may be any JSON value.
+  data?: {
+    type?: unknown
+    title?: unknown
+    errors?: Array<{ detail?: string }>
+  }
 }
 
 /**
@@ -420,10 +432,34 @@ type WasErrorClass = new (
   options?: WasErrorOptions
 ) => WasError
 
+// Client-side hygiene limits on server-supplied strings carried into errors.
+const MAX_TYPE_LENGTH = 2048
+// Applies to `title`, each `errors[].detail`, and each `errors[].pointer`.
+const MAX_TEXT_LENGTH = 1024
+// Applies to the joined recipient key ids in an `UnknownEpochError` message.
+const MAX_KIDS_LENGTH = 1024
+
+/**
+ * Normalizes an untrusted string for display: strips C0 and C1 control
+ * characters and truncates to `maxLength`.
+ *
+ * @param value {unknown}   the untrusted value
+ * @param maxLength {number}   the longest string to keep
+ * @returns {string | undefined}   `undefined` when `value` is not a string
+ */
+function cleanText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  return value.replace(/\p{Cc}/gu, '').slice(0, maxLength)
+}
+
 /**
  * Extracts the fragment of a problem-type URI (the part after `#`, e.g.
- * `quota-exceeded` from `https://w3id.org/pws#quota-exceeded`).
- * @param problemType {string}   a `ProblemTypes` URI
+ * `quota-exceeded` from `https://w3id.org/pws#quota-exceeded`). Used only to
+ * make a fallback message readable, never for dispatch.
+ *
+ * @param problemType {string}   a problem-type URI
  * @returns {string}
  */
 function problemFragment(problemType: string): string {
@@ -431,37 +467,43 @@ function problemFragment(problemType: string): string {
 }
 
 /**
- * Maps each problem-kind fragment to the `WasError` subclass that represents
- * it. Keyed off the shared `ProblemTypes` registry from `@interop/storage-core`
- * (via `problemFragment`) so the kinds stay in lockstep with the server instead
- * of being duplicated as literal strings here.
+ * Maps each problem-type URI to the `WasError` subclass that represents it.
+ * Keyed by the full URIs of the shared `ProblemTypes` registry from
+ * `@interop/storage-core`, so the kinds stay in lockstep with the server and a
+ * foreign namespace that reuses a fragment does not match. A `Map` (rather than
+ * a plain object) means a `type` such as `x#constructor` cannot resolve to an
+ * inherited property.
  */
-const ERROR_CLASS_BY_KIND: Record<string, WasErrorClass> = {
-  [problemFragment(ProblemTypes.NOT_FOUND)]: NotFoundError,
-  [problemFragment(ProblemTypes.CAPABILITY_REVOKED)]: CapabilityRevokedError,
-  [problemFragment(ProblemTypes.CAPABILITY_EXPIRED)]: CapabilityExpiredError,
-  [problemFragment(ProblemTypes.INVALID_ID)]: ValidationError,
-  [problemFragment(ProblemTypes.INVALID_REQUEST_BODY)]: ValidationError,
-  [problemFragment(ProblemTypes.MISSING_CONTENT_TYPE)]: ValidationError,
-  [problemFragment(ProblemTypes.INVALID_AUTHORIZATION_HEADER)]: ValidationError,
-  [problemFragment(ProblemTypes.CONTROLLER_MISMATCH)]: ValidationError,
-  [problemFragment(ProblemTypes.INVALID_IMPORT)]: ValidationError,
-  [problemFragment(ProblemTypes.CAPABILITY_ALREADY_REVOKED)]:
-    AlreadyRevokedError,
-  [problemFragment(ProblemTypes.MISSING_AUTHORIZATION)]: AuthRequiredError,
-  [problemFragment(ProblemTypes.RESERVED_ID)]: ConflictError,
-  [problemFragment(ProblemTypes.ID_CONFLICT)]: ConflictError,
-  [problemFragment(ProblemTypes.UNSUPPORTED_BACKEND)]: ConflictError,
-  [problemFragment(ProblemTypes.ENCRYPTION_IMMUTABLE)]: ConflictError,
-  [problemFragment(ProblemTypes.ENCRYPTION_HISTORY_LOG_GOVERNED)]:
-    ConflictError,
-  [problemFragment(ProblemTypes.PRECONDITION_FAILED)]: PreconditionFailedError,
-  [problemFragment(ProblemTypes.PAYLOAD_TOO_LARGE)]: PayloadTooLargeError,
-  [problemFragment(ProblemTypes.QUOTA_EXCEEDED)]: QuotaExceededError,
-  [problemFragment(ProblemTypes.UNSUPPORTED_OPERATION)]: NotImplementedError,
-  [problemFragment(ProblemTypes.STORAGE_ERROR)]: WasServerError,
-  [problemFragment(ProblemTypes.INTERNAL_ERROR)]: WasServerError
-}
+const ERROR_CLASS_BY_TYPE = new Map<string, WasErrorClass>([
+  [ProblemTypes.NOT_FOUND, NotFoundError],
+  [ProblemTypes.CAPABILITY_REVOKED, CapabilityRevokedError],
+  [ProblemTypes.CAPABILITY_EXPIRED, CapabilityExpiredError],
+  [ProblemTypes.INVALID_ID, ValidationError],
+  [ProblemTypes.INVALID_REQUEST_BODY, ValidationError],
+  [ProblemTypes.INVALID_CURSOR, ValidationError],
+  [ProblemTypes.MISSING_CONTENT_TYPE, ValidationError],
+  [ProblemTypes.INVALID_AUTHORIZATION_HEADER, ValidationError],
+  [ProblemTypes.CONTROLLER_MISMATCH, ValidationError],
+  [ProblemTypes.INVALID_IMPORT, ValidationError],
+  [ProblemTypes.UNSUPPORTED_ENCRYPTION_SCHEME, ValidationError],
+  [ProblemTypes.ENCRYPTION_SCHEME_MISMATCH, ValidationError],
+  [ProblemTypes.CAPABILITY_ALREADY_REVOKED, AlreadyRevokedError],
+  [ProblemTypes.MISSING_AUTHORIZATION, AuthRequiredError],
+  [ProblemTypes.RESERVED_ID, ConflictError],
+  [ProblemTypes.ID_CONFLICT, ConflictError],
+  [ProblemTypes.UNSUPPORTED_BACKEND, ConflictError],
+  [ProblemTypes.REPLICA_REFUSED, ConflictError],
+  [ProblemTypes.ENCRYPTION_IMMUTABLE, ConflictError],
+  [ProblemTypes.ENCRYPTION_HISTORY_LOG_GOVERNED, ConflictError],
+  [ProblemTypes.REVISIONS_IMMUTABLE, ConflictError],
+  [ProblemTypes.RESOURCE_IMMUTABLE, ConflictError],
+  [ProblemTypes.PRECONDITION_FAILED, PreconditionFailedError],
+  [ProblemTypes.PAYLOAD_TOO_LARGE, PayloadTooLargeError],
+  [ProblemTypes.QUOTA_EXCEEDED, QuotaExceededError],
+  [ProblemTypes.UNSUPPORTED_OPERATION, NotImplementedError],
+  [ProblemTypes.STORAGE_ERROR, WasServerError],
+  [ProblemTypes.INTERNAL_ERROR, WasServerError]
+])
 
 /**
  * Reads the HTTP status from a raw ky/ezcap error, checking both the flat
@@ -516,8 +558,10 @@ export function requireResourceId({
 /**
  * Translates a thrown ky/ezcap error into the appropriate `WasError` subclass,
  * carrying through the server's `problem+json` fields. Dispatches on the
- * problem-kind `type` URI when the server sent one, falling back to the HTTP
- * status otherwise.
+ * full problem-type URI in `type` when it is a known `ProblemTypes` entry,
+ * falling back to the HTTP status otherwise. Server strings (`type`, `title`,
+ * each problem's `detail` and `pointer`) are stripped of control characters
+ * and length-capped; a non-string `type` or `title` is dropped.
  *
  * @param err {unknown}   the caught error
  * @returns {WasError}
@@ -530,8 +574,8 @@ export function mapError(err: unknown): WasError {
   const httpError = (err ?? {}) as HttpClientError
   const status = httpStatus(httpError)
   const data = httpError.data
-  const type = data?.type
-  const title = data?.title
+  const type = cleanText(data?.type, MAX_TYPE_LENGTH)
+  const title = cleanText(data?.title, MAX_TEXT_LENGTH)
   // Guard with `Array.isArray`, not just optional chaining: a non-conformant
   // `problem+json` body with `errors` as a non-array (e.g. `"boom"`) is truthy,
   // so `?.map` would throw a `TypeError` and mask the real `WasError`. Each
@@ -547,15 +591,29 @@ export function mapError(err: unknown): WasError {
           detail?: unknown
           pointer?: unknown
         }
-        if (typeof detail !== 'string') {
+        const cleanDetail = cleanText(detail, MAX_TEXT_LENGTH)
+        if (cleanDetail === undefined) {
           return []
         }
-        return [{ detail, ...(typeof pointer === 'string' && { pointer }) }]
+        const cleanPointer = cleanText(pointer, MAX_TEXT_LENGTH)
+        return [
+          {
+            detail: cleanDetail,
+            ...(cleanPointer !== undefined && { pointer: cleanPointer })
+          }
+        ]
       })
     : undefined
   const details = problems?.map(problem => problem.detail)
   const requestUrl = httpError.requestUrl
-  const message = title ?? httpError.message ?? 'WAS request failed'
+  const fragment = type === undefined ? '' : problemFragment(type)
+  const baseMessage =
+    typeof httpError.message === 'string'
+      ? httpError.message
+      : 'WAS request failed'
+  // Without a server title, name the problem kind for readability.
+  const message =
+    title ?? (fragment === '' ? baseMessage : `${baseMessage} (${fragment})`)
   const options = {
     status,
     type,
@@ -566,10 +624,10 @@ export function mapError(err: unknown): WasError {
     cause: err
   }
 
-  // Dispatch on the problem-kind anchor when the server sent one, falling
-  // through to the status-based switch for an unrecognized or absent kind.
-  const kind = typeof type === 'string' ? problemFragment(type) : undefined
-  const ErrorClass = kind === undefined ? undefined : ERROR_CLASS_BY_KIND[kind]
+  // Dispatch on the full problem-type URI when the server sent a known one,
+  // falling through to the status-based switch otherwise.
+  const ErrorClass =
+    type === undefined ? undefined : ERROR_CLASS_BY_TYPE.get(type)
   if (ErrorClass) {
     return new ErrorClass(message, options)
   }
@@ -583,6 +641,7 @@ export function mapError(err: unknown): WasError {
     case 404:
       return new NotFoundError(message, options)
     case 415:
+    case 422:
       return new ValidationError(message, options)
     case 409:
       return new ConflictError(message, options)

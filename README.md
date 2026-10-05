@@ -1303,6 +1303,7 @@ not exist". Write/delete methods throw a typed error instead.
 | 400    | `ValidationError`      | `ValidationError`      |
 | 401    | `AuthRequiredError`    | `AuthRequiredError`    |
 | 409    | `ConflictError`        | `ConflictError`        |
+| 422    | `ValidationError`      | `ValidationError`      |
 | 413    | `PayloadTooLargeError` | `PayloadTooLargeError` |
 | 501    | `NotImplementedError`  | `NotImplementedError`  |
 | 507    | `QuotaExceededError`   | `QuotaExceededError`   |

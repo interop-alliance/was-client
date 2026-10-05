@@ -3646,34 +3646,33 @@ the first verified fetch overwrites it.
 - labels: identity, breaking, key-derivation
 - touches:
   - was-client: `src/identity/agents.ts` (the constant, the module doc's
-    "load-bearing typo" paragraph), `test/node/identity.test.ts`, CHANGELOG
-    (a breaking release)
-  - wallet-core: WC-277 (ARCHITECTURE.md's two mentions, its identity test,
-    the dependency bump)
-  - freewallet: FW-653 (four unit tests spelling the literal, three `_spec`
-    docs calling the typo frozen, the dependency bump)
+    "load-bearing typo" paragraph), `test/node/identity.test.ts`, CHANGELOG (a
+    breaking release)
+  - wallet-core: WC-277 (ARCHITECTURE.md's two mentions, its identity test, the
+    dependency bump)
+  - freewallet: FW-653 (four unit tests spelling the literal, three `_spec` docs
+    calling the typo frozen, the dependency bump)
   - dcw: DCW-91 (the dependency bump; its test profiles are re-created)
-  - encrypted-collections-spec: ECS-16 prints `'bootstrap-key'` with no
-    "sic" (amended in place 2026-10-05)
+  - encrypted-collections-spec: ECS-16 prints `'bootstrap-key'` with no "sic"
+    (amended in place 2026-10-05)
   - was-react: dependency bump only; `walletCoreCounterpart.test.ts` derives
     through the constant and spells no literal
 - acceptance:
-  - [x] `BOOTSTRAP_KEY_NAME` is `'bootstrap-key'`, and the module doc
-        describes the pair as pinned derivation inputs without the
-        never-fixable claim
+  - [x] `BOOTSTRAP_KEY_NAME` is `'bootstrap-key'`, and the module doc describes
+        the pair as pinned derivation inputs without the never-fixable claim
   - [x] `test/node/identity.test.ts` pins the corrected value
-  - [x] CHANGELOG records the rename as breaking: every did:key derived
-        from a client seed, and so every existing account's data identity,
-        changes; no migration is provided
+  - [x] CHANGELOG records the rename as breaking: every did:key derived from a
+        client seed, and so every existing account's data identity, changes; no
+        migration is provided
 
 The key name enters `CapabilityAgent.fromSeed` as the HMAC message over the
 32-byte seed, so it decides the Ed25519 key and the did:key of every wallet
 client and of the FW-478 pairwise connection key. The typo was written as
-permanent in the module doc, wallet-core's ARCHITECTURE.md, and three
-freewallet planning docs, on the theory that fixing it strands existing
-accounts. Nothing deployed holds accounts worth carrying, so the fix is a
-rename and a dependency bump in each consumer, taken before FW-478 binds the
-name a second time (its N1 sign-off, 2026-10-05).
+permanent in the module doc, wallet-core's ARCHITECTURE.md, and three freewallet
+planning docs, on the theory that fixing it strands existing accounts. Nothing
+deployed holds accounts worth carrying, so the fix is a rename and a dependency
+bump in each consumer, taken before FW-478 binds the name a second time (its N1
+sign-off, 2026-10-05).
 
 ### WCL-77: [M] `agentsFromSecret` accepts an empty secret and derives a well-known identity
 
@@ -3708,3 +3707,43 @@ any minimum length applies are maintainer decisions, because they permanently
 partition who can derive which account; ask before coding beyond the empty case.
 
 discovered-from: whole-codebase review, 2026-09-11.
+
+### WCL-85: [M] `mapError` hardening -- prototype lookup, the unmapped 422, and unvalidated server strings
+
+- status: done (2026-10-05)
+- priority: medium
+- labels: errors, security, correctness
+- acceptance:
+  - [x] A problem `type` whose fragment names an `Object.prototype` member falls
+        through to the status switch, instead of returning a non-`Error` or
+        throwing out of `mapError`
+  - [x] Every `ProblemTypes` key resolves to something other than the bare
+        `WasError`, including the 422 `encryption-scheme-mismatch`
+  - [x] Dispatch keys on the full problem-type URI; the fragment is kept for
+        display only
+  - [x] `WasSyncConflictError`, `WasSyncNotFoundError` and `WasSyncAuthError`
+        keep their default status when the caller passes `status: undefined`
+  - [x] Server-supplied `title`, `details` entries and the joined `kids` are
+        length-capped and stripped of control characters
+  - [x] A non-string `type` or `title` is normalized away rather than stored on
+        the error and stringified into its message
+
+Six defects in one function plus the three sync constructors, with one test file
+between them. `ERROR_CLASS_BY_KIND` is an object literal indexed by a
+server-controlled fragment, so `type: 'x#constructor'` returns a `String` object
+from `mapError` and `'x#toString'` throws a `TypeError` out of it -- both proven
+against a fresh build of `src/`. `send()` calls `mapError` from its catch block,
+so a routine 412 then surfaces as that `TypeError`. `noUncheckedIndexedAccess`
+hides this: the lookup types as possibly-undefined and the guard looks
+sufficient. Separately, 422 is absent from both the kind map and the status
+switch, so `encryption-scheme-mismatch` lands on a bare `WasError` while its
+storage-core siblings map to `ConflictError`. `problemFragment` discards the URI
+namespace, so any origin's JSON body can assert a kind; the threat model is weak
+(a server that controls the body can send the canonical URI anyway), so this
+part is hygiene. The three sync constructors disagree on spread order, which
+erases the 412 and 404 defaults when the caller passes an explicit `undefined`.
+And `type` and `title` are trusted as strings without the validation the
+adjacent `errors` field already gets. If the 422 fix mints a new error name
+rather than reusing `ValidationError` or `ConflictError`, that name is a public
+contract and needs the maintainer's sign-off first. discovered-from:
+whole-codebase review, 2026-09-11.
