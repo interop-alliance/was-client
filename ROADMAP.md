@@ -21,8 +21,6 @@ Ready:
 - WCL-55 [M] Stale and foreign `indexed` entries are carried forward into the
   client's next write
 - WCL-56 [M] The write epoch goes stale with no signal on any write path
-- WCL-74 [M] `isEncryptedEnvelope` is a fail-open routing predicate, and its
-  JSDoc says to use it that way
 - WCL-96 [M] `resourceDescriptorStore.read()` reads a masked 404 as "no
   descriptor yet"
 - WCL-60 [L] `was.v` is taken from the unauthenticated descriptor, and
@@ -360,33 +358,6 @@ stored envelopes" constrains the fix: already-stored ciphertext stays where it
 is, so this is about the next write and about stating the window honestly.
 
 discovered-from: whole-codebase review, 2026-09-11.
-
-### WCL-74: [M] `isEncryptedEnvelope` is a fail-open routing predicate, and its JSDoc says to use it that way
-
-- status: todo
-- priority: medium
-- labels: sync, encryption, fail-closed
-- touches:
-  - freewallet: `src/stores/remoteDirectStore.ts` returns a plaintext body as a
-    credential when the predicate says "not an envelope", with no decrypt and no
-    binding check
-- acceptance:
-  - [ ] The JSDoc on `isEncryptedEnvelope` no longer endorses plaintext
-        tolerance as a read-path default, and states that the predicate does not
-        decide whether to decrypt
-  - [ ] A collection whose descriptor declares encryption refuses a plaintext
-        row on read, matching `EdvCodec.decode`'s `#assertEnvelope(doc, 'read')`
-  - [ ] Any remaining legacy-row tolerance is an explicit per-call opt-in on a
-        migration path, not the default branch
-
-The predicate at `src/sync/envelope.ts:19-26` is correct on its own. Its doc
-comment is the defect: it says the predicate lets read paths stay tolerant of
-legacy plaintext rows written before a collection declared encryption. That
-inverts the codec's own rule, which refuses a body with no `jwe` on read. One
-consumer acts on the invitation today and accepts a server-supplied plaintext
-body as a credential. Closing this needs the doc change plus the consumer edit,
-so the item is not done at the doc alone. discovered-from: whole-codebase
-review, 2026-09-11.
 
 ### WCL-96: [M] `resourceDescriptorStore.read()` reads a masked 404 as "no descriptor yet"
 

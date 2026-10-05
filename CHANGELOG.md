@@ -1,5 +1,15 @@
 # @interop/was-client Changelog
 
+## 0.93.1 - TBD
+
+### Changed
+
+- The `isEncryptedEnvelope` JSDoc no longer presents plaintext tolerance as a
+  read-path default. It now states that the predicate is a shape test, that an
+  encrypted collection refuses a non-envelope body on read (as `EdvCodec.decode`
+  already does), and that legacy-row tolerance belongs on an explicit migration
+  path only.
+
 ## 0.93.0 - 2026-10-05
 
 ### Changed
