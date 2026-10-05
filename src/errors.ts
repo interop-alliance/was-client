@@ -266,11 +266,13 @@ export class EncryptOnlyCipherError extends EncryptionError {
  * declares a governing log (it carries `history`), but the source that served
  * it does not verify that log (it does not declare `verifiesHistory`). The
  * served descriptor is a non-authoritative projection. Adopting it unverified
- * would let a host seal every later write to an epoch it minted. Recover by
- * acquiring through a log-governed source, such as wallet-core's
- * `logGovernedDescriptorSource`. Raised client-side, before the descriptor is
- * cached, so it carries no HTTP status. A subtype of {@link EncryptionError},
- * so existing `catch (EncryptionError)` fail-closed handling still catches it.
+ * would let a host seal every later write to an epoch it minted. Also raised
+ * under `requireGoverned` for any source that does not declare
+ * `verifiesHistory`, before the source is asked. Recover by acquiring through
+ * a log-governed source, such as wallet-core's `logGovernedDescriptorSource`.
+ * Raised client-side, before anything is cached, so it carries no HTTP status.
+ * A subtype of {@link EncryptionError}, so existing `catch (EncryptionError)`
+ * fail-closed handling still catches it.
  */
 export class UnverifiedDescriptorError extends EncryptionError {
   override name = 'UnverifiedDescriptorError'

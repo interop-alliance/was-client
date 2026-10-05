@@ -487,13 +487,22 @@ a security signal, not an outage: `@interop/vh-resource-log`'s
 `rollback` as the one carve-out. A served descriptor that carries `history` is a
 non-authoritative projection of its governing log, so acquisition adopts one
 only from a source that declares `verifiesHistory: true` and refuses it
-otherwise with `UnverifiedDescriptorError`, before the cache. An epoch rotation
-emits no Resource entry in the change feed, only a `collection-metadata` or
-`log` entry the sync port skips, so a cipher built from a cached descriptor can
-meet envelopes under an unseen epoch; the remedy is one re-read plus a cipher
-rebuild plus one retry, guarded to once per collection per session so a
-genuinely foreign envelope cannot drive a refetch loop.
-`DescriptorRefreshPolicy` is that guard for a host that scans rows, and
+otherwise with `UnverifiedDescriptorError`, before the cache. A hostile host can
+strip `history` instead, and the result looks like a point-state descriptor. The
+`requireGoverned` option closes this gap. With it set, a source that does not
+declare `verifiesHistory` is refused with `UnverifiedDescriptorError` before it
+is asked. A verifying source's descriptor is adopted and cached with or without
+`history`. A verified log head is the governed descriptor by construction, and
+`history` is a member of the server's projection only, so its presence is not
+what the policy checks. The cache paths (no source, a fetch that threw, an empty
+description) serve the cache as before. So a cache entry written through a plain
+source while the policy was off is served there until the first verified fetch
+overwrites it. An epoch rotation emits no Resource entry in the change feed,
+only a `collection-metadata` or `log` entry the sync port skips, so a cipher
+built from a cached descriptor can meet envelopes under an unseen epoch; the
+remedy is one re-read plus a cipher rebuild plus one retry, guarded to once per
+collection per session so a genuinely foreign envelope cannot drive a refetch
+loop. `DescriptorRefreshPolicy` is that guard for a host that scans rows, and
 `createRefreshingEdvDocCipher` binds `createEdvDocCipher` to both for a host
 whose decrypt seam is the cipher itself. The two no-key signals are what the
 policy dispatches on: only `UnknownEpochError` drives a refresh, and

@@ -87,14 +87,20 @@ function memoryCache(): EncryptionDescriptorCache & {
 /**
  * An `EncryptionDescriptorSource` with fetch counting, served from a mutable
  * per-collection map; a collection id in `failing` throws instead.
+ *
+ * @param [options.verifiesHistory] {true}   declare the source verifying,
+ *   as a log-governed source would
  */
-function memorySource(): EncryptionDescriptorSource & {
+function memorySource({
+  verifiesHistory
+}: { verifiesHistory?: true } = {}): EncryptionDescriptorSource & {
   fetches: number
   failing: Set<string>
   _set(collectionId: string, descriptor: CollectionEncryption | undefined): void
 } {
   const descriptors = new Map<string, CollectionEncryption | undefined>()
   return {
+    verifiesHistory,
     fetches: 0,
     failing: new Set<string>(),
     async collectionEncryption({ collectionId }) {
@@ -405,15 +411,127 @@ describe('acquireDescriptor', () => {
   it('resolves a governed descriptor unchanged from a source that declares verifiesHistory', async () => {
     const cache = memoryCache()
     const descriptor = governedDescriptor()
-    const source: EncryptionDescriptorSource = {
-      verifiesHistory: true,
-      collectionEncryption: async () => structuredClone(descriptor)
-    }
+    const source = memorySource({ verifiesHistory: true })
+    source._set(COLLECTION_ID, descriptor)
 
     const acquired = await acquireDescriptor({
       source,
       cache,
       collectionId: COLLECTION_ID
+    })
+    expect(acquired).toEqual(descriptor)
+    expect(cache._get(COLLECTION_ID)).toEqual(descriptor)
+  })
+})
+
+describe('acquireDescriptor with requireGoverned', () => {
+  it('refuses a plain source before it is asked, so a host that strips history and mints its own epoch is never fetched or cached', async () => {
+    const source = memorySource()
+    const cache = memoryCache()
+    // The governed projection with `history` dropped and the epoch replaced
+    // by one the host holds the key for.
+    const { history: _stripped, ...stripped } = governedDescriptor()
+    const hostEpoch = 'did:key:z6LShostMinted'
+    source._set(COLLECTION_ID, {
+      ...stripped,
+      currentEpoch: hostEpoch,
+      epochs: [{ id: hostEpoch, recipients: [] }]
+    })
+
+    const acquiring = acquireDescriptor({
+      source,
+      cache,
+      collectionId: COLLECTION_ID,
+      requireGoverned: true
+    })
+    await expect(acquiring).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+    expect(source.fetches).toBe(0)
+    expect(cache.writes).toBe(0)
+    expect(cache._get(COLLECTION_ID)).toBeUndefined()
+  })
+
+  it('does not let a plain source fall back to the cache', async () => {
+    const source = memorySource()
+    source.failing.add(COLLECTION_ID)
+    const cache = memoryCache()
+    cache._set(COLLECTION_ID, governedDescriptor())
+
+    await expect(
+      acquireDescriptor({
+        source,
+        cache,
+        collectionId: COLLECTION_ID,
+        requireGoverned: true
+      })
+    ).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+    expect(source.fetches).toBe(0)
+  })
+
+  it("adopts and caches a verifying source's descriptor with or without history", async () => {
+    // The realistic shape is the first: a verifying source resolves the
+    // governing log's verified head, whose entry state carries no `history`.
+    for (const descriptor of [sampleDescriptor(), governedDescriptor()]) {
+      const source = memorySource({ verifiesHistory: true })
+      source._set(COLLECTION_ID, descriptor)
+      const cache = memoryCache()
+      const acquired = await acquireDescriptor({
+        source,
+        cache,
+        collectionId: COLLECTION_ID,
+        requireGoverned: true
+      })
+      expect(acquired).toEqual(descriptor)
+      expect(source.fetches).toBe(1)
+      expect(cache._get(COLLECTION_ID)).toEqual(descriptor)
+    }
+  })
+
+  it('serves the cache on the cache-only and fallback paths', async () => {
+    const failing = memorySource({ verifiesHistory: true })
+    failing.failing.add(COLLECTION_ID)
+    const sources = [
+      undefined,
+      failing,
+      memorySource({ verifiesHistory: true })
+    ]
+    for (const source of sources) {
+      const descriptor = sampleDescriptor()
+      const cache = memoryCache()
+      cache._set(COLLECTION_ID, descriptor)
+      const acquired = await acquireDescriptor({
+        source,
+        cache,
+        collectionId: COLLECTION_ID,
+        requireGoverned: true
+      })
+      expect(acquired).toEqual(descriptor)
+      expect(cache.writes).toBe(0)
+    }
+  })
+
+  it('resolves undefined when nothing is fetched or cached', async () => {
+    for (const source of [undefined, memorySource({ verifiesHistory: true })]) {
+      const acquired = await acquireDescriptor({
+        source,
+        cache: memoryCache(),
+        collectionId: COLLECTION_ID,
+        requireGoverned: true
+      })
+      expect(acquired).toBeUndefined()
+    }
+  })
+
+  it('keeps point-state descriptors from a plain source working when false', async () => {
+    const source = memorySource()
+    const cache = memoryCache()
+    const descriptor = sampleDescriptor()
+    source._set(COLLECTION_ID, descriptor)
+
+    const acquired = await acquireDescriptor({
+      source,
+      cache,
+      collectionId: COLLECTION_ID,
+      requireGoverned: false
     })
     expect(acquired).toEqual(descriptor)
     expect(cache._get(COLLECTION_ID)).toEqual(descriptor)
@@ -439,6 +557,20 @@ describe('acquireDescriptors', () => {
       'wallet-activity'
     ])
     expect(source.fetches).toBe(3)
+  })
+
+  it('forwards requireGoverned to each acquisition', async () => {
+    const source = memorySource()
+    source._set('contacts', sampleDescriptor())
+
+    await expect(
+      acquireDescriptors({
+        source,
+        cache: memoryCache(),
+        collectionIds: ['contacts'],
+        requireGoverned: true
+      })
+    ).rejects.toBeInstanceOf(UnverifiedDescriptorError)
   })
 })
 
@@ -529,6 +661,42 @@ describe('createRefreshingEdvDocCipher', () => {
         cache: memoryCache()
       })
     ).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+  })
+
+  it('forwards requireGoverned, refusing a plain source', async () => {
+    const reader = await makeReader()
+    const source = memorySource()
+    source._set(COLLECTION_ID, sampleDescriptor())
+
+    await expect(
+      createRefreshingEdvDocCipher({
+        ...reader,
+        collectionId: COLLECTION_ID,
+        source,
+        cache: memoryCache(),
+        requireGoverned: true
+      })
+    ).rejects.toBeInstanceOf(UnverifiedDescriptorError)
+  })
+
+  it('builds under requireGoverned from a verifying source whose descriptor lacks history', async () => {
+    const owner = await makeReader()
+    const { descriptor2 } = await mintRotatedDescriptors(owner)
+    const cache = memoryCache()
+    const source = memorySource({ verifiesHistory: true })
+    source._set(COLLECTION_ID, descriptor2)
+
+    const cipher = await createRefreshingEdvDocCipher({
+      ...owner,
+      collectionId: COLLECTION_ID,
+      source,
+      cache,
+      requireGoverned: true
+    })
+    const { id, envelope, epoch } = await cipher.encrypt({ data: { n: 1 } })
+    expect(epoch).toBe(descriptor2.currentEpoch)
+    expect(await cipher.decrypt({ id, envelope })).toEqual({ n: 1 })
+    expect(cache._get(COLLECTION_ID)).toEqual(descriptor2)
   })
 
   it('refuses to build fail-closed when no descriptor resolves anywhere', async () => {

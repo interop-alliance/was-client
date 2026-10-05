@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 129
+nextAvailableId: 130
 
 <!-- roadmap-order:index:start -->
 
@@ -16,7 +16,6 @@ Ready:
 
 - WCL-44 [H] Chunked reads never verify a chunk against its parent document
   (cross-document chunk splice)
-- WCL-118 [H] A host can downgrade a governed collection by omitting `history`
 - WCL-52 [M] The envelope `sequence` is unauthenticated and never validated on
   read
 - WCL-55 [M] Stale and foreign `indexed` entries are carried forward into the
@@ -252,66 +251,6 @@ decision only if a new header member is added instead of reading the existing
 one; that choice needs the maintainer's byte-level sign-off before it is coded.
 
 discovered-from: whole-codebase review, 2026-09-11.
-
-### WCL-118: [H] A host can downgrade a governed collection by omitting `history`
-
-- status: todo
-- priority: high
-- labels: encryption, log, integrity, security, fail-closed
-- touches:
-  - encrypted-collections spec: a security consideration that a reader without a
-    require-governed policy is open to the `history`-stripping downgrade;
-    point-state descriptors stay a conforming mode
-  - wallet-core, freewallet, was-react: the wallet stack turns `requireGoverned`
-    on for every `edv` collection it reads
-- acceptance:
-  - [ ] `acquireDescriptor` (and `createRefreshingEdvDocCipher`) take a
-        `requireGoverned` option; when set, an `edv` descriptor that lacks
-        `history` is refused, typed, and not cached
-  - [ ] With `requireGoverned` set, a plain source cannot satisfy acquisition at
-        all (WCL-47's `verifiesHistory` refusal still applies)
-  - [ ] A test shows a hostile host that strips `history` and mints its own
-        epoch is refused
-  - [ ] Point-state descriptors keep working when `requireGoverned` is unset
-
-WCL-47's refusal only catches a host that honestly includes `history` in the
-served projection. A hostile host can drop `history` and serve an epoch it
-minted. The descriptor then looks client-written, so a plain source resolves it
-and acquisition adopts it. The attack is the same one WCL-47 describes: the
-epoch id is the X25519 public key, so every later write is sealed to the host.
-
-A verifying source already resists the strip. `logGovernedDescriptorSource`
-reads `meta/log` directly and never the Description, so the host would have to
-hide or forge the log itself. A held pin turns a missing log into a `rollback`,
-a forged log fails verification, and first contact with no log fails closed. The
-exposure is a reader on a plain source: was-react's `remoteDescriptorSource`
-(WR-52), freewallet's no-logs fallback in `#readGovernedDescriptor` (FW-511),
-and any app or agent that does not know a collection is governed. A plain reader
-cannot tell a stripped descriptor from an honest point-state one, because ECS
-makes `history` OPTIONAL and point-state is a conforming mode.
-
-Decision (2026-09-27): a client-side `requireGoverned` policy, not a spec
-mandate. Options considered:
-
-- Verifying-source discipline only (close FW-511 and WR-52). Cheapest, but a
-  reader that does not know a collection is governed stays exposed.
-- Pin-aware acquisition (refuse when a `meta/log` pin is held but `history` is
-  absent). Uses existing state, but does not cover first contact.
-- A governed marker in the descriptor cache. Changes a stored record and does
-  not cover first contact.
-- The expectation carried in the share or connect payload. Covers first contact
-  for a grantee, but adds a permanent wire field.
-- Every `edv` collection log-governed, in the spec. Closes the attack outright,
-  but makes `governed-history-logs` mandatory for every WAS server that hosts
-  encrypted collections and removes the point-state mode for general WAS
-  implementers.
-
-`requireGoverned` gives the wallet stack the same guarantee as the spec mandate,
-since it always sets the policy, while general WAS clients and servers keep
-point-state descriptors. The residual risk is a generic reader that leaves the
-policy off, and the ECS security consideration records it. Mandatory governance
-makes descriptor reads cost in proportion to each log's length; see WCL-119.
-discovered-from: WCL-47.
 
 ### WCL-52: [M] The envelope `sequence` is unauthenticated and never validated on read
 

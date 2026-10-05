@@ -1,5 +1,19 @@
 # @interop/was-client Changelog
 
+## 0.91.0 - TBD
+
+### Added
+
+- A `requireGoverned` option on `acquireDescriptor`, `acquireDescriptors`, and
+  `createRefreshingEdvDocCipher`. When set, a descriptor is adopted only through
+  a source that declares `verifiesHistory`. A plain source is refused up front
+  with `UnverifiedDescriptorError`. This closes the downgrade where a host
+  strips `history` and serves an epoch it minted.
+
+### Changed
+
+- `UnverifiedDescriptorError` also covers the `requireGoverned` refusal.
+
 ## 0.90.2 - 2026-10-04
 
 ### Added

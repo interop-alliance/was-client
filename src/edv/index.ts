@@ -47,7 +47,9 @@
  *   encrypted one whose epoch[0] install has not landed -- which a caller that
  *   has declared the collection encrypted must refuse fail-closed. A
  *   log-governed source's refusal classes rethrow instead of falling back
- *   (except a continuity rollback, which is reconcilable divergence).
+ *   (except a continuity rollback, which is reconcilable divergence). With
+ *   `requireGoverned` set, a source that does not declare `verifiesHistory`
+ *   is refused up front with `UnverifiedDescriptorError`.
  * - `DescriptorRefreshPolicy` -- the once-per-collection-per-session
  *   unknown-epoch refresh guard, plus the refresh-and-re-read-once wrapper
  *   for hosts whose reads scan rows and count unknown-epoch skips.

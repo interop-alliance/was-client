@@ -64,6 +64,9 @@ import {
  *   `'content'`
  * @param [options.source] {EncryptionDescriptorSource}
  * @param options.cache {EncryptionDescriptorCache}
+ * @param [options.requireGoverned] {boolean}   forwarded to every descriptor
+ *   acquisition, the initial build and the unknown-epoch refresh alike (see
+ *   `acquireDescriptor`)
  * @param [options.onFetchError] {function}   observes swallowed
  *   descriptor-fetch failures
  * @returns {Promise<EdvDocCipher>}
@@ -76,6 +79,7 @@ export async function createRefreshingEdvDocCipher({
   idDerivation,
   source,
   cache,
+  requireGoverned,
   onFetchError
 }: {
   keyAgreementKey: IKeyAgreementKey
@@ -85,6 +89,7 @@ export async function createRefreshingEdvDocCipher({
   idDerivation?: 'content' | 'random'
   source?: EncryptionDescriptorSource
   cache: EncryptionDescriptorCache
+  requireGoverned?: boolean
   onFetchError?: (err: unknown, info: { collectionId: string }) => void
 }): Promise<EdvDocCipher> {
   // The `/meta` value last installed with `applyMeta`, replayed onto a rebuilt
@@ -96,6 +101,7 @@ export async function createRefreshingEdvDocCipher({
       source,
       cache,
       collectionId,
+      requireGoverned,
       onFetchError
     })
     if (!encryption) {

@@ -3539,3 +3539,101 @@ echo, which RxDB drops when it arrives during the push (was-sync WS-17). The ack
 now carries what the body carries, and a consumer that was written for the
 `{ etag }` ack keeps working since every new member is optional. Filed from
 was-sync WS-17.
+
+### WCL-118: [H] A host can downgrade a governed collection by omitting `history`
+
+- status: done
+- done: 2026-10-04
+- priority: high
+- labels: encryption, log, integrity, security, fail-closed
+- touches:
+  - encrypted-collections spec: a security consideration that a reader without a
+    require-governed policy is open to the `history`-stripping downgrade;
+    point-state descriptors stay a conforming mode -- filed as ECS-26
+  - wallet-core, freewallet, was-react: the wallet stack turns `requireGoverned`
+    on for every `edv` collection it reads -- filed as WC-276 (the verifying
+    source must satisfy the policy), WR-58, FW-650
+- acceptance:
+  - [x] `acquireDescriptor` (and `createRefreshingEdvDocCipher`) take a
+        `requireGoverned` option; when set, an `edv` descriptor that lacks
+        `history` is refused, typed, and not cached
+  - [x] With `requireGoverned` set, a plain source cannot satisfy acquisition at
+        all (WCL-47's `verifiesHistory` refusal still applies)
+  - [x] A test shows a hostile host that strips `history` and mints its own
+        epoch is refused
+  - [x] Point-state descriptors keep working when `requireGoverned` is unset
+
+WCL-47's refusal only catches a host that honestly includes `history` in the
+served projection. A hostile host can drop `history` and serve an epoch it
+minted. The descriptor then looks client-written, so a plain source resolves it
+and acquisition adopts it. The attack is the same one WCL-47 describes: the
+epoch id is the X25519 public key, so every later write is sealed to the host.
+
+A verifying source already resists the strip. `logGovernedDescriptorSource`
+reads `meta/log` directly and never the Description, so the host would have to
+hide or forge the log itself. A held pin turns a missing log into a `rollback`,
+a forged log fails verification, and first contact with no log fails closed. The
+exposure is a reader on a plain source: was-react's `remoteDescriptorSource`
+(WR-52), freewallet's no-logs fallback in `#readGovernedDescriptor` (FW-511),
+and any app or agent that does not know a collection is governed. A plain reader
+cannot tell a stripped descriptor from an honest point-state one, because ECS
+makes `history` OPTIONAL and point-state is a conforming mode.
+
+Decision (2026-09-27): a client-side `requireGoverned` policy, not a spec
+mandate. Options considered:
+
+- Verifying-source discipline only (close FW-511 and WR-52). Cheapest, but a
+  reader that does not know a collection is governed stays exposed.
+- Pin-aware acquisition (refuse when a `meta/log` pin is held but `history` is
+  absent). Uses existing state, but does not cover first contact.
+- A governed marker in the descriptor cache. Changes a stored record and does
+  not cover first contact.
+- The expectation carried in the share or connect payload. Covers first contact
+  for a grantee, but adds a permanent wire field.
+- Every `edv` collection log-governed, in the spec. Closes the attack outright,
+  but makes `governed-history-logs` mandatory for every WAS server that hosts
+  encrypted collections and removes the point-state mode for general WAS
+  implementers.
+
+`requireGoverned` gives the wallet stack the same guarantee as the spec mandate,
+since it always sets the policy, while general WAS clients and servers keep
+point-state descriptors. The residual risk is a generic reader that leaves the
+policy off, and the ECS security consideration records it. Mandatory governance
+makes descriptor reads cost in proportion to each log's length; see WCL-119.
+discovered-from: WCL-47.
+
+### WCL-129: [H] `requireGoverned` refuses the real verifying source
+
+- status: done
+- done: 2026-10-04
+- priority: high
+- labels: encryption, log, fail-closed
+- discovered-from: WCL-118 (cross-repo filing review, 2026-10-04)
+- acceptance:
+  - [x] Under `requireGoverned`, a source that does not declare
+        `verifiesHistory` is still refused before any fetch, with
+        `UnverifiedDescriptorError`
+  - [x] A verifying source's descriptor is adopted and cached whether or not it
+        carries `history`
+  - [x] The cache-only and fallback paths serve the cache under the policy
+  - [x] Tests cover a verifying source that serves a descriptor without
+        `history`, through `acquireDescriptor` and
+        `createRefreshingEdvDocCipher`
+  - [x] The residual is documented in the module header and ARCHITECTURE.md
+
+WCL-118 shipped a policy that refused the only real verifying source.
+wallet-core's `logGovernedDescriptorSource` returns the verified log head, and
+`toEpochConfigurationState` strips `history` from entry state by design. So a
+verifying source serves a descriptor with no `history`, and the policy refused
+it. The tests passed only because the mock verifying source carried `history`.
+
+Decision (2026-10-04): trust the verifying source. A verified log head is the
+governed descriptor by construction. `history` is a member of the server's
+projection only, so its presence is not what the policy checks. The policy now
+checks the source alone: a plain source is refused up front, and a verifying
+source's result is adopted with or without `history`.
+
+The residual: the cache paths (no source, a fetch that threw, an empty
+description) serve the cache as they do without the policy. A cache entry
+written through a plain source while the policy was off is served there until
+the first verified fetch overwrites it.

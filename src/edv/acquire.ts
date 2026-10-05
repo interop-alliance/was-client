@@ -33,6 +33,22 @@
  * it out. A source declares this with `verifiesHistory: true`; acquisition
  * refuses a `history`-bearing descriptor from any other source with
  * `UnverifiedDescriptorError`, before it reaches the cache.
+ *
+ * That refusal catches only a host that honestly serves `history`. A hostile
+ * host can strip it and serve an epoch it minted, which then looks like a
+ * point-state descriptor. The `requireGoverned` policy closes this gap. Under
+ * it, acquisition adopts a descriptor only through a source that declares
+ * `verifiesHistory`. A plain source is refused with `UnverifiedDescriptorError`
+ * before it is asked, so nothing it serves is cached. A verifying source's
+ * result is adopted and cached whether or not it carries `history`. A verified
+ * log head is the governed descriptor by construction. `history` is a member
+ * of the server's projection only, so its presence is not what the policy
+ * checks.
+ *
+ * The cache paths (no source, a fetch that threw, an empty description) serve
+ * the cache as they do without the policy. One residual remains: a cache
+ * entry written through a plain source while the policy was off is served on
+ * these paths until the first verified fetch overwrites it.
  */
 import { isResourceLogRefusal } from '@interop/vh-resource-log'
 import { UnverifiedDescriptorError } from '../errors.js'
@@ -115,13 +131,18 @@ export function wasDescriptorSource({
  * `undefined` means no descriptor exists anywhere for this collection.
  * A fetched descriptor that carries `history` from a source that does not
  * declare `verifiesHistory` is refused with `UnverifiedDescriptorError`, and
- * is not cached.
+ * is not cached. With `requireGoverned` set, any source that does not declare
+ * `verifiesHistory` is refused the same way before it is asked (see the module
+ * header); the cache paths are unaffected.
  *
  * @param options {object}
  * @param [options.source] {EncryptionDescriptorSource}   omit for cache-only
  *   acquisition
  * @param options.cache {EncryptionDescriptorCache}
  * @param options.collectionId {string}
+ * @param [options.requireGoverned] {boolean}   refuse a source that does not
+ *   declare `verifiesHistory` (default off, which keeps point-state
+ *   descriptors from a plain source working)
  * @param [options.onFetchError] {function}   observes a swallowed fetch
  *   failure (the thrown-fetch branch only; an empty description is not an
  *   error). Errors from the cache itself throw through, as do a log-governed
@@ -134,15 +155,24 @@ export async function acquireDescriptor({
   source,
   cache,
   collectionId,
+  requireGoverned,
   onFetchError
 }: {
   source?: EncryptionDescriptorSource
   cache: EncryptionDescriptorCache
   collectionId: string
+  requireGoverned?: boolean
   onFetchError?: (err: unknown, info: { collectionId: string }) => void
 }): Promise<CollectionEncryption | undefined> {
   if (!source) {
     return cache.readDescriptor({ collectionId })
+  }
+  if (requireGoverned && source.verifiesHistory !== true) {
+    throw new UnverifiedDescriptorError(
+      `Collection "${collectionId}" requires a log-governed encryption ` +
+        'descriptor, but its source does not verify the governing log. ' +
+        'Acquire it through a log-governed descriptor source.'
+    )
   }
   let fetched: CollectionEncryption | undefined
   try {
@@ -186,6 +216,8 @@ export async function acquireDescriptor({
  *   acquisition
  * @param options.cache {EncryptionDescriptorCache}
  * @param options.collectionIds {string[]}
+ * @param [options.requireGoverned] {boolean}   applied to each collection, as
+ *   in {@link acquireDescriptor}; one refusal rejects the whole set
  * @param [options.onFetchError] {function}   observes each swallowed fetch
  *   failure
  * @returns {Promise<Record<string, CollectionEncryption>>}   keyed by
@@ -195,11 +227,13 @@ export async function acquireDescriptors({
   source,
   cache,
   collectionIds,
+  requireGoverned,
   onFetchError
 }: {
   source?: EncryptionDescriptorSource
   cache: EncryptionDescriptorCache
   collectionIds: string[]
+  requireGoverned?: boolean
   onFetchError?: (err: unknown, info: { collectionId: string }) => void
 }): Promise<Record<string, CollectionEncryption>> {
   const resolved = await Promise.all(
@@ -207,7 +241,13 @@ export async function acquireDescriptors({
       async collectionId =>
         [
           collectionId,
-          await acquireDescriptor({ source, cache, collectionId, onFetchError })
+          await acquireDescriptor({
+            source,
+            cache,
+            collectionId,
+            requireGoverned,
+            onFetchError
+          })
         ] as const
     )
   )
