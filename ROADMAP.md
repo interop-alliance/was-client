@@ -1,6 +1,6 @@
 # WAS Client Roadmap (open items)
 
-nextAvailableId: 132
+nextAvailableId: 133
 
 <!-- roadmap-order:index:start -->
 
@@ -103,6 +103,11 @@ Ready:
 
 - WCL-12 [M] Chunked-stream auto-routing for `put()` (oversize update)
 - WCL-124 [L] Read a policy tombstone (`?include=deleted`)
+
+Waiting on another repo:
+
+- WCL-132 [H] A GET-form `Collection.changes()` caller for a GET/HEAD grant
+  holder (after WASS-51)
 
 **Performance**
 
@@ -1525,6 +1530,38 @@ live in the wallet and the server stores opaque JWEs. Everything shipped on that
 front (both encrypted-collections increments, key epochs, the blinded `/query`
 binding, chunked encrypted blobs, the encryption-descriptor store seam) is
 recorded in the CHANGELOG, not here.
+
+### WCL-132: [H] [after WASS-51] A GET-form `Collection.changes()` caller for a GET/HEAD grant holder
+
+- status: todo
+- priority: high
+- labels: changes-feed, zcap, audiences, cross-repo
+- discovered-from: freewallet FW-478 (the cleartext audiences design,
+  section 3 and question 8.7, approved 2026-10-05)
+- depends-on: WASS-51 (the profile text of the GET form)
+- touches:
+  - was-client: `Collection.changes()` (`src/Collection.ts`) gains the GET
+    form beside the POST-only one, invoked under the caller's zcap like any
+    other read; the sync wire contract names it
+  - wallet-attached-storage-spec: WASS-51's GET form, cited
+  - freewallet: FW-478 depends on this item; the e2e agent double reads an
+    audience through it
+  - was-react: the plaintext audience reader FW-478 adds calls it; cite
+- acceptance:
+  - [ ] A holder of a GET and HEAD grant on a collection can read its
+        `changes` feed through `Collection.changes()` with no POST
+  - [ ] The POST form is unchanged and both share one checkpoint shape
+  - [ ] An integration-tier test reads the feed under a GET/HEAD
+        delegation and is refused under one carrying GET alone when the
+        server requires HEAD, per WASS-51's text
+
+Context: a subscription agent holds today's share grant shape, GET and HEAD
+on an audience collection's container, and reads new posts off the `changes`
+feed. The feed is POST-only here, so that grant could not reach it; the
+server shipped the GET form (0.42.0) and WASS-51 carries its text. The only
+planned caller of the GET form was an optional bullet in WCL-127. The
+ecosystem learnings forbid hand-rolling WAS requests, so the reader needs
+this caller from was-client.
 
 ### WCL-12: [M] Chunked-stream auto-routing for `put()` (oversize update)
 

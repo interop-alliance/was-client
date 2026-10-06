@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Update to latest zcap and jsonld-signatures deps.
 - The `isEncryptedEnvelope` JSDoc no longer presents plaintext tolerance as a
   read-path default. It now states that the predicate is a shape test, that an
   encrypted collection refuses a non-envelope body on read (as `EdvCodec.decode`
