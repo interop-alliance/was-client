@@ -33,8 +33,8 @@ importers:
         specifier: ^0.35.1
         version: 0.35.1
       '@interop/vh-resource-log':
-        specifier: ^0.6.1
-        version: 0.6.1
+        specifier: ^0.7.0
+        version: 0.7.0
       '@interop/x25519-key-agreement-key':
         specifier: ^5.4.1
         version: 5.4.1
@@ -295,6 +295,10 @@ packages:
     resolution: {integrity: sha512-QEANqs/IWr5UGD1vs3x5/tZWmRlaSUMp3/unZOQ7u8gzH4eLBKPI8AL/r0dmAc2CAvvpVJ5f+hn97KlXXk04Cg==}
     engines: {node: '>=22'}
 
+  '@interop/did-method-webvh@5.13.0':
+    resolution: {integrity: sha512-9T6ayOYltcCpj9d9CvSE2I9O6WWOY6K/4dJM0avDGCjXT8ot/6bqkJScEgfmC1HkjbzJThskrs/AIulj2fYBuw==}
+    engines: {node: '>=22'}
+
   '@interop/did-web-resolver@6.3.5':
     resolution: {integrity: sha512-AQ8tdyu4MgTSS15weNVQBBh8fRet5rOrL3wezPF7VgWA5Z9n8ZnHuhoJLTj3MUrUgY7K5XcQ4xmSW+5nZRH3ew==}
     engines: {node: '>=24.0'}
@@ -392,10 +396,6 @@ packages:
     resolution: {integrity: sha512-fJRU8k0N2YHCQhFOiSgiLNtVklVUulm4WgsDNKmw0QfCF5DuX5a6Xnf2bZ1xIEeZw386KxMGa6pCOpiKJ6Ww4A==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.28.0':
-    resolution: {integrity: sha512-yP4M/oquqFvFwjqq2YUj7mh7Fs0vcc/UEmVDtHL/P9WkH1EXlGX0I0676Kgjoj5fmxyPXhwup/M/ndmUe1Hl1w==}
-    engines: {node: '>=22.0'}
-
   '@interop/storage-core@0.31.0':
     resolution: {integrity: sha512-ql95AtuwA4SC5H+AggPJyMAhHA/exHXjEYqwRkxL/94F88Rt3BbbiWJ7jJjUc3NnCBhgIakGSlLyGlRC/xLitQ==}
     engines: {node: '>=22.0'}
@@ -404,8 +404,8 @@ packages:
     resolution: {integrity: sha512-d2VJUebrhMTk1LZ13xv3QwgocA9rqhWNWtbXRFDEtA02m0jC4QnL+9H1aXGMJxX7D96TxkyFRXxLITjXJhXK9w==}
     engines: {node: '>=22.0'}
 
-  '@interop/vh-resource-log@0.6.1':
-    resolution: {integrity: sha512-BpI671YUckiuvVsi/Ns6rvP3vIo4bBq5iiY0kVsH4v+KLvHeHhu+0zfu0Ed6fs7WRftZVWuEb6EmgbTBBqjqmA==}
+  '@interop/vh-resource-log@0.7.0':
+    resolution: {integrity: sha512-T2AYDXQUdgrz1f8m7IJL5jJFXW5tyJRoKpUmn6q/KINQAUZFr7KGw+s235sI9P9RxYtAbzo6/Vnxs+6ojO5xhg==}
     engines: {node: '>=24.0'}
 
   '@interop/x25519-key-agreement-key@5.4.1':
@@ -2042,6 +2042,14 @@ snapshots:
       '@scure/base': 2.4.0
       json-canonicalize: 3.0.0
 
+  '@interop/did-method-webvh@5.13.0':
+    dependencies:
+      '@interop/data-integrity-core': 8.8.0
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
+      '@scure/base': 2.4.0
+      json-canonicalize: 3.0.0
+
   '@interop/did-web-resolver@6.3.5':
     dependencies:
       '@interop/bnid': 6.0.2
@@ -2210,10 +2218,6 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  '@interop/storage-core@0.28.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.8.0
-
   '@interop/storage-core@0.31.0':
     dependencies:
       '@interop/data-integrity-core': 8.8.0
@@ -2222,10 +2226,10 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
-  '@interop/vh-resource-log@0.6.1':
+  '@interop/vh-resource-log@0.7.0':
     dependencies:
-      '@interop/did-method-webvh': 5.12.0
-      '@interop/storage-core': 0.28.0
+      '@interop/did-method-webvh': 5.13.0
+      '@interop/storage-core': 0.35.1
 
   '@interop/x25519-key-agreement-key@5.4.1':
     dependencies:

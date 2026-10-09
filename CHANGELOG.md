@@ -1,5 +1,12 @@
 # @interop/was-client Changelog
 
+## 0.93.2 - TBD
+
+### Changed
+
+- Depend on `@interop/vh-resource-log` 0.7.0, whose `ResourceLogController`
+  exposes `documentAt` in place of `assertionKeysAt`.
+
 ## 0.93.1 - 2026-10-06
 
 ### Changed
