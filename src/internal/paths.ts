@@ -470,6 +470,45 @@ export function parseSpaceTarget({
 }
 
 /**
+ * Classifies an absolute `target` URL whose server is not known in advance:
+ * the base URL is read off the target itself, as everything before its first
+ * `space` path segment, so a WAS mounted under a sub-path
+ * (`https://host/was/space/...`) yields `https://host/was`. For a target on a
+ * known server, `parseSpaceTarget` is the stricter check (it refuses a target
+ * beneath any other base). This is the one for a capability received from
+ * another party, whose `invocationTarget` may name any host.
+ *
+ * Returns `null` when `target` is not an absolute URL or has no `space`
+ * segment, and `null` from the path grammar for a path it cannot classify.
+ * The caller chooses whether that is an error.
+ *
+ * @param target {string}   an absolute WAS URL
+ * @returns {{ serverUrl: string; path: ParsedSpacePath } | null}   the server
+ *   base URL (no trailing slash) and the parsed target beneath it
+ */
+export function parseAbsoluteSpaceTarget(
+  target: string
+): { serverUrl: string; path: ParsedSpacePath } | null {
+  let url: URL
+  try {
+    url = new URL(target)
+  } catch {
+    return null
+  }
+  const segments = url.pathname.split('/')
+  const spaceIndex = segments.indexOf('space')
+  if (spaceIndex === -1) {
+    return null
+  }
+  const path = parseSpacePath(`/${segments.slice(spaceIndex).join('/')}`)
+  if (path === null) {
+    return null
+  }
+  const basePath = segments.slice(0, spaceIndex).join('/')
+  return { serverUrl: `${url.origin}${basePath}`, path }
+}
+
+/**
  * Parses a server pathname back into the containment depth it addresses -- the
  * inverse of the builders above, kept next to them so the grammar is owned in
  * one place. Segments are percent-decoded (the builders re-encode them).

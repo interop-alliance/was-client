@@ -34,7 +34,7 @@ import {
   WasServerError,
   httpStatus
 } from './errors.js'
-import { delegateGrantAt } from './internal/grant.js'
+import { allowsAction, delegateGrantAt } from './internal/grant.js'
 import type { ClientContext } from './internal/request.js'
 import { send, readData } from './internal/request.js'
 import {
@@ -183,11 +183,7 @@ function mergedConfiguration(
  * one whose actions are unrestricted or include `POST`).
  */
 function changesMethodFor(capability?: IZcap): 'POST' | 'GET' {
-  const allowed = capability?.allowedAction ?? 'POST'
-  const actions = Array.isArray(allowed) ? allowed : [allowed]
-  return actions.some(action => action.toUpperCase() === 'POST')
-    ? 'POST'
-    : 'GET'
+  return allowsAction({ zcap: capability, action: 'POST' }) ? 'POST' : 'GET'
 }
 
 /**

@@ -39,7 +39,8 @@ import {
   resourceMeta,
   resourceChunkPath,
   toUrl,
-  parseSpacePath
+  parseSpacePath,
+  parseAbsoluteSpaceTarget
 } from '../../src/internal/paths.js'
 
 describe('path builders', () => {
@@ -319,6 +320,49 @@ describe('parseSpacePath', () => {
   })
 })
 
+describe('parseAbsoluteSpaceTarget', () => {
+  it('reads the server base URL and the path off a bare-origin target', () => {
+    expect(parseAbsoluteSpaceTarget('https://was.example/space/s/c/')).toEqual({
+      serverUrl: 'https://was.example',
+      path: { kind: 'collection', spaceId: 's', collectionId: 'c' }
+    })
+  })
+
+  it('keeps a sub-path mount in the server base URL', () => {
+    expect(
+      parseAbsoluteSpaceTarget('http://localhost:9787/was/v1/space/s/c/r')
+    ).toEqual({
+      serverUrl: 'http://localhost:9787/was/v1',
+      path: {
+        kind: 'resource',
+        spaceId: 's',
+        collectionId: 'c',
+        resourceId: 'r'
+      }
+    })
+  })
+
+  it('splits on the first `space` segment, so a space id may be "space"', () => {
+    expect(
+      parseAbsoluteSpaceTarget('https://was.example/space/space/c')
+    ).toEqual({
+      serverUrl: 'https://was.example',
+      path: { kind: 'collection', spaceId: 'space', collectionId: 'c' }
+    })
+  })
+
+  it('returns null for a relative URL or one with no space segment', () => {
+    expect(parseAbsoluteSpaceTarget('/space/s/c')).toBeNull()
+    expect(parseAbsoluteSpaceTarget('https://was.example/spaces/s')).toBeNull()
+    expect(parseAbsoluteSpaceTarget('https://was.example/kms/x')).toBeNull()
+  })
+
+  it('returns null when the path beneath the base does not classify', () => {
+    expect(parseAbsoluteSpaceTarget('https://was.example/space')).toBeNull()
+    expect(parseAbsoluteSpaceTarget('https://was.example/space/%ff')).toBeNull()
+  })
+})
+
 describe('toUrl', () => {
   it('resolves a leading-slash path against the server base URL', () => {
     expect(toUrl({ serverUrl: 'https://was.example', path: '/space/x' })).toBe(
@@ -357,6 +401,7 @@ describe('the ./paths subpath barrel', () => {
         'collectionQuery',
         'isReservedCollectionId',
         'isReservedResourceId',
+        'parseAbsoluteSpaceTarget',
         'parseSpacePath',
         'parseSpaceTarget',
         'resourceMeta',

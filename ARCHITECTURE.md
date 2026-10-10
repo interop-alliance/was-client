@@ -211,7 +211,10 @@ client-side controller). Per-handle state on top of that:
   `reset()`). A standalone `Resource` resolves its own. Codecs stay per-handle:
   a handle may carry an encryption override.
 - `WasClient.fromCapability(zcap)` parses `invocationTarget` back into a handle
-  at the right depth via `parseSpaceTarget`.
+  at the right depth via `parseSpaceTarget`. A capability from another party,
+  whose server is not known in advance, goes through `parseAbsoluteSpaceTarget`
+  first, which reads the server base URL off the target itself; the client is
+  then built for that server and the handle derived as usual.
 
 ## Service discovery
 

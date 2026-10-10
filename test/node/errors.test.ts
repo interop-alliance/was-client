@@ -27,7 +27,8 @@ import {
   WasSyncCheckpointError,
   WasSyncConflictError,
   WasSyncNotFoundError,
-  httpStatus
+  httpStatus,
+  isDenialError
 } from '../../src/index.js'
 import { mapError, UnknownEpochError } from '../../src/errors.js'
 
@@ -433,6 +434,28 @@ describe('sync error constructors', () => {
     expect(new WasSyncCheckpointError('m', { status: undefined }).status).toBe(
       400
     )
+  })
+})
+
+describe('isDenialError', () => {
+  it('matches 401/403 and the masked 404, named or bare', () => {
+    expect(isDenialError(new AuthRequiredError('m'))).toBe(true)
+    expect(isDenialError(new NotFoundError('m'))).toBe(true)
+    expect(isDenialError(new CapabilityRevokedError('m'))).toBe(true)
+    expect(isDenialError(new CapabilityExpiredError('m'))).toBe(true)
+    expect(isDenialError(new WasSyncAuthError(403))).toBe(true)
+  })
+
+  it('matches by name, for an error from another copy of the package', () => {
+    expect(isDenialError({ name: 'CapabilityRevokedError' })).toBe(true)
+    expect(isDenialError({ name: 'ValidationError' })).toBe(false)
+  })
+
+  it('does not match other errors or non-errors', () => {
+    expect(isDenialError(new ValidationError('m'))).toBe(false)
+    expect(isDenialError(new WasServerError('m'))).toBe(false)
+    expect(isDenialError(new Error('m'))).toBe(false)
+    expect(isDenialError(undefined)).toBe(false)
   })
 })
 

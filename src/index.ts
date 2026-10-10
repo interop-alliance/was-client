@@ -13,6 +13,7 @@ export { zcapClientForSigner } from './zcapClient.js'
 export { discoverService } from './internal/service.js'
 
 export { parseSpaceTarget } from './internal/paths.js'
+export { allowsAction } from './internal/grant.js'
 export type { ParsedSpacePath } from './internal/paths.js'
 export { readEtag, writeHeaders } from './internal/conditional.js'
 export { isGovernedDescriptor } from './internal/describe.js'
@@ -53,6 +54,7 @@ export {
   WasSyncNotFoundError,
   WasServerError,
   httpStatus,
+  isDenialError,
   mapError
 } from './errors.js'
 

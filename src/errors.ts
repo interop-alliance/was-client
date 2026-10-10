@@ -516,6 +516,37 @@ export function httpStatus(err: unknown): number | undefined {
 }
 
 /**
+ * Whether an error is a denied invocation: a 401 or 403
+ * ({@link AuthRequiredError}), or the 404 WAS answers an unauthorized caller
+ * with ({@link NotFoundError}, including its named `CapabilityRevokedError`
+ * and `CapabilityExpiredError` forms). A missing target and a denied one are
+ * indistinguishable on the wire, so a caller for whom the difference matters
+ * settles it with a request whose target is known to exist. Matches by class
+ * and by `name`, so an error from another copy of this package classifies too.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {boolean}
+ */
+export function isDenialError(err: unknown): boolean {
+  if (err instanceof AuthRequiredError || err instanceof NotFoundError) {
+    return true
+  }
+  // By name as well, so a tree resolving two copies of this package still
+  // classifies the other copy's errors (the `isSync*` predicates do the same).
+  const name = (err as { name?: unknown } | null)?.name
+  return typeof name === 'string' && DENIAL_ERROR_NAMES.has(name)
+}
+
+const DENIAL_ERROR_NAMES = new Set([
+  'AuthRequiredError',
+  'NotFoundError',
+  'CapabilityRevokedError',
+  'CapabilityExpiredError',
+  'WasSyncAuthError',
+  'WasSyncNotFoundError'
+])
+
+/**
  * Normalizes an unknown caught value into a display string: the `Error`'s
  * `message` when it is one, else its `String(...)` coercion. The companion to
  * {@link httpStatus} for the "log or surface what went wrong" half of a catch

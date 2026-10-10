@@ -16,8 +16,9 @@
  * container's description lives at its `meta` segment (`spaceMeta`,
  * `collectionMeta`) instead of at the container URL.
  *
- * `parseSpacePath` / `parseSpaceTarget` are the inverse grammar (a pathname or
- * an absolute URL back to the containment depth it addresses),
+ * `parseSpacePath` / `parseSpaceTarget` / `parseAbsoluteSpaceTarget` are the
+ * inverse grammar (a pathname, an absolute URL on a known server, or an
+ * absolute URL on any server back to the containment depth it addresses),
  * `isReservedCollectionId` / `isReservedResourceId` report whether a segment is
  * in the Reserved Path Segment Registry (the builders throw on one, so a caller
  * forming a path out of a value it did not choose asks first), and
@@ -41,7 +42,8 @@ export {
   resourceMeta,
   toUrl,
   parseSpacePath,
-  parseSpaceTarget
+  parseSpaceTarget,
+  parseAbsoluteSpaceTarget
 } from './internal/paths.js'
 export {
   isReservedCollectionId,

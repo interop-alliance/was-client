@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import { ValidationError, WasClient } from '../../src/index.js'
+import { ValidationError, WasClient, allowsAction } from '../../src/index.js'
 import { serviceDescriptionFor } from '../helpers/stubClient.js'
 
 interface DelegateArgs {
@@ -198,6 +198,30 @@ describe('grant rooting (revocability)', () => {
  * delegating never touches the invocation signer -- so a client built for
  * delegation alone can still hand out capabilities.
  */
+describe('allowsAction', () => {
+  const zcap = (allowedAction?: string | string[]) =>
+    ({
+      invocationTarget: 'https://was.example/space/s/c/',
+      allowedAction
+    }) as never
+
+  it('matches a listed action case-insensitively', () => {
+    expect(allowsAction({ zcap: zcap(['get', 'HEAD']), action: 'GET' })).toBe(
+      true
+    )
+    expect(allowsAction({ zcap: zcap('post'), action: 'POST' })).toBe(true)
+    expect(allowsAction({ zcap: zcap(['GET', 'HEAD']), action: 'POST' })).toBe(
+      false
+    )
+  })
+
+  it('reads an absent or empty allowedAction, or no zcap, as unrestricted', () => {
+    expect(allowsAction({ zcap: zcap(), action: 'DELETE' })).toBe(true)
+    expect(allowsAction({ zcap: zcap([]), action: 'DELETE' })).toBe(true)
+    expect(allowsAction({ action: 'DELETE' })).toBe(true)
+  })
+})
+
 describe('was.grant input validation', () => {
   it('throws ValidationError when neither target nor capability is given', async () => {
     const { client, lastDelegate } = clientWithDelegateSpy()

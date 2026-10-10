@@ -1,5 +1,18 @@
 # @interop/was-client Changelog
 
+## 0.94.0 - TBD
+
+### Added
+
+- `parseAbsoluteSpaceTarget(target)` on the `./paths` entry: classifies an
+  absolute WAS URL on a server not known in advance, reading the server base URL
+  (sub-path mounts included) off the target itself.
+- `allowsAction({ zcap, action })` on the root entry: a case-insensitive
+  `allowedAction` check that reads an absent or empty list as unrestricted.
+  `Collection.changes()` picks its `POST` / `GET` form through it.
+- `isDenialError(err)` on the root entry: a 401/403 or the masked 404 WAS
+  answers an unauthorized caller with, named or bare.
+
 ## 0.93.2 - 2026-10-09
 
 ### Changed

@@ -92,6 +92,37 @@ export async function delegateGrant(
 }
 
 /**
+ * Whether a capability permits `action`, matched case-insensitively against
+ * its `allowedAction` (a single verb or a list). A capability that states no
+ * `allowedAction`, or an empty one, permits every action, as the zcap model
+ * reads it.
+ *
+ * @param options {object}
+ * @param [options.zcap] {IZcap}   the capability; `undefined` is read as
+ *   unrestricted, for a handle bound to no capability
+ * @param options.action {string}   the action verb (e.g. `'GET'`)
+ * @returns {boolean}
+ */
+export function allowsAction({
+  zcap,
+  action
+}: {
+  zcap?: IZcap
+  action: string
+}): boolean {
+  const allowed = zcap?.allowedAction
+  if (allowed === undefined) {
+    return true
+  }
+  const actions = Array.isArray(allowed) ? allowed : [allowed]
+  if (actions.length === 0) {
+    return true
+  }
+  const wanted = action.toUpperCase()
+  return actions.some(entry => entry.toUpperCase() === wanted)
+}
+
+/**
  * The scoped-grant sugar shared by `Space.grant` and `Collection.grant`:
  * delegates per `GrantOptions` with the grant `target` prefilled from the
  * handle's `path` (and the handle's bound `capability`, if any, as the parent

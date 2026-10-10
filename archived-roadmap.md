@@ -3905,13 +3905,13 @@ first CI-visible run caught one stale assertion, filed as WCL-131.
 - priority: medium
 - labels: sync, encryption, fail-closed
 - touches:
-  - freewallet (filed as FW-664): `src/stores/remoteDirectStore.ts` returns a plaintext body as a
-    credential, wallet activity, contact head, or contact revision when the
-    predicate says "not an envelope", with no decrypt and no binding check;
-    `src/stores/browserStore.ts` does the same passthrough on local reads and in
-    `updateContact`'s read of the existing head. `src/stores/storageManager.ts`
-    already fails closed (a non-envelope row is bucketed as unreadable or
-    yields undefined).
+  - freewallet (filed as FW-664): `src/stores/remoteDirectStore.ts` returns a
+    plaintext body as a credential, wallet activity, contact head, or contact
+    revision when the predicate says "not an envelope", with no decrypt and no
+    binding check; `src/stores/browserStore.ts` does the same passthrough on
+    local reads and in `updateContact`'s read of the existing head.
+    `src/stores/storageManager.ts` already fails closed (a non-envelope row is
+    bucketed as unreadable or yields undefined).
 - acceptance:
   - [x] The JSDoc on `isEncryptedEnvelope` no longer endorses plaintext
         tolerance as a read-path default, and states that the predicate does not
@@ -3920,8 +3920,8 @@ first CI-visible run caught one stale assertion, filed as WCL-131.
         row on read, matching `EdvCodec.decode`'s `#assertEnvelope(doc, 'read')`
         (already the codec's behavior, covered by `test/node/edv-codec.test.ts`)
   - [x] Any remaining legacy-row tolerance is an explicit per-call opt-in on a
-        migration path, not the default branch (this package has no such
-        branch; the consumer branches are FW-664)
+        migration path, not the default branch (this package has no such branch;
+        the consumer branches are FW-664)
 
 The predicate at `src/sync/envelope.ts:19-26` is correct on its own. Its doc
 comment is the defect: it says the predicate lets read paths stay tolerant of
